@@ -67,7 +67,7 @@ class AIAgent:
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
-            client_kwargs["api_key"] = os.getenv("OPENAI_API_KEY", "dummy-key")
+            client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", "dummy-key")
         
         try:
             self.client = OpenAI(**client_kwargs)
@@ -296,7 +296,7 @@ def main():
     # Example conversation
     user_query = (
         "Tell me about the latest developments in Python 3.12 and what new features "
-        "developers should know about. Please search for current information."
+        "developers should know about. Please search for current information and try it out."
     )
     
     print(f"\n📝 User Query: {user_query}")

@@ -24,7 +24,7 @@ from typing import Dict, Any, List
 
 # Import toolsets
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
-from terminal_tool import terminal_tool, check_hecate_requirements
+from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -123,7 +123,7 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "terminal",
-                "description": "Execute commands on a Linux VM with optional interactive session support. Automatically manages VM lifecycle - creates VMs on demand, reuses existing VMs, and cleans up after inactivity. Can handle both simple commands and interactive sessions.",
+                "description": TERMINAL_TOOL_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {

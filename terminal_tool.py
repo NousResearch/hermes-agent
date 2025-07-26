@@ -25,6 +25,53 @@ from typing import Optional, Dict, Any
 from hecate import run_tool_with_lifecycle_management
 from morphcloud._llm import ToolCall
 
+# Detailed description for the terminal tool based on Hermes Terminal system prompt
+TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure, persistent Linux VM environment with full interactive application support.
+
+**Environment:** 
+- Minimal Debian-based OS with internet access
+- Automatic VM lifecycle management (creates on-demand, reuses, cleans up)
+- **Full state persistence across tool calls**: current directory (pwd), environment variables, activated virtual environments (conda/venv), running processes, and command history all persist between consecutive tool calls
+- Session state managed automatically via tmux
+
+**Command Execution:**
+- Simple commands: Just provide the 'command' parameter
+- Background processes: Set 'background': True for servers/long-running tasks
+- Interactive applications automatically detected and handled
+
+**Interactive Applications (TUIs/Pagers/Prompts):**
+When commands enter interactive mode (vim, nano, less, git prompts, package managers, etc.), you'll receive screen content with "frozen" status. This is NORMAL - the session is still active and waiting for input.
+
+**To interact with frozen sessions:**
+1. Use 'input_keys' parameter with keystrokes to send
+2. System auto-detects and uses the active session
+3. Session stays active until application exits
+
+**Special Key Syntax for input_keys:**
+- `<ESC>`: Escape key
+- `<ENTER>`: Enter/Return  
+- `<CTRL+C>`, `<CTRL+D>`, `<CTRL+Z>`: Control combinations
+- `<UP>`, `<DOWN>`, `<LEFT>`, `<RIGHT>`: Arrow keys
+- `<TAB>`, `<BACKSPACE>`: Tab and Backspace
+- `<F1>` through `<F12>`: Function keys
+- `<SHIFT+TAB>`: Shift+Tab
+- Uppercase letters for Shift+letter (e.g., 'V' for Shift+V)
+- Symbols for Shift+number (e.g., '!' for Shift+1, ':' for Shift+;)
+
+**Examples:**
+- Start vim: `{"command": "vim file.txt"}`
+- Type in vim: `{"input_keys": "iHello World<ESC>"}`  
+- Save and quit: `{"input_keys": ":wq<ENTER>"}`
+- Navigate in less: `{"input_keys": "j"}`
+- Quit less: `{"input_keys": "q"}`
+
+**Best Practices:**
+- Run servers/long processes in background with separate tool calls
+- Chain multiple foreground commands in single call if needed
+- Monitor disk usage for large tasks, clean up to free space
+- Test components incrementally with mock inputs
+- Install whatever tools needed - full system access provided"""
+
 def terminal_tool(
     command: Optional[str] = None,
     input_keys: Optional[str] = None,

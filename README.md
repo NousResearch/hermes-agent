@@ -9,7 +9,7 @@ pip install -e .
 ## Run
 ```
 python run_agent.py \
-  --query "search up the latest docs on the new openai responses api and write me a hello world example that's not in their docs. run it to verify. search up public github examples if needbe" \
+  --query "search up the latest docs on jit in python 3.13 and write me basic example that's not in their docs." \
   --max_turns 20 \
   --model claude-sonnet-4-20250514 \
   --base_url https://api.anthropic.com/v1/ \

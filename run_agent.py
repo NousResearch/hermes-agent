@@ -25,6 +25,7 @@ import os
 import time
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
+import fire
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
@@ -67,7 +68,7 @@ class AIAgent:
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
-            client_kwargs["api_key"] = os.getenv("OPENAI_API_KEY", "dummy-key")
+            client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", "dummy-key")
         
         try:
             self.client = OpenAI(**client_kwargs)
@@ -276,28 +277,46 @@ class AIAgent:
         return result["final_response"]
 
 
-def main():
+def main(
+    query: str = None,
+    model: str = "claude-opus-4-20250514", 
+    api_key: str = None,
+    base_url: str = "https://api.anthropic.com/v1/",
+    max_turns: int = 10
+):
     """
     Main function for running the agent directly.
+    
+    Args:
+        query (str): Natural language query for the agent. Defaults to Python 3.13 example.
+        model (str): Model name to use. Defaults to claude-opus-4-20250514.
+        api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
+        base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
+        max_turns (int): Maximum number of API call iterations. Defaults to 10.
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     
-    # Initialize agent with local SGLang server (modify as needed)
+    # Initialize agent with provided parameters
     try:
         agent = AIAgent(
-            base_url="https://api.anthropic.com/v1/",
-            model="claude-opus-4-20250514"
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            max_iterations=max_turns
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")
         return
     
-    # Example conversation
-    user_query = (
-        "Tell me about the latest developments in Python 3.12 and what new features "
-        "developers should know about. Please search for current information."
-    )
+    # Use provided query or default to Python 3.13 example
+    if query is None:
+        user_query = (
+            "Tell me about the latest developments in Python 3.13 and what new features "
+            "developers should know about. Please search for current information and try it out."
+        )
+    else:
+        user_query = query
     
     print(f"\n📝 User Query: {user_query}")
     print("\n" + "=" * 50)
@@ -321,4 +340,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)

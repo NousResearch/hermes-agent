@@ -24,6 +24,7 @@ from typing import Dict, Any, List
 
 # Import toolsets
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
+from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -36,7 +37,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_search_tool",
+                "name": "web_search",
                 "description": "Search the web for information on any topic. Returns relevant results with titles, URLs, content snippets, and answers. Uses advanced search depth for comprehensive results.",
                 "parameters": {
                     "type": "object",
@@ -60,7 +61,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_extract_tool",
+                "name": "web_extract",
                 "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search.",
                 "parameters": {
                     "type": "object",
@@ -84,7 +85,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_crawl_tool",
+                "name": "web_crawl",
                 "description": "Crawl a website with specific instructions to find and extract targeted content. Uses AI to intelligently navigate and extract relevant information from across the site.",
                 "parameters": {
                     "type": "object",
@@ -110,6 +111,53 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         }
     ]
 
+def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for terminal tools in OpenAI's expected format.
+    
+    Returns:
+        List[Dict]: List of terminal tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": TERMINAL_TOOL_DESCRIPTION,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The command to execute on the VM"
+                        },
+                        "input_keys": {
+                            "type": "string",
+                            "description": "Keystrokes to send to the most recent interactive session (e.g., 'hello\\n' for typing hello + Enter). If no active session exists, this will be ignored."
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Whether to run the command in the background (default: false)",
+                            "default": False
+                        },
+                        "idle_threshold": {
+                            "type": "number",
+                            "description": "Seconds to wait for output before considering session idle (default: 5.0)",
+                            "default": 5.0,
+                            "minimum": 0.1
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Command timeout in seconds (optional)",
+                            "minimum": 1
+                        }
+                    },
+                    "required": []
+                }
+            }
+        }
+    ]
+
 def get_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get all available tool definitions for model API calls.
@@ -124,6 +172,9 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
     
     # Add web tools
     tools.extend(get_web_tool_definitions())
+    
+    # Add terminal tools
+    tools.extend(get_terminal_tool_definitions())
     
     # Future toolsets can be added here:
     # tools.extend(get_file_tool_definitions())
@@ -143,21 +194,21 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
-    if function_name == "web_search_tool":
+    if function_name == "web_search":
         query = function_args.get("query", "")
         limit = function_args.get("limit", 5)
         # Ensure limit is within bounds
         limit = max(1, min(10, limit))
         return web_search_tool(query, limit)
     
-    elif function_name == "web_extract_tool":
+    elif function_name == "web_extract":
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
         format = function_args.get("format")
         return web_extract_tool(urls, format)
     
-    elif function_name == "web_crawl_tool":
+    elif function_name == "web_crawl":
         url = function_args.get("url", "")
         instructions = function_args.get("instructions")
         depth = function_args.get("depth", "basic")
@@ -165,6 +216,29 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"})
+
+def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+    """
+    Handle function calls for terminal tools.
+    
+    Args:
+        function_name (str): Name of the terminal function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "terminal":
+        command = function_args.get("command")
+        input_keys = function_args.get("input_keys")
+        background = function_args.get("background", False)
+        idle_threshold = function_args.get("idle_threshold", 5.0)
+        timeout = function_args.get("timeout")
+        # Session management is handled internally - don't pass session_id from model
+        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
+    
+    else:
+        return json.dumps({"error": f"Unknown terminal function: {function_name}"})
 
 def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
@@ -186,8 +260,12 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
     """
     try:
         # Route web tools
-        if function_name in ["web_search_tool", "web_extract_tool", "web_crawl_tool"]:
+        if function_name in ["web_search", "web_extract", "web_crawl"]:
             return handle_web_function_call(function_name, function_args)
+        
+        # Route terminal tools
+        elif function_name in ["terminal"]:
+            return handle_terminal_function_call(function_name, function_args)
         
         # Future toolsets can be routed here:
         # elif function_name in ["file_read_tool", "file_write_tool"]:
@@ -218,6 +296,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["web_search_tool", "web_extract_tool", "web_crawl_tool"],
             "description": "Web search, content extraction, and website crawling tools",
             "requirements": ["TAVILY_API_KEY environment variable"]
+        },
+        "terminal_tools": {
+            "available": check_hecate_requirements(),
+            "tools": ["terminal_tool"],
+            "description": "Execute commands with optional interactive session support on Linux VMs",
+            "requirements": ["MORPH_API_KEY environment variable", "hecate package"]
         }
         # Future toolsets can be added here
     }
@@ -232,7 +316,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
         Dict: Status of each toolset's requirements
     """
     return {
-        "web_tools": check_tavily_api_key()
+        "web_tools": check_tavily_api_key(),
+        "terminal_tools": check_hecate_requirements()
     }
 
 if __name__ == "__main__":

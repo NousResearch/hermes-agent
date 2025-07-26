@@ -139,8 +139,9 @@ def terminal_tool(
         result = run_tool_with_lifecycle_management(tool_call)
         
         # Format the result with all possible fields
+        # Map hecate's "stdout" to "output" for compatibility
         formatted_result = {
-            "output": result.get("output", ""),
+            "output": result.get("stdout", result.get("output", "")),
             "screen": result.get("screen", ""),
             "session_id": result.get("session_id"),
             "exit_code": result.get("returncode", result.get("exit_code", -1)),

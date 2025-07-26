@@ -24,7 +24,7 @@ from typing import Dict, Any, List
 
 # Import toolsets
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
-from terminal_tool import terminal_execute_tool, terminal_session_tool, check_hecate_requirements
+from terminal_tool import terminal_tool, check_hecate_requirements
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -37,7 +37,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_search_tool",
+                "name": "web_search",
                 "description": "Search the web for information on any topic. Returns relevant results with titles, URLs, content snippets, and answers. Uses advanced search depth for comprehensive results.",
                 "parameters": {
                     "type": "object",
@@ -61,7 +61,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_extract_tool",
+                "name": "web_extract",
                 "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search.",
                 "parameters": {
                     "type": "object",
@@ -85,7 +85,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "web_crawl_tool",
+                "name": "web_crawl",
                 "description": "Crawl a website with specific instructions to find and extract targeted content. Uses AI to intelligently navigate and extract relevant information from across the site.",
                 "parameters": {
                     "type": "object",
@@ -122,8 +122,8 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "terminal_execute_tool",
-                "description": "Execute a command on a Linux VM and get the output. Automatically manages VM lifecycle - creates VMs on demand, reuses existing VMs, and cleans up after inactivity.",
+                "name": "terminal",
+                "description": "Execute commands on a Linux VM with optional interactive session support. Automatically manages VM lifecycle - creates VMs on demand, reuses existing VMs, and cleans up after inactivity. Can handle both simple commands and interactive sessions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -131,46 +131,25 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "string",
                             "description": "The command to execute on the VM"
                         },
+                        "input_keys": {
+                            "type": "string",
+                            "description": "Keystrokes to send to the most recent interactive session (e.g., 'hello\\n' for typing hello + Enter). If no active session exists, this will be ignored."
+                        },
                         "background": {
                             "type": "boolean",
                             "description": "Whether to run the command in the background (default: false)",
                             "default": False
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Command timeout in seconds (optional)",
-                            "minimum": 1
-                        }
-                    },
-                    "required": ["command"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "terminal_session_tool",
-                "description": "Execute commands in an interactive terminal session. Useful for running interactive programs (vim, python REPL, etc.), maintaining state between commands, or sending keystrokes to running programs.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Command to start a new session (optional if continuing existing session)"
-                        },
-                        "input_keys": {
-                            "type": "string",
-                            "description": "Keystrokes to send to the session (e.g., 'hello\\n' for typing hello + Enter)"
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "ID of existing session to continue (optional)"
                         },
                         "idle_threshold": {
                             "type": "number",
                             "description": "Seconds to wait for output before considering session idle (default: 5.0)",
                             "default": 5.0,
                             "minimum": 0.1
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Command timeout in seconds (optional)",
+                            "minimum": 1
                         }
                     },
                     "required": []
@@ -215,21 +194,21 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
-    if function_name == "web_search_tool":
+    if function_name == "web_search":
         query = function_args.get("query", "")
         limit = function_args.get("limit", 5)
         # Ensure limit is within bounds
         limit = max(1, min(10, limit))
         return web_search_tool(query, limit)
     
-    elif function_name == "web_extract_tool":
+    elif function_name == "web_extract":
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
         format = function_args.get("format")
         return web_extract_tool(urls, format)
     
-    elif function_name == "web_crawl_tool":
+    elif function_name == "web_crawl":
         url = function_args.get("url", "")
         instructions = function_args.get("instructions")
         depth = function_args.get("depth", "basic")
@@ -249,18 +228,14 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
     Returns:
         str: Function result as JSON string
     """
-    if function_name == "terminal_execute_tool":
-        command = function_args.get("command", "")
-        background = function_args.get("background", False)
-        timeout = function_args.get("timeout")
-        return terminal_execute_tool(command, background, timeout)
-    
-    elif function_name == "terminal_session_tool":
+    if function_name == "terminal":
         command = function_args.get("command")
         input_keys = function_args.get("input_keys")
-        session_id = function_args.get("session_id")
+        background = function_args.get("background", False)
         idle_threshold = function_args.get("idle_threshold", 5.0)
-        return terminal_session_tool(command, input_keys, session_id, idle_threshold)
+        timeout = function_args.get("timeout")
+        # Session management is handled internally - don't pass session_id from model
+        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
     
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"})
@@ -285,11 +260,11 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
     """
     try:
         # Route web tools
-        if function_name in ["web_search_tool", "web_extract_tool", "web_crawl_tool"]:
+        if function_name in ["web_search", "web_extract", "web_crawl"]:
             return handle_web_function_call(function_name, function_args)
         
         # Route terminal tools
-        elif function_name in ["terminal_execute_tool", "terminal_session_tool"]:
+        elif function_name in ["terminal"]:
             return handle_terminal_function_call(function_name, function_args)
         
         # Future toolsets can be routed here:
@@ -324,8 +299,8 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
         },
         "terminal_tools": {
             "available": check_hecate_requirements(),
-            "tools": ["terminal_execute_tool", "terminal_session_tool"],
-            "description": "Execute commands and manage interactive sessions on Linux VMs",
+            "tools": ["terminal_tool"],
+            "description": "Execute commands with optional interactive session support on Linux VMs",
             "requirements": ["MORPH_API_KEY environment variable", "hecate package"]
         }
         # Future toolsets can be added here

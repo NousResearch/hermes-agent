@@ -62,7 +62,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_extract",
-                "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search.",
+                "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -86,7 +86,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_crawl",
-                "description": "Crawl a website with specific instructions to find and extract targeted content. Uses AI to intelligently navigate and extract relevant information from across the site.",
+                "description": "Crawl a website with specific instructions to find and extract targeted content. Uses AI to intelligently navigate and extract relevant information from across the site. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window.",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -19,6 +19,11 @@ LLM Processing:
 - Uses Nous Research API with Gemini 2.5 Flash for intelligent content extraction
 - Extracts key excerpts and creates markdown summaries to reduce token usage
 
+Debug Mode:
+- Set WEB_TOOLS_DEBUG=true to enable detailed logging
+- Creates web_tools_debug_UUID.json in ./logs directory
+- Captures all tool calls, results, and compression metrics
+
 Usage:
     from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
     
@@ -40,6 +45,9 @@ import json
 import os
 import re
 import asyncio
+import uuid
+import datetime
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tavily import TavilyClient
 from openai import AsyncOpenAI
@@ -56,6 +64,66 @@ nous_client = AsyncOpenAI(
 # Configuration for LLM processing
 DEFAULT_SUMMARIZER_MODEL = "gemini-2.5-flash"
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
+
+# Debug mode configuration
+DEBUG_MODE = os.getenv("WEB_TOOLS_DEBUG", "false").lower() == "true"
+DEBUG_SESSION_ID = str(uuid.uuid4())
+DEBUG_LOG_PATH = Path("./logs")
+DEBUG_DATA = {
+    "session_id": DEBUG_SESSION_ID,
+    "start_time": datetime.datetime.now().isoformat(),
+    "debug_enabled": DEBUG_MODE,
+    "tool_calls": []
+} if DEBUG_MODE else None
+
+# Create logs directory if debug mode is enabled
+if DEBUG_MODE:
+    DEBUG_LOG_PATH.mkdir(exist_ok=True)
+    print(f"🐛 Debug mode enabled - Session ID: {DEBUG_SESSION_ID}")
+
+
+def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
+    """
+    Log a debug call entry to the global debug data structure.
+    
+    Args:
+        tool_name (str): Name of the tool being called
+        call_data (Dict[str, Any]): Data about the call including parameters and results
+    """
+    if not DEBUG_MODE or not DEBUG_DATA:
+        return
+    
+    call_entry = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "tool_name": tool_name,
+        **call_data
+    }
+    
+    DEBUG_DATA["tool_calls"].append(call_entry)
+
+
+def _save_debug_log() -> None:
+    """
+    Save the current debug data to a JSON file in the logs directory.
+    """
+    if not DEBUG_MODE or not DEBUG_DATA:
+        return
+    
+    try:
+        debug_filename = f"web_tools_debug_{DEBUG_SESSION_ID}.json"
+        debug_filepath = DEBUG_LOG_PATH / debug_filename
+        
+        # Update end time
+        DEBUG_DATA["end_time"] = datetime.datetime.now().isoformat()
+        DEBUG_DATA["total_calls"] = len(DEBUG_DATA["tool_calls"])
+        
+        with open(debug_filepath, 'w', encoding='utf-8') as f:
+            json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
+        
+        print(f"🐛 Debug log saved: {debug_filepath}")
+        
+    except Exception as e:
+        print(f"❌ Error saving debug log: {str(e)}")
 
 
 async def process_content_with_llm(
@@ -208,21 +276,51 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Raises:
         Exception: If search fails or API key is not set
     """
+    debug_call_data = {
+        "parameters": {
+            "query": query,
+            "limit": limit
+        },
+        "error": None,
+        "results_count": 0,
+        "original_response_size": 0,
+        "final_response_size": 0
+    }
+    
     try:
         print(f"🔍 Searching the web for: '{query}' (limit: {limit})")
         
         # Use Tavily's search functionality
         response = tavily_client.search(query=query, max_results=limit, search_depth="advanced")
         
-        print(f"✅ Found {len(response.get('results', []))} results")
+        results_count = len(response.get('results', []))
+        print(f"✅ Found {results_count} results")
+        
+        # Capture debug information
+        debug_call_data["results_count"] = results_count
+        debug_call_data["original_response_size"] = len(json.dumps(response))
         
         result_json = json.dumps(response, indent=2)
         # Clean base64 images from search results
-        return clean_base64_images(result_json)
+        cleaned_result = clean_base64_images(result_json)
+        
+        debug_call_data["final_response_size"] = len(cleaned_result)
+        debug_call_data["compression_applied"] = "base64_image_removal"
+        
+        # Log debug information
+        _log_debug_call("web_search_tool", debug_call_data)
+        _save_debug_log()
+        
+        return cleaned_result
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
         print(f"❌ {error_msg}")
+        
+        debug_call_data["error"] = error_msg
+        _log_debug_call("web_search_tool", debug_call_data)
+        _save_debug_log()
+        
         return json.dumps({"error": error_msg})
 
 
@@ -253,17 +351,39 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
+    debug_call_data = {
+        "parameters": {
+            "urls": urls,
+            "format": format,
+            "use_llm_processing": use_llm_processing,
+            "model": model,
+            "min_length": min_length
+        },
+        "error": None,
+        "pages_extracted": 0,
+        "pages_processed_with_llm": 0,
+        "original_response_size": 0,
+        "final_response_size": 0,
+        "compression_metrics": [],
+        "processing_applied": []
+    }
+    
     try:
         print(f"📄 Extracting content from {len(urls)} URL(s)")
         
         # Use Tavily's extract functionality
         response = tavily_client.extract(urls=urls, format=format)
         
-        print(f"✅ Extracted content from {len(response.get('results', []))} pages")
+        pages_extracted = len(response.get('results', []))
+        print(f"✅ Extracted content from {pages_extracted} pages")
+        
+        debug_call_data["pages_extracted"] = pages_extracted
+        debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
         if use_llm_processing and os.getenv("NOUS_API_KEY"):
             print("🧠 Processing extracted content with LLM...")
+            debug_call_data["processing_applied"].append("llm_processing")
             
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
@@ -271,24 +391,48 @@ async def web_extract_tool(
                 raw_content = result.get('raw_content', '') or result.get('content', '')
                 
                 if raw_content:
+                    original_size = len(raw_content)
+                    
                     # Process content with LLM
                     processed = await process_content_with_llm(
                         raw_content, url, title, model, min_length
                     )
                     
                     if processed:
+                        processed_size = len(processed)
+                        compression_ratio = processed_size / original_size if original_size > 0 else 1.0
+                        
+                        # Capture compression metrics
+                        debug_call_data["compression_metrics"].append({
+                            "url": url,
+                            "original_size": original_size,
+                            "processed_size": processed_size,
+                            "compression_ratio": compression_ratio,
+                            "model_used": model
+                        })
+                        
                         # Replace content with processed version
                         result['content'] = processed
                         # Keep raw content in separate field for reference
                         result['raw_content'] = raw_content
+                        debug_call_data["pages_processed_with_llm"] += 1
                         print(f"  📝 {url} (processed)")
                     else:
+                        debug_call_data["compression_metrics"].append({
+                            "url": url,
+                            "original_size": original_size,
+                            "processed_size": original_size,
+                            "compression_ratio": 1.0,
+                            "model_used": None,
+                            "reason": "content_too_short"
+                        })
                         print(f"  📝 {url} (no processing - content too short)")
                 else:
                     print(f"  ⚠️  {url} (no content to process)")
         else:
             if use_llm_processing and not os.getenv("NOUS_API_KEY"):
                 print("⚠️  LLM processing requested but NOUS_API_KEY not set, returning raw content")
+                debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of extracted pages for debugging (original behavior)
             for result in response.get('results', []):
@@ -298,11 +442,25 @@ async def web_extract_tool(
         
         result_json = json.dumps(response, indent=2)
         # Clean base64 images from extracted content
-        return clean_base64_images(result_json)
+        cleaned_result = clean_base64_images(result_json)
+        
+        debug_call_data["final_response_size"] = len(cleaned_result)
+        debug_call_data["processing_applied"].append("base64_image_removal")
+        
+        # Log debug information
+        _log_debug_call("web_extract_tool", debug_call_data)
+        _save_debug_log()
+        
+        return cleaned_result
             
     except Exception as e:
         error_msg = f"Error extracting content: {str(e)}"
         print(f"❌ {error_msg}")
+        
+        debug_call_data["error"] = error_msg
+        _log_debug_call("web_extract_tool", debug_call_data)
+        _save_debug_log()
+        
         return json.dumps({"error": error_msg})
 
 
@@ -336,6 +494,24 @@ async def web_crawl_tool(
     Raises:
         Exception: If crawling fails or API key is not set
     """
+    debug_call_data = {
+        "parameters": {
+            "url": url,
+            "instructions": instructions,
+            "depth": depth,
+            "use_llm_processing": use_llm_processing,
+            "model": model,
+            "min_length": min_length
+        },
+        "error": None,
+        "pages_crawled": 0,
+        "pages_processed_with_llm": 0,
+        "original_response_size": 0,
+        "final_response_size": 0,
+        "compression_metrics": [],
+        "processing_applied": []
+    }
+    
     try:
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         print(f"🕷️ Crawling {url}{instructions_text}")
@@ -348,11 +524,16 @@ async def web_crawl_tool(
             extract_depth=depth
         )
         
-        print(f"✅ Crawled {len(response.get('results', []))} pages")
+        pages_crawled = len(response.get('results', []))
+        print(f"✅ Crawled {pages_crawled} pages")
+        
+        debug_call_data["pages_crawled"] = pages_crawled
+        debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
         if use_llm_processing and os.getenv("NOUS_API_KEY"):
             print("🧠 Processing crawled content with LLM...")
+            debug_call_data["processing_applied"].append("llm_processing")
             
             for result in response.get('results', []):
                 page_url = result.get('url', 'Unknown URL')
@@ -360,24 +541,48 @@ async def web_crawl_tool(
                 content = result.get('content', '')
                 
                 if content:
+                    original_size = len(content)
+                    
                     # Process content with LLM
                     processed = await process_content_with_llm(
                         content, page_url, title, model, min_length
                     )
                     
                     if processed:
+                        processed_size = len(processed)
+                        compression_ratio = processed_size / original_size if original_size > 0 else 1.0
+                        
+                        # Capture compression metrics
+                        debug_call_data["compression_metrics"].append({
+                            "url": page_url,
+                            "original_size": original_size,
+                            "processed_size": processed_size,
+                            "compression_ratio": compression_ratio,
+                            "model_used": model
+                        })
+                        
                         # Keep original content in raw_content field
                         result['raw_content'] = content
                         # Replace content with processed version
                         result['content'] = processed
+                        debug_call_data["pages_processed_with_llm"] += 1
                         print(f"  🌐 {page_url} (processed)")
                     else:
+                        debug_call_data["compression_metrics"].append({
+                            "url": page_url,
+                            "original_size": original_size,
+                            "processed_size": original_size,
+                            "compression_ratio": 1.0,
+                            "model_used": None,
+                            "reason": "content_too_short"
+                        })
                         print(f"  🌐 {page_url} (no processing - content too short)")
                 else:
                     print(f"  ⚠️  {page_url} (no content to process)")
         else:
             if use_llm_processing and not os.getenv("NOUS_API_KEY"):
                 print("⚠️  LLM processing requested but NOUS_API_KEY not set, returning raw content")
+                debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of crawled pages for debugging (original behavior)
             for result in response.get('results', []):
@@ -387,11 +592,25 @@ async def web_crawl_tool(
         
         result_json = json.dumps(response, indent=2)
         # Clean base64 images from crawled content
-        return clean_base64_images(result_json)
+        cleaned_result = clean_base64_images(result_json)
+        
+        debug_call_data["final_response_size"] = len(cleaned_result)
+        debug_call_data["processing_applied"].append("base64_image_removal")
+        
+        # Log debug information
+        _log_debug_call("web_crawl_tool", debug_call_data)
+        _save_debug_log()
+        
+        return cleaned_result
         
     except Exception as e:
         error_msg = f"Error crawling website: {str(e)}"
         print(f"❌ {error_msg}")
+        
+        debug_call_data["error"] = error_msg
+        _log_debug_call("web_crawl_tool", debug_call_data)
+        _save_debug_log()
+        
         return json.dumps({"error": error_msg})
 
 
@@ -414,6 +633,33 @@ def check_nous_api_key() -> bool:
         bool: True if API key is set, False otherwise
     """
     return bool(os.getenv("NOUS_API_KEY"))
+
+
+def get_debug_session_info() -> Dict[str, Any]:
+    """
+    Get information about the current debug session.
+    
+    Returns:
+        Dict[str, Any]: Dictionary containing debug session information:
+                       - enabled: Whether debug mode is enabled
+                       - session_id: Current session UUID (if enabled)
+                       - log_path: Path where debug logs are saved (if enabled)
+                       - total_calls: Number of tool calls logged so far (if enabled)
+    """
+    if not DEBUG_MODE or not DEBUG_DATA:
+        return {
+            "enabled": False,
+            "session_id": None,
+            "log_path": None,
+            "total_calls": 0
+        }
+    
+    return {
+        "enabled": True,
+        "session_id": DEBUG_SESSION_ID,
+        "log_path": str(DEBUG_LOG_PATH / f"web_tools_debug_{DEBUG_SESSION_ID}.json"),
+        "total_calls": len(DEBUG_DATA["tool_calls"])
+    }
 
 
 if __name__ == "__main__":
@@ -451,6 +697,13 @@ if __name__ == "__main__":
         print("🧠 LLM content processing available with Gemini 2.5 Flash")
         print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
     
+    # Show debug mode status
+    if DEBUG_MODE:
+        print(f"🐛 Debug mode ENABLED - Session ID: {DEBUG_SESSION_ID}")
+        print(f"   Debug logs will be saved to: ./logs/web_tools_debug_{DEBUG_SESSION_ID}.json")
+    else:
+        print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
+    
     print("\nBasic usage:")
     print("  from web_tools import web_search_tool, web_extract_tool, web_crawl_tool")
     print("  import asyncio")
@@ -479,5 +732,15 @@ if __name__ == "__main__":
         print("")
         print("  # Disable LLM processing")
         print("  raw_content = await web_extract_tool(['https://example.com'], use_llm_processing=False)")
+    
+    print("\nDebug mode:")
+    print("  # Enable debug logging")
+    print("  export WEB_TOOLS_DEBUG=true")
+    print("  # Debug logs capture:")
+    print("  # - All tool calls with parameters")
+    print("  # - Original API responses")
+    print("  # - LLM compression metrics")
+    print("  # - Final processed results")
+    print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
     print(f"\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")

@@ -20,11 +20,13 @@ Usage:
 """
 
 import json
+import asyncio
 from typing import Dict, Any, List
 
 # Import toolsets
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
 from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
+from vision_tools import vision_analyze_tool, check_vision_requirements
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -158,30 +160,234 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
         }
     ]
 
-def get_tool_definitions() -> List[Dict[str, Any]]:
+
+def get_vision_tool_definitions() -> List[Dict[str, Any]]:
     """
-    Get all available tool definitions for model API calls.
-    
-    This function aggregates tool definitions from all available toolsets.
-    Currently includes web tools, but can be extended to include other toolsets.
+    Get tool definitions for vision tools in OpenAI's expected format.
     
     Returns:
-        List[Dict]: Complete list of all available tool definitions
+        List[Dict]: List of vision tool definitions compatible with OpenAI API
     """
-    tools = []
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "vision_analyze",
+                "description": "Analyze images from URLs using AI vision. Provides comprehensive image description and answers specific questions about the image content. Perfect for understanding visual content, reading text in images, identifying objects, analyzing scenes, and extracting visual information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "image_url": {
+                            "type": "string",
+                            "description": "The URL of the image to analyze (must be publicly accessible HTTP/HTTPS URL)"
+                        },
+                        "question": {
+                            "type": "string",
+                            "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question. Examples: 'What text can you read?', 'What architectural style is this?', 'Describe the mood and emotions', 'What safety hazards do you see?'"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "The vision model to use for analysis (optional, default: gemini-2.5-flash)",
+                            "default": "gemini-2.5-flash"
+                        }
+                    },
+                    "required": ["image_url", "question"]
+                }
+            }
+        }
+    ]
+
+
+def get_all_tool_names() -> List[str]:
+    """
+    Get the names of all available tools across all toolsets.
     
-    # Add web tools
-    tools.extend(get_web_tool_definitions())
+    Returns:
+        List[str]: List of all tool names
+    """
+    tool_names = []
     
-    # Add terminal tools
-    tools.extend(get_terminal_tool_definitions())
+    # Web tools
+    if check_tavily_api_key():
+        tool_names.extend(["web_search", "web_extract", "web_crawl"])
+    
+    # Terminal tools  
+    if check_hecate_requirements():
+        tool_names.extend(["terminal"])
+    
+    # Vision tools
+    if check_vision_requirements():
+        tool_names.extend(["vision_analyze"])
     
     # Future toolsets can be added here:
-    # tools.extend(get_file_tool_definitions())
-    # tools.extend(get_code_tool_definitions())
-    # tools.extend(get_database_tool_definitions())
+    # if check_file_tools():
+    #     tool_names.extend(["file_read", "file_write"])
     
-    return tools
+    return tool_names
+
+
+def get_toolset_for_tool(tool_name: str) -> str:
+    """
+    Get the toolset that a tool belongs to.
+    
+    Args:
+        tool_name (str): Name of the tool
+        
+    Returns:
+        str: Name of the toolset, or "unknown" if not found
+    """
+    toolset_mapping = {
+        "web_search": "web_tools",
+        "web_extract": "web_tools", 
+        "web_crawl": "web_tools",
+        "terminal": "terminal_tools",
+        "vision_analyze": "vision_tools"
+        # Future tools can be added here
+    }
+    
+    return toolset_mapping.get(tool_name, "unknown")
+
+
+def get_tool_definitions(
+    enabled_tools: List[str] = None, 
+    disabled_tools: List[str] = None,
+    enabled_toolsets: List[str] = None,
+    disabled_toolsets: List[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for model API calls with optional filtering.
+    
+    This function aggregates tool definitions from all available toolsets
+    and applies filtering based on the provided parameters.
+    
+    Filter Priority (higher priority overrides lower):
+    1. enabled_tools (highest priority - only these tools, overrides everything)
+    2. disabled_tools (applied after toolset filtering)
+    3. enabled_toolsets (only tools from these toolsets)
+    4. disabled_toolsets (exclude tools from these toolsets)
+    
+    Args:
+        enabled_tools (List[str]): Only include these specific tools. If provided, 
+                                  ONLY these tools will be included (overrides all other filters)
+        disabled_tools (List[str]): Exclude these specific tools (applied after toolset filtering)
+        enabled_toolsets (List[str]): Only include tools from these toolsets
+        disabled_toolsets (List[str]): Exclude tools from these toolsets
+    
+    Returns:
+        List[Dict]: Filtered list of tool definitions
+    
+    Examples:
+        # Only web tools
+        tools = get_tool_definitions(enabled_toolsets=["web_tools"])
+        
+        # All tools except terminal
+        tools = get_tool_definitions(disabled_tools=["terminal"])
+        
+        # Only specific tools (overrides toolset filters)
+        tools = get_tool_definitions(enabled_tools=["web_search", "web_extract"])
+        
+        # Conflicting filters (enabled_tools wins)
+        tools = get_tool_definitions(enabled_toolsets=["web_tools"], enabled_tools=["terminal"])
+        # Result: Only terminal tool (enabled_tools overrides enabled_toolsets)
+    """
+    # Detect and warn about potential conflicts
+    conflicts_detected = False
+    
+    if enabled_tools and (enabled_toolsets or disabled_toolsets or disabled_tools):
+        print("⚠️  enabled_tools overrides all other filters")
+        conflicts_detected = True
+    
+    if enabled_toolsets and disabled_toolsets:
+        # Check for overlap
+        enabled_set = set(enabled_toolsets)
+        disabled_set = set(disabled_toolsets)
+        overlap = enabled_set & disabled_set
+        if overlap:
+            print(f"⚠️  Conflicting toolsets: {overlap} in both enabled and disabled")
+            print(f"   → enabled_toolsets takes priority")
+            conflicts_detected = True
+    
+    if enabled_tools and disabled_tools:
+        # Check for overlap
+        enabled_set = set(enabled_tools)
+        disabled_set = set(disabled_tools)
+        overlap = enabled_set & disabled_set
+        if overlap:
+            print(f"⚠️  Conflicting tools: {overlap} in both enabled and disabled")
+            print(f"   → enabled_tools takes priority")
+            conflicts_detected = True
+    
+    all_tools = []
+    
+    # Collect all available tools from each toolset
+    toolset_tools = {
+        "web_tools": get_web_tool_definitions() if check_tavily_api_key() else [],
+        "terminal_tools": get_terminal_tool_definitions() if check_hecate_requirements() else [],
+        "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else []
+        # Future toolsets can be added here:
+        # "file_tools": get_file_tool_definitions() if check_file_tools() else [],
+    }
+    
+    # HIGHEST PRIORITY: enabled_tools (overrides everything)
+    if enabled_tools:
+        if conflicts_detected:
+            print(f"🎯 Using only enabled_tools: {enabled_tools}")
+        
+        # Collect all available tools first
+        all_available_tools = []
+        for tools in toolset_tools.values():
+            all_available_tools.extend(tools)
+        
+        # Only include specifically enabled tools
+        tool_names_to_include = set(enabled_tools)
+        filtered_tools = [
+            tool for tool in all_available_tools 
+            if tool["function"]["name"] in tool_names_to_include
+        ]
+        
+        # Warn about requested tools that aren't available
+        found_tools = {tool["function"]["name"] for tool in filtered_tools}
+        missing_tools = tool_names_to_include - found_tools
+        if missing_tools:
+            print(f"⚠️  Requested tools not available: {missing_tools}")
+        
+        return filtered_tools
+    
+    # Apply toolset-level filtering first
+    if enabled_toolsets:
+        # Only include tools from enabled toolsets
+        for toolset_name in enabled_toolsets:
+            if toolset_name in toolset_tools:
+                all_tools.extend(toolset_tools[toolset_name])
+            else:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
+    elif disabled_toolsets:
+        # Include all tools except from disabled toolsets
+        for toolset_name, tools in toolset_tools.items():
+            if toolset_name not in disabled_toolsets:
+                all_tools.extend(tools)
+    else:
+        # Include all available tools
+        for tools in toolset_tools.values():
+            all_tools.extend(tools)
+    
+    # Apply tool-level filtering (disabled_tools)
+    if disabled_tools:
+        tool_names_to_exclude = set(disabled_tools)
+        original_tools = [tool["function"]["name"] for tool in all_tools]
+        
+        all_tools = [
+            tool for tool in all_tools 
+            if tool["function"]["name"] not in tool_names_to_exclude
+        ]
+        
+        # Show what was actually filtered out
+        remaining_tools = {tool["function"]["name"] for tool in all_tools}
+        actually_excluded = set(original_tools) & tool_names_to_exclude
+        if actually_excluded:
+            print(f"🚫 Excluded tools: {actually_excluded}")
+    
+    return all_tools
 
 def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
@@ -206,13 +412,15 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
         format = function_args.get("format")
-        return web_extract_tool(urls, format)
+        # Run async function in event loop
+        return asyncio.run(web_extract_tool(urls, format))
     
     elif function_name == "web_crawl":
         url = function_args.get("url", "")
         instructions = function_args.get("instructions")
         depth = function_args.get("depth", "basic")
-        return web_crawl_tool(url, instructions, depth)
+        # Run async function in event loop
+        return asyncio.run(web_crawl_tool(url, instructions, depth))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"})
@@ -240,6 +448,33 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"})
 
+
+def handle_vision_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+    """
+    Handle function calls for vision tools.
+    
+    Args:
+        function_name (str): Name of the vision function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "vision_analyze":
+        image_url = function_args.get("image_url", "")
+        question = function_args.get("question", "")
+        model = function_args.get("model", "gemini-2.5-flash")
+        
+        # Automatically prepend full description request to user's question
+        full_prompt = f"Fully describe and explain everything about this image\n\n{question}"
+        
+        # Run async function in event loop
+        return asyncio.run(vision_analyze_tool(image_url, full_prompt, model))
+    
+    else:
+        return json.dumps({"error": f"Unknown vision function: {function_name}"})
+
+
 def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Main function call dispatcher that routes calls to appropriate toolsets.
@@ -266,6 +501,10 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
         # Route terminal tools
         elif function_name in ["terminal"]:
             return handle_terminal_function_call(function_name, function_args)
+        
+        # Route vision tools
+        elif function_name in ["vision_analyze"]:
+            return handle_vision_function_call(function_name, function_args)
         
         # Future toolsets can be routed here:
         # elif function_name in ["file_read_tool", "file_write_tool"]:
@@ -302,6 +541,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["terminal_tool"],
             "description": "Execute commands with optional interactive session support on Linux VMs",
             "requirements": ["MORPH_API_KEY environment variable", "hecate package"]
+        },
+        "vision_tools": {
+            "available": check_vision_requirements(),
+            "tools": ["vision_analyze_tool"],
+            "description": "Analyze images from URLs using AI vision for comprehensive understanding",
+            "requirements": ["NOUS_API_KEY environment variable"]
         }
         # Future toolsets can be added here
     }
@@ -317,7 +562,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
     """
     return {
         "web_tools": check_tavily_api_key(),
-        "terminal_tools": check_hecate_requirements()
+        "terminal_tools": check_hecate_requirements(),
+        "vision_tools": check_vision_requirements()
     }
 
 if __name__ == "__main__":
@@ -334,13 +580,20 @@ if __name__ == "__main__":
         status = "✅" if available else "❌"
         print(f"  {status} {toolset}: {'Available' if available else 'Missing requirements'}")
     
-    # Show available tools
+    # Show all available tool names
+    all_tool_names = get_all_tool_names()
+    print(f"\n🔧 Available Tools ({len(all_tool_names)} total):")
+    for tool_name in all_tool_names:
+        toolset = get_toolset_for_tool(tool_name)
+        print(f"  📌 {tool_name} (from {toolset})")
+    
+    # Show available tools with full definitions
     tools = get_tool_definitions()
-    print(f"\n🔧 Available Tools ({len(tools)} total):")
+    print(f"\n📝 Tool Definitions ({len(tools)} loaded):")
     for tool in tools:
         func_name = tool["function"]["name"]
         desc = tool["function"]["description"]
-        print(f"  📌 {func_name}: {desc[:80]}{'...' if len(desc) > 80 else ''}")
+        print(f"  🔹 {func_name}: {desc[:60]}{'...' if len(desc) > 60 else ''}")
     
     # Show toolset info
     toolsets = get_available_toolsets()
@@ -351,7 +604,26 @@ if __name__ == "__main__":
         if not info["available"]:
             print(f"    Requirements: {', '.join(info['requirements'])}")
     
-    print("\n💡 Usage Example:")
+    print("\n💡 Usage Examples:")
     print("  from model_tools import get_tool_definitions, handle_function_call")
+    print("  # All tools")
     print("  tools = get_tool_definitions()")
-    print("  result = handle_function_call('web_search_tool', {'query': 'Python'})")
+    print("  # Only web tools")
+    print("  tools = get_tool_definitions(enabled_toolsets=['web_tools'])")
+    print("  # Specific tools only")
+    print("  tools = get_tool_definitions(enabled_tools=['web_search', 'terminal'])")
+    print("  # All except terminal")
+    print("  tools = get_tool_definitions(disabled_tools=['terminal'])")
+    
+    # Example filtering
+    print(f"\n🧪 Filtering Examples:")
+    web_only = get_tool_definitions(enabled_toolsets=["web_tools"])
+    print(f"  Web tools only: {len(web_only)} tools")
+    
+    if len(all_tool_names) > 1:
+        specific_tools = get_tool_definitions(enabled_tools=["web_search"])
+        print(f"  Only web_search: {len(specific_tools)} tool(s)")
+        
+        if "terminal" in all_tool_names:
+            no_terminal = get_tool_definitions(disabled_tools=["terminal"])
+            print(f"  All except terminal: {len(no_terminal)} tools")

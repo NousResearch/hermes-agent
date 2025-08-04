@@ -45,7 +45,11 @@ class AIAgent:
         api_key: str = None, 
         model: str = "gpt-4",
         max_iterations: int = 10,
-        tool_delay: float = 1.0
+        tool_delay: float = 1.0,
+        enabled_tools: List[str] = None,
+        disabled_tools: List[str] = None,
+        enabled_toolsets: List[str] = None,
+        disabled_toolsets: List[str] = None
     ):
         """
         Initialize the AI Agent.
@@ -56,10 +60,20 @@ class AIAgent:
             model (str): Model name to use (default: "gpt-4")
             max_iterations (int): Maximum number of tool calling iterations (default: 10)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
+            enabled_tools (List[str]): Only enable these specific tools (optional)
+            disabled_tools (List[str]): Disable these specific tools (optional)
+            enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
+            disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
         """
         self.model = model
         self.max_iterations = max_iterations
         self.tool_delay = tool_delay
+        
+        # Store tool filtering options
+        self.enabled_tools = enabled_tools
+        self.disabled_tools = disabled_tools
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
         
         # Initialize OpenAI client
         client_kwargs = {}
@@ -78,15 +92,37 @@ class AIAgent:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Get available tools
-        self.tools = get_tool_definitions()
-        print(f"🛠️  Loaded {len(self.tools)} tools")
+        # Get available tools with filtering
+        self.tools = get_tool_definitions(
+            enabled_tools=enabled_tools,
+            disabled_tools=disabled_tools,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets
+        )
+        
+        # Show tool configuration
+        if self.tools:
+            tool_names = [tool["function"]["name"] for tool in self.tools]
+            print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
+            
+            # Show filtering info if applied
+            if enabled_tools:
+                print(f"   ✅ Enabled tools: {', '.join(enabled_tools)}")
+            if disabled_tools:
+                print(f"   ❌ Disabled tools: {', '.join(disabled_tools)}")
+            if enabled_toolsets:
+                print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
+            if disabled_toolsets:
+                print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
+        else:
+            print("🛠️  No tools loaded (all tools filtered out or unavailable)")
         
         # Check tool requirements
-        requirements = check_toolset_requirements()
-        missing_reqs = [name for name, available in requirements.items() if not available]
-        if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+        if self.tools:
+            requirements = check_toolset_requirements()
+            missing_reqs = [name for name, available in requirements.items() if not available]
+            if missing_reqs:
+                print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
     
     def create_system_message(self, custom_system: str = None) -> str:
         """
@@ -282,7 +318,12 @@ def main(
     model: str = "claude-opus-4-20250514", 
     api_key: str = None,
     base_url: str = "https://api.anthropic.com/v1/",
-    max_turns: int = 10
+    max_turns: int = 10,
+    enabled_tools: str = None,
+    disabled_tools: str = None,
+    enabled_toolsets: str = None,
+    disabled_toolsets: str = None,
+    list_tools: bool = False
 ):
     """
     Main function for running the agent directly.
@@ -293,9 +334,68 @@ def main(
         api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
+        enabled_tools (str): Comma-separated list of tools to enable (e.g., "web_search,terminal")
+        disabled_tools (str): Comma-separated list of tools to disable (e.g., "terminal")
+        enabled_toolsets (str): Comma-separated list of toolsets to enable (e.g., "web_tools")
+        disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal_tools")
+        list_tools (bool): Just list available tools and exit
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
+    
+    # Handle tool listing
+    if list_tools:
+        from model_tools import get_all_tool_names, get_toolset_for_tool, get_available_toolsets
+        
+        print("📋 Available Tools & Toolsets:")
+        print("-" * 30)
+        
+        # Show toolsets
+        toolsets = get_available_toolsets()
+        print("📦 Toolsets:")
+        for name, info in toolsets.items():
+            status = "✅" if info["available"] else "❌"
+            print(f"  {status} {name}: {info['description']}")
+            if not info["available"]:
+                print(f"    Requirements: {', '.join(info['requirements'])}")
+        
+        # Show individual tools
+        all_tools = get_all_tool_names()
+        print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
+        for tool_name in all_tools:
+            toolset = get_toolset_for_tool(tool_name)
+            print(f"  📌 {tool_name} (from {toolset})")
+        
+        print(f"\n💡 Usage Examples:")
+        print(f"  # Run with only web tools")
+        print(f"  python run_agent.py --enabled_toolsets=web_tools --query='search for Python news'")
+        print(f"  # Run with specific tools only")
+        print(f"  python run_agent.py --enabled_tools=web_search,web_extract --query='research topic'")
+        print(f"  # Run without terminal tools")
+        print(f"  python run_agent.py --disabled_tools=terminal --query='web research only'")
+        return
+    
+    # Parse tool selection arguments
+    enabled_tools_list = None
+    disabled_tools_list = None
+    enabled_toolsets_list = None
+    disabled_toolsets_list = None
+    
+    if enabled_tools:
+        enabled_tools_list = [t.strip() for t in enabled_tools.split(",")]
+        print(f"🎯 Enabled tools: {enabled_tools_list}")
+    
+    if disabled_tools:
+        disabled_tools_list = [t.strip() for t in disabled_tools.split(",")]
+        print(f"🚫 Disabled tools: {disabled_tools_list}")
+    
+    if enabled_toolsets:
+        enabled_toolsets_list = [t.strip() for t in enabled_toolsets.split(",")]
+        print(f"🎯 Enabled toolsets: {enabled_toolsets_list}")
+    
+    if disabled_toolsets:
+        disabled_toolsets_list = [t.strip() for t in disabled_toolsets.split(",")]
+        print(f"🚫 Disabled toolsets: {disabled_toolsets_list}")
     
     # Initialize agent with provided parameters
     try:
@@ -303,7 +403,11 @@ def main(
             base_url=base_url,
             model=model,
             api_key=api_key,
-            max_iterations=max_turns
+            max_iterations=max_turns,
+            enabled_tools=enabled_tools_list,
+            disabled_tools=disabled_tools_list,
+            enabled_toolsets=enabled_toolsets_list,
+            disabled_toolsets=disabled_toolsets_list
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")

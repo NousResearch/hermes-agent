@@ -27,6 +27,8 @@ from typing import Dict, Any, List
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
 from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 from vision_tools import vision_analyze_tool, check_vision_requirements
+from mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
+from image_generation_tool import image_generate_tool, check_image_generation_requirements
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -198,6 +200,68 @@ def get_vision_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_moa_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for Mixture-of-Agents tools in OpenAI's expected format.
+    
+    Returns:
+        List[Dict]: List of MoA tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "mixture_of_agents",
+                "description": "Process extremely difficult problems requiring intense reasoning using the Mixture-of-Agents methodology. This tool leverages multiple frontier language models to collaboratively solve complex tasks that single models struggle with. Uses a fixed 2-layer architecture: reference models (claude-opus-4, gemini-2.5-pro, o4-mini, deepseek-r1) generate diverse responses, then an aggregator synthesizes the best solution. Best for: complex mathematical proofs, advanced coding problems, multi-step analytical reasoning, precise and complex STEM problems, algorithm design, and problems requiring diverse domain expertise.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "user_prompt": {
+                            "type": "string",
+                            "description": "The complex query or problem to solve using multiple AI models. Should be a challenging problem that benefits from diverse perspectives and collaborative reasoning."
+                        }
+                    },
+                    "required": ["user_prompt"]
+                }
+            }
+        }
+    ]
+
+
+def get_image_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for image generation tools in OpenAI's expected format.
+    
+    Returns:
+        List[Dict]: List of image generation tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "image_generate",
+                "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling. Creates detailed, artistic images that are automatically enhanced for superior quality. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "The text prompt describing the desired image. Be detailed and descriptive for best results."
+                        },
+                        "image_size": {
+                            "type": "string",
+                            "enum": ["square","portrait_16_9", "landscape_16_9"],
+                            "description": "The size/aspect ratio of the generated image (default: landscape_4_3)",
+                            "default": "landscape_16_9"
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            }
+        }
+    ]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -218,6 +282,14 @@ def get_all_tool_names() -> List[str]:
     # Vision tools
     if check_vision_requirements():
         tool_names.extend(["vision_analyze"])
+    
+    # MoA tools
+    if check_moa_requirements():
+        tool_names.extend(["mixture_of_agents"])
+    
+    # Image generation tools
+    if check_image_generation_requirements():
+        tool_names.extend(["image_generate"])
     
     # Future toolsets can be added here:
     # if check_file_tools():
@@ -241,7 +313,9 @@ def get_toolset_for_tool(tool_name: str) -> str:
         "web_extract": "web_tools", 
         "web_crawl": "web_tools",
         "terminal": "terminal_tools",
-        "vision_analyze": "vision_tools"
+        "vision_analyze": "vision_tools",
+        "mixture_of_agents": "moa_tools",
+        "image_generate": "image_tools"
         # Future tools can be added here
     }
     
@@ -323,7 +397,9 @@ def get_tool_definitions(
     toolset_tools = {
         "web_tools": get_web_tool_definitions() if check_tavily_api_key() else [],
         "terminal_tools": get_terminal_tool_definitions() if check_hecate_requirements() else [],
-        "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else []
+        "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else [],
+        "moa_tools": get_moa_tool_definitions() if check_moa_requirements() else [],
+        "image_tools": get_image_tool_definitions() if check_image_generation_requirements() else []
         # Future toolsets can be added here:
         # "file_tools": get_file_tool_definitions() if check_file_tools() else [],
     }
@@ -475,6 +551,78 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
         return json.dumps({"error": f"Unknown vision function: {function_name}"})
 
 
+def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+    """
+    Handle function calls for Mixture-of-Agents tools.
+    
+    Args:
+        function_name (str): Name of the MoA function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "mixture_of_agents":
+        user_prompt = function_args.get("user_prompt", "")
+        
+        if not user_prompt:
+            return json.dumps({"error": "user_prompt is required for MoA processing"})
+        
+        # Run async function in event loop
+        return asyncio.run(mixture_of_agents_tool(user_prompt=user_prompt))
+    
+    else:
+        return json.dumps({"error": f"Unknown MoA function: {function_name}"})
+
+
+def handle_image_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+    """
+    Handle function calls for image generation tools.
+    
+    Args:
+        function_name (str): Name of the image generation function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "image_generate":
+        prompt = function_args.get("prompt", "")
+        
+        if not prompt:
+            return json.dumps({"success": False, "image": None})
+        
+        # Extract only the exposed parameters
+        image_size = function_args.get("image_size", "landscape_16_9")
+        
+        # Use fixed internal defaults for all other parameters (not exposed to model)
+        num_inference_steps = 50
+        guidance_scale = 4.5
+        num_images = 1
+        enable_safety_checker = True
+        output_format = "png"
+        acceleration = "none"
+        allow_nsfw_images = True
+        seed = None
+        
+        # Run async function in event loop
+        return asyncio.run(image_generate_tool(
+            prompt=prompt,
+            image_size=image_size,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            num_images=num_images,
+            enable_safety_checker=enable_safety_checker,
+            output_format=output_format,
+            acceleration=acceleration,
+            allow_nsfw_images=allow_nsfw_images,
+            seed=seed
+        ))
+    
+    else:
+        return json.dumps({"error": f"Unknown image generation function: {function_name}"})
+
+
 def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Main function call dispatcher that routes calls to appropriate toolsets.
@@ -505,6 +653,14 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
         # Route vision tools
         elif function_name in ["vision_analyze"]:
             return handle_vision_function_call(function_name, function_args)
+        
+        # Route MoA tools
+        elif function_name in ["mixture_of_agents"]:
+            return handle_moa_function_call(function_name, function_args)
+        
+        # Route image generation tools
+        elif function_name in ["image_generate"]:
+            return handle_image_function_call(function_name, function_args)
         
         # Future toolsets can be routed here:
         # elif function_name in ["file_read_tool", "file_write_tool"]:
@@ -547,6 +703,18 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["vision_analyze_tool"],
             "description": "Analyze images from URLs using AI vision for comprehensive understanding",
             "requirements": ["NOUS_API_KEY environment variable"]
+        },
+        "moa_tools": {
+            "available": check_moa_requirements(),
+            "tools": ["mixture_of_agents_tool"],
+            "description": "Process extremely difficult problems using Mixture-of-Agents methodology with multiple frontier models collaborating for enhanced reasoning. Best for complex math, coding, and analytical tasks.",
+            "requirements": ["NOUS_API_KEY environment variable"]
+        },
+        "image_tools": {
+            "available": check_image_generation_requirements(),
+            "tools": ["image_generate_tool"],
+            "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling for enhanced quality",
+            "requirements": ["FAL_API_KEY environment variable", "fal-client package"]
         }
         # Future toolsets can be added here
     }
@@ -563,7 +731,9 @@ def check_toolset_requirements() -> Dict[str, bool]:
     return {
         "web_tools": check_tavily_api_key(),
         "terminal_tools": check_hecate_requirements(),
-        "vision_tools": check_vision_requirements()
+        "vision_tools": check_vision_requirements(),
+        "moa_tools": check_moa_requirements(),
+        "image_tools": check_image_generation_requirements()
     }
 
 if __name__ == "__main__":

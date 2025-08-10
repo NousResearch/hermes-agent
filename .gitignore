@@ -3,3 +3,16 @@
 hecate/
 hecate-lib/
 *.pyc*
+__pycache__/
+.venv/
+.vscode/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+export*
+__pycache__/model_tools.cpython-310.pyc
+__pycache__/web_tools.cpython-310.pyc

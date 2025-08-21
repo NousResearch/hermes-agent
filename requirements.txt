@@ -1,3 +1,3 @@
-tavily-python
+firecrawl-py
 openai
 fal-client

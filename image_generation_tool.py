@@ -323,8 +323,8 @@ async def image_generate_tool(
             raise ValueError("Prompt must be 1000 characters or less")
         
         # Check API key availability
-        if not os.getenv("FAL_API_KEY"):
-            raise ValueError("FAL_API_KEY environment variable not set")
+        if not os.getenv("FAL_KEY"):
+            raise ValueError("FAL_KEY environment variable not set")
         
         # Validate parameters
         validated_params = _validate_parameters(
@@ -445,7 +445,7 @@ def check_fal_api_key() -> bool:
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("FAL_API_KEY"))
+    return bool(os.getenv("FAL_KEY"))
 
 
 def check_image_generation_requirements() -> bool:
@@ -502,8 +502,8 @@ if __name__ == "__main__":
     api_available = check_fal_api_key()
     
     if not api_available:
-        print("❌ FAL_API_KEY environment variable not set")
-        print("Please set your API key: export FAL_API_KEY='your-key-here'")
+        print("❌ FAL_KEY environment variable not set")
+        print("Please set your API key: export FAL_KEY='your-key-here'")
         print("Get API key at: https://fal.ai/")
         exit(1)
     else:

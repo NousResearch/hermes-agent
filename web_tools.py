@@ -3,8 +3,8 @@
 Standalone Web Tools Module
 
 This module provides generic web tools that work with multiple backend providers.
-Currently uses Tavily as the backend, but the interface makes it easy to swap
-to other providers like Firecrawl without changing the function signatures.
+Currently uses Firecrawl as the backend, and the interface makes it easy to swap
+providers without changing the function signatures.
 
 Available tools:
 - web_search_tool: Search the web for information
@@ -12,8 +12,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
-- Tavily: https://docs.tavily.com/
-- Firecrawl: https://docs.firecrawl.dev/features/search
+- Firecrawl: https://docs.firecrawl.dev/introduction
 
 LLM Processing:
 - Uses Nous Research API with Gemini 2.5 Flash for intelligent content extraction
@@ -49,11 +48,11 @@ import uuid
 import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from tavily import TavilyClient
+from firecrawl import FirecrawlApp, ScrapeOptions
 from openai import AsyncOpenAI
 
-# Initialize Tavily client once at module level
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+# Initialize Firecrawl client once at module level
+firecrawl_app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
 # Initialize Nous Research API client for LLM processing (async)
 nous_client = AsyncOpenAI(
@@ -250,7 +249,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Search the web for information using available search API backend.
     
     This function provides a generic interface for web search that can work
-    with multiple backends. Currently uses Tavily but can be easily swapped.
+    with multiple backends. Currently uses Firecrawl.
     
     Note: Search results are already concise snippets, so no LLM processing is applied.
     
@@ -290,18 +289,36 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     try:
         print(f"🔍 Searching the web for: '{query}' (limit: {limit})")
         
-        # Use Tavily's search functionality
-        response = tavily_client.search(query=query, max_results=limit, search_depth="advanced")
+        # Use Firecrawl's search functionality
+        # Firecrawl Search: search the web and get full content from results
+        # Docs: https://docs.firecrawl.dev/introduction
+        # Note: Firecrawl SDK supports search via app.search(query, limit=...)
+        response = firecrawl_app.search(query=query, limit=limit)
         
-        results_count = len(response.get('results', []))
+        # Determine results count and trim to minimal structure: { success, data: [{markdown}] }
+        results_list = []
+        success_flag = True
+        if isinstance(response, dict):
+            success_flag = bool(response.get("success", True))
+            if "data" in response and isinstance(response["data"], list):
+                results_list = response["data"]
+            elif "results" in response and isinstance(response["results"], list):
+                results_list = response["results"]
+        results_count = len(results_list)
         print(f"✅ Found {results_count} results")
         
         # Capture debug information
         debug_call_data["results_count"] = results_count
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        result_json = json.dumps(response, indent=2)
-        # Clean base64 images from search results
+        # Build minimal response
+        minimal_data = []
+        for item in results_list:
+            if isinstance(item, dict) and ("markdown" in item):
+                minimal_data.append({"markdown": item.get("markdown", "")})
+        minimal_response = {"success": success_flag, "data": minimal_data}
+        
+        result_json = json.dumps(minimal_response, indent=2)
         cleaned_result = clean_base64_images(result_json)
         
         debug_call_data["final_response_size"] = len(cleaned_result)
@@ -335,7 +352,7 @@ async def web_extract_tool(
     Extract content from specific web pages using available extraction API backend.
     
     This function provides a generic interface for web content extraction that
-    can work with multiple backends. Currently uses Tavily but can be easily swapped.
+    can work with multiple backends. Currently uses Firecrawl.
     
     Args:
         urls (List[str]): List of URLs to extract content from
@@ -371,8 +388,49 @@ async def web_extract_tool(
     try:
         print(f"📄 Extracting content from {len(urls)} URL(s)")
         
-        # Use Tavily's extract functionality
-        response = tavily_client.extract(urls=urls, format=format)
+        # Use Firecrawl's scrape functionality per URL and normalize to a common shape
+        results: List[Dict[str, Any]] = []
+        for url in urls:
+            try:
+                # Determine requested formats for Firecrawl
+                formats: List[str] = []
+                if format == "markdown":
+                    formats = ["markdown"]
+                elif format == "html":
+                    formats = ["html"]
+                else:
+                    # Default: request markdown for LLM-readiness and include html as backup
+                    formats = ["markdown", "html"]
+
+                scrape_result = firecrawl_app.scrape_url(url, formats=formats)
+
+                # Firecrawl returns {success, data: {markdown?, html?, metadata}}
+                data = scrape_result.get("data", {}) if isinstance(scrape_result, dict) else {}
+                metadata = data.get("metadata", {})
+                title = metadata.get("title", "")
+                content_markdown = data.get("markdown")
+                content_html = data.get("html")
+
+                # Choose content based on requested format
+                chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+
+                results.append({
+                    "url": metadata.get("sourceURL", url),
+                    "title": title,
+                    "content": chosen_content,
+                    "raw_content": chosen_content,
+                    "metadata": metadata
+                })
+            except Exception as scrape_err:
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": str(scrape_err)
+                })
+
+        response = {"results": results}
         
         pages_extracted = len(response.get('results', []))
         print(f"✅ Extracted content from {pages_extracted} pages")
@@ -440,7 +498,18 @@ async def web_extract_tool(
                 content_length = len(result.get('raw_content', ''))
                 print(f"  📝 {url} ({content_length} characters)")
         
-        result_json = json.dumps(response, indent=2)
+        # Trim output to minimal fields per entry: title, content, error
+        trimmed_results = [
+            {
+                "title": r.get("title", ""),
+                "content": r.get("content", ""),
+                "error": r.get("error")
+            }
+            for r in response.get("results", [])
+        ]
+        trimmed_response = {"results": trimmed_results}
+        
+        result_json = json.dumps(trimmed_response, indent=2)
         # Clean base64 images from extracted content
         cleaned_result = clean_base64_images(result_json)
         
@@ -476,7 +545,7 @@ async def web_crawl_tool(
     Crawl a website with specific instructions using available crawling API backend.
     
     This function provides a generic interface for web crawling that can work
-    with multiple backends. Currently uses Tavily but can be easily swapped.
+    with multiple backends. Currently uses Firecrawl.
     
     Args:
         url (str): The base URL to crawl (can include or exclude https://)
@@ -516,13 +585,35 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         print(f"🕷️ Crawling {url}{instructions_text}")
         
-        # Use Tavily's crawl functionality
-        response = tavily_client.crawl(
-            url=url,
-            limit=20,  # Reasonable limit for most use cases
-            instructions=instructions or "Get all available content",
-            extract_depth=depth
+        # Use Firecrawl's crawl functionality and normalize to a common shape
+        # Firecrawl SDK returns the crawl results directly for synchronous crawl
+        scrape_options = ScrapeOptions(formats=["markdown", "html"])
+        crawl_result = firecrawl_app.crawl_url(
+            url,
+            limit=20,
+            scrape_options=scrape_options,
         )
+
+        pages: List[Dict[str, Any]] = []
+        if isinstance(crawl_result, dict):
+            # Firecrawl returns {success, data: [ {markdown?, html?, metadata} ]}
+            data_list = crawl_result.get("data", [])
+            for item in data_list:
+                metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+                page_url = metadata.get("sourceURL", "Unknown URL")
+                title = metadata.get("title", "")
+                content_markdown = item.get("markdown") if isinstance(item, dict) else None
+                content_html = item.get("html") if isinstance(item, dict) else None
+                content = content_markdown or content_html or ""
+                pages.append({
+                    "url": page_url,
+                    "title": title,
+                    "content": content,
+                    "raw_content": content,
+                    "metadata": metadata
+                })
+
+        response = {"results": pages}
         
         pages_crawled = len(response.get('results', []))
         print(f"✅ Crawled {pages_crawled} pages")
@@ -590,7 +681,18 @@ async def web_crawl_tool(
                 content_length = len(result.get('content', ''))
                 print(f"  🌐 {page_url} ({content_length} characters)")
         
-        result_json = json.dumps(response, indent=2)
+        # Trim output to minimal fields per entry: title, content, error
+        trimmed_results = [
+            {
+                "title": r.get("title", ""),
+                "content": r.get("content", ""),
+                "error": r.get("error")
+            }
+            for r in response.get("results", [])
+        ]
+        trimmed_response = {"results": trimmed_results}
+        
+        result_json = json.dumps(trimmed_response, indent=2)
         # Clean base64 images from crawled content
         cleaned_result = clean_base64_images(result_json)
         
@@ -615,14 +717,14 @@ async def web_crawl_tool(
 
 
 # Convenience function to check if API key is available
-def check_tavily_api_key() -> bool:
+def check_firecrawl_api_key() -> bool:
     """
-    Check if the Tavily API key is available in environment variables.
+    Check if the Firecrawl API key is available in environment variables.
     
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("TAVILY_API_KEY"))
+    return bool(os.getenv("FIRECRAWL_API_KEY"))
 
 
 def check_nous_api_key() -> bool:
@@ -670,15 +772,15 @@ if __name__ == "__main__":
     print("=" * 40)
     
     # Check if API keys are available
-    tavily_available = check_tavily_api_key()
+    firecrawl_available = check_firecrawl_api_key()
     nous_available = check_nous_api_key()
     
-    if not tavily_available:
-        print("❌ TAVILY_API_KEY environment variable not set")
-        print("Please set your API key: export TAVILY_API_KEY='your-key-here'")
-        print("Get API key at: https://tavily.com/")
+    if not firecrawl_available:
+        print("❌ FIRECRAWL_API_KEY environment variable not set")
+        print("Please set your API key: export FIRECRAWL_API_KEY='your-key-here'")
+        print("Get API key at: https://firecrawl.dev/")
     else:
-        print("✅ Tavily API key found")
+        print("✅ Firecrawl API key found")
     
     if not nous_available:
         print("❌ NOUS_API_KEY environment variable not set")
@@ -688,7 +790,7 @@ if __name__ == "__main__":
     else:
         print("✅ Nous Research API key found")
     
-    if not tavily_available:
+    if not firecrawl_available:
         exit(1)
     
     print("🛠️  Web tools ready for use!")

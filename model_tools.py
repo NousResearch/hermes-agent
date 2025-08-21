@@ -24,7 +24,7 @@ import asyncio
 from typing import Dict, Any, List
 
 # Import toolsets
-from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_tavily_api_key
+from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
 from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 from vision_tools import vision_analyze_tool, check_vision_requirements
 from mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
@@ -272,7 +272,7 @@ def get_all_tool_names() -> List[str]:
     tool_names = []
     
     # Web tools
-    if check_tavily_api_key():
+    if check_firecrawl_api_key():
         tool_names.extend(["web_search", "web_extract", "web_crawl"])
     
     # Terminal tools  
@@ -395,7 +395,7 @@ def get_tool_definitions(
     
     # Collect all available tools from each toolset
     toolset_tools = {
-        "web_tools": get_web_tool_definitions() if check_tavily_api_key() else [],
+        "web_tools": get_web_tool_definitions() if check_firecrawl_api_key() else [],
         "terminal_tools": get_terminal_tool_definitions() if check_hecate_requirements() else [],
         "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else [],
         "moa_tools": get_moa_tool_definitions() if check_moa_requirements() else [],
@@ -687,10 +687,10 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     toolsets = {
         "web_tools": {
-            "available": check_tavily_api_key(),
+            "available": check_firecrawl_api_key(),
             "tools": ["web_search_tool", "web_extract_tool", "web_crawl_tool"],
             "description": "Web search, content extraction, and website crawling tools",
-            "requirements": ["TAVILY_API_KEY environment variable"]
+            "requirements": ["FIRECRAWL_API_KEY environment variable"]
         },
         "terminal_tools": {
             "available": check_hecate_requirements(),
@@ -714,7 +714,7 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "available": check_image_generation_requirements(),
             "tools": ["image_generate_tool"],
             "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling for enhanced quality",
-            "requirements": ["FAL_API_KEY environment variable", "fal-client package"]
+            "requirements": ["FAL_KEY environment variable", "fal-client package"]
         }
         # Future toolsets can be added here
     }
@@ -729,7 +729,7 @@ def check_toolset_requirements() -> Dict[str, bool]:
         Dict: Status of each toolset's requirements
     """
     return {
-        "web_tools": check_tavily_api_key(),
+        "web_tools": check_firecrawl_api_key(),
         "terminal_tools": check_hecate_requirements(),
         "vision_tools": check_vision_requirements(),
         "moa_tools": check_moa_requirements(),

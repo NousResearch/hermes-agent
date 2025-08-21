@@ -196,13 +196,22 @@ async def _run_reference_model_safe(
             return model, content, True
             
         except Exception as e:
+            error_str = str(e)
+            # Log more detailed error information for debugging
+            if "invalid" in error_str.lower():
+                print(f"⚠️  {model} invalid request error (attempt {attempt + 1}): {error_str}")
+            elif "rate" in error_str.lower() or "limit" in error_str.lower():
+                print(f"⚠️  {model} rate limit error (attempt {attempt + 1}): {error_str}")
+            else:
+                print(f"⚠️  {model} unknown error (attempt {attempt + 1}): {error_str}")
+                
             if attempt < max_retries - 1:
                 # Exponential backoff for rate limiting
                 sleep_time = 2 ** attempt
-                print(f"⚠️  {model} failed (attempt {attempt + 1}), retrying in {sleep_time}s: {str(e)}")
+                print(f"   Retrying in {sleep_time}s...")
                 await asyncio.sleep(sleep_time)
             else:
-                error_msg = f"{model} failed after {max_retries} attempts: {str(e)}"
+                error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
                 print(f"❌ {error_msg}")
                 return model, error_msg, False
 
@@ -370,15 +379,14 @@ async def mixture_of_agents_tool(
         
         print(f"✅ MoA processing completed in {processing_time:.2f} seconds")
         
-        # Prepare successful response (only final aggregated result)
+        # Prepare successful response (only final aggregated result, minimal fields)
         result = {
             "success": True,
             "response": final_response,
             "models_used": {
                 "reference_models": ref_models,
                 "aggregator_model": agg_model
-            },
-            "processing_time": processing_time
+            }
         }
         
         debug_call_data["success"] = True
@@ -400,7 +408,7 @@ async def mixture_of_agents_tool(
         end_time = datetime.datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         
-        # Prepare error response
+        # Prepare error response (minimal fields)
         result = {
             "success": False,
             "response": "MoA processing failed. Please try again or use a single model for this query.",
@@ -408,7 +416,6 @@ async def mixture_of_agents_tool(
                 "reference_models": reference_models or REFERENCE_MODELS,
                 "aggregator_model": aggregator_model or AGGREGATOR_MODEL
             },
-            "processing_time": processing_time,
             "error": error_msg
         }
         

@@ -42,7 +42,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web for information on any topic. Returns relevant results with titles, URLs, content snippets, and answers. Uses advanced search depth for comprehensive results.",
+                "description": "Search the web for information on any topic. Returns relevant results with titles and URLs. Uses advanced search depth for comprehensive results.",
                 "parameters": {
                     "type": "object",
                     "properties": {

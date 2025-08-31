@@ -48,11 +48,11 @@ import uuid
 import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from firecrawl import FirecrawlApp, ScrapeOptions
+from firecrawl import Firecrawl
 from openai import AsyncOpenAI
 
 # Initialize Firecrawl client once at module level
-firecrawl_app = FirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
+firecrawl_client = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
 # Initialize Nous Research API client for LLM processing (async)
 nous_client = AsyncOpenAI(
@@ -251,7 +251,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     This function provides a generic interface for web search that can work
     with multiple backends. Currently uses Firecrawl.
     
-    Note: Search results are already concise snippets, so no LLM processing is applied.
+    Note: This function returns search result metadata only (URLs, titles, descriptions).
+    Use web_extract_tool to get full content from specific URLs.
     
     Args:
         query (str): The search query to look up
@@ -260,16 +261,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Returns:
         str: JSON string containing search results with the following structure:
              {
-                 "query": str,
-                 "results": [
-                     {
-                         "title": str,
-                         "url": str,
-                         "content": str,
-                         "score": float
-                     },
-                     ...
-                 ]
+                 "success": bool,
+                 "data": {
+                     "web": [
+                         {
+                             "title": str,
+                             "url": str,
+                             "description": str,
+                             "position": int
+                         },
+                         ...
+                     ]
+                 }
              }
     
     Raises:
@@ -289,46 +292,67 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     try:
         print(f"🔍 Searching the web for: '{query}' (limit: {limit})")
         
-        # Use Firecrawl's search functionality
-        # Firecrawl Search: search the web and get full content from results
-        # Docs: https://docs.firecrawl.dev/introduction
-        # Note: Firecrawl SDK supports search via app.search(query, limit=...)
-        response = firecrawl_app.search(query=query, limit=limit)
+        # Use Firecrawl's v2 search functionality WITHOUT scraping
+        # We only want search result metadata, not scraped content
+        # Docs: https://docs.firecrawl.dev/features/search
+        response = firecrawl_client.search(
+            query=query,
+            limit=limit
+        )
         
-        # Determine results count and trim to minimal structure: { success, data: [{markdown}] }
-        results_list = []
-        success_flag = True
-        if isinstance(response, dict):
-            success_flag = bool(response.get("success", True))
-            if "data" in response and isinstance(response["data"], list):
-                results_list = response["data"]
-            elif "results" in response and isinstance(response["results"], list):
-                results_list = response["results"]
-        results_count = len(results_list)
-        print(f"✅ Found {results_count} results")
+        # The response is a SearchData object with web, news, and images attributes
+        # When not scraping, the results are directly in these attributes
+        web_results = []
+        
+        # Check if response has web attribute (SearchData object)
+        if hasattr(response, 'web'):
+            # Response is a SearchData object with web attribute
+            if response.web:
+                # Convert each SearchResultWeb object to dict
+                for result in response.web:
+                    if hasattr(result, 'model_dump'):
+                        # Pydantic model - use model_dump
+                        web_results.append(result.model_dump())
+                    elif hasattr(result, '__dict__'):
+                        # Regular object - use __dict__
+                        web_results.append(result.__dict__)
+                    elif isinstance(result, dict):
+                        # Already a dict
+                        web_results.append(result)
+        elif hasattr(response, 'model_dump'):
+            # Response has model_dump method - use it to get dict
+            response_dict = response.model_dump()
+            if 'web' in response_dict and response_dict['web']:
+                web_results = response_dict['web']
+        elif isinstance(response, dict):
+            # Response is already a dictionary
+            if 'web' in response and response['web']:
+                web_results = response['web']
+        
+        results_count = len(web_results)
+        print(f"✅ Found {results_count} search results")
+        
+        # Build response with just search metadata (URLs, titles, descriptions)
+        response_data = {
+            "success": True,
+            "data": {
+                "web": web_results
+            }
+        }
         
         # Capture debug information
         debug_call_data["results_count"] = results_count
-        debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Build minimal response
-        minimal_data = []
-        for item in results_list:
-            if isinstance(item, dict) and ("markdown" in item):
-                minimal_data.append({"markdown": item.get("markdown", "")})
-        minimal_response = {"success": success_flag, "data": minimal_data}
+        # Convert to JSON
+        result_json = json.dumps(response_data, indent=2)
         
-        result_json = json.dumps(minimal_response, indent=2)
-        cleaned_result = clean_base64_images(result_json)
-        
-        debug_call_data["final_response_size"] = len(cleaned_result)
-        debug_call_data["compression_applied"] = "base64_image_removal"
+        debug_call_data["final_response_size"] = len(result_json)
         
         # Log debug information
         _log_debug_call("web_search_tool", debug_call_data)
         _save_debug_log()
         
-        return cleaned_result
+        return result_json
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
@@ -388,40 +412,87 @@ async def web_extract_tool(
     try:
         print(f"📄 Extracting content from {len(urls)} URL(s)")
         
-        # Use Firecrawl's scrape functionality per URL and normalize to a common shape
+        # Determine requested formats for Firecrawl v2
+        formats: List[str] = []
+        if format == "markdown":
+            formats = ["markdown"]
+        elif format == "html":
+            formats = ["html"]
+        else:
+            # Default: request markdown for LLM-readiness and include html as backup
+            formats = ["markdown", "html"]
+        
+        # Always use individual scraping for simplicity and reliability
+        # Batch scraping adds complexity without much benefit for small numbers of URLs
         results: List[Dict[str, Any]] = []
+        
         for url in urls:
             try:
-                # Determine requested formats for Firecrawl
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
-
-                scrape_result = firecrawl_app.scrape_url(url, formats=formats)
-
-                # Firecrawl returns {success, data: {markdown?, html?, metadata}}
-                data = scrape_result.get("data", {}) if isinstance(scrape_result, dict) else {}
-                metadata = data.get("metadata", {})
+                print(f"  📄 Scraping: {url}")
+                scrape_result = firecrawl_client.scrape(
+                    url=url,
+                    formats=formats
+                )
+                
+                # Process the result - properly handle object serialization
+                metadata = {}
+                title = ""
+                content_markdown = None
+                content_html = None
+                
+                # Extract data from the scrape result
+                if hasattr(scrape_result, 'model_dump'):
+                    # Pydantic model - use model_dump to get dict
+                    result_dict = scrape_result.model_dump()
+                    content_markdown = result_dict.get('markdown')
+                    content_html = result_dict.get('html')
+                    metadata = result_dict.get('metadata', {})
+                elif hasattr(scrape_result, '__dict__'):
+                    # Regular object with attributes
+                    content_markdown = getattr(scrape_result, 'markdown', None)
+                    content_html = getattr(scrape_result, 'html', None)
+                    
+                    # Handle metadata - convert to dict if it's an object
+                    metadata_obj = getattr(scrape_result, 'metadata', {})
+                    if hasattr(metadata_obj, 'model_dump'):
+                        metadata = metadata_obj.model_dump()
+                    elif hasattr(metadata_obj, '__dict__'):
+                        metadata = metadata_obj.__dict__
+                    elif isinstance(metadata_obj, dict):
+                        metadata = metadata_obj
+                    else:
+                        metadata = {}
+                elif isinstance(scrape_result, dict):
+                    # Already a dictionary
+                    content_markdown = scrape_result.get('markdown')
+                    content_html = scrape_result.get('html')
+                    metadata = scrape_result.get('metadata', {})
+                
+                # Ensure metadata is a dict (not an object)
+                if not isinstance(metadata, dict):
+                    if hasattr(metadata, 'model_dump'):
+                        metadata = metadata.model_dump()
+                    elif hasattr(metadata, '__dict__'):
+                        metadata = metadata.__dict__
+                    else:
+                        metadata = {}
+                
+                # Get title from metadata
                 title = metadata.get("title", "")
-                content_markdown = data.get("markdown")
-                content_html = data.get("html")
-
+                
                 # Choose content based on requested format
                 chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-
+                
                 results.append({
                     "url": metadata.get("sourceURL", url),
                     "title": title,
                     "content": chosen_content,
                     "raw_content": chosen_content,
-                    "metadata": metadata
+                    "metadata": metadata  # Now guaranteed to be a dict
                 })
+                
             except Exception as scrape_err:
+                print(f"  ❌ Error scraping {url}: {str(scrape_err)}")
                 results.append({
                     "url": url,
                     "title": "",
@@ -582,36 +653,126 @@ async def web_crawl_tool(
     }
     
     try:
+        # Ensure URL has protocol
+        if not url.startswith(('http://', 'https://')):
+            url = f'https://{url}'
+            print(f"  📝 Added https:// prefix to URL: {url}")
+        
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         print(f"🕷️ Crawling {url}{instructions_text}")
         
-        # Use Firecrawl's crawl functionality and normalize to a common shape
-        # Firecrawl SDK returns the crawl results directly for synchronous crawl
-        scrape_options = ScrapeOptions(formats=["markdown", "html"])
-        crawl_result = firecrawl_app.crawl_url(
-            url,
-            limit=20,
-            scrape_options=scrape_options,
-        )
+        # Use Firecrawl's v2 crawl functionality
+        # Docs: https://docs.firecrawl.dev/features/crawl
+        # The crawl() method automatically waits for completion and returns all data
+        
+        # Build crawl parameters - keep it simple
+        crawl_params = {
+            "limit": 20,  # Limit number of pages to crawl
+            "scrape_options": {
+                "formats": ["markdown"]  # Just markdown for simplicity
+            }
+        }
+        
+        # Note: The 'prompt' parameter is not documented for crawl
+        # Instructions are typically used with the Extract endpoint, not Crawl
+        if instructions:
+            print(f"  ℹ️  Note: Instructions parameter ignored (not supported in crawl API)")
+        
+        # Use the crawl method which waits for completion automatically
+        try:
+            crawl_result = firecrawl_client.crawl(
+                url=url,
+                **crawl_params
+            )
+        except Exception as e:
+            print(f"  ❌ Crawl API call failed: {e}")
+            raise
 
         pages: List[Dict[str, Any]] = []
-        if isinstance(crawl_result, dict):
-            # Firecrawl returns {success, data: [ {markdown?, html?, metadata} ]}
+        
+        # Process crawl results - the crawl method returns a CrawlJob object with data attribute
+        data_list = []
+        
+        # The crawl_result is a CrawlJob object with a 'data' attribute containing list of Document objects
+        if hasattr(crawl_result, 'data'):
+            data_list = crawl_result.data if crawl_result.data else []
+            print(f"  📊 Status: {getattr(crawl_result, 'status', 'unknown')}")
+            print(f"  📄 Retrieved {len(data_list)} pages")
+            
+            # Debug: Check other attributes if no data
+            if not data_list:
+                print(f"  🔍 Debug - CrawlJob attributes: {[attr for attr in dir(crawl_result) if not attr.startswith('_')]}")
+                print(f"  🔍 Debug - Status: {getattr(crawl_result, 'status', 'N/A')}")
+                print(f"  🔍 Debug - Total: {getattr(crawl_result, 'total', 'N/A')}")
+                print(f"  🔍 Debug - Completed: {getattr(crawl_result, 'completed', 'N/A')}")
+                
+        elif isinstance(crawl_result, dict) and 'data' in crawl_result:
             data_list = crawl_result.get("data", [])
-            for item in data_list:
-                metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
-                page_url = metadata.get("sourceURL", "Unknown URL")
-                title = metadata.get("title", "")
-                content_markdown = item.get("markdown") if isinstance(item, dict) else None
-                content_html = item.get("html") if isinstance(item, dict) else None
-                content = content_markdown or content_html or ""
-                pages.append({
-                    "url": page_url,
-                    "title": title,
-                    "content": content,
-                    "raw_content": content,
-                    "metadata": metadata
-                })
+        else:
+            print("  ⚠️  Unexpected crawl result type")
+            print(f"  🔍 Debug - Result type: {type(crawl_result)}")
+            if hasattr(crawl_result, '__dict__'):
+                print(f"  🔍 Debug - Result attributes: {list(crawl_result.__dict__.keys())}")
+        
+        for item in data_list:
+            # Process each crawled page - properly handle object serialization
+            page_url = "Unknown URL"
+            title = ""
+            content_markdown = None
+            content_html = None
+            metadata = {}
+            
+            # Extract data from the item
+            if hasattr(item, 'model_dump'):
+                # Pydantic model - use model_dump to get dict
+                item_dict = item.model_dump()
+                content_markdown = item_dict.get('markdown')
+                content_html = item_dict.get('html')
+                metadata = item_dict.get('metadata', {})
+            elif hasattr(item, '__dict__'):
+                # Regular object with attributes
+                content_markdown = getattr(item, 'markdown', None)
+                content_html = getattr(item, 'html', None)
+                
+                # Handle metadata - convert to dict if it's an object
+                metadata_obj = getattr(item, 'metadata', {})
+                if hasattr(metadata_obj, 'model_dump'):
+                    metadata = metadata_obj.model_dump()
+                elif hasattr(metadata_obj, '__dict__'):
+                    metadata = metadata_obj.__dict__
+                elif isinstance(metadata_obj, dict):
+                    metadata = metadata_obj
+                else:
+                    metadata = {}
+            elif isinstance(item, dict):
+                # Already a dictionary
+                content_markdown = item.get('markdown')
+                content_html = item.get('html')
+                metadata = item.get('metadata', {})
+            
+            # Ensure metadata is a dict (not an object)
+            if not isinstance(metadata, dict):
+                if hasattr(metadata, 'model_dump'):
+                    metadata = metadata.model_dump()
+                elif hasattr(metadata, '__dict__'):
+                    metadata = metadata.__dict__
+                else:
+                    metadata = {}
+            
+            # Extract URL and title from metadata
+            page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
+            title = metadata.get("title", "")
+            
+            # Choose content (prefer markdown)
+            content = content_markdown or content_html or ""
+            
+            pages.append({
+                "url": page_url,
+                "title": title,
+                "content": content,
+                "raw_content": content,
+                "metadata": metadata  # Now guaranteed to be a dict
+            })
 
         response = {"results": pages}
         

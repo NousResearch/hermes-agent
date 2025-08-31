@@ -65,7 +65,7 @@ nous_client = AsyncOpenAI(
 REFERENCE_MODELS = [
     "claude-opus-4-20250514",
     "gemini-2.5-pro", 
-    "o4-mini",
+    "gpt-5",
     "deepseek-r1"
 ]
 
@@ -164,7 +164,7 @@ async def _run_reference_model_safe(
     model: str, 
     user_prompt: str, 
     temperature: float = REFERENCE_TEMPERATURE,
-    max_tokens: int = 128000,
+    max_tokens: int = 32000,
     max_retries: int = 3
 ) -> tuple[str, str, bool]:
     """
@@ -184,12 +184,18 @@ async def _run_reference_model_safe(
         try:
             print(f"🤖 Querying {model} (attempt {attempt + 1}/{max_retries})")
             
-            response = await nous_client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            # Build parameters for the API call
+            api_params = {
+                "model": model,
+                "messages": [{"role": "user", "content": user_prompt}]
+            }
+            
+            # GPT models (especially gpt-4o-mini) don't support custom temperature values
+            # Only include temperature for non-GPT models
+            if not model.lower().startswith('gpt-'):
+                api_params["temperature"] = temperature
+            
+            response = await nous_client.chat.completions.create(**api_params)
             
             content = response.choices[0].message.content.strip()
             print(f"✅ {model} responded ({len(content)} characters)")
@@ -220,7 +226,7 @@ async def _run_aggregator_model(
     system_prompt: str,
     user_prompt: str,
     temperature: float = AGGREGATOR_TEMPERATURE,
-    max_tokens: int = 16000
+    max_tokens: int = None
 ) -> str:
     """
     Run the aggregator model to synthesize the final response.
@@ -236,15 +242,21 @@ async def _run_aggregator_model(
     """
     print(f"🧠 Running aggregator model: {AGGREGATOR_MODEL}")
     
-    response = await nous_client.chat.completions.create(
-        model=AGGREGATOR_MODEL,
-        messages=[
+    # Build parameters for the API call
+    api_params = {
+        "model": AGGREGATOR_MODEL,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens
-    )
+        ]
+    }
+    
+    # GPT models (especially gpt-4o-mini) don't support custom temperature values
+    # Only include temperature for non-GPT models
+    if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
+        api_params["temperature"] = temperature
+    
+    response = await nous_client.chat.completions.create(**api_params)
     
     content = response.choices[0].message.content.strip()
     print(f"✅ Aggregation complete ({len(content)} characters)")

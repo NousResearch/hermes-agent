@@ -78,7 +78,8 @@ def terminal_tool(
     session_id: Optional[str] = None,
     background: bool = False,
     idle_threshold: float = 5.0,
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    snapshot_id: str | None = None,
 ) -> str:
     """
     Execute a command on a Morph VM with optional interactive session support.
@@ -136,7 +137,7 @@ def terminal_tool(
         )
         
         # Execute with lifecycle management
-        result = run_tool_with_lifecycle_management(tool_call)
+        result = run_tool_with_lifecycle_management(tool_call, snapshot_id=snapshot_id)
         
         # Format the result with all possible fields
         # Map hecate's "stdout" to "output" for compatibility

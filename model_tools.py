@@ -518,8 +518,9 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         background = function_args.get("background", False)
         idle_threshold = function_args.get("idle_threshold", 5.0)
         timeout = function_args.get("timeout")
+        snapshot_id = function_args.get("snapshot_id")
         # Session management is handled internally - don't pass session_id from model
-        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
+        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout, snapshot_id=snapshot_id)
     
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"})

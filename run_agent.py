@@ -51,7 +51,8 @@ class AIAgent:
         disabled_tools: List[str] = None,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
-        save_trajectories: bool = False
+        save_trajectories: bool = False,
+        morph_snapshot_id: str | None = None,
     ):
         """
         Initialize the AI Agent.
@@ -67,11 +68,13 @@ class AIAgent:
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
+            morph_snapshot_id (str | None): Morph Cloud snapshot id from which to start terminal tool
         """
         self.model = model
         self.max_iterations = max_iterations
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
+        self.morph_snapshot_id = morph_snapshot_id
         
         # Store tool filtering options
         self.enabled_tools = enabled_tools
@@ -388,6 +391,9 @@ class AIAgent:
                             function_args = {}
                         
                         print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
+
+                        if function_name == "terminal" and self.morph_snapshot_id is not None:
+                            function_args["snapshot_id"] = self.morph_snapshot_id
                         
                         # Execute the tool
                         function_result = handle_function_call(function_name, function_args)
@@ -480,7 +486,8 @@ def main(
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
-    save_trajectories: bool = False
+    save_trajectories: bool = False,
+    morph_snapshot_id: str | None = None,
 ):
     """
     Main function for running the agent directly.
@@ -497,6 +504,7 @@ def main(
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal_tools")
         list_tools (bool): Just list available tools and exit
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
+        morph_snapshot_id (str | None): Morph Cloud snapshot id to start terminal tool from
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
@@ -573,7 +581,8 @@ def main(
             disabled_tools=disabled_tools_list,
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
-            save_trajectories=save_trajectories
+            save_trajectories=save_trajectories,
+            morph_snapshot_id=morph_snapshot_id
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")

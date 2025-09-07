@@ -1,12 +1,29 @@
+#!/bin/bash
+
+# Check if a prompt argument was provided
+if [ $# -eq 0 ]; then
+    echo "Error: Please provide a prompt as an argument"
+    echo "Usage: $0 \"your prompt here\""
+    exit 1
+fi
+
+# Get the prompt from the first argument
+PROMPT="$1"
+
+# Set debug mode for web tools
 export WEB_TOOLS_DEBUG=true
 
+# Run the agent with the provided prompt
 python run_agent.py \
-  --query "Tell me about this animal pictured: https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQi1nkrYXY-ijQv5aCxkwooyg2roNFxj0ewJA&s" \
+  --query "$PROMPT" \
   --max_turns 30 \
-  --model claude-sonnet-4-20250514 \
-  --base_url https://api.anthropic.com/v1/ \
+#  --model claude-sonnet-4-20250514 \
+#  --base_url https://api.anthropic.com/v1/ \
+  --model hermes-4-70B \
+  --base_url http://bore.pub:8292/v1 \
   --api_key $ANTHROPIC_API_KEY \
-  --enabled_toolsets=vision_tools
+  --save_trajectories
+  #--enabled_toolsets=vision_tools
 
 #Possible Toolsets:
 #web_tools

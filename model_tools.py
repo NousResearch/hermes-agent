@@ -8,22 +8,28 @@ for defining tools and executing function calls.
 
 Currently supports:
 - Web tools (search, extract, crawl) from web_tools.py
+- Terminal tools (command execution with interactive sessions) from terminal_tool.py
+- Vision tools (image analysis) from vision_tools.py
+- Mixture of Agents tools (collaborative multi-model reasoning) from mixture_of_agents_tool.py
+- Image generation tools (text-to-image with upscaling) from image_generation_tool.py
 
 Usage:
     from model_tools import get_tool_definitions, handle_function_call
     
-    # Get tool definitions for model API
+    # Get all available tool definitions for model API
     tools = get_tool_definitions()
     
+    # Get specific toolsets
+    web_tools = get_tool_definitions(enabled_toolsets=['web_tools'])
+    
     # Handle function calls from model
-    result = handle_function_call("web_search_tool", {"query": "Python", "limit": 3})
+    result = handle_function_call("web_search", {"query": "Python", "limit": 3})
 """
 
 import json
 import asyncio
 from typing import Dict, Any, List
 
-# Import toolsets
 from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
 from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 from vision_tools import vision_analyze_tool, check_vision_requirements
@@ -75,11 +81,6 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
                             "items": {"type": "string"},
                             "description": "List of URLs to extract content from (max 5 URLs per call)",
                             "maxItems": 5
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["markdown", "html"],
-                            "description": "Desired output format for extracted content (optional)"
                         }
                     },
                     "required": ["urls"]
@@ -101,12 +102,6 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
                         "instructions": {
                             "type": "string",
                             "description": "Specific instructions for what to crawl/extract using AI intelligence (e.g., 'Find pricing information', 'Get documentation pages', 'Extract contact details')"
-                        },
-                        "depth": {
-                            "type": "string",
-                            "enum": ["basic", "advanced"],
-                            "description": "Depth of extraction - 'basic' for surface content, 'advanced' for deeper analysis (default: basic)",
-                            "default": "basic"
                         }
                     },
                     "required": ["url"]
@@ -185,12 +180,7 @@ def get_vision_tool_definitions() -> List[Dict[str, Any]]:
                         },
                         "question": {
                             "type": "string",
-                            "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question. Examples: 'What text can you read?', 'What architectural style is this?', 'Describe the mood and emotions', 'What safety hazards do you see?'"
-                        },
-                        "model": {
-                            "type": "string",
-                            "description": "The vision model to use for analysis (optional, default: gemini-2.5-flash)",
-                            "default": "gemini-2.5-flash"
+                            "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question."
                         }
                     },
                     "required": ["image_url", "question"]
@@ -212,7 +202,7 @@ def get_moa_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "mixture_of_agents",
-                "description": "Process extremely difficult problems requiring intense reasoning using the Mixture-of-Agents methodology. This tool leverages multiple frontier language models to collaboratively solve complex tasks that single models struggle with. Uses a fixed 2-layer architecture: reference models (claude-opus-4, gemini-2.5-pro, o4-mini, deepseek-r1) generate diverse responses, then an aggregator synthesizes the best solution. Best for: complex mathematical proofs, advanced coding problems, multi-step analytical reasoning, precise and complex STEM problems, algorithm design, and problems requiring diverse domain expertise.",
+                "description": "Process extremely difficult problems requiring intense reasoning using a Mixture-of-Agents. This tool leverages multiple frontier language models to collaboratively solve complex tasks that single models struggle with. Uses a fixed 2-layer architecture: reference models generate diverse responses, then an aggregator synthesizes the best solution. Best for: complex mathematical proofs, advanced coding problems, multi-step analytical reasoning, precise and complex STEM problems, algorithm design, and problems requiring diverse domain expertise.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -240,13 +230,13 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "image_generate",
-                "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling. Creates detailed, artistic images that are automatically enhanced for superior quality. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
+                "description": "Generate high-quality images from text prompts using FLUX Krea model with automatic 2x upscaling. Creates detailed, artistic images that are automatically enhanced for superior quality. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "The text prompt describing the desired image. Be detailed and descriptive for best results."
+                            "description": "The text prompt describing the desired image. Be detailed and descriptive."
                         },
                         "image_size": {
                             "type": "string",
@@ -291,10 +281,6 @@ def get_all_tool_names() -> List[str]:
     if check_image_generation_requirements():
         tool_names.extend(["image_generate"])
     
-    # Future toolsets can be added here:
-    # if check_file_tools():
-    #     tool_names.extend(["file_read", "file_write"])
-    
     return tool_names
 
 
@@ -316,7 +302,6 @@ def get_toolset_for_tool(tool_name: str) -> str:
         "vision_analyze": "vision_tools",
         "mixture_of_agents": "moa_tools",
         "image_generate": "image_tools"
-        # Future tools can be added here
     }
     
     return toolset_mapping.get(tool_name, "unknown")
@@ -400,8 +385,6 @@ def get_tool_definitions(
         "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else [],
         "moa_tools": get_moa_tool_definitions() if check_moa_requirements() else [],
         "image_tools": get_image_tool_definitions() if check_image_generation_requirements() else []
-        # Future toolsets can be added here:
-        # "file_tools": get_file_tool_definitions() if check_file_tools() else [],
     }
     
     # HIGHEST PRIORITY: enabled_tools (overrides everything)
@@ -487,16 +470,14 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
-        format = function_args.get("format")
         # Run async function in event loop
-        return asyncio.run(web_extract_tool(urls, format))
+        return asyncio.run(web_extract_tool(urls, "markdown"))
     
     elif function_name == "web_crawl":
         url = function_args.get("url", "")
         instructions = function_args.get("instructions")
-        depth = function_args.get("depth", "basic")
         # Run async function in event loop
-        return asyncio.run(web_crawl_tool(url, instructions, depth))
+        return asyncio.run(web_crawl_tool(url, instructions, "basic"))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"})
@@ -518,7 +499,7 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         background = function_args.get("background", False)
         idle_threshold = function_args.get("idle_threshold", 5.0)
         timeout = function_args.get("timeout")
-        # Session management is handled internally - don't pass session_id from model
+
         return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
     
     else:
@@ -539,13 +520,11 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
     if function_name == "vision_analyze":
         image_url = function_args.get("image_url", "")
         question = function_args.get("question", "")
-        model = function_args.get("model", "gemini-2.5-flash")
-        
-        # Automatically prepend full description request to user's question
-        full_prompt = f"Fully describe and explain everything about this image\n\n{question}"
+
+        full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
         
         # Run async function in event loop
-        return asyncio.run(vision_analyze_tool(image_url, full_prompt, model))
+        return asyncio.run(vision_analyze_tool(image_url, full_prompt, "gemini-2.5-flash"))
     
     else:
         return json.dumps({"error": f"Unknown vision function: {function_name}"})
@@ -592,7 +571,6 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         if not prompt:
             return json.dumps({"success": False, "image": None})
         
-        # Extract only the exposed parameters
         image_size = function_args.get("image_size", "landscape_16_9")
         
         # Use fixed internal defaults for all other parameters (not exposed to model)
@@ -662,12 +640,6 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
         elif function_name in ["image_generate"]:
             return handle_image_function_call(function_name, function_args)
         
-        # Future toolsets can be routed here:
-        # elif function_name in ["file_read_tool", "file_write_tool"]:
-        #     return handle_file_function_call(function_name, function_args)
-        # elif function_name in ["code_execute_tool", "code_analyze_tool"]:
-        #     return handle_code_function_call(function_name, function_args)
-        
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
@@ -716,7 +688,6 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling for enhanced quality",
             "requirements": ["FAL_KEY environment variable", "fal-client package"]
         }
-        # Future toolsets can be added here
     }
     
     return toolsets

@@ -21,6 +21,7 @@ Usage:
 """
 
 import json
+
 import os
 import time
 from typing import List, Dict, Any, Optional
@@ -47,8 +48,6 @@ class AIAgent:
         model: str = "gpt-4",
         max_iterations: int = 10,
         tool_delay: float = 1.0,
-        enabled_tools: List[str] = None,
-        disabled_tools: List[str] = None,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False
@@ -62,8 +61,6 @@ class AIAgent:
             model (str): Model name to use (default: "gpt-4")
             max_iterations (int): Maximum number of tool calling iterations (default: 10)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
-            enabled_tools (List[str]): Only enable these specific tools (optional)
-            disabled_tools (List[str]): Disable these specific tools (optional)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
@@ -73,9 +70,7 @@ class AIAgent:
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         
-        # Store tool filtering options
-        self.enabled_tools = enabled_tools
-        self.disabled_tools = disabled_tools
+        # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
         
@@ -98,8 +93,6 @@ class AIAgent:
         
         # Get available tools with filtering
         self.tools = get_tool_definitions(
-            enabled_tools=enabled_tools,
-            disabled_tools=disabled_tools,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets
         )
@@ -110,10 +103,6 @@ class AIAgent:
             print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
             
             # Show filtering info if applied
-            if enabled_tools:
-                print(f"   ✅ Enabled tools: {', '.join(enabled_tools)}")
-            if disabled_tools:
-                print(f"   ❌ Disabled tools: {', '.join(disabled_tools)}")
             if enabled_toolsets:
                 print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
             if disabled_toolsets:
@@ -475,8 +464,6 @@ def main(
     api_key: str = None,
     base_url: str = "https://api.anthropic.com/v1/",
     max_turns: int = 10,
-    enabled_tools: str = None,
-    disabled_tools: str = None,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
@@ -491,12 +478,15 @@ def main(
         api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
-        enabled_tools (str): Comma-separated list of tools to enable (e.g., "web_search,terminal")
-        disabled_tools (str): Comma-separated list of tools to disable (e.g., "terminal")
-        enabled_toolsets (str): Comma-separated list of toolsets to enable (e.g., "web_tools")
-        disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal_tools")
+        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined 
+                              toolsets (e.g., "research", "development", "safe"). 
+                              Multiple toolsets can be combined: "web,vision"
+        disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
+        
+    Toolset Examples:
+        - "research": Web search, extract, crawl + vision tools
     """
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
@@ -504,14 +494,58 @@ def main(
     # Handle tool listing
     if list_tools:
         from model_tools import get_all_tool_names, get_toolset_for_tool, get_available_toolsets
+        from toolsets import get_all_toolsets, get_toolset_info
         
         print("📋 Available Tools & Toolsets:")
-        print("-" * 30)
+        print("-" * 50)
         
-        # Show toolsets
-        toolsets = get_available_toolsets()
-        print("📦 Toolsets:")
-        for name, info in toolsets.items():
+        # Show new toolsets system
+        print("\n🎯 Predefined Toolsets (New System):")
+        print("-" * 40)
+        all_toolsets = get_all_toolsets()
+        
+        # Group by category
+        basic_toolsets = []
+        composite_toolsets = []
+        scenario_toolsets = []
+        
+        for name, toolset in all_toolsets.items():
+            info = get_toolset_info(name)
+            if info:
+                entry = (name, info)
+                if name in ["web", "terminal", "vision", "creative", "reasoning"]:
+                    basic_toolsets.append(entry)
+                elif name in ["research", "development", "analysis", "content_creation", "full_stack"]:
+                    composite_toolsets.append(entry)
+                else:
+                    scenario_toolsets.append(entry)
+        
+        # Print basic toolsets
+        print("\n📌 Basic Toolsets:")
+        for name, info in basic_toolsets:
+            tools_str = ', '.join(info['resolved_tools']) if info['resolved_tools'] else 'none'
+            print(f"  • {name:15} - {info['description']}")
+            print(f"    Tools: {tools_str}")
+        
+        # Print composite toolsets
+        print("\n📂 Composite Toolsets (built from other toolsets):")
+        for name, info in composite_toolsets:
+            includes_str = ', '.join(info['includes']) if info['includes'] else 'none'
+            print(f"  • {name:15} - {info['description']}")
+            print(f"    Includes: {includes_str}")
+            print(f"    Total tools: {info['tool_count']}")
+        
+        # Print scenario-specific toolsets
+        print("\n🎭 Scenario-Specific Toolsets:")
+        for name, info in scenario_toolsets:
+            print(f"  • {name:20} - {info['description']}")
+            print(f"    Total tools: {info['tool_count']}")
+        
+        
+        # Show legacy toolset compatibility
+        print("\n📦 Legacy Toolsets (for backward compatibility):")
+        legacy_toolsets = get_available_toolsets()
+        for name, info in legacy_toolsets.items():
             status = "✅" if info["available"] else "❌"
             print(f"  {status} {name}: {info['description']}")
             if not info["available"]:
@@ -520,34 +554,29 @@ def main(
         # Show individual tools
         all_tools = get_all_tool_names()
         print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
-        for tool_name in all_tools:
+        for tool_name in sorted(all_tools):
             toolset = get_toolset_for_tool(tool_name)
             print(f"  📌 {tool_name} (from {toolset})")
         
         print(f"\n💡 Usage Examples:")
-        print(f"  # Run with only web tools")
-        print(f"  python run_agent.py --enabled_toolsets=web_tools --query='search for Python news'")
-        print(f"  # Run with specific tools only")
-        print(f"  python run_agent.py --enabled_tools=web_search,web_extract --query='research topic'")
-        print(f"  # Run without terminal tools")
-        print(f"  python run_agent.py --disabled_tools=terminal --query='web research only'")
+        print(f"  # Use predefined toolsets")
+        print(f"  python run_agent.py --enabled_toolsets=research --query='search for Python news'")
+        print(f"  python run_agent.py --enabled_toolsets=development --query='debug this code'")
+        print(f"  python run_agent.py --enabled_toolsets=safe --query='analyze without terminal'")
+        print(f"  ")
+        print(f"  # Combine multiple toolsets")
+        print(f"  python run_agent.py --enabled_toolsets=web,vision --query='analyze website'")
+        print(f"  ")
+        print(f"  # Disable toolsets")
+        print(f"  python run_agent.py --disabled_toolsets=terminal --query='no command execution'")
+        print(f"  ")
         print(f"  # Run with trajectory saving enabled")
         print(f"  python run_agent.py --save_trajectories --query='your question here'")
         return
     
-    # Parse tool selection arguments
-    enabled_tools_list = None
-    disabled_tools_list = None
+    # Parse toolset selection arguments
     enabled_toolsets_list = None
     disabled_toolsets_list = None
-    
-    if enabled_tools:
-        enabled_tools_list = [t.strip() for t in enabled_tools.split(",")]
-        print(f"🎯 Enabled tools: {enabled_tools_list}")
-    
-    if disabled_tools:
-        disabled_tools_list = [t.strip() for t in disabled_tools.split(",")]
-        print(f"🚫 Disabled tools: {disabled_tools_list}")
     
     if enabled_toolsets:
         enabled_toolsets_list = [t.strip() for t in enabled_toolsets.split(",")]
@@ -569,8 +598,6 @@ def main(
             model=model,
             api_key=api_key,
             max_iterations=max_turns,
-            enabled_tools=enabled_tools_list,
-            disabled_tools=disabled_tools_list,
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
             save_trajectories=save_trajectories

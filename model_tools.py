@@ -23,7 +23,7 @@ Usage:
     web_tools = get_tool_definitions(enabled_toolsets=['web_tools'])
     
     # Handle function calls from model
-    result = handle_function_call("web_search", {"query": "Python", "limit": 3})
+    result = handle_function_call("web_search", {"query": "Python"})
 """
 
 import json
@@ -35,6 +35,11 @@ from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOO
 from vision_tools import vision_analyze_tool, check_vision_requirements
 from mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from image_generation_tool import image_generate_tool, check_image_generation_requirements
+from toolsets import (
+    get_toolset, resolve_toolset, resolve_multiple_toolsets,
+    get_all_toolsets, get_toolset_names, validate_toolset,
+    get_toolset_info, print_toolset_tree
+)
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -48,20 +53,13 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web for information on any topic. Returns relevant results with titles and URLs. Uses advanced search depth for comprehensive results.",
+                "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles and URLs. Uses advanced search depth for comprehensive results.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
                             "description": "The search query to look up on the web"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results to return (default: 5, max: 10)",
-                            "default": 5,
-                            "minimum": 1,
-                            "maximum": 10
                         }
                     },
                     "required": ["query"]
@@ -308,145 +306,146 @@ def get_toolset_for_tool(tool_name: str) -> str:
 
 
 def get_tool_definitions(
-    enabled_tools: List[str] = None, 
-    disabled_tools: List[str] = None,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    Get tool definitions for model API calls with optional filtering.
+    Get tool definitions for model API calls with toolset-based filtering.
     
-    This function aggregates tool definitions from all available toolsets
-    and applies filtering based on the provided parameters.
-    
-    Filter Priority (higher priority overrides lower):
-    1. enabled_tools (highest priority - only these tools, overrides everything)
-    2. disabled_tools (applied after toolset filtering)
-    3. enabled_toolsets (only tools from these toolsets)
-    4. disabled_toolsets (exclude tools from these toolsets)
+    This function aggregates tool definitions from available toolsets.
+    All tools must be part of a toolset to be accessible. Individual tool
+    selection is not supported - use toolsets to organize and select tools.
     
     Args:
-        enabled_tools (List[str]): Only include these specific tools. If provided, 
-                                  ONLY these tools will be included (overrides all other filters)
-        disabled_tools (List[str]): Exclude these specific tools (applied after toolset filtering)
-        enabled_toolsets (List[str]): Only include tools from these toolsets
-        disabled_toolsets (List[str]): Exclude tools from these toolsets
+        enabled_toolsets (List[str]): Only include tools from these toolsets.
+                                     If None, all available tools are included.
+        disabled_toolsets (List[str]): Exclude tools from these toolsets.
+                                      Applied only if enabled_toolsets is None.
     
     Returns:
         List[Dict]: Filtered list of tool definitions
     
     Examples:
-        # Only web tools
-        tools = get_tool_definitions(enabled_toolsets=["web_tools"])
+        # Use predefined toolsets
+        tools = get_tool_definitions(enabled_toolsets=["research"])
+        tools = get_tool_definitions(enabled_toolsets=["development"])
         
-        # All tools except terminal
-        tools = get_tool_definitions(disabled_tools=["terminal"])
+        # Combine multiple toolsets
+        tools = get_tool_definitions(enabled_toolsets=["web", "vision"])
         
-        # Only specific tools (overrides toolset filters)
-        tools = get_tool_definitions(enabled_tools=["web_search", "web_extract"])
+        # All tools except those in terminal toolset
+        tools = get_tool_definitions(disabled_toolsets=["terminal"])
         
-        # Conflicting filters (enabled_tools wins)
-        tools = get_tool_definitions(enabled_toolsets=["web_tools"], enabled_tools=["terminal"])
-        # Result: Only terminal tool (enabled_tools overrides enabled_toolsets)
+        # Default - all available tools
+        tools = get_tool_definitions()
     """
-    # Detect and warn about potential conflicts
-    conflicts_detected = False
+    # Collect all available tool definitions
+    all_available_tools_map = {}
     
-    if enabled_tools and (enabled_toolsets or disabled_toolsets or disabled_tools):
-        print("⚠️  enabled_tools overrides all other filters")
-        conflicts_detected = True
+    # Map tool names to their definitions
+    if check_firecrawl_api_key():
+        for tool in get_web_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
-    if enabled_toolsets and disabled_toolsets:
-        # Check for overlap
-        enabled_set = set(enabled_toolsets)
-        disabled_set = set(disabled_toolsets)
-        overlap = enabled_set & disabled_set
-        if overlap:
-            print(f"⚠️  Conflicting toolsets: {overlap} in both enabled and disabled")
-            print(f"   → enabled_toolsets takes priority")
-            conflicts_detected = True
+    if check_hecate_requirements():
+        for tool in get_terminal_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
-    if enabled_tools and disabled_tools:
-        # Check for overlap
-        enabled_set = set(enabled_tools)
-        disabled_set = set(disabled_tools)
-        overlap = enabled_set & disabled_set
-        if overlap:
-            print(f"⚠️  Conflicting tools: {overlap} in both enabled and disabled")
-            print(f"   → enabled_tools takes priority")
-            conflicts_detected = True
+    if check_vision_requirements():
+        for tool in get_vision_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
-    all_tools = []
+    if check_moa_requirements():
+        for tool in get_moa_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
-    # Collect all available tools from each toolset
-    toolset_tools = {
-        "web_tools": get_web_tool_definitions() if check_firecrawl_api_key() else [],
-        "terminal_tools": get_terminal_tool_definitions() if check_hecate_requirements() else [],
-        "vision_tools": get_vision_tool_definitions() if check_vision_requirements() else [],
-        "moa_tools": get_moa_tool_definitions() if check_moa_requirements() else [],
-        "image_tools": get_image_tool_definitions() if check_image_generation_requirements() else []
-    }
+    if check_image_generation_requirements():
+        for tool in get_image_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
-    # HIGHEST PRIORITY: enabled_tools (overrides everything)
-    if enabled_tools:
-        if conflicts_detected:
-            print(f"🎯 Using only enabled_tools: {enabled_tools}")
-        
-        # Collect all available tools first
-        all_available_tools = []
-        for tools in toolset_tools.values():
-            all_available_tools.extend(tools)
-        
-        # Only include specifically enabled tools
-        tool_names_to_include = set(enabled_tools)
-        filtered_tools = [
-            tool for tool in all_available_tools 
-            if tool["function"]["name"] in tool_names_to_include
-        ]
-        
-        # Warn about requested tools that aren't available
-        found_tools = {tool["function"]["name"] for tool in filtered_tools}
-        missing_tools = tool_names_to_include - found_tools
-        if missing_tools:
-            print(f"⚠️  Requested tools not available: {missing_tools}")
-        
-        return filtered_tools
+    # Determine which tools to include based on toolsets
+    tools_to_include = set()
     
-    # Apply toolset-level filtering first
     if enabled_toolsets:
         # Only include tools from enabled toolsets
         for toolset_name in enabled_toolsets:
-            if toolset_name in toolset_tools:
-                all_tools.extend(toolset_tools[toolset_name])
+            if validate_toolset(toolset_name):
+                resolved_tools = resolve_toolset(toolset_name)
+                tools_to_include.update(resolved_tools)
+                print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+                # Try legacy compatibility
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools"]:
+                    # Map legacy names to new system
+                    legacy_map = {
+                        "web_tools": ["web_search", "web_extract", "web_crawl"],
+                        "terminal_tools": ["terminal"],
+                        "vision_tools": ["vision_analyze"],
+                        "moa_tools": ["mixture_of_agents"],
+                        "image_tools": ["image_generate"]
+                    }
+                    legacy_tools = legacy_map.get(toolset_name, [])
+                    tools_to_include.update(legacy_tools)
+                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                else:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     elif disabled_toolsets:
-        # Include all tools except from disabled toolsets
-        for toolset_name, tools in toolset_tools.items():
-            if toolset_name not in disabled_toolsets:
-                all_tools.extend(tools)
+        # Start with all tools from all toolsets, then remove disabled ones
+        # Note: Only tools that are part of toolsets are accessible
+        # We need to get all tools from all defined toolsets
+        from toolsets import get_all_toolsets
+        all_toolset_tools = set()
+        for toolset_name in get_all_toolsets():
+            resolved_tools = resolve_toolset(toolset_name)
+            all_toolset_tools.update(resolved_tools)
+        
+        # Start with all tools from toolsets
+        tools_to_include = all_toolset_tools
+        
+        # Remove tools from disabled toolsets
+        for toolset_name in disabled_toolsets:
+            if validate_toolset(toolset_name):
+                resolved_tools = resolve_toolset(toolset_name)
+                tools_to_include.difference_update(resolved_tools)
+                print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
+            else:
+                # Try legacy compatibility
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools"]:
+                    legacy_map = {
+                        "web_tools": ["web_search", "web_extract", "web_crawl"],
+                        "terminal_tools": ["terminal"],
+                        "vision_tools": ["vision_analyze"],
+                        "moa_tools": ["mixture_of_agents"],
+                        "image_tools": ["image_generate"]
+                    }
+                    legacy_tools = legacy_map.get(toolset_name, [])
+                    tools_to_include.difference_update(legacy_tools)
+                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                else:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        # Include all available tools
-        for tools in toolset_tools.values():
-            all_tools.extend(tools)
+        # No filtering - include all tools from all defined toolsets
+        from toolsets import get_all_toolsets
+        for toolset_name in get_all_toolsets():
+            resolved_tools = resolve_toolset(toolset_name)
+            tools_to_include.update(resolved_tools)
     
-    # Apply tool-level filtering (disabled_tools)
-    if disabled_tools:
-        tool_names_to_exclude = set(disabled_tools)
-        original_tools = [tool["function"]["name"] for tool in all_tools]
-        
-        all_tools = [
-            tool for tool in all_tools 
-            if tool["function"]["name"] not in tool_names_to_exclude
-        ]
-        
-        # Show what was actually filtered out
-        remaining_tools = {tool["function"]["name"] for tool in all_tools}
-        actually_excluded = set(original_tools) & tool_names_to_exclude
-        if actually_excluded:
-            print(f"🚫 Excluded tools: {actually_excluded}")
+    # Build final tool list (only include tools that are available)
+    filtered_tools = []
+    for tool_name in tools_to_include:
+        if tool_name in all_available_tools_map:
+            filtered_tools.append(all_available_tools_map[tool_name])
     
-    return all_tools
+    # Sort tools for consistent ordering
+    filtered_tools.sort(key=lambda t: t["function"]["name"])
+    
+    if filtered_tools:
+        tool_names = [t["function"]["name"] for t in filtered_tools]
+        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+    else:
+        print("🛠️  No tools selected (all filtered out or unavailable)")
+    
+    return filtered_tools
 
 def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
@@ -461,9 +460,8 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     """
     if function_name == "web_search":
         query = function_args.get("query", "")
-        limit = function_args.get("limit", 5)
-        # Ensure limit is within bounds
-        limit = max(1, min(10, limit))
+        # Always use fixed limit of 5
+        limit = 5
         return web_search_tool(query, limit)
     
     elif function_name == "web_extract":

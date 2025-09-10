@@ -21,7 +21,7 @@ Usage:
 """
 
 import json
-
+import logging
 import os
 import time
 from typing import List, Dict, Any, Optional
@@ -50,7 +50,8 @@ class AIAgent:
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
-        save_trajectories: bool = False
+        save_trajectories: bool = False,
+        verbose_logging: bool = False
     ):
         """
         Initialize the AI Agent.
@@ -64,15 +65,39 @@ class AIAgent:
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
+            verbose_logging (bool): Enable verbose logging for debugging (default: False)
         """
         self.model = model
         self.max_iterations = max_iterations
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
+        self.verbose_logging = verbose_logging
         
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        
+        # Configure logging
+        if self.verbose_logging:
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%H:%M:%S'
+            )
+            # Also set OpenAI client logging to debug
+            logging.getLogger('openai').setLevel(logging.DEBUG)
+            logging.getLogger('httpx').setLevel(logging.DEBUG)
+            print("🔍 Verbose logging enabled")
+        else:
+            # Set logging to INFO level for important messages only
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                datefmt='%H:%M:%S'
+            )
+            # Reduce OpenAI client logging
+            logging.getLogger('openai').setLevel(logging.WARNING)
+            logging.getLogger('httpx').setLevel(logging.WARNING)
         
         # Initialize OpenAI client
         client_kwargs = {}
@@ -331,14 +356,45 @@ class AIAgent:
             api_call_count += 1
             print(f"\n🔄 Making API call #{api_call_count}...")
             
+            # Log request details if verbose
+            if self.verbose_logging:
+                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
+                logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
+            
+            api_start_time = time.time()
+            retry_count = 0
+            max_retries = 3
+            
+            while retry_count <= max_retries:
+                try:
+                    # Make API call with tools
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=self.tools if self.tools else None,
+                        timeout=60.0  # Add explicit timeout
+                    )
+                    
+                    api_duration = time.time() - api_start_time
+                    print(f"⏱️  API call completed in {api_duration:.2f}s")
+                    
+                    if self.verbose_logging:
+                        logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+                    
+                    break  # Success, exit retry loop
+                    
+                except Exception as api_error:
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        raise api_error
+                    
+                    wait_time = min(2 ** retry_count, 10)  # Exponential backoff, max 10s
+                    print(f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
+                    print(f"⏳ Retrying in {wait_time}s...")
+                    logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
+                    time.sleep(wait_time)
+            
             try:
-                # Make API call with tools
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=self.tools if self.tools else None
-                )
-                
                 assistant_message = response.choices[0].message
                 
                 # Handle assistant response
@@ -348,6 +404,10 @@ class AIAgent:
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     print(f"🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                    
+                    if self.verbose_logging:
+                        for tc in assistant_message.tool_calls:
+                            logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
                     
                     # Add assistant message with tool calls to conversation
                     messages.append({
@@ -378,8 +438,17 @@ class AIAgent:
                         
                         print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
                         
+                        tool_start_time = time.time()
+                        
                         # Execute the tool
                         function_result = handle_function_call(function_name, function_args)
+                        
+                        tool_duration = time.time() - tool_start_time
+                        result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                        
+                        if self.verbose_logging:
+                            logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
+                            logging.debug(f"Tool result preview: {result_preview}...")
                         
                         # Add tool result to conversation
                         messages.append({
@@ -388,7 +457,7 @@ class AIAgent:
                             "tool_call_id": tool_call.id
                         })
                         
-                        print(f"  ✅ Tool {i} completed")
+                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -413,6 +482,9 @@ class AIAgent:
             except Exception as e:
                 error_msg = f"Error during API call #{api_call_count}: {str(e)}"
                 print(f"❌ {error_msg}")
+                
+                if self.verbose_logging:
+                    logging.exception("Detailed error information:")
                 
                 # Add error to conversation and try to continue
                 messages.append({
@@ -467,7 +539,8 @@ def main(
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
-    save_trajectories: bool = False
+    save_trajectories: bool = False,
+    verbose: bool = False
 ):
     """
     Main function for running the agent directly.
@@ -484,6 +557,7 @@ def main(
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
+        verbose (bool): Enable verbose logging for debugging. Defaults to False.
         
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
@@ -600,7 +674,8 @@ def main(
             max_iterations=max_turns,
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
-            save_trajectories=save_trajectories
+            save_trajectories=save_trajectories,
+            verbose_logging=verbose
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")

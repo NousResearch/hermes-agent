@@ -1,3 +1,6 @@
 firecrawl-py
 openai
 fal-client
+fire
+git@github.com:NousResearch/hecate.git
+tenacity

@@ -65,6 +65,7 @@ and how this ends up parsing into on policy training data, if requested.
 Edges are the connections between nodes, and there are two types we are concerned with:
 - **Sequential edges**: These represent the flow of conversation, connecting messages in the order they were sent. For example, a user message followed by an assistant response.
 - **Parallel edges**: These represent versioning, e.g. edit history, context squishing, etc.
+We, however, are only concerned about parallel edges when we break the prefix, and ignore any other parallel edges.
 
 ## So what does this look like in practice?
 

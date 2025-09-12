@@ -25,6 +25,8 @@ Preferably all in a single place.
 class BaseAgent:
     def agent_primitives(self) -> list[BaseAgent]:
         # Returns a list of Agents that are utilized by this agent to generate inputs
+        # We use agent primitives here instead of subagents because these are going to be part
+        # of the message graph, not a subagent tool call.
         raise NotImplementedError
     
     def tools(self) -> list[BaseTool]:
@@ -37,7 +39,7 @@ class BaseAgent:
         tools = self.tools()
         for agent in self.agent_primitives():
             tools.extend(agent.tools())
-        tools = set(tools)
+        tools = remove_duplicates(tools)
         tools = initialize_tools(tools, config)
         return self(llm, tools, config, *args, **kwargs)
     

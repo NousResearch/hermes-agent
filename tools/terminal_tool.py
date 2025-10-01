@@ -22,8 +22,6 @@ Usage:
 import json
 import os
 from typing import Optional, Dict, Any
-from hecate import run_tool_with_lifecycle_management
-from morphcloud._llm import ToolCall
 
 # Detailed description for the terminal tool based on Hermes Terminal system prompt
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure, persistent Linux VM environment with full interactive application support.
@@ -114,6 +112,22 @@ def terminal_tool(
         >>> result = terminal_tool(command="sleep 60", background=True)
     """
     try:
+        # Import hecate and ToolCall lazily so this module can be imported
+        # even when hecate is not installed. If unavailable, gracefully
+        # indicate that the terminal tool is disabled.
+        try:
+            from hecate import run_tool_with_lifecycle_management
+            from morphcloud._llm import ToolCall
+        except ImportError:
+            return json.dumps({
+                "output": "",
+                "screen": "",
+                "session_id": None,
+                "exit_code": -1,
+                "error": "Terminal tool is disabled: 'hecate' is not installed. Install with: pip install hecate",
+                "status": "disabled"
+            })
+
         # Build tool input based on provided parameters
         tool_input = {}
         

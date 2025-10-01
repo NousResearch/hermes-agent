@@ -574,11 +574,15 @@ async def web_extract_tool(
             {
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error")
+                "error": r.get("error"),
+                **({"llm_model": model} if use_llm_processing else {})
             }
             for r in response.get("results", [])
         ]
         trimmed_response = {"results": trimmed_results}
+        # Include model name used for summarization when LLM processing was requested
+        if use_llm_processing:
+            trimmed_response["llm_model"] = model
         
         result_json = json.dumps(trimmed_response, indent=2)
         # Clean base64 images from extracted content
@@ -847,11 +851,15 @@ async def web_crawl_tool(
             {
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error")
+                "error": r.get("error"),
+                **({"llm_model": model} if use_llm_processing else {})
             }
             for r in response.get("results", [])
         ]
         trimmed_response = {"results": trimmed_results}
+        # Include model name used for summarization when LLM processing was requested
+        if use_llm_processing:
+            trimmed_response["llm_model"] = model
         
         result_json = json.dumps(trimmed_response, indent=2)
         # Clean base64 images from crawled content

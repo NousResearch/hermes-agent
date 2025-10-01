@@ -23,8 +23,8 @@ import argparse
 from datetime import datetime
 from typing import List, Dict, Any
 
-# Import the web tools to test
-from web_tools import (
+# Import the web tools to test (updated path after moving tools/)
+from tools.web_tools import (
     web_search_tool, 
     web_extract_tool, 
     web_crawl_tool,

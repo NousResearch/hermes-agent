@@ -13,6 +13,16 @@ PROMPT="$1"
 # Set debug mode for web tools
 export WEB_TOOLS_DEBUG=true
 
+# Resolve repository root relative to this script and run from there
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Prefer local venv if present
+if [ -f "venv/bin/activate" ]; then
+  source venv/bin/activate
+fi
+
 # Run the agent with the provided prompt
 python run_agent.py \
   --query "$PROMPT" \

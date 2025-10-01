@@ -1,3 +1,5 @@
 firecrawl-py
 openai
 fal-client
+python-dotenv
+fire

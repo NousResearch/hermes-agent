@@ -30,11 +30,11 @@ import json
 import asyncio
 from typing import Dict, Any, List
 
-from web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
-from terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
-from vision_tools import vision_analyze_tool, check_vision_requirements
-from mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
-from image_generation_tool import image_generate_tool, check_image_generation_requirements
+from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
+from tools.terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
+from tools.vision_tools import vision_analyze_tool, check_vision_requirements
+from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
+from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,

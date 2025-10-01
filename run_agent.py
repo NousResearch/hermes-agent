@@ -28,6 +28,18 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
+from pathlib import Path
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Load .env file if it exists
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    print(f"✅ Loaded environment variables from {env_path}")
+else:
+    print(f"ℹ️  No .env file found at {env_path}. Using system environment variables.")
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements

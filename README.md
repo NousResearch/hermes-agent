@@ -12,12 +12,41 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Toolsets System**: Organize tools into logical groups for different scenarios
 
 ## Setup
+
+### 1. Install Dependencies
 ```bash
+# Create and activate virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install required packages
 pip install -r requirements.txt
+
+# Install Hecate for terminal tools
 git clone git@github.com:NousResearch/hecate.git
 cd hecate
 pip install -e .
+cd ..
 ```
+
+### 2. Configure Environment Variables
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env and add your API keys
+nano .env  # or use your preferred editor
+```
+
+**Required API Keys:**
+- `ANTHROPIC_API_KEY` - Main agent model (get at: https://console.anthropic.com/)
+- `FIRECRAWL_API_KEY` - Web tools (get at: https://firecrawl.dev/)
+- `NOUS_API_KEY` - Vision & reasoning tools (get at: https://inference-api.nousresearch.com/)
+- `MORPH_API_KEY` - Terminal tools (get at: https://morph.so/)
+- `FAL_KEY` - Image generation (get at: https://fal.ai/)
+- `OPENAI_API_KEY` - Optional, for some Hecate features
+
+See `.env.example` for all available configuration options including debug settings and terminal tool configuration.
 
 ## Toolsets System
 
@@ -115,13 +144,20 @@ agent = AIAgent(enabled_toolsets=["my_tools"])
 
 ## Environment Variables
 
-Set these environment variables to enable different tools:
+All environment variables can be configured in the `.env` file (copy from `.env.example`).
 
-- `FIRECRAWL_API_KEY`: For web tools (search, extract, crawl)
-- `MORPH_API_KEY`: For terminal tools
-- `NOUS_API_KEY`: For vision and reasoning tools
-- `FAL_KEY`: For image generation tools
-- `ANTHROPIC_API_KEY`: For the main agent model
+**Core API Keys:**
+- `ANTHROPIC_API_KEY`: Main agent model
+- `FIRECRAWL_API_KEY`: Web tools (search, extract, crawl)
+- `NOUS_API_KEY`: Vision and reasoning tools
+- `MORPH_API_KEY`: Terminal tools
+- `FAL_KEY`: Image generation tools
+- `OPENAI_API_KEY`: Optional, for some Hecate features
+
+**Configuration Options:**
+- `HECATE_VM_LIFETIME_SECONDS`: VM lifetime (default: 300)
+- `HECATE_DEFAULT_SNAPSHOT_ID`: Default snapshot (default: snapshot_p5294qxt)
+- `WEB_TOOLS_DEBUG`, `VISION_TOOLS_DEBUG`, `MOA_TOOLS_DEBUG`, `IMAGE_TOOLS_DEBUG`: Enable debug logging
 
 ## Documentation
 

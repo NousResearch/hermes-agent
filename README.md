@@ -76,6 +76,9 @@ python run_agent.py --enabled_toolsets=research --query "Find latest AI papers"
 # Combine multiple toolsets
 python run_agent.py --enabled_toolsets=web,vision --query "Analyze this website"
 
+# Enable all toolsets explicitly (same as omitting the flag)
+python run_agent.py --enabled_toolsets=all --query "Do web research and run commands if helpful"
+
 # Safe mode (no terminal access)
 python run_agent.py --enabled_toolsets=safe --query "Help without running commands"
 
@@ -137,7 +140,7 @@ agent = AIAgent(enabled_toolsets=["my_tools"])
 - `--api_key`: API key for authentication
 - `--base_url`: API endpoint URL
 - `--max_turns`: Maximum number of tool-calling iterations
-- `--enabled_toolsets`: Comma-separated list of toolsets to enable
+- `--enabled_toolsets`: Comma-separated list of toolsets to enable. Use `all` (or `*`) to enable everything. If omitted, all toolsets are enabled by default.
 - `--disabled_toolsets`: Comma-separated list of toolsets to disable
 - `--list_tools`: List all available toolsets and tools
 - `--save_trajectories`: Save conversation trajectories to JSONL files

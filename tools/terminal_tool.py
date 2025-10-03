@@ -116,15 +116,29 @@ def terminal_tool(
         # even when hecate is not installed. If unavailable, gracefully
         # indicate that the terminal tool is disabled.
         try:
-            from hecate import run_tool_with_lifecycle_management
+            # Primary import path when the hecate package is properly installed
+            try:
+                from hecate import run_tool_with_lifecycle_management  # type: ignore
+            except ImportError as primary_import_error:
+                # Fallback for when a local folder named "hecate" shadows the installed package
+                # (common when the repo is cloned inside the project root). In that case,
+                # the actual implementation lives under hecate.hecate.cli.
+                try:
+                    from hecate.hecate.cli import run_tool_with_lifecycle_management  # type: ignore
+                except Exception as fallback_import_error:
+                    raise ImportError(
+                        f"Failed to import 'run_tool_with_lifecycle_management' from hecate: "
+                        f"{primary_import_error}; fallback failed: {fallback_import_error}"
+                    )
+
             from morphcloud._llm import ToolCall
-        except ImportError:
+        except ImportError as import_error:
             return json.dumps({
                 "output": "",
                 "screen": "",
                 "session_id": None,
                 "exit_code": -1,
-                "error": "Terminal tool is disabled: 'hecate' is not installed. Install with: pip install hecate",
+                "error": f"Terminal tool is disabled due to import error: {import_error}",
                 "status": "disabled"
             })
 
@@ -197,12 +211,16 @@ def check_hecate_requirements() -> bool:
         print(f"Warning: Missing optional environment variables: {', '.join(missing_optional)}")
         print("   (Some Hecate features may be limited)")
     
-    # Check if Hecate is importable
+    # Check if Hecate entrypoint is importable (handle local-folder shadowing)
     try:
-        import hecate
+        try:
+            from hecate import run_tool_with_lifecycle_management  # type: ignore
+        except ImportError:
+            from hecate.hecate.cli import run_tool_with_lifecycle_management  # type: ignore
         return True
-    except ImportError:
-        print("Hecate is not installed. Please install it with: pip install hecate")
+    except Exception as e:
+        print(f"Hecate not available: {e}\nIf you cloned the hecate repo into this project, it may shadow the installed package. "
+              f"Either install it (pip install -e hecate) and/or move/rename the local 'hecate' folder.")
         return False
 
 # Module-level initialization check

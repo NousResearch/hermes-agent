@@ -10,6 +10,7 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
 - **Creative Tools**: Generate images from text prompts
 - **Toolsets System**: Organize tools into logical groups for different scenarios
+- **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
 
 ## Setup
 
@@ -133,6 +134,36 @@ create_custom_toolset(
 agent = AIAgent(enabled_toolsets=["my_tools"])
 ```
 
+## Batch Processing
+
+Process multiple prompts from a dataset in parallel with automatic checkpointing and statistics tracking:
+
+```bash
+# Basic batch processing
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=20 \
+  --run_name=my_run
+
+# With specific distribution
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=20 \
+  --run_name=image_run \
+  --distribution=image_gen \
+  --num_workers=4
+```
+
+**Key Features:**
+- Parallel processing with configurable workers
+- Toolset distributions for varied data generation
+- Automatic checkpointing and resume capability
+- Combined output in `data/<run_name>/trajectories.jsonl`
+- Tool usage statistics and success rates
+
+**Quick Start:** See [QUICKSTART_BATCH.md](QUICKSTART_BATCH.md) for a 5-minute getting started guide.  
+**Full Documentation:** See [BATCH_PROCESSING.md](BATCH_PROCESSING.md) for comprehensive documentation.
+
 ## Command Line Arguments
 
 - `--query`: The question or task for the agent
@@ -164,9 +195,15 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 
 ## Documentation
 
+**Single Agent Usage:**
 - `TOOLSETS_README.md`: Comprehensive guide to the toolsets system
 - `toolsets.py`: View and modify available toolsets
 - `model_tools.py`: Core tool definitions and handlers
+
+**Batch Processing:**
+- `QUICKSTART_BATCH.md`: 5-minute quick start guide
+- `BATCH_PROCESSING.md`: Complete batch processing documentation
+- `toolset_distributions.py`: Toolset distributions for data generation
 
 ## Examples
 

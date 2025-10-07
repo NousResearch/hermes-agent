@@ -581,8 +581,21 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         allow_nsfw_images = True
         seed = None
         
-        # Run async function in event loop
-        return asyncio.run(image_generate_tool(
+        # Run async function in event loop with proper handling for multiprocessing
+        try:
+            # Try to get existing event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                # If closed, create a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            # No event loop in current thread, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the coroutine in the event loop
+        result = loop.run_until_complete(image_generate_tool(
             prompt=prompt,
             image_size=image_size,
             num_inference_steps=num_inference_steps,
@@ -594,6 +607,8 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
             allow_nsfw_images=allow_nsfw_images,
             seed=seed
         ))
+        
+        return result
     
     else:
         return json.dumps({"error": f"Unknown image generation function: {function_name}"})

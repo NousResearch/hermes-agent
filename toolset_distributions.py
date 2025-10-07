@@ -43,10 +43,11 @@ DISTRIBUTIONS = {
     "image_gen": {
         "description": "Heavy focus on image generation with vision and web support",
         "toolsets": {
-            "image_gen": 80,  # 80% chance of image generation tools
-            "vision": 60,      # 60% chance of vision tools
-            "web": 40,         # 40% chance of web tools
-            "moa": 20          # 20% chance of reasoning tools
+            "image_gen": 90,  # 80% chance of image generation tools
+            "vision": 90,      # 60% chance of vision tools
+            "web": 55,         # 40% chance of web tools
+            "terminal": 45,
+            "moa": 10          # 20% chance of reasoning tools
         }
     },
     

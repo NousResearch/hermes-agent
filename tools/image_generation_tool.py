@@ -319,9 +319,6 @@ async def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
         
-        if len(prompt) > 1000:
-            raise ValueError("Prompt must be 1000 characters or less")
-        
         # Check API key availability
         if not os.getenv("FAL_KEY"):
             raise ValueError("FAL_KEY environment variable not set")

@@ -63,7 +63,8 @@ class AIAgent:
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
-        verbose_logging: bool = False
+        verbose_logging: bool = False,
+        ephemeral_system_prompt: str = None
     ):
         """
         Initialize the AI Agent.
@@ -78,12 +79,14 @@ class AIAgent:
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
+            ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         """
         self.model = model
         self.max_iterations = max_iterations
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
+        self.ephemeral_system_prompt = ephemeral_system_prompt
         
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -157,6 +160,11 @@ class AIAgent:
         # Show trajectory saving status
         if self.save_trajectories:
             print("📝 Trajectory saving enabled")
+        
+        # Show ephemeral system prompt status
+        if self.ephemeral_system_prompt:
+            prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
+            print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     
     def _format_tools_for_system_message(self) -> str:
         """
@@ -343,7 +351,7 @@ class AIAgent:
         
         Args:
             user_message (str): The user's message/question
-            system_message (str): Custom system message (optional)
+            system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
             
         Returns:
@@ -359,6 +367,10 @@ class AIAgent:
         })
         
         print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+        
+        # Determine which system prompt to use for API calls (ephemeral)
+        # Priority: explicit system_message > ephemeral_system_prompt > None
+        active_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
         
         # Main conversation loop
         api_call_count = 0
@@ -379,10 +391,17 @@ class AIAgent:
             
             while retry_count <= max_retries:
                 try:
+                    # Prepare messages for API call
+                    # If we have an ephemeral system prompt, prepend it to the messages
+                    api_messages = messages.copy()
+                    if active_system_prompt:
+                        # Insert system message at the beginning
+                        api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
+                    
                     # Make API call with tools
                     response = self.client.chat.completions.create(
                         model=self.model,
-                        messages=messages,
+                        messages=api_messages,
                         tools=self.tools if self.tools else None,
                         timeout=60.0  # Add explicit timeout
                     )

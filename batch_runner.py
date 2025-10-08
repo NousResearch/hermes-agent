@@ -141,7 +141,8 @@ def _process_single_prompt(
             max_iterations=config["max_iterations"],
             enabled_toolsets=selected_toolsets,
             save_trajectories=False,  # We handle saving ourselves
-            verbose_logging=config.get("verbose", False)
+            verbose_logging=config.get("verbose", False),
+            ephemeral_system_prompt=config.get("ephemeral_system_prompt")
         )
         
         # Run the agent
@@ -299,7 +300,8 @@ class BatchRunner:
         api_key: str = None,
         model: str = "claude-opus-4-20250514",
         num_workers: int = 4,
-        verbose: bool = False
+        verbose: bool = False,
+        ephemeral_system_prompt: str = None
     ):
         """
         Initialize the batch runner.
@@ -315,6 +317,7 @@ class BatchRunner:
             model (str): Model name to use
             num_workers (int): Number of parallel workers
             verbose (bool): Enable verbose logging
+            ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         """
         self.dataset_file = Path(dataset_file)
         self.batch_size = batch_size
@@ -326,6 +329,7 @@ class BatchRunner:
         self.model = model
         self.num_workers = num_workers
         self.verbose = verbose
+        self.ephemeral_system_prompt = ephemeral_system_prompt
         
         # Validate distribution
         if not validate_distribution(distribution):
@@ -355,6 +359,9 @@ class BatchRunner:
         print(f"   Distribution: {self.distribution}")
         print(f"   Output directory: {self.output_dir}")
         print(f"   Workers: {self.num_workers}")
+        if self.ephemeral_system_prompt:
+            prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
+            print(f"   🔒 Ephemeral system prompt: '{prompt_preview}'")
     
     def _load_dataset(self) -> List[Dict[str, Any]]:
         """
@@ -477,7 +484,8 @@ class BatchRunner:
             "max_iterations": self.max_iterations,
             "base_url": self.base_url,
             "api_key": self.api_key,
-            "verbose": self.verbose
+            "verbose": self.verbose,
+            "ephemeral_system_prompt": self.ephemeral_system_prompt
         }
         
         # Get completed prompts set
@@ -619,7 +627,8 @@ def main(
     num_workers: int = 4,
     resume: bool = False,
     verbose: bool = False,
-    list_distributions: bool = False
+    list_distributions: bool = False,
+    ephemeral_system_prompt: str = None
 ):
     """
     Run batch processing of agent prompts from a dataset.
@@ -637,6 +646,7 @@ def main(
         resume (bool): Resume from checkpoint if run was interrupted (default: False)
         verbose (bool): Enable verbose logging (default: False)
         list_distributions (bool): List available toolset distributions and exit
+        ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         
     Examples:
         # Basic usage
@@ -647,6 +657,10 @@ def main(
         
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
+        
+        # With ephemeral system prompt (not saved to dataset)
+        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+                               --ephemeral_system_prompt="You are a helpful assistant focused on image generation."
         
         # List available distributions
         python batch_runner.py --list_distributions
@@ -692,7 +706,8 @@ def main(
             api_key=api_key,
             model=model,
             num_workers=num_workers,
-            verbose=verbose
+            verbose=verbose,
+            ephemeral_system_prompt=ephemeral_system_prompt
         )
         
         runner.run(resume=resume)

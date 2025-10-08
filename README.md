@@ -11,6 +11,7 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Creative Tools**: Generate images from text prompts
 - **Toolsets System**: Organize tools into logical groups for different scenarios
 - **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
+- **Ephemeral System Prompts**: Guide model behavior without polluting training datasets
 
 ## Setup
 
@@ -164,8 +165,30 @@ python batch_runner.py \
 **Quick Start:** See [QUICKSTART_BATCH.md](QUICKSTART_BATCH.md) for a 5-minute getting started guide.  
 **Full Documentation:** See [BATCH_PROCESSING.md](BATCH_PROCESSING.md) for comprehensive documentation.
 
+### Ephemeral System Prompts
+
+The ephemeral system prompt feature allows you to guide the model's behavior during batch processing **without** saving that prompt to the training dataset trajectories. This is useful for:
+
+- Guiding model behavior during data collection
+- Adding task-specific instructions 
+- Keeping saved trajectories clean and focused on tool-calling format
+
+**Example:**
+```bash
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=10 \
+  --run_name=my_run \
+  --ephemeral_system_prompt="You are a helpful assistant focused on image generation."
+```
+
+The ephemeral prompt will influence the model's behavior during execution, but **only the standard tool-calling system prompt** will be saved in the trajectory files.
+
+**Documentation:** See [docs/ephemeral_system_prompt.md](docs/ephemeral_system_prompt.md) for complete details.
+
 ## Command Line Arguments
 
+**Single Agent (`run_agent.py`):**
 - `--query`: The question or task for the agent
 - `--model`: Model to use (default: claude-opus-4-20250514)
 - `--api_key`: API key for authentication
@@ -175,6 +198,16 @@ python batch_runner.py \
 - `--disabled_toolsets`: Comma-separated list of toolsets to disable
 - `--list_tools`: List all available toolsets and tools
 - `--save_trajectories`: Save conversation trajectories to JSONL files
+
+**Batch Processing (`batch_runner.py`):**
+- `--dataset_file`: Path to JSONL file with prompts
+- `--batch_size`: Number of prompts per batch
+- `--run_name`: Name for this run (for output/checkpointing)
+- `--distribution`: Toolset distribution to use (default: "default")
+- `--num_workers`: Number of parallel workers (default: 4)
+- `--resume`: Resume from checkpoint if interrupted
+- `--ephemeral_system_prompt`: System prompt used during execution but NOT saved to trajectories
+- `--list_distributions`: List available toolset distributions
 
 ## Environment Variables
 

@@ -9,8 +9,10 @@ Available tools:
 - vision_analyze_tool: Analyze images from URLs with custom prompts
 
 Features:
+- Downloads images from URLs and converts to base64 for API compatibility
 - Comprehensive image description
 - Context-aware analysis based on user queries
+- Automatic temporary file cleanup
 - Proper error handling and validation
 - Debug logging support
 
@@ -30,6 +32,8 @@ import os
 import asyncio
 import uuid
 import datetime
+import base64
+import requests
 from pathlib import Path
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
@@ -127,6 +131,85 @@ def _validate_image_url(url: str) -> bool:
     return True  # Allow all HTTP/HTTPS URLs for flexibility
 
 
+def _download_image(image_url: str, destination: Path) -> Path:
+    """
+    Download an image from a URL to a local destination.
+    
+    Args:
+        image_url (str): The URL of the image to download
+        destination (Path): The path where the image should be saved
+        
+    Returns:
+        Path: The path to the downloaded image
+        
+    Raises:
+        Exception: If download fails or response is invalid
+    """
+    # Create parent directories if they don't exist
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Download the image with appropriate headers
+    response = requests.get(
+        image_url,
+        timeout=30,
+        headers={"User-Agent": "hermes-agent-vision/1.0"},
+    )
+    response.raise_for_status()
+    
+    # Save the image content
+    destination.write_bytes(response.content)
+    return destination
+
+
+def _determine_mime_type(image_path: Path) -> str:
+    """
+    Determine the MIME type of an image based on its file extension.
+    
+    Args:
+        image_path (Path): Path to the image file
+        
+    Returns:
+        str: The MIME type (defaults to image/jpeg if unknown)
+    """
+    extension = image_path.suffix.lower()
+    mime_types = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+        '.webp': 'image/webp',
+        '.svg': 'image/svg+xml'
+    }
+    return mime_types.get(extension, 'image/jpeg')
+
+
+def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
+    """
+    Convert an image file to a base64-encoded data URL.
+    
+    Args:
+        image_path (Path): Path to the image file
+        mime_type (Optional[str]): MIME type of the image (auto-detected if None)
+        
+    Returns:
+        str: Base64-encoded data URL (e.g., "data:image/jpeg;base64,...")
+    """
+    # Read the image as bytes
+    data = image_path.read_bytes()
+    
+    # Encode to base64
+    encoded = base64.b64encode(data).decode("ascii")
+    
+    # Determine MIME type
+    mime = mime_type or _determine_mime_type(image_path)
+    
+    # Create data URL
+    data_url = f"data:{mime};base64,{encoded}"
+    
+    return data_url
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
@@ -135,13 +218,16 @@ async def vision_analyze_tool(
     """
     Analyze an image from a URL using vision AI.
     
-    This tool processes images using Gemini Flash via Nous Research API.
+    This tool downloads images from URLs, converts them to base64, and processes
+    them using Gemini Flash via Nous Research API. The image is downloaded to a
+    temporary location and automatically cleaned up after processing.
+    
     The user_prompt parameter is expected to be pre-formatted by the calling
     function (typically model_tools.py) to include both full description
     requests and specific questions.
     
     Args:
-        image_url (str): The URL of the image to analyze
+        image_url (str): The URL of the image to analyze (must be http:// or https://)
         user_prompt (str): The pre-formatted prompt for the vision model
         model (str): The vision model to use (default: gemini-2.5-flash)
     
@@ -153,7 +239,12 @@ async def vision_analyze_tool(
              }
     
     Raises:
-        Exception: If analysis fails or API key is not set
+        Exception: If download fails, analysis fails, or API key is not set
+        
+    Note:
+        - Temporary images are stored in ./temp_vision_images/
+        - Images are automatically deleted after processing
+        - Supports common image formats (JPEG, PNG, GIF, WebP, etc.)
     """
     debug_call_data = {
         "parameters": {
@@ -167,6 +258,8 @@ async def vision_analyze_tool(
         "model_used": model
     }
     
+    temp_image_path = None
+    
     try:
         print(f"🔍 Analyzing image from URL: {image_url[:60]}{'...' if len(image_url) > 60 else ''}")
         print(f"📝 User prompt: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}")
@@ -179,10 +272,23 @@ async def vision_analyze_tool(
         if not os.getenv("NOUS_API_KEY"):
             raise ValueError("NOUS_API_KEY environment variable not set")
         
+        # Download the image to a temporary location
+        print(f"⬇️  Downloading image from URL...")
+        temp_dir = Path("./temp_vision_images")
+        temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
+        
+        _download_image(image_url, temp_image_path)
+        print(f"✅ Image downloaded successfully")
+        
+        # Convert image to base64 data URL
+        print(f"🔄 Converting image to base64...")
+        image_data_url = _image_to_base64_data_url(temp_image_path)
+        print(f"✅ Image converted to base64 ({len(image_data_url)} characters)")
+        
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
         
-        # Prepare the message with image URL format
+        # Prepare the message with base64-encoded image
         messages = [
             {
                 "role": "user",
@@ -194,7 +300,7 @@ async def vision_analyze_tool(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": image_url
+                            "url": image_data_url
                         }
                     }
                 ]
@@ -247,6 +353,15 @@ async def vision_analyze_tool(
         _save_debug_log()
         
         return json.dumps(result, indent=2)
+    
+    finally:
+        # Clean up temporary image file
+        if temp_image_path and temp_image_path.exists():
+            try:
+                temp_image_path.unlink()
+                print(f"🧹 Cleaned up temporary image file")
+            except Exception as cleanup_error:
+                print(f"⚠️  Warning: Could not delete temporary file: {cleanup_error}")
 
 
 def check_nous_api_key() -> bool:

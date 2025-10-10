@@ -1,3 +1,14 @@
 firecrawl-py
 openai
 fal-client
+python-dotenv
+fire
+httpx
+yt-dlp
+streamlit
+fastapi
+uvicorn
+websockets
+PySide6>=6.6.0
+websocket-client>=1.7.0
+requests>=2.31.0

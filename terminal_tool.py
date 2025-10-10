@@ -22,8 +22,8 @@ Usage:
 import json
 import os
 from typing import Optional, Dict, Any
-from hecate import run_tool_with_lifecycle_management
-from morphcloud._llm import ToolCall
+# from hecate import run_tool_with_lifecycle_management
+# from morphcloud._llm import ToolCall
 
 # Detailed description for the terminal tool based on Hermes Terminal system prompt
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure, persistent Linux VM environment with full interactive application support.
@@ -129,27 +129,30 @@ def terminal_tool(
             tool_input["idle_threshold"] = idle_threshold
         if timeout is not None:
             tool_input["timeout"] = timeout
+
+        # THIS IS BROKEN FOR NOW ~!!!!!!!
         
-        tool_call = ToolCall(
-            name="run_command",
-            input=tool_input
-        )
+        # tool_call = ToolCall(
+        #     name="run_command",
+        #     input=tool_input
+        # )
         
-        # Execute with lifecycle management
-        result = run_tool_with_lifecycle_management(tool_call)
+        # # Execute with lifecycle management
+        # result = run_tool_with_lifecycle_management(tool_call)
+
         
-        # Format the result with all possible fields
-        # Map hecate's "stdout" to "output" for compatibility
-        formatted_result = {
-            "output": result.get("stdout", result.get("output", "")),
-            "screen": result.get("screen", ""),
-            "session_id": result.get("session_id"),
-            "exit_code": result.get("returncode", result.get("exit_code", -1)),
-            "error": result.get("error"),
-            "status": "active" if result.get("session_id") else "ended"
-        }
+        # # Format the result with all possible fields
+        # # Map hecate's "stdout" to "output" for compatibility
+        # formatted_result = {
+        #     "output": result.get("stdout", result.get("output", "")),
+        #     "screen": result.get("screen", ""),
+        #     "session_id": result.get("session_id"),
+        #     "exit_code": result.get("returncode", result.get("exit_code", -1)),
+        #     "error": result.get("error"),
+        #     "status": "active" if result.get("session_id") else "ended"
+        # }
         
-        return json.dumps(formatted_result)
+        return json.dumps({})
         
     except Exception as e:
         return json.dumps({

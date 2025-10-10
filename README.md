@@ -1,134 +1,295 @@
 # Hermes Agent
 
-An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.
+AI Agent with advanced tool calling capabilities, real-time logging, and extensible toolsets.
 
 ## Features
 
-- **Web Tools**: Search, extract content, and crawl websites
-- **Terminal Tools**: Execute commands with interactive session support
-- **Vision Tools**: Analyze images from URLs
-- **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
-- **Creative Tools**: Generate images from text prompts
-- **Toolsets System**: Organize tools into logical groups for different scenarios
+- 🤖 **Multi-model Support**: Works with Claude, GPT-4, and other OpenAI-compatible models
+- 🔧 **Rich Tool Library**: Web search, content extraction, vision analysis, terminal execution, and more
+- 📊 **Real-time Logging**: WebSocket-based logging system for monitoring agent execution
+- 🖥️ **Desktop UI**: Modern PySide6 frontend with real-time event streaming
+- 🎯 **Flexible Toolsets**: Predefined toolset combinations for different use cases
+- 💾 **Trajectory Saving**: Save conversation flows for training and analysis
+- 🔄 **Auto-retry**: Built-in error handling and retry logic
 
-## Setup
+## Quick Start
+
+### Installation
+
 ```bash
 pip install -r requirements.txt
-git clone git@github.com:NousResearch/hecate.git
-cd hecate
-pip install -e .
 ```
 
-## Toolsets System
-
-The agent uses a toolsets system for organizing and managing tools. All tools must be part of a toolset to be accessible - individual tool selection is not supported. This ensures consistent and logical grouping of capabilities.
-
-### Key Concepts
-
-- **Toolsets**: Logical groups of tools for specific use cases (e.g., "research", "development", "debugging")
-- **Composition**: Toolsets can include other toolsets for powerful combinations
-- **Custom Toolsets**: Create your own toolsets at runtime or by editing `toolsets.py`
-- **Toolset-Only Access**: Tools are only accessible through toolsets, not individually
-
-### Available Toolsets
-
-See `toolsets.py` for the complete list of predefined toolsets including:
-- Basic toolsets (web, terminal, vision, creative, reasoning)
-- Composite toolsets (research, development, analysis, etc.)
-- Scenario-specific toolsets (debugging, documentation, API testing, etc.)
-- Special toolsets (safe mode without terminal, minimal, offline)
-
-### Using Toolsets
+### Basic Usage
 
 ```bash
-# Use a predefined toolset
-python run_agent.py --enabled_toolsets=research --query "Find latest AI papers"
+python run_agent.py \
+  --enabled_toolsets web \
+  --query "Search for the latest AI news"
+```
+
+### With Real-time Logging
+
+```bash
+# Terminal 1: Start API endpoint server
+python api_endpoint/logging_server.py
+
+# Terminal 2: Run agent
+python run_agent.py \
+  --enabled_toolsets web \
+  --enable_websocket_logging \
+  --query "Your question here"
+```
+
+### With Desktop UI (Recommended)
+
+The easiest way to use Hermes Agent is through the desktop UI:
+
+```bash
+# One-command launch (starts server + UI)
+cd ui && ./start_hermes_ui.sh
+
+# Or manually:
+# Terminal 1: Start server
+python api_endpoint/logging_server.py
+
+# Terminal 2: Start UI
+python ui/hermes_ui.py
+```
+
+The UI provides:
+- 🖱️ Point-and-click query submission
+- 🎛️ Easy model and tool selection
+- 📊 Real-time event visualization
+- 🔄 Automatic WebSocket connection
+- 📝 Session history
+
+## Project Structure
+
+```
+Hermes-Agent/
+├── run_agent.py              # Main agent runner
+├── model_tools.py            # Tool definitions and handling
+├── toolsets.py               # Predefined toolset combinations
+├── requirements.txt          # Python dependencies
+│
+├── ui/                      # Desktop UI ⭐ NEW
+│   ├── hermes_ui.py         # PySide6 desktop application
+│   ├── start_hermes_ui.sh   # UI launcher script
+│   └── test_ui_flow.py      # UI integration tests
+│
+├── tools/                    # Tool implementations
+│   ├── web_tools.py         # Web search, extract, crawl
+│   ├── vision_tools.py      # Image analysis
+│   ├── terminal_tool.py     # Command execution
+│   ├── image_generation_tool.py
+│   └── ...
+│
+├── api_endpoint/            # FastAPI + WebSocket logging endpoint
+│   ├── logging_server.py    # WebSocket server + Agent API ⭐ ENHANCED
+│   ├── websocket_logger.py  # Client library
+│   ├── README.md           # API endpoint docs
+│   └── ...
+│
+├── logs/                    # Log files
+│   └── realtime/           # WebSocket session logs
+│
+└── tests/                   # Test files
+```
+
+## Available Toolsets
+
+### Basic Toolsets
+- **web**: Web search, extract, and crawl
+- **terminal**: Command execution
+- **vision**: Image analysis
+- **creative**: Image generation
+- **reasoning**: Mixture of agents
+
+### Composite Toolsets
+- **research**: Web + vision tools
+- **development**: Web + terminal + vision
+- **analysis**: Web + vision + reasoning
+- **full_stack**: All tools enabled
+
+### Usage Examples
+
+```bash
+# Research with web and vision
+python run_agent.py --enabled_toolsets research --query "..."
+
+# Development with terminal access
+python run_agent.py --enabled_toolsets development --query "..."
 
 # Combine multiple toolsets
-python run_agent.py --enabled_toolsets=web,vision --query "Analyze this website"
-
-# Safe mode (no terminal access)
-python run_agent.py --enabled_toolsets=safe --query "Help without running commands"
-
-# List all available toolsets and tools
-python run_agent.py --list_tools
+python run_agent.py --enabled_toolsets web,vision --query "..."
 ```
 
-For detailed documentation on toolsets, see `TOOLSETS_README.md`.
+## Real-time Logging System
 
-## Basic Usage
+Monitor your agent's execution in real-time with the FastAPI WebSocket endpoint using a **persistent connection pool** architecture.
 
-### Default (all tools enabled)
+### Architecture
+
+The logging system uses a **singleton WebSocket connection** that persists across multiple agent runs:
+- ✅ **No timeouts** - connection stays alive indefinitely
+- ✅ **No reconnection overhead** - connect once, reuse forever
+- ✅ **Parallel execution** - multiple agents share one connection
+- ✅ **Production-ready** - graceful shutdown with signal handlers
+
+See [`api_endpoint/PERSISTENT_CONNECTION_GUIDE.md`](api_endpoint/PERSISTENT_CONNECTION_GUIDE.md) for technical details.
+
+### Features
+- Track all API calls and responses
+- **Persistent connection** - one WebSocket for all sessions
+- Monitor tool executions with parameters and timing
+- Capture errors and completion status
+- REST API for querying sessions
+- Real-time WebSocket broadcasting
+
+### Documentation
+See [`api_endpoint/README.md`](api_endpoint/README.md) for complete documentation.
+
+### Quick Start
 ```bash
-python run_agent.py \
-  --query "search up the latest docs on jit in python 3.13 and write me basic example that's not in their docs. profile its perf" \
-  --max_turns 20 \
-  --model claude-sonnet-4-20250514 \
-  --base_url https://api.anthropic.com/v1/ \
-  --api_key $ANTHROPIC_API_KEY
+# Start API endpoint server
+python api_endpoint/logging_server.py
+
+# Run agent with logging
+python run_agent.py --enable_websocket_logging --query "..."
+
+# View logs
+curl http://localhost:8000/sessions
 ```
 
-### With specific toolset
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
 ```bash
-python run_agent.py \
-  --query "Debug this Python error" \
-  --enabled_toolsets=debugging \
-  --model claude-sonnet-4-20250514 \
-  --api_key $ANTHROPIC_API_KEY
+# API Keys
+ANTHROPIC_API_KEY=your_key_here
+FIRECRAWL_API_KEY=your_key_here
+NOUS_API_KEY=your_key_here
+FAL_KEY=your_key_here
+
+# Optional
+WEB_TOOLS_DEBUG=true  # Enable web tools debug logging
 ```
 
-### Python API
+### Command-Line Options
+
+```bash
+python run_agent.py --help
+```
+
+Key options:
+- `--query`: Your question/task
+- `--model`: Model to use (default: claude-sonnet-4-5-20250929)
+- `--enabled_toolsets`: Toolsets to enable
+- `--max_turns`: Maximum conversation turns
+- `--enable_websocket_logging`: Enable real-time logging
+- `--verbose`: Verbose debug output
+- `--save_trajectories`: Save conversation trajectories
+
+## Parallel Execution
+
+The persistent connection pool enables true parallel agent execution. Multiple agents can run simultaneously, all sharing the same WebSocket connection for logging.
+
+### Test Parallel Execution
+
+```bash
+python test_parallel_execution.py
+```
+
+This script runs three tests:
+1. **Sequential** - baseline (3 queries one after another)
+2. **Parallel** - 3 queries simultaneously  
+3. **High Concurrency** - 10 queries simultaneously
+
+**Expected Results:**
+- ⚡ ~3x speedup with parallel execution
+- ✅ All queries logged to same connection
+- ✅ No connection timeouts or errors
+
+### Custom Parallel Code
+
 ```python
+import asyncio
 from run_agent import AIAgent
 
-# Use a specific toolset
-agent = AIAgent(
-    model="claude-opus-4-20250514",
-    enabled_toolsets=["research"]
-)
-response = agent.chat("Find information about quantum computing")
+async def main():
+    agent1 = AIAgent(enable_websocket_logging=True)
+    agent2 = AIAgent(enable_websocket_logging=True)
+    
+    # Run in parallel - both use shared connection!
+    results = await asyncio.gather(
+        agent1.run_conversation("Query 1"),
+        agent2.run_conversation("Query 2")
+    )
 
-# Create custom toolset at runtime
-from toolsets import create_custom_toolset
-
-create_custom_toolset(
-    name="my_tools",
-    description="My custom toolkit",
-    tools=["web_search"],
-    includes=["terminal", "vision"]
-)
-
-agent = AIAgent(enabled_toolsets=["my_tools"])
+asyncio.run(main())
 ```
-
-## Command Line Arguments
-
-- `--query`: The question or task for the agent
-- `--model`: Model to use (default: claude-opus-4-20250514)
-- `--api_key`: API key for authentication
-- `--base_url`: API endpoint URL
-- `--max_turns`: Maximum number of tool-calling iterations
-- `--enabled_toolsets`: Comma-separated list of toolsets to enable
-- `--disabled_toolsets`: Comma-separated list of toolsets to disable
-- `--list_tools`: List all available toolsets and tools
-- `--save_trajectories`: Save conversation trajectories to JSONL files
-
-## Environment Variables
-
-Set these environment variables to enable different tools:
-
-- `FIRECRAWL_API_KEY`: For web tools (search, extract, crawl)
-- `MORPH_API_KEY`: For terminal tools
-- `NOUS_API_KEY`: For vision and reasoning tools
-- `FAL_KEY`: For image generation tools
-- `ANTHROPIC_API_KEY`: For the main agent model
-
-## Documentation
-
-- `TOOLSETS_README.md`: Comprehensive guide to the toolsets system
-- `toolsets.py`: View and modify available toolsets
-- `model_tools.py`: Core tool definitions and handlers
 
 ## Examples
 
-See `TOOLSETS_README.md` for extensive examples of using different toolsets for various scenarios.
+### Investment Research
+```bash
+python run_agent.py \
+  --enabled_toolsets web \
+  --query "Find publicly traded companies in renewable energy"
+```
+
+### Code Analysis
+```bash
+python run_agent.py \
+  --enabled_toolsets development \
+  --query "Analyze the codebase and suggest improvements"
+```
+
+### Image Analysis
+```bash
+python run_agent.py \
+  --enabled_toolsets vision \
+  --query "Analyze this chart and explain the trends"
+```
+
+## Development
+
+### Adding New Tools
+
+1. Create tool in `tools/` directory
+2. Register in `model_tools.py`
+3. Add to appropriate toolset in `toolsets.py`
+
+### Running Tests
+
+```bash
+# Test web tools
+python tests/test_web_tools.py
+
+# Test API endpoint / logging
+cd api_endpoint
+./test_websocket_logging.sh
+```
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Contributing
+
+Contributions welcome! Please open an issue or PR.
+
+## Support
+
+For questions or issues:
+1. Check documentation in `api_endpoint/`
+2. Review example usage in this README
+3. Open a GitHub issue
+
+---
+
+Built with ❤️ for advanced AI agent workflows

@@ -193,6 +193,8 @@ Create a markdown summary that captures all key information in a well-organized,
             temperature=0.1,  # Low temperature for consistent extraction
             max_tokens=4000   # Generous limit for comprehensive processing
         )
+
+        print("Response within tool call to see the error: ", response)
         
         # Get the markdown response directly
         processed_content = response.choices[0].message.content.strip()

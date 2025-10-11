@@ -11,6 +11,7 @@ Features:
 - Real-time event display via WebSocket
 - Beautiful, responsive UI with dark theme
 - Session history
+- Safe exit handling (no segfaults)
 
 Usage:
     python hermes_ui.py
@@ -19,22 +20,25 @@ Usage:
 import sys
 import json
 import signal
-import asyncio
+import os
 import requests
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+# Suppress Qt logging warnings BEFORE importing Qt
+os.environ['QT_LOGGING_RULES'] = 'qt.qpa.*=false'
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QLineEdit, QComboBox, QCheckBox,
-    QGroupBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem,
-    QTextBrowser, QTabWidget, QSpinBox, QMessageBox, QProgressBar
+    QGroupBox, QSplitter, QListWidget, QListWidgetItem,
+    QTextBrowser, QSpinBox, QMessageBox
 )
 from PySide6.QtCore import (
-    Qt, Signal, Slot, QThread, QObject, QTimer
+    Qt, Signal, Slot, QObject, QTimer
 )
 from PySide6.QtGui import (
-    QFont, QColor, QPalette, QTextCursor, QTextCharFormat
+    QFont, QTextCursor
 )
 
 # WebSocket imports
@@ -92,7 +96,7 @@ class WebSocketClient(QObject):
             )
             
             # Run forever with reconnection
-            self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            self.ws.run_forever(ping_interval=300, ping_timeout=60)
             
         except Exception as e:
             self.error.emit(f"WebSocket error: {str(e)}")
@@ -142,10 +146,16 @@ class EventDisplayWidget(QWidget):
         header.setFont(QFont("Arial", 12, QFont.Bold))
         layout.addWidget(header)
         
-        # Event display (rich text browser)
+        # Event display (rich text browser) - use system monospace font
         self.event_display = QTextBrowser()
         self.event_display.setOpenExternalLinks(False)
-        self.event_display.setFont(QFont("Monaco", 10))
+        
+        # Use system monospace font instead of hardcoded "Monaco" or "Courier"
+        font = QFont()
+        font.setStyleHint(QFont.Monospace)
+        font.setPointSize(10)
+        self.event_display.setFont(font)
+        
         layout.addWidget(self.event_display)
         
         # Clear button
@@ -269,6 +279,7 @@ class HermesMainWindow(QMainWindow):
         self.ws_client = None
         self.current_session_id = None
         self.available_toolsets = []
+        self.is_closing = False  # Flag to prevent reconnection during shutdown
         
         self.init_ui()
         self.setup_websocket()
@@ -445,6 +456,10 @@ class HermesMainWindow(QMainWindow):
     @Slot()
     def on_ws_disconnected(self):
         """Called when WebSocket connection is lost."""
+        # Don't attempt reconnection if we're closing the application
+        if self.is_closing:
+            return
+        
         self.connection_status.setText("🔴 Disconnected")
         self.connection_status.setStyleSheet("QLabel { padding: 5px; background-color: #F44336; color: white; border-radius: 3px; }")
         self.statusBar().showMessage("WebSocket disconnected - attempting reconnect...")
@@ -583,21 +598,70 @@ class HermesMainWindow(QMainWindow):
         # Re-enable button after short delay (UI feedback)
         QTimer.singleShot(2000, lambda: self.submit_btn.setText("🚀 Submit Query"))
     
-    def closeEvent(self, event):
-        """Handle window close event."""
+    def cleanup(self):
+        """Clean up resources before exit."""
+        print("Cleaning up resources...")
+        self.is_closing = True
+        
         if self.ws_client:
-            self.ws_client.disconnect()
+            try:
+                self.ws_client.disconnect()
+            except Exception as e:
+                print(f"Error disconnecting WebSocket: {e}")
+    
+    def closeEvent(self, event):
+        """Handle window close event - ensures clean shutdown."""
+        print("Closing application...")
+        self.cleanup()
         event.accept()
+
+
+def setup_signal_handlers(app: QApplication) -> QTimer:
+    """
+    Setup signal handlers for graceful shutdown on Ctrl+C.
+    
+    This prevents segmentation faults by:
+    1. Catching SIGINT/SIGTERM signals
+    2. Creating a timer that keeps Python responsive to signals
+    3. Calling app.quit() for proper Qt cleanup
+    
+    Args:
+        app: The QApplication instance
+        
+    Returns:
+        Timer that keeps Python interpreter responsive to signals
+    """
+    def signal_handler(signum, frame):
+        """Handle interrupt signals gracefully."""
+        print("\n🛑 Interrupt received, shutting down gracefully...")
+        app.quit()
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+    
+    # CRITICAL: Create a timer to wake up Python interpreter periodically
+    # This allows Python to process signals while Qt's event loop is running
+    # Without this, Ctrl+C will not work and may cause segfaults
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)  # Empty callback just to wake up Python
+    timer.start(100)  # Check every 100ms
+    
+    return timer
 
 
 def main():
     """Main entry point for the application."""
+    # Create application
     app = QApplication(sys.argv)
     
     # Set application metadata
     app.setApplicationName("Hermes Agent")
     app.setOrganizationName("Hermes")
     app.setApplicationVersion("1.0.0")
+    
+    # Setup signal handlers for safe Ctrl+C handling (prevents segfaults!)
+    timer = setup_signal_handlers(app)
     
     # Apply dark theme (optional)
     # Uncomment to enable dark mode
@@ -611,10 +675,15 @@ def main():
     window = HermesMainWindow()
     window.show()
     
+    print("✨ Hermes Agent UI started")
+    print("   Press Ctrl+C to exit gracefully")
+    
     # Start event loop
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    
+    print("👋 Hermes Agent UI closed")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
     main()
-

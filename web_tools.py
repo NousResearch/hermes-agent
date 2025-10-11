@@ -42,6 +42,7 @@ Usage:
 
 import json
 import os
+from dotenv import load_dotenv
 import re
 import asyncio
 import uuid
@@ -50,6 +51,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
+
+
+load_dotenv()
 
 # Initialize Firecrawl client once at module level
 firecrawl_client = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
@@ -61,7 +65,7 @@ nous_client = AsyncOpenAI(
 )
 
 # Configuration for LLM processing
-DEFAULT_SUMMARIZER_MODEL = "gemini-2.5-flash"
+DEFAULT_SUMMARIZER_MODEL = "Hermes-4-70B"
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
 # Debug mode configuration

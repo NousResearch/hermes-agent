@@ -50,13 +50,16 @@ import os
 import asyncio
 import uuid
 import datetime
+from dotenv import load_dotenv
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from openai import AsyncOpenAI
 
+load_dotenv()
+
 # Initialize Nous Research API client for MoA processing
 nous_client = AsyncOpenAI(
-    api_key=os.getenv("NOUS_API_KEY"),
+    api_key="sk-_yoJ_CBLbSNN2R5rGZ_rpg",
     base_url="https://inference-api.nousresearch.com/v1"
 )
 

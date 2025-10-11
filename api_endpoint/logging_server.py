@@ -33,6 +33,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+
 
 # Configuration
 LOGS_DIR = Path(__file__).parent / "logs" / "realtime"

@@ -347,36 +347,111 @@ def connect_sync(server_url: str = "ws://localhost:8000/ws") -> bool:
     """
     Synchronous connect - handles event loop internally.
     
-    Agent code should use this instead of directly managing event loops.
-    This ensures the connection pool maintains full control over its lifecycle.
+    Creates a persistent event loop in a background thread if needed.
+    This is thread-safe and can be called from any thread (including agent background threads).
     """
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    import threading
     
-    return loop.run_until_complete(ws_pool.connect(server_url))
+    # If pool doesn't have a loop yet or it's closed, we need to start one
+    if not ws_pool.loop or ws_pool.loop.is_closed():
+        # Start connection in a background thread with its own loop
+        result_container = {"success": False, "error": None, "connected": False}
+        
+        def run_in_thread():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                ws_pool.loop = loop  # Store the loop in the pool
+                
+                # Connect to WebSocket
+                result_container["success"] = loop.run_until_complete(ws_pool.connect(server_url))
+                result_container["connected"] = True
+                
+                # Keep loop running forever for future send_event calls
+                # This is critical - the loop must stay alive for run_coroutine_threadsafe to work
+                loop.run_forever()
+                
+            except Exception as e:
+                result_container["error"] = str(e)
+                print(f"❌ Error in WebSocket connection thread: {e}")
+            finally:
+                # Clean up if loop stops
+                if loop.is_running():
+                    loop.close()
+        
+        thread = threading.Thread(target=run_in_thread, daemon=True, name="WebSocket-EventLoop")
+        thread.start()
+        
+        # Wait for connection to complete (but not for loop to exit - it runs forever)
+        import time
+        timeout = 10.0
+        start = time.time()
+        while not result_container["connected"] and (time.time() - start) < timeout:
+            time.sleep(0.1)
+        
+        if result_container["error"]:
+            print(f"⚠️  Connection failed: {result_container['error']}")
+        
+        return result_container["success"]
+    else:
+        # Pool already has a loop, use run_coroutine_threadsafe
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                ws_pool.connect(server_url),
+                ws_pool.loop
+            )
+            return future.result(timeout=10.0)
+        except Exception as e:
+            print(f"⚠️  Connection failed: {e}")
+            return False
 
 
 def send_event_sync(event_type: str, session_id: str, data: Dict[str, Any]) -> bool:
     """
     Synchronous send event - handles event loop internally.
     
-    Agent code should use this instead of managing event loops.
-    This ensures the connection pool maintains full control over its lifecycle.
+    Uses the WebSocket pool's own event loop to avoid loop conflicts.
+    This is critical when called from background threads (like agent execution).
+    This is thread-safe and works correctly even when agent runs in a different thread.
     """
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    if not ws_pool.loop or not ws_pool.loop.is_running():
+        # No event loop running - can't send
+        print("⚠️  WebSocket pool has no running event loop")
+        return False
     
-    return loop.run_until_complete(ws_pool.send_event(event_type, session_id, data))
+    try:
+        # Use run_coroutine_threadsafe to submit to the WebSocket pool's loop
+        # This works across threads - submits the coroutine to the correct loop
+        future = asyncio.run_coroutine_threadsafe(
+            ws_pool.send_event(event_type, session_id, data),
+            ws_pool.loop  # ← Use the pool's loop, not current thread's loop
+        )
+        
+        # Wait for completion (with timeout to avoid hanging)
+        return future.result(timeout=5.0)
+        
+    except TimeoutError:
+        print(f"⚠️  Timeout sending event {event_type}")
+        return False
+    except Exception as e:
+        print(f"⚠️  Error sending event: {e}")
+        return False
 
+
+def disconnect_sync():
+    """
+    Synchronous disconnect - handles event loop internally.
+    
+    Thread-safe disconnect that works from any thread.
+    """
+    if ws_pool.loop and ws_pool.loop.is_running():
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                ws_pool.disconnect(),
+                ws_pool.loop
+            )
+            return future.result(timeout=5.0)
+        except Exception as e:
+            print(f"⚠️  Error disconnecting: {e}")
+            return False
+    return True

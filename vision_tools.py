@@ -29,10 +29,13 @@ import json
 import os
 import asyncio
 import uuid
+from dotenv import load_dotenv
 import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
+
+load_dotenv()
 
 # Initialize Nous Research API client for vision processing
 nous_client = AsyncOpenAI(

@@ -46,8 +46,8 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Hermes Agent Logging Server",
-    description="Real-time WebSocket server for agent execution logging",
+    title="Hermes Agent API Endpoint",
+    description="Manage interface between agent and user",
     version="1.0.0"
 )
 
@@ -76,7 +76,7 @@ class SessionLogger:
         self.session_id = session_id
         self.start_time = datetime.now()
         self.events: List[Dict[str, Any]] = []  # In-memory list of all events
-        self.log_file = LOGS_DIR / f"session_{session_id}.json"  # Where to save on disk
+        self.log_file = LOGS_DIR / f"session_{session_id}.json"  # Where to save on disk 
         
         # Initialize session data structure
         # This is what gets saved to the JSON file

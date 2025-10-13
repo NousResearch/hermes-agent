@@ -55,7 +55,6 @@ def mock_web_search(query: str, delay: int = 2) -> str:
         }
     }
     
-    print(f"✅ [MOCK] Search completed with {len(result['data']['web'])} results")
     return json.dumps(result, indent=2)
 
 

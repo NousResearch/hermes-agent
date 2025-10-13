@@ -398,15 +398,9 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
-        # ============================================================
-        # WEBSOCKET LOGGING: Session Initialization
-        # ============================================================
-        # Generate unique session ID for this agent execution (or use provided one)
-        # This ID will be used to link all events together in the log file
         if session_id is None:
             session_id = str(uuid.uuid4())
         
-        # Initialize WebSocket logger if enabled (via --enable_websocket_logging flag)
         # Uses synchronous API - no event loop management in agent layer
         if self.enable_websocket_logging:
             try:

@@ -33,10 +33,10 @@ import asyncio
 import uuid
 import datetime
 import base64
-import requests
 from pathlib import Path
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
+import httpx  # Use httpx for async HTTP requests
 
 # Initialize Nous Research API client for vision processing
 nous_client = AsyncOpenAI(
@@ -131,9 +131,9 @@ def _validate_image_url(url: str) -> bool:
     return True  # Allow all HTTP/HTTPS URLs for flexibility
 
 
-def _download_image(image_url: str, destination: Path) -> Path:
+async def _download_image(image_url: str, destination: Path) -> Path:
     """
-    Download an image from a URL to a local destination.
+    Download an image from a URL to a local destination (async).
     
     Args:
         image_url (str): The URL of the image to download
@@ -148,16 +148,17 @@ def _download_image(image_url: str, destination: Path) -> Path:
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     
-    # Download the image with appropriate headers
-    response = requests.get(
-        image_url,
-        timeout=30,
-        headers={"User-Agent": "hermes-agent-vision/1.0"},
-    )
-    response.raise_for_status()
+    # Download the image with appropriate headers using async httpx
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            image_url,
+            headers={"User-Agent": "hermes-agent-vision/1.0"},
+        )
+        response.raise_for_status()
+        
+        # Save the image content
+        destination.write_bytes(response.content)
     
-    # Save the image content
-    destination.write_bytes(response.content)
     return destination
 
 
@@ -249,20 +250,21 @@ async def vision_analyze_tool(
     debug_call_data = {
         "parameters": {
             "image_url": image_url,
-            "user_prompt": user_prompt,
+            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
             "model": model
         },
         "error": None,
         "success": False,
         "analysis_length": 0,
-        "model_used": model
+        "model_used": model,
+        "image_size_bytes": 0
     }
     
     temp_image_path = None
     
     try:
-        print(f"🔍 Analyzing image from URL: {image_url[:60]}{'...' if len(image_url) > 60 else ''}")
-        print(f"📝 User prompt: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}")
+        print(f"🔍 Analyzing image from URL: {image_url[:60]}{'...' if len(image_url) > 60 else ''}", flush=True)
+        print(f"📝 User prompt: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}", flush=True)
         
         # Validate image URL
         if not _validate_image_url(image_url):
@@ -273,17 +275,25 @@ async def vision_analyze_tool(
             raise ValueError("NOUS_API_KEY environment variable not set")
         
         # Download the image to a temporary location
-        print(f"⬇️  Downloading image from URL...")
+        print(f"⬇️  Downloading image from URL...", flush=True)
         temp_dir = Path("./temp_vision_images")
         temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
         
-        _download_image(image_url, temp_image_path)
-        print(f"✅ Image downloaded successfully")
+        await _download_image(image_url, temp_image_path)
+        
+        # Get image file size for logging
+        image_size_bytes = temp_image_path.stat().st_size
+        image_size_kb = image_size_bytes / 1024
+        print(f"✅ Image downloaded successfully ({image_size_kb:.1f} KB)", flush=True)
         
         # Convert image to base64 data URL
-        print(f"🔄 Converting image to base64...")
+        print(f"🔄 Converting image to base64...", flush=True)
         image_data_url = _image_to_base64_data_url(temp_image_path)
-        print(f"✅ Image converted to base64 ({len(image_data_url)} characters)")
+        # Calculate size in KB for better readability
+        data_size_kb = len(image_data_url) / 1024
+        print(f"✅ Image converted to base64 ({data_size_kb:.1f} KB)", flush=True)
+        
+        debug_call_data["image_size_bytes"] = image_size_bytes
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
@@ -307,7 +317,7 @@ async def vision_analyze_tool(
             }
         ]
         
-        print(f"🧠 Processing image with {model}...")
+        print(f"🧠 Processing image with {model}...", flush=True)
         
         # Call the vision API
         response = await nous_client.chat.completions.create(
@@ -321,7 +331,7 @@ async def vision_analyze_tool(
         analysis = response.choices[0].message.content.strip()
         analysis_length = len(analysis)
         
-        print(f"✅ Image analysis completed ({analysis_length} characters)")
+        print(f"✅ Image analysis completed ({analysis_length} characters)", flush=True)
         
         # Prepare successful response
         result = {
@@ -340,7 +350,7 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        print(f"❌ {error_msg}")
+        print(f"❌ {error_msg}", flush=True)
         
         # Prepare error response
         result = {
@@ -359,9 +369,9 @@ async def vision_analyze_tool(
         if temp_image_path and temp_image_path.exists():
             try:
                 temp_image_path.unlink()
-                print(f"🧹 Cleaned up temporary image file")
+                print(f"🧹 Cleaned up temporary image file", flush=True)
             except Exception as cleanup_error:
-                print(f"⚠️  Warning: Could not delete temporary file: {cleanup_error}")
+                print(f"⚠️  Warning: Could not delete temporary file: {cleanup_error}", flush=True)
 
 
 def check_nous_api_key() -> bool:

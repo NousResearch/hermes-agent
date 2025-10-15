@@ -86,13 +86,35 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
             # Determine if tool call was successful
             is_success = True
             try:
-                # Try to parse as JSON and check for error field
+                # Try to parse as JSON and check for actual error values
                 content_json = json.loads(content) if isinstance(content, str) else content
-                if isinstance(content_json, dict) and "error" in content_json:
-                    is_success = False
+                
+                if isinstance(content_json, dict):
+                    # Check if error field exists AND has a non-null value
+                    if "error" in content_json and content_json["error"] is not None:
+                        is_success = False
+                    
+                    # Special handling for terminal tool responses
+                    # Terminal wraps its response in a "content" field
+                    if "content" in content_json and isinstance(content_json["content"], dict):
+                        inner_content = content_json["content"]
+                        # Check for actual error (non-null error field or non-zero exit code)
+                        has_error = (inner_content.get("error") is not None or 
+                                   inner_content.get("exit_code", 0) != 0)
+                        if has_error:
+                            is_success = False
+                    
+                    # Check for "success": false pattern used by some tools
+                    if content_json.get("success") is False:
+                        is_success = False
+                        
             except:
-                # If not JSON, check if content contains error indicators
-                if not content or "error" in content.lower():
+                # If not JSON, check if content is empty or explicitly states an error
+                # Note: We avoid simple substring matching to prevent false positives
+                if not content:
+                    is_success = False
+                # Only mark as failure if it explicitly starts with "Error:" or "ERROR:"
+                elif content.strip().lower().startswith("error:"):
                     is_success = False
             
             # Update success/failure count

@@ -99,10 +99,11 @@ class AIAgent:
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
-            # Also set OpenAI client logging to debug
-            logging.getLogger('openai').setLevel(logging.DEBUG)
-            logging.getLogger('httpx').setLevel(logging.DEBUG)
-            print("🔍 Verbose logging enabled")
+            # Keep OpenAI and httpx at INFO level to avoid massive base64 logs
+            # Even in verbose mode, we don't want to see full request/response bodies
+            logging.getLogger('openai').setLevel(logging.INFO)
+            logging.getLogger('httpx').setLevel(logging.WARNING)
+            print("🔍 Verbose logging enabled (OpenAI/httpx request bodies suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(

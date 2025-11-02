@@ -3,4 +3,4 @@ openai
 fal-client
 python-dotenv
 fire
-requests
+httpx

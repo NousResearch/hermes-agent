@@ -61,7 +61,19 @@ DISTRIBUTIONS = {
             "terminal": 10  # 10% chance of terminal tools
         }
     },
-    
+
+    # Scientific problem solving focused distribution
+    "science": {
+        "description": "Web research with vision analysis and reasoning",
+        "toolsets": {
+            "web": 94,      # 90% chance of web tools
+            "vision": 50,   # 50% chance of vision tools
+            "moa": 10,      # 40% chance of reasoning tools
+            "terminal": 94,  # 10% chance of terminal tools
+            "image_gen": 15  # 80% chance of image generation tools
+        }
+    },
+
     # Development-focused distribution
     "development": {
         "description": "Terminal and reasoning with occasional web lookup",

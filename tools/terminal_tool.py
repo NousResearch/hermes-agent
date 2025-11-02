@@ -4,13 +4,8 @@ Terminal Tool Module
 
 This module provides a single terminal tool using Hecate's VM infrastructure.
 It wraps Hecate's functionality to provide a simple interface for executing commands
-on Morph VMs with automatic lifecycle management.
-
-Key features:
-- Persistent VM instance: Reused across tool calls within the configured lifetime window
-- Persistent ExecutionContext: Maintains session state (including interactive/TUI sessions)
-  across multiple tool calls, enabling interactive mode to work correctly
-- Automatic cleanup: VMs are cleaned up after inactivity
+on Morph VMs with automatic lifecycle management. VMs live for 5 minutes after last use.
+Timer resets with each use.
 
 Available tool:
 - terminal_tool: Execute commands with optional interactive session support
@@ -148,7 +143,7 @@ def terminal_tool(
 
         # Get configuration from environment
         vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
-        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "snapshot_p5294qxt")
+        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "python-2025-10-31")
 
         # Check API key
         morph_api_key = os.getenv("MORPH_API_KEY")

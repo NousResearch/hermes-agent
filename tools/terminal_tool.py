@@ -4,23 +4,26 @@ Terminal Tool Module
 
 This module provides a single terminal tool using Hecate's VM infrastructure.
 It wraps Hecate's functionality to provide a simple interface for executing commands
-on Morph VMs with automatic lifecycle management.
+on Morph VMs with automatic lifecycle management. VMs live for 5 minutes after last use.
+Timer resets with each use.
 
 Available tool:
 - terminal_tool: Execute commands with optional interactive session support
 
 Usage:
     from terminal_tool import terminal_tool
-    
+
     # Execute a single command
     result = terminal_tool("ls -la")
-    
+
     # Execute in an interactive session
     result = terminal_tool("python", input_keys="print('hello')\\nexit()\\n")
 """
 
 import json
 import os
+import uuid
+import threading
 from typing import Optional, Dict, Any
 
 # Detailed description for the terminal tool based on Hermes Terminal system prompt
@@ -70,6 +73,12 @@ When commands enter interactive mode (vim, nano, less, git prompts, package mana
 - Test components incrementally with mock inputs
 - Install whatever tools needed - full system access provided"""
 
+# Global state for VM lifecycle management
+# These persist across tool calls to enable session continuity
+_active_instance = None
+_active_context = None
+_instance_lock = threading.Lock()
+
 def terminal_tool(
     command: Optional[str] = None,
     input_keys: Optional[str] = None,
@@ -111,27 +120,17 @@ def terminal_tool(
         # Run a background task
         >>> result = terminal_tool(command="sleep 60", background=True)
     """
-    try:
-        # Import hecate and ToolCall lazily so this module can be imported
-        # even when hecate is not installed. If unavailable, gracefully
-        # indicate that the terminal tool is disabled.
-        try:
-            # Primary import path when the hecate package is properly installed
-            try:
-                from hecate import run_tool_with_lifecycle_management  # type: ignore
-            except ImportError as primary_import_error:
-                # Fallback for when a local folder named "hecate" shadows the installed package
-                # (common when the repo is cloned inside the project root). In that case,
-                # the actual implementation lives under hecate.hecate.cli.
-                try:
-                    from hecate.hecate.cli import run_tool_with_lifecycle_management  # type: ignore
-                except Exception as fallback_import_error:
-                    raise ImportError(
-                        f"Failed to import 'run_tool_with_lifecycle_management' from hecate: "
-                        f"{primary_import_error}; fallback failed: {fallback_import_error}"
-                    )
+    global _active_instance, _active_context
 
+    try:
+        # Import required modules lazily so this module can be imported
+        # even when hecate is not installed
+        try:
             from morphcloud._llm import ToolCall
+            from morphcloud.api import MorphCloudClient
+            from hecate.cli import run_tool, ExecutionContext
+            from rich.console import Console
+            import io
         except ImportError as import_error:
             return json.dumps({
                 "output": "",
@@ -142,9 +141,39 @@ def terminal_tool(
                 "status": "disabled"
             })
 
+        # Get configuration from environment
+        vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
+        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "python-2025-10-31")
+
+        # Check API key
+        morph_api_key = os.getenv("MORPH_API_KEY")
+        if not morph_api_key:
+            return json.dumps({
+                "output": "",
+                "screen": "",
+                "session_id": None,
+                "exit_code": -1,
+                "error": "MORPH_API_KEY environment variable not set",
+                "status": "disabled"
+            })
+
+        # Get or create VM instance and execution context
+        # This is critical for interactive session support - the context must persist!
+        with _instance_lock:
+            if _active_instance is None:
+                morph_client = MorphCloudClient(api_key=morph_api_key)
+                _active_instance = morph_client.instances.start(snapshot_id=snapshot_id)
+
+            # Get or create persistent execution context
+            if _active_context is None:
+                _active_context = ExecutionContext()
+
+            instance = _active_instance
+            ctx = _active_context
+
         # Build tool input based on provided parameters
         tool_input = {}
-        
+
         if command:
             tool_input["command"] = command
         if input_keys:
@@ -157,15 +186,28 @@ def terminal_tool(
             tool_input["idle_threshold"] = idle_threshold
         if timeout is not None:
             tool_input["timeout"] = timeout
-        
+
         tool_call = ToolCall(
             name="run_command",
             input=tool_input
         )
-        
-        # Execute with lifecycle management
-        result = run_tool_with_lifecycle_management(tool_call)
-        
+
+        # Create a console for output (redirect to string buffer to avoid printing)
+        console_output = io.StringIO()
+        console = Console(file=console_output, force_terminal=False, legacy_windows=False)
+
+        # Generate unique tool block ID
+        tool_block_id = f"tool_{uuid.uuid4().hex[:8]}"
+
+        # Execute the tool with hecate
+        result = run_tool(
+            tool_call=tool_call,
+            instance=instance,
+            console=console,
+            tool_block_id=tool_block_id,
+            ctx=ctx
+        )
+
         # Format the result with all possible fields
         # Map hecate's "stdout" to "output" for compatibility
         formatted_result = {
@@ -176,9 +218,9 @@ def terminal_tool(
             "error": result.get("error"),
             "status": "active" if result.get("session_id") else "ended"
         }
-        
+
         return json.dumps(formatted_result)
-        
+
     except Exception as e:
         return json.dumps({
             "output": "",
@@ -211,16 +253,16 @@ def check_hecate_requirements() -> bool:
         print(f"Warning: Missing optional environment variables: {', '.join(missing_optional)}")
         print("   (Some Hecate features may be limited)")
     
-    # Check if Hecate entrypoint is importable (handle local-folder shadowing)
+    # Check if Hecate and required modules are importable
     try:
-        try:
-            from hecate import run_tool_with_lifecycle_management  # type: ignore
-        except ImportError:
-            from hecate.hecate.cli import run_tool_with_lifecycle_management  # type: ignore
+        from morphcloud._llm import ToolCall
+        from morphcloud.api import MorphCloudClient
+        from hecate.cli import run_tool, ExecutionContext
+        from rich.console import Console
         return True
     except Exception as e:
-        print(f"Hecate not available: {e}\nIf you cloned the hecate repo into this project, it may shadow the installed package. "
-              f"Either install it (pip install -e hecate) and/or move/rename the local 'hecate' folder.")
+        print(f"Hecate not available: {e}")
+        print(f"Make sure hecate is installed and MORPH_API_KEY is set.")
         return False
 
 # Module-level initialization check

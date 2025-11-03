@@ -54,9 +54,9 @@ class AIAgent:
     """
     
     def __init__(
-        self, 
-        base_url: str = None, 
-        api_key: str = None, 
+        self,
+        base_url: str = None,
+        api_key: str = None,
         model: str = "gpt-4",
         max_iterations: int = 10,
         tool_delay: float = 1.0,
@@ -64,11 +64,12 @@ class AIAgent:
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
-        ephemeral_system_prompt: str = None
+        ephemeral_system_prompt: str = None,
+        task_id: str = None
     ):
         """
         Initialize the AI Agent.
-        
+
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
@@ -80,6 +81,7 @@ class AIAgent:
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -87,7 +89,11 @@ class AIAgent:
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
         self.ephemeral_system_prompt = ephemeral_system_prompt
-        
+
+        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
+        import uuid
+        self.task_id = task_id or str(uuid.uuid4())
+
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
@@ -469,12 +475,12 @@ class AIAgent:
                             function_args = {}
                         
                         print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                        
+
                         tool_start_time = time.time()
-                        
-                        # Execute the tool
-                        function_result = handle_function_call(function_name, function_args)
-                        
+
+                        # Execute the tool with task_id to isolate VMs between concurrent tasks
+                        function_result = handle_function_call(function_name, function_args, self.task_id)
+
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
                         

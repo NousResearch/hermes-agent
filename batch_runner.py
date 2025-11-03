@@ -156,6 +156,7 @@ def _process_single_prompt(
             print(f"   Prompt {prompt_index}: Using toolsets {selected_toolsets}")
         
         # Initialize agent with sampled toolsets
+        # Use prompt_index as task_id to ensure each task gets its own isolated VM
         agent = AIAgent(
             base_url=config.get("base_url"),
             api_key=config.get("api_key"),
@@ -164,7 +165,8 @@ def _process_single_prompt(
             enabled_toolsets=selected_toolsets,
             save_trajectories=False,  # We handle saving ourselves
             verbose_logging=config.get("verbose", False),
-            ephemeral_system_prompt=config.get("ephemeral_system_prompt")
+            ephemeral_system_prompt=config.get("ephemeral_system_prompt"),
+            task_id=f"task_{prompt_index}"
         )
         
         # Run the agent

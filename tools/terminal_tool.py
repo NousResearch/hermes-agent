@@ -75,8 +75,9 @@ When commands enter interactive mode (vim, nano, less, git prompts, package mana
 
 # Global state for VM lifecycle management
 # These persist across tool calls to enable session continuity
-_active_instance = None
-_active_context = None
+# Changed to dictionaries keyed by task_id to prevent leakage between concurrent tasks
+_active_instances: Dict[str, Any] = {}
+_active_contexts: Dict[str, Any] = {}
 _instance_lock = threading.Lock()
 
 def terminal_tool(
@@ -85,23 +86,25 @@ def terminal_tool(
     session_id: Optional[str] = None,
     background: bool = False,
     idle_threshold: float = 5.0,
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    task_id: Optional[str] = None
 ) -> str:
     """
     Execute a command on a Morph VM with optional interactive session support.
-    
+
     This tool uses Hecate's VM lifecycle management to automatically create
     and manage VMs. VMs are reused within the configured lifetime window
     and automatically cleaned up after inactivity.
-    
+
     Args:
         command: The command to execute (optional if continuing existing session)
         input_keys: Keystrokes to send to interactive session (e.g., "hello\\n")
         session_id: ID of existing session to continue (optional)
-        background: Whether to run the command in the background (default: False) 
+        background: Whether to run the command in the background (default: False)
         idle_threshold: Seconds to wait for output before considering session idle (default: 5.0)
         timeout: Command timeout in seconds (optional)
-    
+        task_id: Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+
     Returns:
         str: JSON string containing command output, session info, exit code, and any errors
     
@@ -120,7 +123,7 @@ def terminal_tool(
         # Run a background task
         >>> result = terminal_tool(command="sleep 60", background=True)
     """
-    global _active_instance, _active_context
+    global _active_instances, _active_contexts
 
     try:
         # Import required modules lazily so this module can be imported
@@ -135,10 +138,8 @@ def terminal_tool(
             return json.dumps({
                 "output": "",
                 "screen": "",
-                "session_id": None,
                 "exit_code": -1,
-                "error": f"Terminal tool is disabled due to import error: {import_error}",
-                "status": "disabled"
+                "error": f"Terminal tool is disabled due to import error: {import_error}"
             })
 
         # Get configuration from environment
@@ -151,25 +152,27 @@ def terminal_tool(
             return json.dumps({
                 "output": "",
                 "screen": "",
-                "session_id": None,
                 "exit_code": -1,
-                "error": "MORPH_API_KEY environment variable not set",
-                "status": "disabled"
+                "error": "MORPH_API_KEY environment variable not set"
             })
 
-        # Get or create VM instance and execution context
+        # Use task_id to isolate VMs between concurrent tasks
+        # If no task_id provided, use "default" for backward compatibility
+        effective_task_id = task_id or "default"
+
+        # Get or create VM instance and execution context per task
         # This is critical for interactive session support - the context must persist!
         with _instance_lock:
-            if _active_instance is None:
+            if effective_task_id not in _active_instances:
                 morph_client = MorphCloudClient(api_key=morph_api_key)
-                _active_instance = morph_client.instances.start(snapshot_id=snapshot_id)
+                _active_instances[effective_task_id] = morph_client.instances.start(snapshot_id=snapshot_id)
 
-            # Get or create persistent execution context
-            if _active_context is None:
-                _active_context = ExecutionContext()
+            # Get or create persistent execution context per task
+            if effective_task_id not in _active_contexts:
+                _active_contexts[effective_task_id] = ExecutionContext()
 
-            instance = _active_instance
-            ctx = _active_context
+            instance = _active_instances[effective_task_id]
+            ctx = _active_contexts[effective_task_id]
 
         # Build tool input based on provided parameters
         tool_input = {}
@@ -208,15 +211,13 @@ def terminal_tool(
             ctx=ctx
         )
 
-        # Format the result with all possible fields
+        # Format the result with only essential fields for the LLM
         # Map hecate's "stdout" to "output" for compatibility
         formatted_result = {
             "output": result.get("stdout", result.get("output", "")),
             "screen": result.get("screen", ""),
-            "session_id": result.get("session_id"),
             "exit_code": result.get("returncode", result.get("exit_code", -1)),
-            "error": result.get("error"),
-            "status": "active" if result.get("session_id") else "ended"
+            "error": result.get("error")
         }
 
         return json.dumps(formatted_result)
@@ -225,10 +226,8 @@ def terminal_tool(
         return json.dumps({
             "output": "",
             "screen": "",
-            "session_id": None,
             "exit_code": -1,
-            "error": f"Failed to execute terminal command: {str(e)}",
-            "status": "error"
+            "error": f"Failed to execute terminal command: {str(e)}"
         })
 
 def check_hecate_requirements() -> bool:

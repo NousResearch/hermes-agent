@@ -43,6 +43,7 @@ else:
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
+from tools.terminal_tool import cleanup_vm
 
 
 class AIAgent:
@@ -64,8 +65,7 @@ class AIAgent:
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
-        ephemeral_system_prompt: str = None,
-        task_id: str = None
+        ephemeral_system_prompt: str = None
     ):
         """
         Initialize the AI Agent.
@@ -81,7 +81,6 @@ class AIAgent:
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
-            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -89,10 +88,6 @@ class AIAgent:
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
         self.ephemeral_system_prompt = ephemeral_system_prompt
-
-        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
-        import uuid
-        self.task_id = task_id or str(uuid.uuid4())
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -348,22 +343,27 @@ class AIAgent:
             print(f"⚠️ Failed to save trajectory: {e}")
     
     def run_conversation(
-        self, 
-        user_message: str, 
-        system_message: str = None, 
-        conversation_history: List[Dict[str, Any]] = None
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
-        
+
         Args:
             user_message (str): The user's message/question
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
-            
+            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
+        import uuid
+        effective_task_id = task_id or str(uuid.uuid4())
         # Initialize conversation
         messages = conversation_history or []
         
@@ -479,7 +479,7 @@ class AIAgent:
                         tool_start_time = time.time()
 
                         # Execute the tool with task_id to isolate VMs between concurrent tasks
-                        function_result = handle_function_call(function_name, function_args, self.task_id)
+                        function_result = handle_function_call(function_name, function_args, effective_task_id)
 
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
@@ -543,10 +543,17 @@ class AIAgent:
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
-        
+
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
-        
+
+        # Clean up VM for this task after conversation completes
+        try:
+            cleanup_vm(effective_task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+
         return {
             "final_response": final_response,
             "messages": messages,

@@ -43,6 +43,7 @@ else:
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
+from tools.terminal_tool import cleanup_vm
 
 
 class AIAgent:
@@ -54,9 +55,9 @@ class AIAgent:
     """
     
     def __init__(
-        self, 
-        base_url: str = None, 
-        api_key: str = None, 
+        self,
+        base_url: str = None,
+        api_key: str = None,
         model: str = "gpt-4",
         max_iterations: int = 10,
         tool_delay: float = 1.0,
@@ -68,7 +69,7 @@ class AIAgent:
     ):
         """
         Initialize the AI Agent.
-        
+
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
@@ -87,7 +88,7 @@ class AIAgent:
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
         self.ephemeral_system_prompt = ephemeral_system_prompt
-        
+
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
@@ -342,22 +343,27 @@ class AIAgent:
             print(f"⚠️ Failed to save trajectory: {e}")
     
     def run_conversation(
-        self, 
-        user_message: str, 
-        system_message: str = None, 
-        conversation_history: List[Dict[str, Any]] = None
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
-        
+
         Args:
             user_message (str): The user's message/question
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
-            
+            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
+        import uuid
+        effective_task_id = task_id or str(uuid.uuid4())
         # Initialize conversation
         messages = conversation_history or []
         
@@ -469,12 +475,12 @@ class AIAgent:
                             function_args = {}
                         
                         print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                        
+
                         tool_start_time = time.time()
-                        
-                        # Execute the tool
-                        function_result = handle_function_call(function_name, function_args)
-                        
+
+                        # Execute the tool with task_id to isolate VMs between concurrent tasks
+                        function_result = handle_function_call(function_name, function_args, effective_task_id)
+
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
                         
@@ -537,10 +543,17 @@ class AIAgent:
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
-        
+
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
-        
+
+        # Clean up VM for this task after conversation completes
+        try:
+            cleanup_vm(effective_task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+
         return {
             "final_response": final_response,
             "messages": messages,

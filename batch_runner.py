@@ -166,9 +166,9 @@ def _process_single_prompt(
             verbose_logging=config.get("verbose", False),
             ephemeral_system_prompt=config.get("ephemeral_system_prompt")
         )
-        
-        # Run the agent
-        result = agent.run_conversation(prompt)
+
+        # Run the agent with task_id to ensure each task gets its own isolated VM
+        result = agent.run_conversation(prompt, task_id=f"task_{prompt_index}")
         
         # Extract tool usage statistics
         tool_stats = _extract_tool_stats(result["messages"])

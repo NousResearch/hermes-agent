@@ -4,8 +4,12 @@ Terminal Tool Module
 
 This module provides a single terminal tool using Hecate's VM infrastructure.
 It wraps Hecate's functionality to provide a simple interface for executing commands
-on Morph VMs with automatic lifecycle management. VMs live for 5 minutes after last use.
-Timer resets with each use.
+on Morph VMs with automatic lifecycle management.
+
+VM Lifecycle:
+- VMs have a TTL (time to live) set at creation (default: 20 minutes)
+- VMs are also cleaned up locally after 5 minutes of inactivity
+- Timer resets with each use
 
 Available tool:
 - terminal_tool: Execute commands with optional interactive session support
@@ -24,6 +28,8 @@ import json
 import os
 import uuid
 import threading
+import time
+import atexit
 from typing import Optional, Dict, Any
 
 # Detailed description for the terminal tool based on Hermes Terminal system prompt
@@ -75,9 +81,137 @@ When commands enter interactive mode (vim, nano, less, git prompts, package mana
 
 # Global state for VM lifecycle management
 # These persist across tool calls to enable session continuity
-_active_instance = None
-_active_context = None
+# Changed to dictionaries keyed by task_id to prevent leakage between concurrent tasks
+_active_instances: Dict[str, Any] = {}
+_active_contexts: Dict[str, Any] = {}
+_last_activity: Dict[str, float] = {}  # Track last activity time for each VM
 _instance_lock = threading.Lock()
+_cleanup_thread = None
+_cleanup_running = False
+
+def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
+    """
+    Clean up VMs that have been inactive for longer than vm_lifetime_seconds.
+    This function should be called periodically by a background thread.
+
+    Args:
+        vm_lifetime_seconds: Maximum lifetime in seconds for inactive VMs (default: 300)
+    """
+    global _active_instances, _active_contexts, _last_activity
+
+    current_time = time.time()
+    tasks_to_cleanup = []
+
+    with _instance_lock:
+        # Find all VMs that have been inactive for too long
+        for task_id, last_time in list(_last_activity.items()):
+            if current_time - last_time > vm_lifetime_seconds:
+                tasks_to_cleanup.append(task_id)
+
+        # Clean up the inactive VMs
+        for task_id in tasks_to_cleanup:
+            try:
+                if task_id in _active_instances:
+                    instance = _active_instances[task_id]
+                    # Terminate the VM instance
+                    if hasattr(instance, 'terminate'):
+                        instance.terminate()
+                    elif hasattr(instance, 'stop'):
+                        instance.stop()
+                    elif hasattr(instance, 'delete'):
+                        instance.delete()
+
+                    # Remove from tracking dictionaries
+                    del _active_instances[task_id]
+                    print(f"[VM Cleanup] Terminated inactive VM for task: {task_id}")
+
+                if task_id in _active_contexts:
+                    del _active_contexts[task_id]
+
+                if task_id in _last_activity:
+                    del _last_activity[task_id]
+
+            except Exception as e:
+                print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
+
+def _cleanup_thread_worker():
+    """
+    Background thread worker that periodically cleans up inactive VMs.
+    Runs every 60 seconds.
+    """
+    global _cleanup_running
+
+    while _cleanup_running:
+        try:
+            vm_lifetime = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
+            _cleanup_inactive_vms(vm_lifetime)
+        except Exception as e:
+            print(f"[VM Cleanup] Error in cleanup thread: {e}")
+
+        # Sleep for 60 seconds, but check every second if we should stop
+        for _ in range(60):
+            if not _cleanup_running:
+                break
+            time.sleep(1)
+
+def _start_cleanup_thread():
+    """
+    Start the background cleanup thread if it's not already running.
+    """
+    global _cleanup_thread, _cleanup_running
+
+    with _instance_lock:
+        if _cleanup_thread is None or not _cleanup_thread.is_alive():
+            _cleanup_running = True
+            _cleanup_thread = threading.Thread(target=_cleanup_thread_worker, daemon=True)
+            _cleanup_thread.start()
+
+def _stop_cleanup_thread():
+    """
+    Stop the background cleanup thread.
+    """
+    global _cleanup_running
+    _cleanup_running = False
+    if _cleanup_thread is not None:
+        _cleanup_thread.join(timeout=5)
+
+def cleanup_vm(task_id: str):
+    """
+    Manually clean up a specific VM by task_id.
+    This should be called when a task is completed.
+
+    Args:
+        task_id: The task ID of the VM to clean up
+    """
+    global _active_instances, _active_contexts, _last_activity
+
+    with _instance_lock:
+        try:
+            if task_id in _active_instances:
+                instance = _active_instances[task_id]
+                # Terminate the VM instance
+                if hasattr(instance, 'terminate'):
+                    instance.terminate()
+                elif hasattr(instance, 'stop'):
+                    instance.stop()
+                elif hasattr(instance, 'delete'):
+                    instance.delete()
+
+                # Remove from tracking dictionaries
+                del _active_instances[task_id]
+                print(f"[VM Cleanup] Manually terminated VM for task: {task_id}")
+
+            if task_id in _active_contexts:
+                del _active_contexts[task_id]
+
+            if task_id in _last_activity:
+                del _last_activity[task_id]
+
+        except Exception as e:
+            print(f"[VM Cleanup] Error manually cleaning up VM for task {task_id}: {e}")
+
+# Register cleanup on program exit
+atexit.register(_stop_cleanup_thread)
 
 def terminal_tool(
     command: Optional[str] = None,
@@ -85,23 +219,25 @@ def terminal_tool(
     session_id: Optional[str] = None,
     background: bool = False,
     idle_threshold: float = 5.0,
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    task_id: Optional[str] = None
 ) -> str:
     """
     Execute a command on a Morph VM with optional interactive session support.
-    
+
     This tool uses Hecate's VM lifecycle management to automatically create
     and manage VMs. VMs are reused within the configured lifetime window
     and automatically cleaned up after inactivity.
-    
+
     Args:
         command: The command to execute (optional if continuing existing session)
         input_keys: Keystrokes to send to interactive session (e.g., "hello\\n")
         session_id: ID of existing session to continue (optional)
-        background: Whether to run the command in the background (default: False) 
+        background: Whether to run the command in the background (default: False)
         idle_threshold: Seconds to wait for output before considering session idle (default: 5.0)
         timeout: Command timeout in seconds (optional)
-    
+        task_id: Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+
     Returns:
         str: JSON string containing command output, session info, exit code, and any errors
     
@@ -120,7 +256,7 @@ def terminal_tool(
         # Run a background task
         >>> result = terminal_tool(command="sleep 60", background=True)
     """
-    global _active_instance, _active_context
+    global _active_instances, _active_contexts
 
     try:
         # Import required modules lazily so this module can be imported
@@ -135,14 +271,15 @@ def terminal_tool(
             return json.dumps({
                 "output": "",
                 "screen": "",
-                "session_id": None,
                 "exit_code": -1,
                 "error": f"Terminal tool is disabled due to import error: {import_error}",
                 "status": "disabled"
             }, ensure_ascii=False)
 
+
         # Get configuration from environment
         vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
+        vm_ttl_seconds = int(os.getenv("HECATE_VM_TTL_SECONDS", "1200"))  # 20 minutes default
         snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "snapshot_defv9tjg")
 
         # Check API key
@@ -151,25 +288,38 @@ def terminal_tool(
             return json.dumps({
                 "output": "",
                 "screen": "",
-                "session_id": None,
                 "exit_code": -1,
                 "error": "MORPH_API_KEY environment variable not set",
                 "status": "disabled"
             }, ensure_ascii=False)
 
-        # Get or create VM instance and execution context
+        # Use task_id to isolate VMs between concurrent tasks
+        # If no task_id provided, use "default" for backward compatibility
+        effective_task_id = task_id or "default"
+
+        # Start the cleanup thread if not already running
+        _start_cleanup_thread()
+
+        # Get or create VM instance and execution context per task
         # This is critical for interactive session support - the context must persist!
         with _instance_lock:
-            if _active_instance is None:
+            if effective_task_id not in _active_instances:
                 morph_client = MorphCloudClient(api_key=morph_api_key)
-                _active_instance = morph_client.instances.start(snapshot_id=snapshot_id)
+                _active_instances[effective_task_id] = morph_client.instances.start(
+                    snapshot_id=snapshot_id,
+                    ttl_seconds=vm_ttl_seconds,
+                    ttl_action="stop"
+                )
 
-            # Get or create persistent execution context
-            if _active_context is None:
-                _active_context = ExecutionContext()
+            # Get or create persistent execution context per task
+            if effective_task_id not in _active_contexts:
+                _active_contexts[effective_task_id] = ExecutionContext()
 
-            instance = _active_instance
-            ctx = _active_context
+            # Update last activity time for this VM (resets the inactivity timer)
+            _last_activity[effective_task_id] = time.time()
+
+            instance = _active_instances[effective_task_id]
+            ctx = _active_contexts[effective_task_id]
 
         # Build tool input based on provided parameters
         tool_input = {}
@@ -208,15 +358,13 @@ def terminal_tool(
             ctx=ctx
         )
 
-        # Format the result with all possible fields
+        # Format the result with only essential fields for the LLM
         # Map hecate's "stdout" to "output" for compatibility
         formatted_result = {
             "output": result.get("stdout", result.get("output", "")),
             "screen": result.get("screen", ""),
-            "session_id": result.get("session_id"),
             "exit_code": result.get("returncode", result.get("exit_code", -1)),
-            "error": result.get("error"),
-            "status": "active" if result.get("session_id") else "ended"
+            "error": result.get("error")
         }
 
         return json.dumps(formatted_result, ensure_ascii=False)
@@ -225,7 +373,6 @@ def terminal_tool(
         return json.dumps({
             "output": "",
             "screen": "",
-            "session_id": None,
             "exit_code": -1,
             "error": f"Failed to execute terminal command: {str(e)}",
             "status": "error"
@@ -304,5 +451,6 @@ if __name__ == "__main__":
     print("\nEnvironment Variables:")
     print(f"  MORPH_API_KEY: {'Set' if os.getenv('MORPH_API_KEY') else 'Not set'}")
     print(f"  OPENAI_API_KEY: {'Set' if os.getenv('OPENAI_API_KEY') else 'Not set (optional)'}")
-    print(f"  HECATE_VM_LIFETIME_SECONDS: {os.getenv('HECATE_VM_LIFETIME_SECONDS', '300')} (default: 300)")
+    print(f"  HECATE_VM_TTL_SECONDS: {os.getenv('HECATE_VM_TTL_SECONDS', '1200')} (default: 1200 / 20 minutes)")
+    print(f"  HECATE_VM_LIFETIME_SECONDS: {os.getenv('HECATE_VM_LIFETIME_SECONDS', '300')} (default: 300 / 5 minutes)")
     print(f"  HECATE_DEFAULT_SNAPSHOT_ID: {os.getenv('HECATE_DEFAULT_SNAPSHOT_ID', 'snapshot_defv9tjg')} (default: snapshot_defv9tjg)")

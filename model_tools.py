@@ -28,7 +28,7 @@ Usage:
 
 import json
 import asyncio
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
 from tools.terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
@@ -480,14 +480,15 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
 
-def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
     """
     Handle function calls for terminal tools.
-    
+
     Args:
         function_name (str): Name of the terminal function to call
         function_args (Dict): Arguments for the function
-    
+        task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+
     Returns:
         str: Function result as JSON string
     """
@@ -498,8 +499,8 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         idle_threshold = function_args.get("idle_threshold", 5.0)
         timeout = function_args.get("timeout")
 
-        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
-    
+        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout, task_id)
+
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
 
@@ -614,21 +615,22 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+def handle_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
     """
     Main function call dispatcher that routes calls to appropriate toolsets.
-    
+
     This function determines which toolset a function belongs to and dispatches
     the call to the appropriate handler. This makes it easy to add new toolsets
     without changing the main calling interface.
-    
+
     Args:
         function_name (str): Name of the function to call
         function_args (Dict): Arguments for the function
-    
+        task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+
     Returns:
         str: Function result as JSON string
-    
+
     Raises:
         None: Returns error as JSON string instead of raising exceptions
     """
@@ -636,26 +638,27 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
         # Route web tools
         if function_name in ["web_search", "web_extract", "web_crawl"]:
             return handle_web_function_call(function_name, function_args)
-        
+
         # Route terminal tools
         elif function_name in ["terminal"]:
-            return handle_terminal_function_call(function_name, function_args)
-        
+            return handle_terminal_function_call(function_name, function_args, task_id)
+
         # Route vision tools
         elif function_name in ["vision_analyze"]:
             return handle_vision_function_call(function_name, function_args)
-        
+
         # Route MoA tools
         elif function_name in ["mixture_of_agents"]:
             return handle_moa_function_call(function_name, function_args)
-        
+
         # Route image generation tools
         elif function_name in ["image_generate"]:
             return handle_image_function_call(function_name, function_args)
-        
+
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
+            
             return json.dumps({"error": error_msg}, ensure_ascii=False)
     
     except Exception as e:

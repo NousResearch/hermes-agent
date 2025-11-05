@@ -190,7 +190,7 @@ class AIAgent:
             }
             formatted_tools.append(formatted_tool)
         
-        return json.dumps(formatted_tools)
+        return json.dumps(formatted_tools, ensure_ascii=False)
     
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
@@ -251,7 +251,7 @@ class AIAgent:
                             "name": tool_call["function"]["name"],
                             "arguments": json.loads(tool_call["function"]["arguments"]) if isinstance(tool_call["function"]["arguments"], str) else tool_call["function"]["arguments"]
                         }
-                        content += f"<tool_call>\n{json.dumps(tool_call_json)}\n</tool_call>\n"
+                        content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
                     
                     trajectory.append({
                         "from": "gpt",
@@ -278,7 +278,7 @@ class AIAgent:
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
                             "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] if len(tool_responses) < len(msg["tool_calls"]) else "unknown",
                             "content": tool_content
-                        })
+                        }, ensure_ascii=False)
                         tool_response += "\n</tool_response>"
                         tool_responses.append(tool_response)
                         j += 1

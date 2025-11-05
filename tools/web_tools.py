@@ -183,16 +183,33 @@ Your goal is to preserve ALL important information while reducing length. Never 
 
 Create a markdown summary that captures all key information in a well-organized, scannable format. Include important quotes and code snippets in their original formatting. Focus on actionable information, specific details, and unique insights."""
 
-        # Call the LLM asynchronously
-        response = await nous_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.1,  # Low temperature for consistent extraction
-            max_tokens=4000   # Generous limit for comprehensive processing
-        )
+        # Call the LLM asynchronously with retry logic for flaky API
+        max_retries = 3
+        retry_delay = 2  # Start with 2 seconds
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = await nous_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=0.1,  # Low temperature for consistent extraction
+                    max_tokens=4000   # Generous limit for comprehensive processing
+                )
+                break  # Success, exit retry loop
+            except Exception as api_error:
+                last_error = api_error
+                if attempt < max_retries - 1:
+                    print(f"⚠️  LLM API call failed (attempt {attempt + 1}/{max_retries}): {str(api_error)[:100]}")
+                    print(f"   Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff: 2s, 4s, 8s
+                else:
+                    # All retries exhausted
+                    raise last_error
         
         # Get the markdown response directly
         processed_content = response.choices[0].message.content.strip()
@@ -344,7 +361,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         debug_call_data["results_count"] = results_count
         
         # Convert to JSON
-        result_json = json.dumps(response_data, indent=2)
+        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         
         debug_call_data["final_response_size"] = len(result_json)
         
@@ -362,7 +379,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         _log_debug_call("web_search_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps({"error": error_msg})
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 async def web_extract_tool(
@@ -575,18 +592,20 @@ async def web_extract_tool(
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
                 "error": r.get("error"),
-                **({"llm_model": model} if use_llm_processing else {})
             }
             for r in response.get("results", [])
         ]
         trimmed_response = {"results": trimmed_results}
-        # Include model name used for summarization when LLM processing was requested
-        if use_llm_processing:
-            trimmed_response["llm_model"] = model
+
+        if trimmed_response.get("results") == []:
+            result_json = json.dumps({"error": "Content was inaccessible or not found"}, ensure_ascii=False)
+
+            cleaned_result = clean_base64_images(result_json)
         
-        result_json = json.dumps(trimmed_response, indent=2)
-        # Clean base64 images from extracted content
-        cleaned_result = clean_base64_images(result_json)
+        else:
+            result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
+            
+            cleaned_result = clean_base64_images(result_json)
         
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
@@ -605,7 +624,7 @@ async def web_extract_tool(
         _log_debug_call("web_extract_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps({"error": error_msg})
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 async def web_crawl_tool(
@@ -851,17 +870,13 @@ async def web_crawl_tool(
             {
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error"),
-                **({"llm_model": model} if use_llm_processing else {})
+                "error": r.get("error")
             }
             for r in response.get("results", [])
         ]
         trimmed_response = {"results": trimmed_results}
-        # Include model name used for summarization when LLM processing was requested
-        if use_llm_processing:
-            trimmed_response["llm_model"] = model
         
-        result_json = json.dumps(trimmed_response, indent=2)
+        result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
         # Clean base64 images from crawled content
         cleaned_result = clean_base64_images(result_json)
         
@@ -882,7 +897,7 @@ async def web_crawl_tool(
         _log_debug_call("web_crawl_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps({"error": error_msg})
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 # Convenience function to check if API key is available

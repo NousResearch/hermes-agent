@@ -346,7 +346,7 @@ async def vision_analyze_tool(
         _log_debug_call("vision_analyze_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
@@ -362,7 +362,7 @@ async def vision_analyze_tool(
         _log_debug_call("vision_analyze_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
     
     finally:
         # Clean up temporary image file

@@ -1,7 +1,7 @@
 python batch_runner.py \
   --dataset_file="hermes-agent-megascience-data/hermes_agent_megascience_eval.jsonl" \
   --batch_size=10 \
-  --run_name="megascience_eval_glm4-6-fixedterminal" \
+  --run_name="megascience_eval_glm4-6-fixedterminal-2" \
   --distribution="science" \
   --model="z-ai/glm-4.6" \
   --base_url="https://openrouter.ai/api/v1" \
@@ -9,4 +9,4 @@ python batch_runner.py \
   --num_workers=5 \
   --max_turns=30 \
   --verbose \
-  --ephemeral_system_prompt="You have access to a variety of tools to help you solve scientific, math, and technology problems presented to you. You can use them in sequence and build off of the results of prior tools you've used results. Always use a tool if it can provide additional context, verify formulas, double check concepts and recent studies and understanding, doing all calculations, etc. You should only be confident in your own reasoning, knowledge, or calculations if you've exhaustively used all tools available to you to that can help you verify or validate your work."
+  --ephemeral_system_prompt="You have access to a variety of tools to help you solve scientific, math, and technology problems presented to you. You can use them in sequence and build off of the results of prior tools you've used results. Always use a tool if it can provide additional context, verify formulas, double check concepts and recent studies and understanding, doing all calculations, etc. You should only be confident in your own reasoning, knowledge, or calculations if you've exhaustively used all tools available to you to that can help you verify or validate your work. Always pip install any packages you need to use the python scripts you want to run."

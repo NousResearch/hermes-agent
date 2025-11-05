@@ -414,7 +414,7 @@ async def image_generate_tool(
         _log_debug_call("image_generate_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(response_data, indent=2)
+        return json.dumps(response_data, indent=2, ensure_ascii=False)
         
     except Exception as e:
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
@@ -432,7 +432,7 @@ async def image_generate_tool(
         _log_debug_call("image_generate_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(response_data, indent=2)
+        return json.dumps(response_data, indent=2, ensure_ascii=False)
 
 
 def check_fal_api_key() -> bool:

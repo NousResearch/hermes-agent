@@ -478,7 +478,7 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         return asyncio.run(web_crawl_tool(url, instructions, "basic"))
     
     else:
-        return json.dumps({"error": f"Unknown web function: {function_name}"})
+        return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
 
 def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
@@ -501,7 +501,7 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         return terminal_tool(command, input_keys, None, background, idle_threshold, timeout)
     
     else:
-        return json.dumps({"error": f"Unknown terminal function: {function_name}"})
+        return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
 
 
 def handle_vision_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
@@ -525,7 +525,7 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
         return asyncio.run(vision_analyze_tool(image_url, full_prompt, "gemini-2.5-flash"))
     
     else:
-        return json.dumps({"error": f"Unknown vision function: {function_name}"})
+        return json.dumps({"error": f"Unknown vision function: {function_name}"}, ensure_ascii=False)
 
 
 def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
@@ -543,13 +543,13 @@ def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) 
         user_prompt = function_args.get("user_prompt", "")
         
         if not user_prompt:
-            return json.dumps({"error": "user_prompt is required for MoA processing"})
+            return json.dumps({"error": "user_prompt is required for MoA processing"}, ensure_ascii=False)
         
         # Run async function in event loop
         return asyncio.run(mixture_of_agents_tool(user_prompt=user_prompt))
     
     else:
-        return json.dumps({"error": f"Unknown MoA function: {function_name}"})
+        return json.dumps({"error": f"Unknown MoA function: {function_name}"}, ensure_ascii=False)
 
 
 def handle_image_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
@@ -567,7 +567,7 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         prompt = function_args.get("prompt", "")
         
         if not prompt:
-            return json.dumps({"success": False, "image": None})
+            return json.dumps({"success": False, "image": None}, ensure_ascii=False)
         
         image_size = function_args.get("image_size", "landscape_16_9")
         
@@ -611,7 +611,7 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         return result
     
     else:
-        return json.dumps({"error": f"Unknown image generation function: {function_name}"})
+        return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
 
 
 def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
@@ -656,12 +656,12 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any]) -> s
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
-            return json.dumps({"error": error_msg})
+            return json.dumps({"error": error_msg}, ensure_ascii=False)
     
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         print(f"❌ {error_msg}")
-        return json.dumps({"error": error_msg})
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
     """

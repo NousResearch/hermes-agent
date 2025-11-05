@@ -23,3 +23,5 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+tests/quick_test_dataset.jsonl
+tests/sample_dataset.jsonl

@@ -21,3 +21,5 @@ data/
 .pytest_cache/
 tmp/
 temp_vision_images/
+hermes-*/*
+examples/

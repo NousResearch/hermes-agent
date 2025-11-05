@@ -24,7 +24,7 @@ def create_test_dataset():
     
     with open(test_file, 'w') as f:
         for prompt in prompts:
-            f.write(json.dumps(prompt) + "\n")
+            f.write(json.dumps(prompt, ensure_ascii=False) + "\n")
     
     print(f"✅ Created test dataset: {test_file}")
     return test_file

@@ -471,10 +471,10 @@ class BatchRunner:
         if lock:
             with lock:
                 with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
-                    json.dump(checkpoint_data, f, indent=2)
+                    json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
         else:
             with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
-                json.dump(checkpoint_data, f, indent=2)
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
     
     
     def run(self, resume: bool = False):
@@ -597,7 +597,7 @@ class BatchRunner:
         }
         
         with open(self.stats_file, 'w', encoding='utf-8') as f:
-            json.dump(final_stats, f, indent=2)
+            json.dump(final_stats, f, indent=2, ensure_ascii=False)
         
         # Print summary
         print("\n" + "=" * 70)

@@ -272,8 +272,10 @@ def terminal_tool(
                 "output": "",
                 "screen": "",
                 "exit_code": -1,
-                "error": f"Terminal tool is disabled due to import error: {import_error}"
-            })
+                "error": f"Terminal tool is disabled due to import error: {import_error}",
+                "status": "disabled"
+            }, ensure_ascii=False)
+
 
         # Get configuration from environment
         vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
@@ -287,8 +289,9 @@ def terminal_tool(
                 "output": "",
                 "screen": "",
                 "exit_code": -1,
-                "error": "MORPH_API_KEY environment variable not set"
-            })
+                "error": "MORPH_API_KEY environment variable not set",
+                "status": "disabled"
+            }, ensure_ascii=False)
 
         # Use task_id to isolate VMs between concurrent tasks
         # If no task_id provided, use "default" for backward compatibility
@@ -364,15 +367,16 @@ def terminal_tool(
             "error": result.get("error")
         }
 
-        return json.dumps(formatted_result)
+        return json.dumps(formatted_result, ensure_ascii=False)
 
     except Exception as e:
         return json.dumps({
             "output": "",
             "screen": "",
             "exit_code": -1,
-            "error": f"Failed to execute terminal command: {str(e)}"
-        })
+            "error": f"Failed to execute terminal command: {str(e)}",
+            "status": "error"
+        }, ensure_ascii=False)
 
 def check_hecate_requirements() -> bool:
     """

@@ -65,7 +65,8 @@ class AIAgent:
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
-        ephemeral_system_prompt: str = None
+        ephemeral_system_prompt: str = None,
+        log_prefix_chars: int = 100,
     ):
         """
         Initialize the AI Agent.
@@ -81,6 +82,7 @@ class AIAgent:
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -88,6 +90,7 @@ class AIAgent:
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
         self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.log_prefix_chars = log_prefix_chars
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -474,9 +477,9 @@ class AIAgent:
                             print(f"❌ Invalid JSON in tool call arguments: {e}")
                             function_args = {}
                         
-                        # Preview tool call arguments (first 20 chars)
+                        # Preview tool call arguments
                         args_str = json.dumps(function_args, ensure_ascii=False)
-                        args_preview = args_str[:20] + "..." if len(args_str) > 20 else args_str
+                        args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                         print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
                         tool_start_time = time.time()
@@ -498,8 +501,8 @@ class AIAgent:
                             "tool_call_id": tool_call.id
                         })
 
-                        # Preview tool response (first 20 chars)
-                        response_preview = function_result[:20] + "..." if len(function_result) > 20 else function_result
+                        # Preview tool response
+                        response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                         print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
                         
                         # Delay between tool calls
@@ -582,7 +585,7 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "claude-opus-4-20250514", 
+    model: str = "claude-opus-4-20250514",
     api_key: str = None,
     base_url: str = "https://api.anthropic.com/v1/",
     max_turns: int = 10,
@@ -590,25 +593,27 @@ def main(
     disabled_toolsets: str = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    log_prefix_chars: int = 20
 ):
     """
     Main function for running the agent directly.
-    
+
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
         model (str): Model name to use. Defaults to claude-opus-4-20250514.
         api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
-        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined 
-                              toolsets (e.g., "research", "development", "safe"). 
+        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
+                              toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
-        
+        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
+
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
@@ -725,7 +730,8 @@ def main(
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
             save_trajectories=save_trajectories,
-            verbose_logging=verbose
+            verbose_logging=verbose,
+            log_prefix_chars=log_prefix_chars
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")

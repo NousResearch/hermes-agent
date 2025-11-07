@@ -474,7 +474,10 @@ class AIAgent:
                             print(f"❌ Invalid JSON in tool call arguments: {e}")
                             function_args = {}
                         
-                        print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
+                        # Preview tool call arguments (first 20 chars)
+                        args_str = json.dumps(function_args, ensure_ascii=False)
+                        args_preview = args_str[:20] + "..." if len(args_str) > 20 else args_str
+                        print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
                         tool_start_time = time.time()
 
@@ -483,19 +486,21 @@ class AIAgent:
 
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
-                        
+
                         if self.verbose_logging:
                             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                             logging.debug(f"Tool result preview: {result_preview}...")
-                        
+
                         # Add tool result to conversation
                         messages.append({
                             "role": "tool",
                             "content": function_result,
                             "tool_call_id": tool_call.id
                         })
-                        
-                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
+
+                        # Preview tool response (first 20 chars)
+                        response_preview = function_result[:20] + "..." if len(function_result) > 20 else function_result
+                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):

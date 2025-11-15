@@ -164,7 +164,8 @@ def _process_single_prompt(
             enabled_toolsets=selected_toolsets,
             save_trajectories=False,  # We handle saving ourselves
             verbose_logging=config.get("verbose", False),
-            ephemeral_system_prompt=config.get("ephemeral_system_prompt")
+            ephemeral_system_prompt=config.get("ephemeral_system_prompt"),
+            log_prefix_chars=config.get("log_prefix_chars", 100)
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
@@ -323,11 +324,12 @@ class BatchRunner:
         model: str = "claude-opus-4-20250514",
         num_workers: int = 4,
         verbose: bool = False,
-        ephemeral_system_prompt: str = None
+        ephemeral_system_prompt: str = None,
+        log_prefix_chars: int = 100,
     ):
         """
         Initialize the batch runner.
-        
+
         Args:
             dataset_file (str): Path to the dataset JSONL file with 'prompt' field
             batch_size (int): Number of prompts per batch
@@ -340,6 +342,7 @@ class BatchRunner:
             num_workers (int): Number of parallel workers
             verbose (bool): Enable verbose logging
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
         """
         self.dataset_file = Path(dataset_file)
         self.batch_size = batch_size
@@ -352,6 +355,7 @@ class BatchRunner:
         self.num_workers = num_workers
         self.verbose = verbose
         self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.log_prefix_chars = log_prefix_chars
         
         # Validate distribution
         if not validate_distribution(distribution):
@@ -507,7 +511,8 @@ class BatchRunner:
             "base_url": self.base_url,
             "api_key": self.api_key,
             "verbose": self.verbose,
-            "ephemeral_system_prompt": self.ephemeral_system_prompt
+            "ephemeral_system_prompt": self.ephemeral_system_prompt,
+            "log_prefix_chars": self.log_prefix_chars
         }
         
         # Get completed prompts set
@@ -650,11 +655,12 @@ def main(
     resume: bool = False,
     verbose: bool = False,
     list_distributions: bool = False,
-    ephemeral_system_prompt: str = None
+    ephemeral_system_prompt: str = None,
+    log_prefix_chars: int = 100,
 ):
     """
     Run batch processing of agent prompts from a dataset.
-    
+
     Args:
         dataset_file (str): Path to JSONL file with 'prompt' field in each entry
         batch_size (int): Number of prompts per batch
@@ -669,6 +675,7 @@ def main(
         verbose (bool): Enable verbose logging (default: False)
         list_distributions (bool): List available toolset distributions and exit
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
         
     Examples:
         # Basic usage
@@ -729,9 +736,10 @@ def main(
             model=model,
             num_workers=num_workers,
             verbose=verbose,
-            ephemeral_system_prompt=ephemeral_system_prompt
+            ephemeral_system_prompt=ephemeral_system_prompt,
+            log_prefix_chars=log_prefix_chars
         )
-        
+
         runner.run(resume=resume)
     
     except Exception as e:

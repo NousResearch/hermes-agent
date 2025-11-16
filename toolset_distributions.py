@@ -67,7 +67,7 @@ DISTRIBUTIONS = {
         "description": "Web research with vision analysis and reasoning",
         "toolsets": {
             "web": 94,      # 90% chance of web tools
-            "vision": 50,   # 50% chance of vision tools
+            "vision": 65,   # 50% chance of vision tools
             "moa": 10,      # 40% chance of reasoning tools
             "terminal": 94,  # 10% chance of terminal tools
             "image_gen": 15  # 80% chance of image generation tools

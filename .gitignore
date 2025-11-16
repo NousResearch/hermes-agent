@@ -25,3 +25,8 @@ hermes-*/*
 examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
+run_datagen_kimik2-thinking.sh
+run_datagen_megascience_glm4-6.sh
+run_datagen_sonnet.sh
+source-data/*
+run_datagen_megascience_glm4-6.sh

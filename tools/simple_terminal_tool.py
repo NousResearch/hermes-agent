@@ -34,7 +34,7 @@ SIMPLE_TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux VM envi
 **Environment:**
 - Minimal Debian-based OS with internet access
 - Automatic VM lifecycle management (creates on-demand, reuses, cleans up)
-- No state persistence - each command runs independently
+- Filesystem is persisted between tool calls but environment variables, venvs, etc are reset.
 
 **Command Execution:**
 - Simple commands: Just provide the 'command' parameter
@@ -43,13 +43,18 @@ SIMPLE_TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux VM envi
 
 **Examples:**
 - Run command: `{"command": "ls -la"}`
-- Background task: `{"command": "python server.py", "background": True}`
+- Background task: `{"command": "source path/to/my/venv/bin/activate && python server.py", "background": True}`
 - With timeout: `{"command": "long_task.sh", "timeout": 300}`
 
 **Best Practices:**
 - Run servers/long processes in background
 - Monitor disk usage for large tasks
-- Install tools as needed with apt-get"""
+- Install whatever tools you need with sudo apt-get
+- Do not be afraid to run pip with --break-system-packages
+
+**Things to avoid**
+- Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck. Even git sometimes becomes interactive if the output is large. If you're not sure pipe to cat.
+"""
 
 # Global state for VM lifecycle management
 _active_instances: Dict[str, Any] = {}
@@ -89,7 +94,12 @@ def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
                     del _last_activity[task_id]
 
             except Exception as e:
-                print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
+                # 404 errors are benign - VM already cleaned up by TTL
+                error_str = str(e)
+                if "404" in error_str or "InstanceNotFoundError" in error_str or "not found" in error_str.lower():
+                    print(f"[VM Cleanup] VM for task {task_id} already cleaned up (likely TTL expiration)")
+                else:
+                    print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
 
 
 def _cleanup_thread_worker():
@@ -150,7 +160,12 @@ def cleanup_vm(task_id: str):
                 del _last_activity[task_id]
 
         except Exception as e:
-            print(f"[VM Cleanup] Error manually cleaning up VM for task {task_id}: {e}")
+            # 404 errors are benign - VM already cleaned up by TTL
+            error_str = str(e)
+            if "404" in error_str or "InstanceNotFoundError" in error_str or "not found" in error_str.lower():
+                print(f"[VM Cleanup] VM for task {task_id} already cleaned up (likely TTL expiration)")
+            else:
+                print(f"[VM Cleanup] Error manually cleaning up VM for task {task_id}: {e}")
 
 
 atexit.register(_stop_cleanup_thread)

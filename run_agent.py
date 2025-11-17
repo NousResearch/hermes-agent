@@ -388,7 +388,7 @@ class AIAgent:
         
         while api_call_count < self.max_iterations:
             api_call_count += 1
-            print(f"\n🔄 Making API call #{api_call_count}...")
+            print(f"\n🔄 Making OpenAI-compatible API call #{api_call_count}...")
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -397,8 +397,8 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
-            
+            max_retries = 6  # Increased to allow longer backoff periods
+
             while retry_count <= max_retries:
                 try:
                     # Prepare messages for API call
@@ -407,30 +407,30 @@ class AIAgent:
                     if active_system_prompt:
                         # Insert system message at the beginning
                         api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
-                    
+
                     # Make API call with tools
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=api_messages,
                         tools=self.tools if self.tools else None,
-                        timeout=60.0  # Add explicit timeout
+                        timeout=300.0  # 5 minute timeout for long-running agent tasks
                     )
-                    
+
                     api_duration = time.time() - api_start_time
-                    print(f"⏱️  API call completed in {api_duration:.2f}s")
-                    
+                    print(f"⏱️  OpenAI-compatible API call completed in {api_duration:.2f}s")
+
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                    
+
                     break  # Success, exit retry loop
-                    
+
                 except Exception as api_error:
                     retry_count += 1
                     if retry_count > max_retries:
                         raise api_error
-                    
-                    wait_time = min(2 ** retry_count, 10)  # Exponential backoff, max 10s
-                    print(f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
+
+                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
                     print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
                     time.sleep(wait_time)
@@ -522,11 +522,11 @@ class AIAgent:
                         "content": final_response
                     })
                     
-                    print(f"🎉 Conversation completed after {api_call_count} API call(s)")
+                    print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
                 
             except Exception as e:
-                error_msg = f"Error during API call #{api_call_count}: {str(e)}"
+                error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
                 print(f"❌ {error_msg}")
                 
                 if self.verbose_logging:

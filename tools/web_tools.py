@@ -184,10 +184,10 @@ Your goal is to preserve ALL important information while reducing length. Never 
 Create a markdown summary that captures all key information in a well-organized, scannable format. Include important quotes and code snippets in their original formatting. Focus on actionable information, specific details, and unique insights."""
 
         # Call the LLM asynchronously with retry logic for flaky API
-        max_retries = 3
+        max_retries = 6
         retry_delay = 2  # Start with 2 seconds
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
                 response = await nous_client.chat.completions.create(
@@ -206,7 +206,7 @@ Create a markdown summary that captures all key information in a well-organized,
                     print(f"⚠️  LLM API call failed (attempt {attempt + 1}/{max_retries}): {str(api_error)[:100]}")
                     print(f"   Retrying in {retry_delay}s...")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff: 2s, 4s, 8s
+                    retry_delay = min(retry_delay * 2, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s
                 else:
                     # All retries exhausted
                     raise last_error

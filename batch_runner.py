@@ -34,11 +34,12 @@ import fire
 
 from run_agent import AIAgent
 from toolset_distributions import (
-    get_distribution, 
-    list_distributions, 
+    get_distribution,
+    list_distributions,
     sample_toolsets_from_distribution,
     validate_distribution
 )
+from profiling import get_profiler
 
 
 # Global configuration for worker processes
@@ -639,6 +640,9 @@ class BatchRunner:
         print(f"   - Individual batches: batch_*.jsonl (for debugging)")
         print(f"   - Statistics: {self.stats_file.name}")
         print(f"   - Checkpoint: {self.checkpoint_file.name}")
+
+        # Display profiling statistics for the entire batch run
+        get_profiler().print_statistics(detailed=True)
 
 
 def main(

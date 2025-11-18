@@ -45,6 +45,9 @@ else:
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
 from tools.terminal_tool import cleanup_vm
 
+# Import profiling
+from profiling import get_profiler
+
 
 class AIAgent:
     """
@@ -364,6 +367,10 @@ class AIAgent:
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Reset profiler for this conversation to get fresh stats
+        from profiling import reset_profiler as reset_prof
+        reset_prof()
+
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         import uuid
         effective_task_id = task_id or str(uuid.uuid4())
@@ -418,6 +425,9 @@ class AIAgent:
 
                     api_duration = time.time() - api_start_time
                     print(f"⏱️  OpenAI-compatible API call completed in {api_duration:.2f}s")
+
+                    # Record API timing in profiler
+                    get_profiler().record_api_timing(api_duration)
 
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
@@ -489,6 +499,9 @@ class AIAgent:
 
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
+
+                        # Record tool timing in profiler
+                        get_profiler().record_tool_timing(function_name, tool_duration)
 
                         if self.verbose_logging:
                             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -562,11 +575,15 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
 
+        # Get profiling statistics for this conversation
+        profiling_stats = get_profiler().get_statistics()
+
         return {
             "final_response": final_response,
             "messages": messages,
             "api_calls": api_call_count,
-            "completed": completed
+            "completed": completed,
+            "profiling_stats": profiling_stats
         }
     
     def chat(self, message: str) -> str:
@@ -594,7 +611,8 @@ def main(
     list_tools: bool = False,
     save_trajectories: bool = False,
     verbose: bool = False,
-    log_prefix_chars: int = 20
+    log_prefix_chars: int = 20,
+    show_profiling: bool = True
 ):
     """
     Main function for running the agent directly.
@@ -613,6 +631,7 @@ def main(
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
+        show_profiling (bool): Display profiling statistics after conversation. Defaults to True.
 
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
@@ -763,7 +782,11 @@ def main(
         print(f"\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])
-    
+
+    # Display profiling statistics if enabled
+    if show_profiling:
+        get_profiler().print_statistics(detailed=True)
+
     print("\n👋 Agent execution completed!")
 
 

@@ -401,6 +401,8 @@ class AIAgent:
             if self.verbose_logging:
                 logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
                 logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
+                # Log the last few messages to see if thought_signature is present
+                logging.debug(f"Last message content: {json.dumps(messages[-1] if messages else {}, indent=2)}")
             
             api_start_time = time.time()
             retry_count = 0
@@ -459,22 +461,58 @@ class AIAgent:
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
                             logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                            # Debug: Check what attributes are available on tool_call
+                            logging.debug(f"Tool call attributes: {dir(tc)}")
+                            # Try to dump the model to see all fields
+                            if hasattr(tc, 'model_dump'):
+                                logging.debug(f"Tool call data: {tc.model_dump()}")
                     
                     # Add assistant message with tool calls to conversation
+                    # Extract thought_signature if present (required for Gemini models)
+                    tool_calls_data = []
+                    for tool_call in assistant_message.tool_calls:
+                        tool_call_dict = {
+                            "id": tool_call.id,
+                            "type": tool_call.type,
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments
+                            }
+                        }
+                        # Try multiple ways to access thought_signature (Gemini-specific)
+                        # Gemini uses extra_content.google.thought_signature structure
+                        thought_sig = None
+
+                        # Method 1: Check extra_content attribute
+                        if hasattr(tool_call, 'extra_content'):
+                            extra = tool_call.extra_content
+                            if isinstance(extra, dict) and 'google' in extra:
+                                thought_sig = extra['google'].get('thought_signature')
+
+                        # Method 2: Check model_dump() if available (Pydantic v2)
+                        if thought_sig is None and hasattr(tool_call, 'model_dump'):
+                            dumped = tool_call.model_dump()
+                            if 'extra_content' in dumped and isinstance(dumped['extra_content'], dict):
+                                google_data = dumped['extra_content'].get('google', {})
+                                thought_sig = google_data.get('thought_signature')
+
+                        if thought_sig is not None:
+                            tool_call_dict["extra_content"] = {
+                                "google": {
+                                    "thought_signature": thought_sig
+                                }
+                            }
+                            if self.verbose_logging:
+                                logging.debug(f"Captured thought_signature for tool call {tool_call.id}")
+                        elif self.verbose_logging:
+                            logging.debug(f"No thought_signature found for tool call {tool_call.id}")
+
+                        tool_calls_data.append(tool_call_dict)
+
                     messages.append({
                         "role": "assistant",
                         "content": assistant_message.content,
-                        "tool_calls": [
-                            {
-                                "id": tool_call.id,
-                                "type": tool_call.type,
-                                "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments
-                                }
-                            }
-                            for tool_call in assistant_message.tool_calls
-                        ]
+                        "tool_calls": tool_calls_data
                     })
                     
                     # Execute each tool call
@@ -508,6 +546,7 @@ class AIAgent:
                             logging.debug(f"Tool result preview: {result_preview}...")
 
                         # Add tool result to conversation
+                        # Note: thought_signature should NOT be in tool responses, only in assistant messages
                         messages.append({
                             "role": "tool",
                             "content": function_result,

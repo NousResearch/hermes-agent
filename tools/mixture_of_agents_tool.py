@@ -78,6 +78,7 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 
 # Failure handling configuration
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
+UNAVAILABLE_TOOL_RESPONSE = "This tools is not available"
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -364,13 +365,28 @@ async def mixture_of_agents_tool(
         if failed_models:
             print(f"⚠️  Failed models: {', '.join(failed_models)}")
         
-        # Check if we have enough successful responses to proceed
-        if successful_count < MIN_SUCCESSFUL_REFERENCES:
-            raise ValueError(f"Insufficient successful reference models ({successful_count}/{len(ref_models)}). Need at least {MIN_SUCCESSFUL_REFERENCES} successful responses.")
-        
         debug_call_data["reference_responses_count"] = successful_count
         debug_call_data["failed_models_count"] = failed_count
         debug_call_data["failed_models"] = failed_models
+
+        # Check if we have enough successful responses to proceed
+        if successful_count < MIN_SUCCESSFUL_REFERENCES:
+            print("🚫 MoA tool unavailable: insufficient successful reference models after retries")
+            result = {
+                "success": False,
+                "response": UNAVAILABLE_TOOL_RESPONSE,
+                "models_used": {
+                    "reference_models": ref_models,
+                    "aggregator_model": agg_model
+                }
+            }
+            debug_call_data["error"] = UNAVAILABLE_TOOL_RESPONSE
+            debug_call_data["models_used"] = result["models_used"]
+            processing_time = (datetime.datetime.now() - start_time).total_seconds()
+            debug_call_data["processing_time_seconds"] = processing_time
+            _log_debug_call("mixture_of_agents_tool", debug_call_data)
+            _save_debug_log()
+            return json.dumps(result, indent=2, ensure_ascii=False)
         
         # Layer 2: Aggregate responses using the aggregator model
         print("🧠 Layer 2: Synthesizing final response...")

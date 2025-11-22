@@ -536,7 +536,7 @@ class BatchRunner:
         verbose: bool = False,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
-        max_tool_failures: int = 10,
+        max_tool_failures: float = float("inf"),
         max_tool_failure_rate: float = 0.5,
         keep_recent_errors: int = 5,
         min_tool_calls_for_rate: int = 10,
@@ -557,7 +557,7 @@ class BatchRunner:
             verbose (bool): Enable verbose logging
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
-            max_tool_failures (int): Maximum number of tool failures before stopping (default: 10)
+            max_tool_failures (float): Maximum number of tool failures before stopping (default: inf for unlimited)
             max_tool_failure_rate (float): Maximum tool failure rate (0.0-1.0) before stopping (default: 0.5)
             keep_recent_errors (int): Number of recent errors to keep per tool (default: 5)
             min_tool_calls_for_rate (int): Minimum number of tool calls before checking failure rate (default: 10)
@@ -1150,7 +1150,7 @@ def main(
     list_distributions: bool = False,
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
-    max_tool_failures: int = 10,
+    max_tool_failures: float = float("inf"),
     max_tool_failure_rate: float = 0.5,
     keep_recent_errors: int = 5,
     min_tool_calls_for_rate: int = 10,
@@ -1173,7 +1173,7 @@ def main(
         list_distributions (bool): List available toolset distributions and exit
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
-        max_tool_failures (int): Maximum number of tool failures before stopping (default: 10)
+        max_tool_failures (float): Maximum number of tool failures before stopping (default: inf for unlimited)
         max_tool_failure_rate (float): Maximum tool failure rate (0.0-1.0) before stopping (default: 0.5)
         keep_recent_errors (int): Number of recent errors to keep per tool for reporting (default: 5)
         min_tool_calls_for_rate (int): Minimum number of tool calls before checking failure rate (default: 10)

@@ -24,11 +24,121 @@ import json
 import logging
 import os
 import time
+import sys
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
 from pathlib import Path
+from rich import print
+
+from prokletor.formatters.hermes_formatter import HermesToolFormatterWithReasoning
+
+class SyncCustomToolCompletions:
+    def __init__(self, completions, formatter):
+        self._completions = completions
+        self._formatter = formatter
+
+    def create(self, *args, messages, tools=None, **kwargs):
+        if not tools:
+            return self._completions.create(*args, messages=messages, **kwargs)
+
+        # 1. Format system message with tools
+        system_prompt = self._formatter.format_system_message(tools)
+        
+        new_messages = list(messages)
+        if new_messages and new_messages[0]["role"] == "system":
+            # Append to existing system message
+            existing_content = new_messages[0]["content"]
+            if isinstance(existing_content, str):
+                new_messages[0] = {
+                    "role": "system",
+                    "content": existing_content + "\n\n" + system_prompt
+                }
+        else:
+            # Insert new system message
+            new_messages.insert(0, {
+                "role": "system",
+                "content": system_prompt
+            })
+
+        # 2. Call the API without the 'tools' parameter
+        kwargs.pop("tool_choice", None)
+        
+        # Process messages (e.g. convert roles and add reasoning prompt)
+        # use_tool_role=False for API compatibility
+        new_messages = self._formatter.process_messages(new_messages, use_tool_role=False)
+
+        response = self._completions.create(
+            *args,
+            messages=new_messages,
+            # tools=tools, # Do NOT pass tools to the model
+            **kwargs
+        )
+
+        # 3. Parse the response
+        choice = response.choices[0]
+        if choice.message.content:
+            tool_calls = self._formatter.parse_response(choice.message.content, tools=tools)
+            if tool_calls:
+                choice.message.tool_calls = tool_calls
+                
+                # Clean the content if the formatter supports it
+                if hasattr(self._formatter, "extract_text_from_content"):
+                    cleaned_content = self._formatter.extract_text_from_content(choice.message.content)
+                    choice.message.content = cleaned_content
+                    
+                    if not choice.message.content:
+                        choice.message.content = None
+        
+        return response
+        
+    def __getattr__(self, name):
+        return getattr(self._completions, name)
+
+class SyncCustomChat:
+    def __init__(self, chat, formatter):
+        self._chat = chat
+        self.completions = SyncCustomToolCompletions(chat.completions, formatter)
+        
+    def __getattr__(self, name):
+        return getattr(self._chat, name)
+
+class SyncHermesToolClientWithReasoning:
+    def __init__(self, client):
+        self._client = client
+        self.formatter = HermesToolFormatterWithReasoning()
+        self.chat = SyncCustomChat(client.chat, self.formatter)
+
+    def format(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], use_tool_role: bool = True) -> List[Dict[str, Any]]:
+        """
+        Format messages and tools into the Hermes XML format.
+        Useful for debugging or manual inspection of what will be sent to the model.
+        """
+        # 1. Format system message with tools
+        system_prompt = self.formatter.format_system_message(tools)
+        
+        new_messages = list(messages)
+        if new_messages and new_messages[0]["role"] == "system":
+            # Append to existing system message
+            existing_content = new_messages[0]["content"]
+            if isinstance(existing_content, str):
+                new_messages[0] = {
+                    "role": "system",
+                    "content": existing_content + "\n\n" + system_prompt
+                }
+        else:
+            # Insert new system message
+            new_messages.insert(0, {
+                "role": "system",
+                "content": system_prompt
+            })
+
+        # 2. Process messages (convert tool calls and results to XML)
+        return self.formatter.process_messages(new_messages, use_tool_role=use_tool_role)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -132,7 +242,11 @@ class AIAgent:
             client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", "dummy-key")
         
         try:
-            self.client = OpenAI(**client_kwargs)
+            oai_client = OpenAI(**client_kwargs)
+            # self.client = oai_client
+            self.client = SyncHermesToolClientWithReasoning(oai_client)
+            print(f"🧠 Wrapped OpenAI client with SyncHermesToolClientWithReasoning")
+
             print(f"🤖 AI Agent initialized with model: {self.model}")
             if base_url:
                 print(f"🔗 Using custom base URL: {base_url}")
@@ -210,22 +324,54 @@ class AIAgent:
         Returns:
             List[Dict]: Messages in trajectory format
         """
+        # Use the client wrapper's format method if available to get the exact Hermes format
+        # This ensures batch runner also gets the correct formatting
+        if hasattr(self, 'client') and hasattr(self.client, 'format'):
+            formatted_messages = self.client.format(messages, self.tools, use_tool_role=True)
+            
+            trajectory = []
+            for msg in formatted_messages:
+                role = msg["role"]
+                content = msg["content"]
+                
+                # Map roles to trajectory format (human, gpt, system, tool)
+                if role == "user":
+                    trajectory_role = "human"
+                elif role == "assistant":
+                    trajectory_role = "gpt"
+                elif role == "system":
+                    trajectory_role = "system"
+                elif role == "tool":
+                    trajectory_role = "tool"
+                else:
+                    trajectory_role = role
+                    
+                trajectory.append({
+                    "from": trajectory_role,
+                    "value": content
+                })
+            return trajectory
+
         trajectory = []
         
         # Add system message with tool definitions
-        system_msg = (
-            "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
-            "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
-            "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
-            "into functions. After calling & executing the functions, you will be provided with function results within "
-            "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
-            f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n"
-            "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
-            "{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, "
-            "'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\n"
-            "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-            "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
-        )
+        # Use the client's formatter if available to ensure consistency (e.g. reasoning prompt)
+        if hasattr(self, 'client') and hasattr(self.client, 'formatter'):
+            system_msg = self.client.formatter.format_system_message(self.tools if self.tools else [])
+        else:
+            system_msg = (
+                "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
+                "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
+                "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
+                "into functions. After calling & executing the functions, you will be provided with function results within "
+                "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
+                f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n"
+                "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
+                "{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, "
+                "'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\n"
+                "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
+                "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
+            )
         
         trajectory.append({
             "from": "system",
@@ -407,6 +553,8 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            response = None
+            last_api_error = None
 
             while retry_count <= max_retries:
                 try:
@@ -416,8 +564,9 @@ class AIAgent:
                     if active_system_prompt:
                         # Insert system message at the beginning
                         api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
-
+                    
                     # Make API call with tools
+
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=api_messages,
@@ -437,6 +586,15 @@ class AIAgent:
                     break  # Success, exit retry loop
 
                 except Exception as api_error:
+                    last_api_error = api_error
+                    error_message = str(api_error)
+                    token_limit_error = "input token count exceeds the maximum number of tokens" in error_message.lower()
+
+                    if token_limit_error:
+                        print("❌ OpenAI-compatible API call failed: input token limit exceeded. Not retrying this request.")
+                        logging.error("Non-retryable token limit error from API: %s", api_error)
+                        break
+
                     retry_count += 1
                     if retry_count > max_retries:
                         raise api_error
@@ -446,7 +604,10 @@ class AIAgent:
                     print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
                     time.sleep(wait_time)
-            
+
+            if response is None:
+                raise last_api_error if last_api_error else RuntimeError("OpenAI-compatible API call failed without a response")
+
             try:
                 assistant_message = response.choices[0].message
                 
@@ -605,7 +766,75 @@ class AIAgent:
         completed = final_response is not None and api_call_count < self.max_iterations
 
         # Save trajectory if enabled
-        self._save_trajectory(messages, user_message, completed)
+        # When saving trajectory, we want to show what the prompt would look like with proper tool roles
+        # This is helpful for training data or debugging
+        if self.save_trajectories:
+            # Use the client wrapper's format method if available to get the exact Hermes format
+            if hasattr(self, 'client') and hasattr(self.client, 'format'):
+                raise ValueError("reached this point")
+                formatted_messages = self.client.format(messages, self.tools, use_tool_role=True)
+                
+                # We need to adapt this formatted list to the trajectory format expected by _save_trajectory
+                # Since _convert_to_trajectory_format expects raw OAI messages, we might need a different approach
+                # OR just pass the formatted messages directly if _save_trajectory supports it.
+                
+                # Let's look at _convert_to_trajectory_format. It iterates through messages and converts them.
+                # If we pass messages that are already formatted (e.g. system prompt with tools, tool calls in XML),
+                # we need to be careful not to double-format.
+                
+                # Actually, the goal is to save the trajectory in a specific JSONL format for training/eval.
+                # If we use the Hermes formatter, it produces a list of messages where content is XML strings.
+                # The existing _convert_to_trajectory_format does manual XML wrapping.
+                
+                # Ideally, we should use the messages as they are (OAI format) and let the training pipeline handle formatting,
+                # OR save them in the exact format the model sees.
+                
+                # The user request is: "accumulating history in oai format and then calling that final thing with use_tool_call True"
+                # referring to client.format(messages, tools, use_tool_role=True)
+                
+                # So let's save the RESULT of client.format() to the trajectory file.
+                
+                # Create a custom trajectory entry directly from the formatted messages
+                trajectory_content = []
+                for msg in formatted_messages:
+                    role = msg["role"]
+                    content = msg["content"]
+                    
+                    # Map roles to trajectory format (human, gpt, system, tool)
+                    if role == "user":
+                        trajectory_role = "human"
+                    elif role == "assistant":
+                        trajectory_role = "gpt"
+                    elif role == "system":
+                        trajectory_role = "system"
+                    elif role == "tool":
+                        trajectory_role = "tool"
+                    else:
+                        trajectory_role = role
+                        
+                    trajectory_content.append({
+                        "from": trajectory_role,
+                        "value": content
+                    })
+                
+                # Save this specific formatted trajectory
+                filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
+                entry = {
+                    "conversations": trajectory_content,
+                    "timestamp": datetime.now().isoformat(),
+                    "model": self.model,
+                    "completed": completed
+                }
+                
+                try:
+                    with open(filename, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    print(f"💾 Trajectory saved to {filename} (using Hermes format)")
+                except Exception as e:
+                    print(f"⚠️ Failed to save trajectory: {e}")
+            else:
+                # Fallback to original saving method
+                self._save_trajectory(messages, user_message, completed)
 
         # Clean up VM for this task after conversation completes
         try:

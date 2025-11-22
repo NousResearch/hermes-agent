@@ -189,8 +189,13 @@ def _execute_ssh_command(instance, command: str, timeout: Optional[int] = None) 
         ssh_context_manager = instance.ssh()
         ssh_context = ssh_context_manager.__enter__()
 
-        # Execute the command
-        result = ssh_context.run(command, get_pty=False, timeout=timeout or 120)
+        # Execute the command. Using a PTY ensures stdout/stderr ordering matches
+        # what a human would see in a terminal session.
+        result = ssh_context.run(
+            command,
+            get_pty=True,
+            timeout=timeout or 120,
+        )
 
         # Close the SSH connection
         if ssh_context_manager:
@@ -213,21 +218,11 @@ def _execute_ssh_command(instance, command: str, timeout: Optional[int] = None) 
             except:
                 pass
 
-        # Check if it's a timeout
-        error_str = str(e).lower()
-        if "timeout" in error_str:
-            return {
-                "stdout": "",
-                "stderr": f"Command timed out after {timeout or 120} seconds",
-                "returncode": 124
-            }
-
         return {
             "stdout": "",
             "stderr": f"SSH execution failed: {str(e)}",
             "returncode": -1
         }
-
 
 def simple_terminal_tool(
     command: str,
@@ -315,15 +310,21 @@ def simple_terminal_tool(
             result = _execute_ssh_command(instance, exec_command, timeout=10)
 
             # For background tasks, return immediately with info
+            stderr_text = (result["stderr"] or "").strip()
             if result["returncode"] == 0:
                 return json.dumps({
                     "output": "Background task started successfully",
+                    "stderr": stderr_text,
                     "exit_code": 0,
                     "error": None
                 }, ensure_ascii=False)
             else:
+                output_text = result["stdout"] or ""
+                if result["stderr"] and not output_text:
+                    output_text = result["stderr"]
                 return json.dumps({
-                    "output": result["stdout"],
+                    "output": output_text,
+                    "stderr": stderr_text,
                     "exit_code": result["returncode"],
                     "error": result["stderr"]
                 }, ensure_ascii=False)
@@ -331,13 +332,13 @@ def simple_terminal_tool(
             # Run foreground command
             result = _execute_ssh_command(instance, command, timeout=timeout)
 
-            # Combine stdout and stderr for output
-            output = result["stdout"]
+            output = result["stdout"] or ""
             if result["stderr"] and result["returncode"] != 0:
                 output = f"{output}\n{result['stderr']}" if output else result["stderr"]
-
+            stderr_text = (result["stderr"] or "").strip()
             return json.dumps({
                 "output": output.strip(),
+                "stderr": stderr_text,
                 "exit_code": result["returncode"],
                 "error": result["stderr"] if result["returncode"] != 0 else None
             }, ensure_ascii=False)

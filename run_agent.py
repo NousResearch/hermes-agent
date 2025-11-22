@@ -24,121 +24,17 @@ import json
 import logging
 import os
 import time
+import asyncio
 import sys
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from openai import AsyncOpenAI
 import fire
 from datetime import datetime
 from pathlib import Path
 from rich import print
 
 from prokletor.formatters.hermes_formatter import HermesToolFormatterWithReasoning
-
-class SyncCustomToolCompletions:
-    def __init__(self, completions, formatter):
-        self._completions = completions
-        self._formatter = formatter
-
-    def create(self, *args, messages, tools=None, **kwargs):
-        if not tools:
-            return self._completions.create(*args, messages=messages, **kwargs)
-
-        # 1. Format system message with tools
-        system_prompt = self._formatter.format_system_message(tools)
-        
-        new_messages = list(messages)
-        if new_messages and new_messages[0]["role"] == "system":
-            # Append to existing system message
-            existing_content = new_messages[0]["content"]
-            if isinstance(existing_content, str):
-                new_messages[0] = {
-                    "role": "system",
-                    "content": existing_content + "\n\n" + system_prompt
-                }
-        else:
-            # Insert new system message
-            new_messages.insert(0, {
-                "role": "system",
-                "content": system_prompt
-            })
-
-        # 2. Call the API without the 'tools' parameter
-        kwargs.pop("tool_choice", None)
-        
-        # Process messages (e.g. convert roles and add reasoning prompt)
-        # use_tool_role=False for API compatibility
-        new_messages = self._formatter.process_messages(new_messages, use_tool_role=False)
-
-        response = self._completions.create(
-            *args,
-            messages=new_messages,
-            # tools=tools, # Do NOT pass tools to the model
-            **kwargs
-        )
-
-        # 3. Parse the response
-        choice = response.choices[0]
-        if choice.message.content:
-            tool_calls = self._formatter.parse_response(choice.message.content, tools=tools)
-            if tool_calls:
-                choice.message.tool_calls = tool_calls
-                
-                # Clean the content if the formatter supports it
-                if hasattr(self._formatter, "extract_text_from_content"):
-                    cleaned_content = self._formatter.extract_text_from_content(choice.message.content)
-                    choice.message.content = cleaned_content
-                    
-                    if not choice.message.content:
-                        choice.message.content = None
-        
-        return response
-        
-    def __getattr__(self, name):
-        return getattr(self._completions, name)
-
-class SyncCustomChat:
-    def __init__(self, chat, formatter):
-        self._chat = chat
-        self.completions = SyncCustomToolCompletions(chat.completions, formatter)
-        
-    def __getattr__(self, name):
-        return getattr(self._chat, name)
-
-class SyncHermesToolClientWithReasoning:
-    def __init__(self, client):
-        self._client = client
-        self.formatter = HermesToolFormatterWithReasoning()
-        self.chat = SyncCustomChat(client.chat, self.formatter)
-
-    def format(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], use_tool_role: bool = True) -> List[Dict[str, Any]]:
-        """
-        Format messages and tools into the Hermes XML format.
-        Useful for debugging or manual inspection of what will be sent to the model.
-        """
-        # 1. Format system message with tools
-        system_prompt = self.formatter.format_system_message(tools)
-        
-        new_messages = list(messages)
-        if new_messages and new_messages[0]["role"] == "system":
-            # Append to existing system message
-            existing_content = new_messages[0]["content"]
-            if isinstance(existing_content, str):
-                new_messages[0] = {
-                    "role": "system",
-                    "content": existing_content + "\n\n" + system_prompt
-                }
-        else:
-            # Insert new system message
-            new_messages.insert(0, {
-                "role": "system",
-                "content": system_prompt
-            })
-
-        # 2. Process messages (convert tool calls and results to XML)
-        return self.formatter.process_messages(new_messages, use_tool_role=use_tool_role)
-
-    def __getattr__(self, name):
-        return getattr(self._client, name)
+from prokletor.clients.hermes import HermesToolClientWithReasoning
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -242,10 +138,10 @@ class AIAgent:
             client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", "dummy-key")
         
         try:
-            oai_client = OpenAI(**client_kwargs)
+            oai_client = AsyncOpenAI(**client_kwargs)
             # self.client = oai_client
-            self.client = SyncHermesToolClientWithReasoning(oai_client)
-            print(f"🧠 Wrapped OpenAI client with SyncHermesToolClientWithReasoning")
+            self.client = HermesToolClientWithReasoning(oai_client)
+            print(f"🧠 Wrapped OpenAI client with AsyncHermesToolClientWithReasoning")
 
             print(f"🤖 AI Agent initialized with model: {self.model}")
             if base_url:
@@ -494,7 +390,7 @@ class AIAgent:
         except Exception as e:
             print(f"⚠️ Failed to save trajectory: {e}")
     
-    def run_conversation(
+    async def run_conversation(
         self,
         user_message: str,
         system_message: str = None,
@@ -567,7 +463,7 @@ class AIAgent:
                     
                     # Make API call with tools
 
-                    response = self.client.chat.completions.create(
+                    response = await self.client.chat.completions.create(
                         model=self.model,
                         messages=api_messages,
                         tools=self.tools if self.tools else None,
@@ -603,7 +499,7 @@ class AIAgent:
                     print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
                     print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
-                    time.sleep(wait_time)
+                    await asyncio.sleep(wait_time)
 
             if response is None:
                 raise last_api_error if last_api_error else RuntimeError("OpenAI-compatible API call failed without a response")
@@ -694,7 +590,7 @@ class AIAgent:
                         tool_start_time = time.time()
 
                         # Execute the tool with task_id to isolate VMs between concurrent tasks
-                        function_result = handle_function_call(function_name, function_args, effective_task_id)
+                        function_result = await handle_function_call(function_name, function_args, effective_task_id)
 
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
@@ -720,7 +616,7 @@ class AIAgent:
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
-                            time.sleep(self.tool_delay)
+                            await asyncio.sleep(self.tool_delay)
                     
                     # Continue loop for next response
                     continue
@@ -838,7 +734,7 @@ class AIAgent:
 
         # Clean up VM for this task after conversation completes
         try:
-            cleanup_vm(effective_task_id)
+            await asyncio.to_thread(cleanup_vm, effective_task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
@@ -854,7 +750,7 @@ class AIAgent:
             "profiling_stats": profiling_stats
         }
     
-    def chat(self, message: str) -> str:
+    async def chat(self, message: str) -> str:
         """
         Simple chat interface that returns just the final response.
         
@@ -864,7 +760,7 @@ class AIAgent:
         Returns:
             str: Final assistant response
         """
-        result = self.run_conversation(message)
+        result = await self.run_conversation(message)
         return result["final_response"]
 
 
@@ -1037,7 +933,7 @@ def main(
     print("\n" + "=" * 50)
     
     # Run conversation
-    result = agent.run_conversation(user_query)
+    result = asyncio.run(agent.run_conversation(user_query))
     
     print("\n" + "=" * 50)
     print("📋 CONVERSATION SUMMARY")

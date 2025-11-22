@@ -23,7 +23,7 @@ Usage:
     web_tools = get_tool_definitions(enabled_toolsets=['web_tools'])
     
     # Handle function calls from model
-    result = handle_function_call("web_search", {"query": "Python"})
+    result = await handle_function_call("web_search", {"query": "Python"})
 """
 
 import json
@@ -439,7 +439,7 @@ def get_tool_definitions(
     
     return filtered_tools
 
-def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+async def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Handle function calls for web tools.
     
@@ -454,25 +454,25 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         query = function_args.get("query", "")
         # Always use fixed limit of 5
         limit = 5
-        return web_search_tool(query, limit)
+        return await web_search_tool(query, limit)
     
     elif function_name == "web_extract":
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
-        # Run async function in event loop
-        return asyncio.run(web_extract_tool(urls, "markdown"))
+        # Run async function
+        return await web_extract_tool(urls, "markdown")
     
     elif function_name == "web_crawl":
         url = function_args.get("url", "")
         instructions = function_args.get("instructions")
-        # Run async function in event loop
-        return asyncio.run(web_crawl_tool(url, instructions, "basic"))
+        # Run async function
+        return await web_crawl_tool(url, instructions, "basic")
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
 
-def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
+async def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
     """
     Handle function calls for terminal tools.
 
@@ -489,13 +489,20 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
 
-        return simple_terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
+        # Run sync terminal tool in a thread to avoid blocking
+        return await asyncio.to_thread(
+            simple_terminal_tool,
+            command=command,
+            background=background,
+            timeout=timeout,
+            task_id=task_id
+        )
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_vision_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+async def handle_vision_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Handle function calls for vision tools.
     
@@ -512,14 +519,14 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
 
         full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
         
-        # Run async function in event loop
-        return asyncio.run(vision_analyze_tool(image_url, full_prompt, "gemini-2.5-flash"))
+        # Run async function
+        return await vision_analyze_tool(image_url, full_prompt, "gemini-2.5-flash")
     
     else:
         return json.dumps({"error": f"Unknown vision function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+async def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Handle function calls for Mixture-of-Agents tools.
     
@@ -536,14 +543,14 @@ def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) 
         if not user_prompt:
             return json.dumps({"error": "user_prompt is required for MoA processing"}, ensure_ascii=False)
         
-        # Run async function in event loop
-        return asyncio.run(mixture_of_agents_tool(user_prompt=user_prompt))
+        # Run async function
+        return await mixture_of_agents_tool(user_prompt=user_prompt)
     
     else:
         return json.dumps({"error": f"Unknown MoA function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_image_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+async def handle_image_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
     Handle function calls for image generation tools.
     
@@ -572,21 +579,8 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         allow_nsfw_images = True
         seed = None
         
-        # Run async function in event loop with proper handling for multiprocessing
-        try:
-            # Try to get existing event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                # If closed, create a new one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            # No event loop in current thread, create one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Run the coroutine in the event loop
-        result = loop.run_until_complete(image_generate_tool(
+        # Run async function
+        return await image_generate_tool(
             prompt=prompt,
             image_size=image_size,
             num_inference_steps=num_inference_steps,
@@ -597,15 +591,13 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
             acceleration=acceleration,
             allow_nsfw_images=allow_nsfw_images,
             seed=seed
-        ))
-        
-        return result
+        )
     
     else:
         return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
+async def handle_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
     """
     Main function call dispatcher that routes calls to appropriate toolsets.
 
@@ -627,23 +619,23 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any], task
     try:
         # Route web tools
         if function_name in ["web_search", "web_extract", "web_crawl"]:
-            return handle_web_function_call(function_name, function_args)
+            return await handle_web_function_call(function_name, function_args)
 
         # Route terminal tools
         elif function_name in ["terminal"]:
-            return handle_terminal_function_call(function_name, function_args, task_id)
+            return await handle_terminal_function_call(function_name, function_args, task_id)
 
         # Route vision tools
         elif function_name in ["vision_analyze"]:
-            return handle_vision_function_call(function_name, function_args)
+            return await handle_vision_function_call(function_name, function_args)
 
         # Route MoA tools
         elif function_name in ["mixture_of_agents"]:
-            return handle_moa_function_call(function_name, function_args)
+            return await handle_moa_function_call(function_name, function_args)
 
         # Route image generation tools
         elif function_name in ["image_generate"]:
-            return handle_image_function_call(function_name, function_args)
+            return await handle_image_function_call(function_name, function_args)
 
         else:
             error_msg = f"Unknown function: {function_name}"

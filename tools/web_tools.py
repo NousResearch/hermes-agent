@@ -48,11 +48,11 @@ import uuid
 import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from firecrawl import Firecrawl
+from firecrawl import AsyncFirecrawl
 from openai import AsyncOpenAI
 
 # Initialize Firecrawl client once at module level
-firecrawl_client = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
+firecrawl_client = AsyncFirecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
 # Initialize Nous Research API client for LLM processing (async)
 nous_client = AsyncOpenAI(
@@ -261,7 +261,7 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+async def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
     
@@ -312,7 +312,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # Use Firecrawl's v2 search functionality WITHOUT scraping
         # We only want search result metadata, not scraped content
         # Docs: https://docs.firecrawl.dev/features/search
-        response = firecrawl_client.search(
+        response = await firecrawl_client.search(
             query=query,
             limit=limit
         )
@@ -446,7 +446,7 @@ async def web_extract_tool(
         for url in urls:
             try:
                 print(f"  📄 Scraping: {url}")
-                scrape_result = firecrawl_client.scrape(
+                scrape_result = await firecrawl_client.scrape(
                     url=url,
                     formats=formats
                 )
@@ -703,7 +703,7 @@ async def web_crawl_tool(
         
         # Use the crawl method which waits for completion automatically
         try:
-            crawl_result = firecrawl_client.crawl(
+            crawl_result = await firecrawl_client.crawl(
                 url=url,
                 **crawl_params
             )

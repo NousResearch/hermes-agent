@@ -161,11 +161,11 @@ def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> st
 
 
 async def _run_reference_model_safe(
-    model: str, 
-    user_prompt: str, 
+    model: str,
+    user_prompt: str,
     temperature: float = REFERENCE_TEMPERATURE,
     max_tokens: int = 32000,
-    max_retries: int = 3
+    max_retries: int = 6
 ) -> tuple[str, str, bool]:
     """
     Run a single reference model with retry logic and graceful failure handling.
@@ -212,8 +212,8 @@ async def _run_reference_model_safe(
                 print(f"⚠️  {model} unknown error (attempt {attempt + 1}): {error_str}")
                 
             if attempt < max_retries - 1:
-                # Exponential backoff for rate limiting
-                sleep_time = 2 ** attempt
+                # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
+                sleep_time = min(2 ** (attempt + 1), 60)
                 print(f"   Retrying in {sleep_time}s...")
                 await asyncio.sleep(sleep_time)
             else:

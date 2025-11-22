@@ -31,7 +31,9 @@ import asyncio
 from typing import Dict, Any, List, Optional
 
 from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
-from tools.terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
+from tools.simple_terminal_tool import simple_terminal_tool, check_requirements as check_simple_terminal_requirements, SIMPLE_TERMINAL_TOOL_DESCRIPTION
+# Keep old terminal tool for backwards compatibility if needed
+# from tools.terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
@@ -111,7 +113,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
 def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get tool definitions for terminal tools in OpenAI's expected format.
-    
+
     Returns:
         List[Dict]: List of terminal tool definitions compatible with OpenAI API
     """
@@ -120,7 +122,7 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "terminal",
-                "description": TERMINAL_TOOL_DESCRIPTION,
+                "description": SIMPLE_TERMINAL_TOOL_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -128,20 +130,10 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "string",
                             "description": "The command to execute on the VM"
                         },
-                        "input_keys": {
-                            "type": "string",
-                            "description": "Keystrokes to send to the most recent interactive session (e.g., 'hello\\n' for typing hello + Enter). If no active session exists, this will be ignored."
-                        },
                         "background": {
                             "type": "boolean",
                             "description": "Whether to run the command in the background (default: false)",
                             "default": False
-                        },
-                        "idle_threshold": {
-                            "type": "number",
-                            "description": "Seconds to wait for output before considering session idle (default: 5.0)",
-                            "default": 5.0,
-                            "minimum": 0.1
                         },
                         "timeout": {
                             "type": "integer",
@@ -149,7 +141,7 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "minimum": 1
                         }
                     },
-                    "required": []
+                    "required": ["command"]
                 }
             }
         }
@@ -262,11 +254,11 @@ def get_all_tool_names() -> List[str]:
     # Web tools
     if check_firecrawl_api_key():
         tool_names.extend(["web_search", "web_extract", "web_crawl"])
-    
-    # Terminal tools  
-    if check_hecate_requirements():
+
+    # Terminal tools
+    if check_simple_terminal_requirements():
         tool_names.extend(["terminal"])
-    
+
     # Vision tools
     if check_vision_requirements():
         tool_names.extend(["vision_analyze"])
@@ -346,11 +338,11 @@ def get_tool_definitions(
     if check_firecrawl_api_key():
         for tool in get_web_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
-    
-    if check_hecate_requirements():
+
+    if check_simple_terminal_requirements():
         for tool in get_terminal_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
-    
+
     if check_vision_requirements():
         for tool in get_vision_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
@@ -494,12 +486,10 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
     """
     if function_name == "terminal":
         command = function_args.get("command")
-        input_keys = function_args.get("input_keys")
         background = function_args.get("background", False)
-        idle_threshold = function_args.get("idle_threshold", 5.0)
         timeout = function_args.get("timeout")
 
-        return terminal_tool(command, input_keys, None, background, idle_threshold, timeout, task_id)
+        return simple_terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
@@ -681,10 +671,10 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "requirements": ["FIRECRAWL_API_KEY environment variable"]
         },
         "terminal_tools": {
-            "available": check_hecate_requirements(),
-            "tools": ["terminal_tool"],
-            "description": "Execute commands with optional interactive session support on Linux VMs",
-            "requirements": ["MORPH_API_KEY environment variable", "hecate package"]
+            "available": check_simple_terminal_requirements(),
+            "tools": ["simple_terminal_tool"],
+            "description": "Execute commands on secure Linux VMs without session persistence",
+            "requirements": ["MORPH_API_KEY environment variable"]
         },
         "vision_tools": {
             "available": check_vision_requirements(),
@@ -711,13 +701,13 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
 def check_toolset_requirements() -> Dict[str, bool]:
     """
     Check if all requirements for available toolsets are met.
-    
+
     Returns:
         Dict: Status of each toolset's requirements
     """
     return {
         "web_tools": check_firecrawl_api_key(),
-        "terminal_tools": check_hecate_requirements(),
+        "terminal_tools": check_simple_terminal_requirements(),
         "vision_tools": check_vision_requirements(),
         "moa_tools": check_moa_requirements(),
         "image_tools": check_image_generation_requirements()

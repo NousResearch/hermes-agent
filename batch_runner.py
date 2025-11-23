@@ -327,7 +327,9 @@ async def _process_single_prompt(
             save_trajectories=False,  # We handle saving ourselves
             verbose_logging=config.get("verbose", False),
             ephemeral_system_prompt=config.get("ephemeral_system_prompt"),
-            log_prefix_chars=config.get("log_prefix_chars", 100)
+            log_prefix_chars=config.get("log_prefix_chars", 100),
+            prokletor_client=config.get("prokletor_client"),
+            prokletor_formatter=config.get("prokletor_formatter")
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
@@ -439,6 +441,8 @@ class BatchRunner:
         max_tool_failure_rate: float = 0.5,
         keep_recent_errors: int = 5,
         min_tool_calls_for_rate: int = 10,
+        prokletor_client: str = None,
+        prokletor_formatter: str = None,
     ):
         """
         Initialize the batch runner.
@@ -459,6 +463,8 @@ class BatchRunner:
             max_tool_failure_rate (float): Maximum tool failure rate (0.0-1.0) before stopping (default: 0.5)
             keep_recent_errors (int): Number of recent errors to keep per tool (default: 5)
             min_tool_calls_for_rate (int): Minimum number of tool calls before checking failure rate (default: 10)
+            prokletor_client (str): Name of the prokletor client to use
+            prokletor_formatter (str): Name of the prokletor formatter to use
         """
         self.dataset_file = Path(dataset_file)
         self.run_name = run_name
@@ -475,6 +481,8 @@ class BatchRunner:
         self.max_tool_failure_rate = max_tool_failure_rate
         self.keep_recent_errors = keep_recent_errors
         self.min_tool_calls_for_rate = min_tool_calls_for_rate
+        self.prokletor_client = prokletor_client
+        self.prokletor_formatter = prokletor_formatter
         
         # Validate distribution
         if not validate_distribution(distribution):
@@ -719,7 +727,9 @@ class BatchRunner:
             "api_key": self.api_key,
             "verbose": self.verbose,
             "ephemeral_system_prompt": self.ephemeral_system_prompt,
-            "log_prefix_chars": self.log_prefix_chars
+            "log_prefix_chars": self.log_prefix_chars,
+            "prokletor_client": self.prokletor_client,
+            "prokletor_formatter": self.prokletor_formatter
         }
         
         # Start workers
@@ -882,6 +892,8 @@ def main(
     max_tool_failure_rate: float = 0.5,
     keep_recent_errors: int = 5,
     min_tool_calls_for_rate: int = 10,
+    prokletor_client: str = None,
+    prokletor_formatter: str = None,
 ):
     """
     Run batch processing of agent prompts from a dataset.
@@ -904,6 +916,8 @@ def main(
         max_tool_failure_rate (float): Maximum tool failure rate (0.0-1.0) before stopping (default: 0.5)
         keep_recent_errors (int): Number of recent errors to keep per tool for reporting (default: 5)
         min_tool_calls_for_rate (int): Minimum number of tool calls before checking failure rate (default: 10)
+        prokletor_client (str): Name of the prokletor client to use
+        prokletor_formatter (str): Name of the prokletor formatter to use
 
     Examples:
         # Basic usage
@@ -953,7 +967,9 @@ def main(
             max_tool_failures=max_tool_failures,
             max_tool_failure_rate=max_tool_failure_rate,
             keep_recent_errors=keep_recent_errors,
-            min_tool_calls_for_rate=min_tool_calls_for_rate
+            min_tool_calls_for_rate=min_tool_calls_for_rate,
+            prokletor_client=prokletor_client,
+            prokletor_formatter=prokletor_formatter
         )
 
         runner.run(resume=resume)

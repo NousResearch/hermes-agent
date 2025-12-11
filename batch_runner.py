@@ -689,16 +689,12 @@ class BatchRunner:
         print("\n" + "=" * 70)
         print("🚀 Starting Batch Processing")
         print("=" * 70)
-        
-        # Load checkpoint
-        checkpoint_data = self._load_checkpoint() if resume else {
-            "run_name": self.run_name,
-            "completed_prompts": [],
-            "last_updated": None
-        }
-        
-        if resume and checkpoint_data.get("completed_prompts"):
-            print(f"📂 Resuming from checkpoint ({len(checkpoint_data['completed_prompts'])} prompts already completed)")
+
+        # Always load checkpoint if it exists to skip completed indices
+        checkpoint_data = self._load_checkpoint()
+
+        if checkpoint_data.get("completed_prompts"):
+            print(f"📂 Found existing checkpoint - skipping {len(checkpoint_data['completed_prompts'])} already completed prompts")
         
         completed_prompts_set = set(checkpoint_data.get("completed_prompts", []))
         

@@ -100,30 +100,17 @@ def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
     global _active_instances, _active_contexts, _last_activity
 
     current_time = time.time()
-    tasks_to_cleanup = []
+    instances_to_cleanup = []
 
+    # Find and extract instances to cleanup while holding lock
     with _instance_lock:
         # Find all VMs that have been inactive for too long
         for task_id, last_time in list(_last_activity.items()):
             if current_time - last_time > vm_lifetime_seconds:
-                tasks_to_cleanup.append(task_id)
-
-        # Clean up the inactive VMs
-        for task_id in tasks_to_cleanup:
-            try:
                 if task_id in _active_instances:
-                    instance = _active_instances[task_id]
-                    # Terminate the VM instance
-                    if hasattr(instance, 'terminate'):
-                        instance.terminate()
-                    elif hasattr(instance, 'stop'):
-                        instance.stop()
-                    elif hasattr(instance, 'delete'):
-                        instance.delete()
-
-                    # Remove from tracking dictionaries
+                    instances_to_cleanup.append((task_id, _active_instances[task_id]))
+                    # Remove from tracking dictionaries immediately
                     del _active_instances[task_id]
-                    print(f"[VM Cleanup] Terminated inactive VM for task: {task_id}")
 
                 if task_id in _active_contexts:
                     del _active_contexts[task_id]
@@ -131,8 +118,18 @@ def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
                 if task_id in _last_activity:
                     del _last_activity[task_id]
 
-            except Exception as e:
-                print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
+    # Terminate outside the lock so we don't block other operations
+    for task_id, instance in instances_to_cleanup:
+        try:
+            if hasattr(instance, 'terminate'):
+                instance.terminate()
+            elif hasattr(instance, 'stop'):
+                instance.stop()
+            elif hasattr(instance, 'delete'):
+                instance.delete()
+            print(f"[VM Cleanup] Terminated inactive VM for task: {task_id}")
+        except Exception as e:
+            print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
 
 def _cleanup_thread_worker():
     """
@@ -185,28 +182,30 @@ def cleanup_vm(task_id: str):
     """
     global _active_instances, _active_contexts, _last_activity
 
+    # Extract instance from dict while holding lock, but don't terminate yet
+    instance_to_cleanup = None
     with _instance_lock:
+        if task_id in _active_instances:
+            instance_to_cleanup = _active_instances[task_id]
+            # Remove from tracking dictionaries immediately
+            del _active_instances[task_id]
+
+        if task_id in _active_contexts:
+            del _active_contexts[task_id]
+
+        if task_id in _last_activity:
+            del _last_activity[task_id]
+
+    # Terminate outside the lock so multiple cleanups can run concurrently
+    if instance_to_cleanup:
         try:
-            if task_id in _active_instances:
-                instance = _active_instances[task_id]
-                # Terminate the VM instance
-                if hasattr(instance, 'terminate'):
-                    instance.terminate()
-                elif hasattr(instance, 'stop'):
-                    instance.stop()
-                elif hasattr(instance, 'delete'):
-                    instance.delete()
-
-                # Remove from tracking dictionaries
-                del _active_instances[task_id]
-                print(f"[VM Cleanup] Manually terminated VM for task: {task_id}")
-
-            if task_id in _active_contexts:
-                del _active_contexts[task_id]
-
-            if task_id in _last_activity:
-                del _last_activity[task_id]
-
+            if hasattr(instance_to_cleanup, 'terminate'):
+                instance_to_cleanup.terminate()
+            elif hasattr(instance_to_cleanup, 'stop'):
+                instance_to_cleanup.stop()
+            elif hasattr(instance_to_cleanup, 'delete'):
+                instance_to_cleanup.delete()
+            print(f"[VM Cleanup] Manually terminated VM for task: {task_id}")
         except Exception as e:
             print(f"[VM Cleanup] Error manually cleaning up VM for task {task_id}: {e}")
 

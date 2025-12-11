@@ -738,7 +738,6 @@ class AIAgent:
         if self.save_trajectories:
             # Use the client wrapper's format method if available to get the exact Hermes format
             if hasattr(self, 'client') and hasattr(self.client, 'format'):
-                raise ValueError("reached this point")
                 formatted_messages = self.client.format(messages, self.tools, render_final=True)
                 
                 # We need to adapt this formatted list to the trajectory format expected by _save_trajectory
@@ -803,12 +802,16 @@ class AIAgent:
                 # Fallback to original saving method
                 self._save_trajectory(messages, user_message, completed)
 
-        # Clean up VM for this task after conversation completes
-        try:
-            await asyncio.to_thread(cleanup_vm, effective_task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+        # Clean up VM for this task after conversation completes (fire-and-forget)
+        # Don't await this - let it run in the background so we don't block returning results
+        async def cleanup_task():
+            try:
+                await asyncio.to_thread(cleanup_vm, effective_task_id)
+            except Exception as e:
+                if self.verbose_logging:
+                    logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+
+        asyncio.create_task(cleanup_task())
 
         # Get profiling statistics for this conversation
         profiling_stats = get_profiler().get_statistics()

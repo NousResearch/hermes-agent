@@ -110,6 +110,16 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     if visited is None:
         visited = set()
     
+    # Special aliases that represent all tools across every toolset
+    # This ensures future toolsets are automatically included without changes.
+    if name in {"all", "*"}:
+        all_tools: Set[str] = set()
+        for toolset_name in get_toolset_names():
+            # Use a fresh visited set per branch to avoid cross-branch contamination
+            resolved = resolve_toolset(toolset_name, visited.copy())
+            all_tools.update(resolved)
+        return list(all_tools)
+
     # Check for cycles
     if name in visited:
         print(f"⚠️  Circular dependency detected in toolset '{name}'")
@@ -184,6 +194,9 @@ def validate_toolset(name: str) -> bool:
     Returns:
         bool: True if valid, False otherwise
     """
+    # Accept special alias names for convenience
+    if name in {"all", "*"}:
+        return True
     return name in TOOLSETS
 
 

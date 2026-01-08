@@ -1,0 +1,12 @@
+python batch_runner.py \
+  --dataset_file="hermes-agent-megascience-data/hermes_agent_megascience_eval.jsonl" \
+  --batch_size=10 \
+  --run_name="megascience_eval_gpt5_2" \
+  --distribution="science" \
+  --model="gpt-5" \
+  --base_url="https://api.openai.com/v1" \
+  --api_key="${OPENAI_API_KEY}" \
+  --num_workers=5 \
+  --max_turns=30 \
+  --verbose \
+  --ephemeral_system_prompt="You have access to a variety of tools to help you solve scientific, math, and technology problems presented to you. You can use them in sequence and build off of the results of prior tools you've used results. Always use a tool if it can provide additional context, verify formulas, double check concepts and recent studies and understanding, doing all calculations, etc. You should not be confident in your own reasoning, knowledge, or calculations without using a tool to verify or validate your work."

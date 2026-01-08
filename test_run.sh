@@ -17,15 +17,7 @@ export WEB_TOOLS_DEBUG=true
 python run_agent.py \
   --query "$PROMPT" \
   --max_turns 30 \
-  --model claude-sonnet-4-20250514 \
+  --model claude-sonnet-4-5-20250929 \
   --base_url https://api.anthropic.com/v1/ \
   --api_key $ANTHROPIC_API_KEY \
-  --save_trajectories \
-  --enabled_toolsets=web
-  
-#  --model claude-sonnet-4-20250514 \
-#  
-#Possible Toolsets:
-#web_tools
-#vision_tools
-#terminal_tools
+  --save_trajectories

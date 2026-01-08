@@ -319,9 +319,6 @@ async def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
         
-        if len(prompt) > 1000:
-            raise ValueError("Prompt must be 1000 characters or less")
-        
         # Check API key availability
         if not os.getenv("FAL_KEY"):
             raise ValueError("FAL_KEY environment variable not set")
@@ -417,7 +414,7 @@ async def image_generate_tool(
         _log_debug_call("image_generate_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(response_data, indent=2)
+        return json.dumps(response_data, indent=2, ensure_ascii=False)
         
     except Exception as e:
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
@@ -435,7 +432,7 @@ async def image_generate_tool(
         _log_debug_call("image_generate_tool", debug_call_data)
         _save_debug_log()
         
-        return json.dumps(response_data, indent=2)
+        return json.dumps(response_data, indent=2, ensure_ascii=False)
 
 
 def check_fal_api_key() -> bool:

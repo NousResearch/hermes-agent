@@ -1,0 +1,12 @@
+python batch_runner.py \
+  --dataset_file="hermes-agent-imagen-data/hermes_agent_imagen_eval.jsonl" \
+  --batch_size=10 \
+  --run_name="imagen_eval_gpt5" \
+  --distribution="image_gen" \
+  --model="gpt-5" \
+  --base_url="https://api.openai.com/v1" \
+  --api_key="${OPENAI_API_KEY}" \
+  --num_workers=4 \
+  --max_turns=5 \
+  --verbose \
+  --ephemeral_system_prompt="When generating an image for the user view the image by using the vision_analyze tool to ensure it is what the user wanted. If it isn't feel free to retry a few times. If none are perfect, choose the best option that is the closest match, and explain its imperfections. If the image generation tool fails, try again a few times. If the vision analyze tool fails, provide the image to the user and explain it is your best effort attempt."

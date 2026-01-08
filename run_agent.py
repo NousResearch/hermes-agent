@@ -67,6 +67,11 @@ class AIAgent:
         verbose_logging: bool = False,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
+        log_prefix: str = "",
+        providers_allowed: List[str] = None,
+        providers_ignored: List[str] = None,
+        providers_order: List[str] = None,
+        provider_sort: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -83,6 +88,11 @@ class AIAgent:
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
+            log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
+            providers_allowed (List[str]): OpenRouter providers to allow (optional)
+            providers_ignored (List[str]): OpenRouter providers to ignore (optional)
+            providers_order (List[str]): OpenRouter providers to try in order (optional)
+            provider_sort (str): Sort providers by price/throughput/latency (optional)
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -91,6 +101,13 @@ class AIAgent:
         self.verbose_logging = verbose_logging
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.log_prefix_chars = log_prefix_chars
+        self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        
+        # Store OpenRouter provider preferences
+        self.providers_allowed = providers_allowed
+        self.providers_ignored = providers_ignored
+        self.providers_order = providers_order
+        self.provider_sort = provider_sort
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -103,11 +120,13 @@ class AIAgent:
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
-            # Keep OpenAI and httpx at INFO level to avoid massive base64 logs
-            # Even in verbose mode, we don't want to see full request/response bodies
-            logging.getLogger('openai').setLevel(logging.INFO)
+            # Keep OpenAI and httpx at WARNING level to reduce noise
+            # We have our own retry and error logging that's more informative
+            logging.getLogger('openai').setLevel(logging.WARNING)
+            logging.getLogger('openai._base_client').setLevel(logging.WARNING)
             logging.getLogger('httpx').setLevel(logging.WARNING)
-            print("🔍 Verbose logging enabled (OpenAI/httpx request bodies suppressed)")
+            logging.getLogger('httpcore').setLevel(logging.WARNING)
+            print("🔍 Verbose logging enabled (OpenAI/httpx internal logs suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(
@@ -115,24 +134,40 @@ class AIAgent:
                 format='%(asctime)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
-            # Reduce OpenAI client logging
-            logging.getLogger('openai').setLevel(logging.WARNING)
-            logging.getLogger('httpx').setLevel(logging.WARNING)
+            # Suppress noisy library logging
+            logging.getLogger('openai').setLevel(logging.ERROR)
+            logging.getLogger('openai._base_client').setLevel(logging.ERROR)
+            logging.getLogger('httpx').setLevel(logging.ERROR)
+            logging.getLogger('httpcore').setLevel(logging.ERROR)
         
         # Initialize OpenAI client
         client_kwargs = {}
         if base_url:
             client_kwargs["base_url"] = base_url
+        
+        # Handle API key with multiple fallbacks
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
-            client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", "dummy-key")
+            # Try multiple common API key environment variables based on base_url
+            if base_url and "openrouter" in base_url.lower():
+                client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", os.getenv("ANTHROPIC_API_KEY", "dummy-key"))
+            elif base_url and "anthropic" in base_url.lower():
+                client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "dummy-key"))
+            else:
+                client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "dummy-key"))
         
         try:
             self.client = OpenAI(**client_kwargs)
             print(f"🤖 AI Agent initialized with model: {self.model}")
             if base_url:
                 print(f"🔗 Using custom base URL: {base_url}")
+            # Always show API key info (masked) for debugging auth issues
+            key_used = client_kwargs.get("api_key", "none")
+            if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+            else:
+                print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
@@ -245,8 +280,13 @@ class AIAgent:
                 if "tool_calls" in msg and msg["tool_calls"]:
                     # Format assistant message with tool calls
                     content = ""
+                    
+                    # Prepend reasoning in <think> tags if available
+                    if msg.get("reasoning") and msg["reasoning"].strip():
+                        content = f"<think>{msg['reasoning']}</think>"
+                    
                     if msg.get("content") and msg["content"].strip():
-                        content = msg["content"] + "\n"
+                        content += msg["content"] + "\n"
                     
                     # Add tool calls wrapped in XML tags
                     for tool_call in msg["tool_calls"]:
@@ -296,9 +336,17 @@ class AIAgent:
                 
                 else:
                     # Regular assistant message without tool calls
+                    content = ""
+                    
+                    # Prepend reasoning in <think> tags if available
+                    if msg.get("reasoning") and msg["reasoning"].strip():
+                        content = f"<think>{msg['reasoning']}</think>"
+                    
+                    content += msg["content"] or ""
+                    
                     trajectory.append({
                         "from": "gpt",
-                        "value": msg["content"] or ""
+                        "value": content
                     })
             
             elif msg["role"] == "user":
@@ -388,12 +436,27 @@ class AIAgent:
         
         while api_call_count < self.max_iterations:
             api_call_count += 1
-            print(f"\n🔄 Making OpenAI-compatible API call #{api_call_count}...")
+            
+            # Prepare messages for API call
+            # If we have an ephemeral system prompt, prepend it to the messages
+            api_messages = messages.copy()
+            if active_system_prompt:
+                # Insert system message at the beginning
+                api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
+            
+            # Calculate approximate request size for logging
+            total_chars = sum(len(str(msg)) for msg in api_messages)
+            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            
+            print(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
+            print(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+            print(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             
             # Log request details if verbose
             if self.verbose_logging:
                 logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
                 logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
+                logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
             api_start_time = time.time()
             retry_count = 0
@@ -401,24 +464,34 @@ class AIAgent:
 
             while retry_count <= max_retries:
                 try:
-                    # Prepare messages for API call
-                    # If we have an ephemeral system prompt, prepend it to the messages
-                    api_messages = messages.copy()
-                    if active_system_prompt:
-                        # Insert system message at the beginning
-                        api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
-
-                    # Make API call with tools
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=api_messages,
-                        tools=self.tools if self.tools else None,
-                        timeout=300.0  # 5 minute timeout for long-running agent tasks
-                    )
-
+                    # Build OpenRouter provider preferences if specified
+                    provider_preferences = {}
+                    if self.providers_allowed:
+                        provider_preferences["only"] = self.providers_allowed
+                    if self.providers_ignored:
+                        provider_preferences["ignore"] = self.providers_ignored
+                    if self.providers_order:
+                        provider_preferences["order"] = self.providers_order
+                    if self.provider_sort:
+                        provider_preferences["sort"] = self.provider_sort
+                    
+                    # Make API call with tools - increased timeout for long responses
+                    api_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                        "tools": self.tools if self.tools else None,
+                        "timeout": 600.0  # 10 minute timeout for very long responses
+                    }
+                    
+                    # Add provider preferences for OpenRouter via extra_body
+                    if provider_preferences:
+                        api_kwargs["extra_body"] = {"provider": provider_preferences}
+                    
+                    response = self.client.chat.completions.create(**api_kwargs)
+                    
                     api_duration = time.time() - api_start_time
-                    print(f"⏱️  OpenAI-compatible API call completed in {api_duration:.2f}s")
-
+                    print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
+                    
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
@@ -426,7 +499,21 @@ class AIAgent:
 
                 except Exception as api_error:
                     retry_count += 1
+                    elapsed_time = time.time() - api_start_time
+                    
+                    # Enhanced error logging
+                    error_type = type(api_error).__name__
+                    error_msg = str(api_error)
+                    
+                    print(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}")
+                    print(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
+                    print(f"{self.log_prefix}   📝 Error: {error_msg[:200]}")
+                    print(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+                    
                     if retry_count > max_retries:
+                        print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
+                        logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
+                        logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
@@ -440,20 +527,28 @@ class AIAgent:
                 
                 # Handle assistant response
                 if assistant_message.content:
-                    print(f"🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                    print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
                 
                 # Check for tool calls
                 if assistant_message.tool_calls:
-                    print(f"🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                    print(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
                             logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
                     
+                    # Extract reasoning from response if available (for reasoning models like minimax, kimi, etc.)
+                    reasoning_content = None
+                    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
+                        reasoning_content = assistant_message.reasoning
+                    elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+                        reasoning_content = assistant_message.reasoning_content
+                    
                     # Add assistant message with tool calls to conversation
                     messages.append({
                         "role": "assistant",
                         "content": assistant_message.content,
+                        "reasoning": reasoning_content,  # Store reasoning for trajectory
                         "tool_calls": [
                             {
                                 "id": tool_call.id,
@@ -516,10 +611,18 @@ class AIAgent:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
                     
+                    # Extract reasoning from response if available
+                    reasoning_content = None
+                    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
+                        reasoning_content = assistant_message.reasoning
+                    elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+                        reasoning_content = assistant_message.reasoning_content
+                    
                     # Add final assistant message
                     messages.append({
                         "role": "assistant", 
-                        "content": final_response
+                        "content": final_response,
+                        "reasoning": reasoning_content  # Store reasoning for trajectory
                     })
                     
                     print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

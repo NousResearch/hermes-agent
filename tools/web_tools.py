@@ -15,7 +15,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction
 
 LLM Processing:
-- Uses Nous Research API with Gemini 2.5 Flash for intelligent content extraction
+- Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
 - Extracts key excerpts and creates markdown summaries to reduce token usage
 
 Debug Mode:
@@ -54,14 +54,14 @@ from openai import AsyncOpenAI
 # Initialize Firecrawl client once at module level
 firecrawl_client = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
 
-# Initialize Nous Research API client for LLM processing (async)
-nous_client = AsyncOpenAI(
-    api_key=os.getenv("NOUS_API_KEY"),
-    base_url="https://inference-api.nousresearch.com/v1"
+# Initialize OpenRouter API client for LLM processing (async)
+summarizer_client = AsyncOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"
 )
 
 # Configuration for LLM processing
-DEFAULT_SUMMARIZER_MODEL = "gemini-2.5-flash"
+DEFAULT_SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
 # Debug mode configuration
@@ -135,7 +135,7 @@ async def process_content_with_llm(
     """
     Process web content using LLM to create intelligent summaries with key excerpts.
     
-    This function uses Gemini 2.5 Flash (or specified model) via Nous Research API 
+    This function uses Gemini 3 Flash Preview (or specified model) via OpenRouter API 
     to intelligently extract key information and create markdown summaries,
     significantly reducing token usage while preserving all important information.
     
@@ -143,7 +143,7 @@ async def process_content_with_llm(
         content (str): The raw content to process
         url (str): The source URL (for context, optional)
         title (str): The page title (for context, optional)
-        model (str): The model to use for processing (default: gemini-2.5-flash)
+        model (str): The model to use for processing (default: google/gemini-3-flash-preview)
         min_length (int): Minimum content length to trigger processing (default: 5000)
         
     Returns:
@@ -190,7 +190,7 @@ Create a markdown summary that captures all key information in a well-organized,
 
         for attempt in range(max_retries):
             try:
-                response = await nous_client.chat.completions.create(
+                response = await summarizer_client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -399,7 +399,7 @@ async def web_extract_tool(
         urls (List[str]): List of URLs to extract content from
         format (str): Desired output format ("markdown" or "html", optional)
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
-        model (str): The model to use for LLM processing (default: gemini-2.5-flash)
+        model (str): The model to use for LLM processing (default: google/gemini-3-flash-preview)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
     
     Returns:
@@ -527,57 +527,74 @@ async def web_extract_tool(
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
-        if use_llm_processing and os.getenv("NOUS_API_KEY"):
-            print("🧠 Processing extracted content with LLM...")
+        if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
+            print("🧠 Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
-            for result in response.get('results', []):
+            # Prepare tasks for parallel processing
+            async def process_single_result(result):
+                """Process a single result with LLM and return updated result with metrics."""
                 url = result.get('url', 'Unknown URL')
                 title = result.get('title', '')
                 raw_content = result.get('raw_content', '') or result.get('content', '')
                 
-                if raw_content:
-                    original_size = len(raw_content)
+                if not raw_content:
+                    return result, None, "no_content"
+                
+                original_size = len(raw_content)
+                
+                # Process content with LLM
+                processed = await process_content_with_llm(
+                    raw_content, url, title, model, min_length
+                )
+                
+                if processed:
+                    processed_size = len(processed)
+                    compression_ratio = processed_size / original_size if original_size > 0 else 1.0
                     
-                    # Process content with LLM
-                    processed = await process_content_with_llm(
-                        raw_content, url, title, model, min_length
-                    )
+                    # Update result with processed content
+                    result['content'] = processed
+                    result['raw_content'] = raw_content
                     
-                    if processed:
-                        processed_size = len(processed)
-                        compression_ratio = processed_size / original_size if original_size > 0 else 1.0
-                        
-                        # Capture compression metrics
-                        debug_call_data["compression_metrics"].append({
-                            "url": url,
-                            "original_size": original_size,
-                            "processed_size": processed_size,
-                            "compression_ratio": compression_ratio,
-                            "model_used": model
-                        })
-                        
-                        # Replace content with processed version
-                        result['content'] = processed
-                        # Keep raw content in separate field for reference
-                        result['raw_content'] = raw_content
-                        debug_call_data["pages_processed_with_llm"] += 1
-                        print(f"  📝 {url} (processed)")
-                    else:
-                        debug_call_data["compression_metrics"].append({
-                            "url": url,
-                            "original_size": original_size,
-                            "processed_size": original_size,
-                            "compression_ratio": 1.0,
-                            "model_used": None,
-                            "reason": "content_too_short"
-                        })
-                        print(f"  📝 {url} (no processing - content too short)")
+                    metrics = {
+                        "url": url,
+                        "original_size": original_size,
+                        "processed_size": processed_size,
+                        "compression_ratio": compression_ratio,
+                        "model_used": model
+                    }
+                    return result, metrics, "processed"
+                else:
+                    metrics = {
+                        "url": url,
+                        "original_size": original_size,
+                        "processed_size": original_size,
+                        "compression_ratio": 1.0,
+                        "model_used": None,
+                        "reason": "content_too_short"
+                    }
+                    return result, metrics, "too_short"
+            
+            # Run all LLM processing in parallel
+            results_list = response.get('results', [])
+            tasks = [process_single_result(result) for result in results_list]
+            processed_results = await asyncio.gather(*tasks)
+            
+            # Collect metrics and print results
+            for result, metrics, status in processed_results:
+                url = result.get('url', 'Unknown URL')
+                if status == "processed":
+                    debug_call_data["compression_metrics"].append(metrics)
+                    debug_call_data["pages_processed_with_llm"] += 1
+                    print(f"  📝 {url} (processed)")
+                elif status == "too_short":
+                    debug_call_data["compression_metrics"].append(metrics)
+                    print(f"  📝 {url} (no processing - content too short)")
                 else:
                     print(f"  ⚠️  {url} (no content to process)")
         else:
-            if use_llm_processing and not os.getenv("NOUS_API_KEY"):
-                print("⚠️  LLM processing requested but NOUS_API_KEY not set, returning raw content")
+            if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
+                print("⚠️  LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of extracted pages for debugging (original behavior)
@@ -646,7 +663,7 @@ async def web_crawl_tool(
         instructions (str): Instructions for what to crawl/extract using LLM intelligence (optional)
         depth (str): Depth of extraction ("basic" or "advanced", default: "basic")
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
-        model (str): The model to use for LLM processing (default: gemini-2.5-flash)
+        model (str): The model to use for LLM processing (default: google/gemini-3-flash-preview)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
     
     Returns:
@@ -806,57 +823,74 @@ async def web_crawl_tool(
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
-        if use_llm_processing and os.getenv("NOUS_API_KEY"):
-            print("🧠 Processing crawled content with LLM...")
+        if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
+            print("🧠 Processing crawled content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
-            for result in response.get('results', []):
+            # Prepare tasks for parallel processing
+            async def process_single_crawl_result(result):
+                """Process a single crawl result with LLM and return updated result with metrics."""
                 page_url = result.get('url', 'Unknown URL')
                 title = result.get('title', '')
                 content = result.get('content', '')
                 
-                if content:
-                    original_size = len(content)
+                if not content:
+                    return result, None, "no_content"
+                
+                original_size = len(content)
+                
+                # Process content with LLM
+                processed = await process_content_with_llm(
+                    content, page_url, title, model, min_length
+                )
+                
+                if processed:
+                    processed_size = len(processed)
+                    compression_ratio = processed_size / original_size if original_size > 0 else 1.0
                     
-                    # Process content with LLM
-                    processed = await process_content_with_llm(
-                        content, page_url, title, model, min_length
-                    )
+                    # Update result with processed content
+                    result['raw_content'] = content
+                    result['content'] = processed
                     
-                    if processed:
-                        processed_size = len(processed)
-                        compression_ratio = processed_size / original_size if original_size > 0 else 1.0
-                        
-                        # Capture compression metrics
-                        debug_call_data["compression_metrics"].append({
-                            "url": page_url,
-                            "original_size": original_size,
-                            "processed_size": processed_size,
-                            "compression_ratio": compression_ratio,
-                            "model_used": model
-                        })
-                        
-                        # Keep original content in raw_content field
-                        result['raw_content'] = content
-                        # Replace content with processed version
-                        result['content'] = processed
-                        debug_call_data["pages_processed_with_llm"] += 1
-                        print(f"  🌐 {page_url} (processed)")
-                    else:
-                        debug_call_data["compression_metrics"].append({
-                            "url": page_url,
-                            "original_size": original_size,
-                            "processed_size": original_size,
-                            "compression_ratio": 1.0,
-                            "model_used": None,
-                            "reason": "content_too_short"
-                        })
-                        print(f"  🌐 {page_url} (no processing - content too short)")
+                    metrics = {
+                        "url": page_url,
+                        "original_size": original_size,
+                        "processed_size": processed_size,
+                        "compression_ratio": compression_ratio,
+                        "model_used": model
+                    }
+                    return result, metrics, "processed"
+                else:
+                    metrics = {
+                        "url": page_url,
+                        "original_size": original_size,
+                        "processed_size": original_size,
+                        "compression_ratio": 1.0,
+                        "model_used": None,
+                        "reason": "content_too_short"
+                    }
+                    return result, metrics, "too_short"
+            
+            # Run all LLM processing in parallel
+            results_list = response.get('results', [])
+            tasks = [process_single_crawl_result(result) for result in results_list]
+            processed_results = await asyncio.gather(*tasks)
+            
+            # Collect metrics and print results
+            for result, metrics, status in processed_results:
+                page_url = result.get('url', 'Unknown URL')
+                if status == "processed":
+                    debug_call_data["compression_metrics"].append(metrics)
+                    debug_call_data["pages_processed_with_llm"] += 1
+                    print(f"  🌐 {page_url} (processed)")
+                elif status == "too_short":
+                    debug_call_data["compression_metrics"].append(metrics)
+                    print(f"  🌐 {page_url} (no processing - content too short)")
                 else:
                     print(f"  ⚠️  {page_url} (no content to process)")
         else:
-            if use_llm_processing and not os.getenv("NOUS_API_KEY"):
-                print("⚠️  LLM processing requested but NOUS_API_KEY not set, returning raw content")
+            if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
+                print("⚠️  LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of crawled pages for debugging (original behavior)
@@ -918,7 +952,7 @@ def check_nous_api_key() -> bool:
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("NOUS_API_KEY"))
+    return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -967,8 +1001,8 @@ if __name__ == "__main__":
         print("✅ Firecrawl API key found")
     
     if not nous_available:
-        print("❌ NOUS_API_KEY environment variable not set")
-        print("Please set your API key: export NOUS_API_KEY='your-key-here'")  
+        print("❌ OPENROUTER_API_KEY environment variable not set")
+        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")  
         print("Get API key at: https://inference-api.nousresearch.com/")
         print("⚠️  Without Nous API key, LLM content processing will be disabled")
     else:
@@ -980,7 +1014,7 @@ if __name__ == "__main__":
     print("🛠️  Web tools ready for use!")
     
     if nous_available:
-        print("🧠 LLM content processing available with Gemini 2.5 Flash")
+        print("🧠 LLM content processing available with Gemini 3 Flash Preview via OpenRouter")
         print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
     
     # Show debug mode status
@@ -1012,7 +1046,7 @@ if __name__ == "__main__":
         print("  crawl_data = await web_crawl_tool(")
         print("      'docs.python.org',")
         print("      'Find key concepts',")
-        print("      model='gemini-2.5-flash',")
+        print("      model='google/gemini-3-flash-preview',")
         print("      min_length=3000")
         print("  )")
         print("")

@@ -10,14 +10,45 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
 - **Creative Tools**: Generate images from text prompts
 - **Toolsets System**: Organize tools into logical groups for different scenarios
+- **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
+- **Ephemeral System Prompts**: Guide model behavior without polluting training datasets
 
 ## Setup
+
+### 1. Install Dependencies
 ```bash
+# Create and activate virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install required packages
 pip install -r requirements.txt
+
+# Install Hecate for terminal tools
 git clone git@github.com:NousResearch/hecate.git
 cd hecate
 pip install -e .
+cd ..
 ```
+
+### 2. Configure Environment Variables
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env and add your API keys
+nano .env  # or use your preferred editor
+```
+
+**Required API Keys:**
+- `ANTHROPIC_API_KEY` - Main agent model (get at: https://console.anthropic.com/)
+- `FIRECRAWL_API_KEY` - Web tools (get at: https://firecrawl.dev/)
+- `NOUS_API_KEY` - Vision & reasoning tools (get at: https://inference-api.nousresearch.com/)
+- `MORPH_API_KEY` - Terminal tools (get at: https://morph.so/)
+- `FAL_KEY` - Image generation (get at: https://fal.ai/)
+- `OPENAI_API_KEY` - Optional, for some Hecate features
+
+See `.env.example` for all available configuration options including debug settings and terminal tool configuration.
 
 ## Toolsets System
 
@@ -46,6 +77,9 @@ python run_agent.py --enabled_toolsets=research --query "Find latest AI papers"
 
 # Combine multiple toolsets
 python run_agent.py --enabled_toolsets=web,vision --query "Analyze this website"
+
+# Enable all toolsets explicitly (same as omitting the flag)
+python run_agent.py --enabled_toolsets=all --query "Do web research and run commands if helpful"
 
 # Safe mode (no terminal access)
 python run_agent.py --enabled_toolsets=safe --query "Help without running commands"
@@ -101,33 +135,108 @@ create_custom_toolset(
 agent = AIAgent(enabled_toolsets=["my_tools"])
 ```
 
+## Batch Processing
+
+Process multiple prompts from a dataset in parallel with automatic checkpointing and statistics tracking:
+
+```bash
+# Basic batch processing
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=20 \
+  --run_name=my_run
+
+# With specific distribution
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=20 \
+  --run_name=image_run \
+  --distribution=image_gen \
+  --num_workers=4
+```
+
+**Key Features:**
+- Parallel processing with configurable workers
+- Toolset distributions for varied data generation
+- Automatic checkpointing and resume capability
+- Combined output in `data/<run_name>/trajectories.jsonl`
+- Tool usage statistics and success rates
+
+**Quick Start:** See [QUICKSTART_BATCH.md](QUICKSTART_BATCH.md) for a 5-minute getting started guide.  
+**Full Documentation:** See [BATCH_PROCESSING.md](BATCH_PROCESSING.md) for comprehensive documentation.
+
+### Ephemeral System Prompts
+
+The ephemeral system prompt feature allows you to guide the model's behavior during batch processing **without** saving that prompt to the training dataset trajectories. This is useful for:
+
+- Guiding model behavior during data collection
+- Adding task-specific instructions 
+- Keeping saved trajectories clean and focused on tool-calling format
+
+**Example:**
+```bash
+python batch_runner.py \
+  --dataset_file=prompts.jsonl \
+  --batch_size=10 \
+  --run_name=my_run \
+  --ephemeral_system_prompt="You are a helpful assistant focused on image generation."
+```
+
+The ephemeral prompt will influence the model's behavior during execution, but **only the standard tool-calling system prompt** will be saved in the trajectory files.
+
+**Documentation:** See [docs/ephemeral_system_prompt.md](docs/ephemeral_system_prompt.md) for complete details.
+
 ## Command Line Arguments
 
+**Single Agent (`run_agent.py`):**
 - `--query`: The question or task for the agent
 - `--model`: Model to use (default: claude-opus-4-20250514)
 - `--api_key`: API key for authentication
 - `--base_url`: API endpoint URL
 - `--max_turns`: Maximum number of tool-calling iterations
-- `--enabled_toolsets`: Comma-separated list of toolsets to enable
+- `--enabled_toolsets`: Comma-separated list of toolsets to enable. Use `all` (or `*`) to enable everything. If omitted, all toolsets are enabled by default.
 - `--disabled_toolsets`: Comma-separated list of toolsets to disable
 - `--list_tools`: List all available toolsets and tools
 - `--save_trajectories`: Save conversation trajectories to JSONL files
 
+**Batch Processing (`batch_runner.py`):**
+- `--dataset_file`: Path to JSONL file with prompts
+- `--batch_size`: Number of prompts per batch
+- `--run_name`: Name for this run (for output/checkpointing)
+- `--distribution`: Toolset distribution to use (default: "default")
+- `--num_workers`: Number of parallel workers (default: 4)
+- `--resume`: Resume from checkpoint if interrupted
+- `--ephemeral_system_prompt`: System prompt used during execution but NOT saved to trajectories
+- `--list_distributions`: List available toolset distributions
+
 ## Environment Variables
 
-Set these environment variables to enable different tools:
+All environment variables can be configured in the `.env` file (copy from `.env.example`).
 
-- `FIRECRAWL_API_KEY`: For web tools (search, extract, crawl)
-- `MORPH_API_KEY`: For terminal tools
-- `NOUS_API_KEY`: For vision and reasoning tools
-- `FAL_KEY`: For image generation tools
-- `ANTHROPIC_API_KEY`: For the main agent model
+**Core API Keys:**
+- `ANTHROPIC_API_KEY`: Main agent model
+- `FIRECRAWL_API_KEY`: Web tools (search, extract, crawl)
+- `NOUS_API_KEY`: Vision and reasoning tools
+- `MORPH_API_KEY`: Terminal tools
+- `FAL_KEY`: Image generation tools
+- `OPENAI_API_KEY`: Optional, for some Hecate features
+
+**Configuration Options:**
+- `HECATE_VM_LIFETIME_SECONDS`: VM lifetime (default: 300)
+- `HECATE_DEFAULT_SNAPSHOT_ID`: Default snapshot (default: snapshot_p5294qxt)
+- `WEB_TOOLS_DEBUG`, `VISION_TOOLS_DEBUG`, `MOA_TOOLS_DEBUG`, `IMAGE_TOOLS_DEBUG`: Enable debug logging
 
 ## Documentation
 
+**Single Agent Usage:**
 - `TOOLSETS_README.md`: Comprehensive guide to the toolsets system
 - `toolsets.py`: View and modify available toolsets
 - `model_tools.py`: Core tool definitions and handlers
+
+**Batch Processing:**
+- `QUICKSTART_BATCH.md`: 5-minute quick start guide
+- `BATCH_PROCESSING.md`: Complete batch processing documentation
+- `toolset_distributions.py`: Toolset distributions for data generation
 
 ## Examples
 

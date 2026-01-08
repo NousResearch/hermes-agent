@@ -1,0 +1,23 @@
+Hermes-Agent is an agent harness for LLMs.
+
+When building, the tool functionality is in the tools/ directory, where each specific tool (or in some cases, tools that are built for the same execution category or api) are placed in a script each their own.
+
+Each tool is then consolidated in the model_tools.py file in the repo root.
+
+There is also a way to consolidate sets of tools in toolsets.py for the agent to use.
+
+The primary agent runner code is in run_agent, but other runners could be developed using the tools and framework.
+
+Always ensure consistency between tools, the model_tools.py and toolsets.py when changing any of them, otherwise they could become desynced in a way that is detrimental to functionality.
+
+The expected pathway for using API keys is to setup and place them in a .env file in the repo root.
+
+Test scripts will be placed in tests/
+
+The run_agent loop is setup to:
+- Process the enabled toolsets to provide to the model,
+- Pipe in a prompt or problem from the input to the agent,
+- Loop the LLM each time it calls a tool, until the model decides no more tools are needed and provides a natural language response,
+- Return that response.
+
+There are additional caveats for logging, where we restructure the "tools" as a system prompt for storage later into a format that can be used and handled properly later.

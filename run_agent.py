@@ -28,9 +28,22 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
+from pathlib import Path
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Load .env file if it exists
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    print(f"✅ Loaded environment variables from {env_path}")
+else:
+    print(f"ℹ️  No .env file found at {env_path}. Using system environment variables.")
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
+from tools.terminal_tool import cleanup_vm
 
 
 class AIAgent:
@@ -42,20 +55,22 @@ class AIAgent:
     """
     
     def __init__(
-        self, 
-        base_url: str = None, 
-        api_key: str = None, 
+        self,
+        base_url: str = None,
+        api_key: str = None,
         model: str = "gpt-4",
         max_iterations: int = 10,
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
-        verbose_logging: bool = False
+        verbose_logging: bool = False,
+        ephemeral_system_prompt: str = None,
+        log_prefix_chars: int = 100,
     ):
         """
         Initialize the AI Agent.
-        
+
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
@@ -66,13 +81,17 @@ class AIAgent:
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
+            ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
         """
         self.model = model
         self.max_iterations = max_iterations
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
-        
+        self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.log_prefix_chars = log_prefix_chars
+
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
@@ -84,10 +103,11 @@ class AIAgent:
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
-            # Also set OpenAI client logging to debug
-            logging.getLogger('openai').setLevel(logging.DEBUG)
-            logging.getLogger('httpx').setLevel(logging.DEBUG)
-            print("🔍 Verbose logging enabled")
+            # Keep OpenAI and httpx at INFO level to avoid massive base64 logs
+            # Even in verbose mode, we don't want to see full request/response bodies
+            logging.getLogger('openai').setLevel(logging.INFO)
+            logging.getLogger('httpx').setLevel(logging.WARNING)
+            print("🔍 Verbose logging enabled (OpenAI/httpx request bodies suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(
@@ -145,6 +165,11 @@ class AIAgent:
         # Show trajectory saving status
         if self.save_trajectories:
             print("📝 Trajectory saving enabled")
+        
+        # Show ephemeral system prompt status
+        if self.ephemeral_system_prompt:
+            prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
+            print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     
     def _format_tools_for_system_message(self) -> str:
         """
@@ -168,7 +193,7 @@ class AIAgent:
             }
             formatted_tools.append(formatted_tool)
         
-        return json.dumps(formatted_tools)
+        return json.dumps(formatted_tools, ensure_ascii=False)
     
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
@@ -229,7 +254,7 @@ class AIAgent:
                             "name": tool_call["function"]["name"],
                             "arguments": json.loads(tool_call["function"]["arguments"]) if isinstance(tool_call["function"]["arguments"], str) else tool_call["function"]["arguments"]
                         }
-                        content += f"<tool_call>\n{json.dumps(tool_call_json)}\n</tool_call>\n"
+                        content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
                     
                     trajectory.append({
                         "from": "gpt",
@@ -256,7 +281,7 @@ class AIAgent:
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
                             "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] if len(tool_responses) < len(msg["tool_calls"]) else "unknown",
                             "content": tool_content
-                        })
+                        }, ensure_ascii=False)
                         tool_response += "\n</tool_response>"
                         tool_responses.append(tool_response)
                         j += 1
@@ -321,22 +346,27 @@ class AIAgent:
             print(f"⚠️ Failed to save trajectory: {e}")
     
     def run_conversation(
-        self, 
-        user_message: str, 
-        system_message: str = None, 
-        conversation_history: List[Dict[str, Any]] = None
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
-        
+
         Args:
             user_message (str): The user's message/question
-            system_message (str): Custom system message (optional)
+            system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
-            
+            task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+
         Returns:
             Dict: Complete conversation result with final response and message history
         """
+        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
+        import uuid
+        effective_task_id = task_id or str(uuid.uuid4())
         # Initialize conversation
         messages = conversation_history or []
         
@@ -348,13 +378,17 @@ class AIAgent:
         
         print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
+        # Determine which system prompt to use for API calls (ephemeral)
+        # Priority: explicit system_message > ephemeral_system_prompt > None
+        active_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
+        
         # Main conversation loop
         api_call_count = 0
         final_response = None
         
         while api_call_count < self.max_iterations:
             api_call_count += 1
-            print(f"\n🔄 Making API call #{api_call_count}...")
+            print(f"\n🔄 Making OpenAI-compatible API call #{api_call_count}...")
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -363,33 +397,40 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
-            
+            max_retries = 6  # Increased to allow longer backoff periods
+
             while retry_count <= max_retries:
                 try:
+                    # Prepare messages for API call
+                    # If we have an ephemeral system prompt, prepend it to the messages
+                    api_messages = messages.copy()
+                    if active_system_prompt:
+                        # Insert system message at the beginning
+                        api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
+
                     # Make API call with tools
                     response = self.client.chat.completions.create(
                         model=self.model,
-                        messages=messages,
+                        messages=api_messages,
                         tools=self.tools if self.tools else None,
-                        timeout=60.0  # Add explicit timeout
+                        timeout=300.0  # 5 minute timeout for long-running agent tasks
                     )
-                    
+
                     api_duration = time.time() - api_start_time
-                    print(f"⏱️  API call completed in {api_duration:.2f}s")
-                    
+                    print(f"⏱️  OpenAI-compatible API call completed in {api_duration:.2f}s")
+
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                    
+
                     break  # Success, exit retry loop
-                    
+
                 except Exception as api_error:
                     retry_count += 1
                     if retry_count > max_retries:
                         raise api_error
-                    
-                    wait_time = min(2 ** retry_count, 10)  # Exponential backoff, max 10s
-                    print(f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
+
+                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
                     print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
                     time.sleep(wait_time)
@@ -436,28 +477,33 @@ class AIAgent:
                             print(f"❌ Invalid JSON in tool call arguments: {e}")
                             function_args = {}
                         
-                        print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                        
+                        # Preview tool call arguments
+                        args_str = json.dumps(function_args, ensure_ascii=False)
+                        args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
+                        print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+
                         tool_start_time = time.time()
-                        
-                        # Execute the tool
-                        function_result = handle_function_call(function_name, function_args)
-                        
+
+                        # Execute the tool with task_id to isolate VMs between concurrent tasks
+                        function_result = handle_function_call(function_name, function_args, effective_task_id)
+
                         tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
-                        
+
                         if self.verbose_logging:
                             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                             logging.debug(f"Tool result preview: {result_preview}...")
-                        
+
                         # Add tool result to conversation
                         messages.append({
                             "role": "tool",
                             "content": function_result,
                             "tool_call_id": tool_call.id
                         })
-                        
-                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
+
+                        # Preview tool response
+                        response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -476,11 +522,11 @@ class AIAgent:
                         "content": final_response
                     })
                     
-                    print(f"🎉 Conversation completed after {api_call_count} API call(s)")
+                    print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
                 
             except Exception as e:
-                error_msg = f"Error during API call #{api_call_count}: {str(e)}"
+                error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
                 print(f"❌ {error_msg}")
                 
                 if self.verbose_logging:
@@ -505,10 +551,17 @@ class AIAgent:
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
-        
+
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
-        
+
+        # Clean up VM for this task after conversation completes
+        try:
+            cleanup_vm(effective_task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+
         return {
             "final_response": final_response,
             "messages": messages,
@@ -532,7 +585,7 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "claude-opus-4-20250514", 
+    model: str = "claude-opus-4-20250514",
     api_key: str = None,
     base_url: str = "https://api.anthropic.com/v1/",
     max_turns: int = 10,
@@ -540,25 +593,27 @@ def main(
     disabled_toolsets: str = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    log_prefix_chars: int = 20
 ):
     """
     Main function for running the agent directly.
-    
+
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
         model (str): Model name to use. Defaults to claude-opus-4-20250514.
         api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
-        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined 
-                              toolsets (e.g., "research", "development", "safe"). 
+        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
+                              toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
         save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
-        
+        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
+
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
@@ -675,7 +730,8 @@ def main(
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
             save_trajectories=save_trajectories,
-            verbose_logging=verbose
+            verbose_logging=verbose,
+            log_prefix_chars=log_prefix_chars
         )
     except RuntimeError as e:
         print(f"❌ Failed to initialize agent: {e}")

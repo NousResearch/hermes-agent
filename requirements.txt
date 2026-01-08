@@ -4,3 +4,6 @@ fal-client
 fire
 git@github.com:NousResearch/hecate.git
 tenacity
+python-dotenv
+fire
+httpx

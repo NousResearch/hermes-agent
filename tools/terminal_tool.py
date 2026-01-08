@@ -280,7 +280,7 @@ def terminal_tool(
         # Get configuration from environment
         vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
         vm_ttl_seconds = int(os.getenv("HECATE_VM_TTL_SECONDS", "1200"))  # 20 minutes default
-        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "snapshot_defv9tjg")
+        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "snapshot_1a8xowaq")
 
         # Check API key
         morph_api_key = os.getenv("MORPH_API_KEY")
@@ -453,4 +453,4 @@ if __name__ == "__main__":
     print(f"  OPENAI_API_KEY: {'Set' if os.getenv('OPENAI_API_KEY') else 'Not set (optional)'}")
     print(f"  HECATE_VM_TTL_SECONDS: {os.getenv('HECATE_VM_TTL_SECONDS', '1200')} (default: 1200 / 20 minutes)")
     print(f"  HECATE_VM_LIFETIME_SECONDS: {os.getenv('HECATE_VM_LIFETIME_SECONDS', '300')} (default: 300 / 5 minutes)")
-    print(f"  HECATE_DEFAULT_SNAPSHOT_ID: {os.getenv('HECATE_DEFAULT_SNAPSHOT_ID', 'snapshot_defv9tjg')} (default: snapshot_defv9tjg)")
+    print(f"  HECATE_DEFAULT_SNAPSHOT_ID: {os.getenv('HECATE_DEFAULT_SNAPSHOT_ID', 'snapshot_1a8xowaq')} (default: snapshot_1a8xowaq)")

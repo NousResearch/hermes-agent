@@ -98,10 +98,9 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
                     # Terminal wraps its response in a "content" field
                     if "content" in content_json and isinstance(content_json["content"], dict):
                         inner_content = content_json["content"]
-                        # Check for actual error (non-null error field or non-zero exit code)
-                        has_error = (inner_content.get("error") is not None or 
-                                   inner_content.get("exit_code", 0) != 0)
-                        if has_error:
+                        # Check for actual error (non-null error field)
+                        # Note: non-zero exit codes are not failures - the model can self-correct
+                        if inner_content.get("error") is not None:
                             is_success = False
                     
                     # Check for "success": false pattern used by some tools

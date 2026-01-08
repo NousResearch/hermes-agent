@@ -460,8 +460,8 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
-            
+            max_retries = 6  # Increased to allow longer backoff periods
+
             while retry_count <= max_retries:
                 try:
                     # Build OpenRouter provider preferences if specified
@@ -494,9 +494,9 @@ class AIAgent:
                     
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                    
+
                     break  # Success, exit retry loop
-                    
+
                 except Exception as api_error:
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -515,10 +515,11 @@ class AIAgent:
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
-                    
-                    wait_time = min(2 ** retry_count, 10)  # Exponential backoff, max 10s
-                    print(f"{self.log_prefix}⏳ Retrying in {wait_time}s...")
-                    logging.warning(f"API retry {retry_count}/{max_retries} after {error_type}: {error_msg[:200]}")
+
+                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
+                    print(f"⏳ Retrying in {wait_time}s...")
+                    logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
                     time.sleep(wait_time)
             
             try:
@@ -624,11 +625,11 @@ class AIAgent:
                         "reasoning": reasoning_content  # Store reasoning for trajectory
                     })
                     
-                    print(f"🎉 Conversation completed after {api_call_count} API call(s)")
+                    print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
                 
             except Exception as e:
-                error_msg = f"Error during API call #{api_call_count}: {str(e)}"
+                error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
                 print(f"❌ {error_msg}")
                 
                 if self.verbose_logging:

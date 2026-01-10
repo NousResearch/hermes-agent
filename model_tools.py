@@ -8,7 +8,7 @@ for defining tools and executing function calls.
 
 Currently supports:
 - Web tools (search, extract, crawl) from web_tools.py
-- Terminal tools (command execution with interactive sessions) from terminal_tool.py
+- Terminal tools (simple command execution, no session persistence) from simple_terminal_tool.py
 - Vision tools (image analysis) from vision_tools.py
 - Mixture of Agents tools (collaborative multi-model reasoning) from mixture_of_agents_tool.py
 - Image generation tools (text-to-image with upscaling) from image_generation_tool.py

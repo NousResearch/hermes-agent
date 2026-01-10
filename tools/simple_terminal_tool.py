@@ -100,6 +100,12 @@ def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
                     print(f"[VM Cleanup] VM for task {task_id} already cleaned up (likely TTL expiration)")
                 else:
                     print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
+                
+                # Always remove from tracking dicts to prevent infinite retry loops
+                if task_id in _active_instances:
+                    del _active_instances[task_id]
+                if task_id in _last_activity:
+                    del _last_activity[task_id]
 
 
 def _cleanup_thread_worker():
@@ -171,48 +177,36 @@ def cleanup_vm(task_id: str):
 atexit.register(_stop_cleanup_thread)
 
 
-def _execute_ssh_command(instance, command: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+def _execute_command(instance, command: str, timeout: Optional[int] = None) -> Dict[str, Any]:
     """
-    Execute a command via SSH on the VM instance.
+    Execute a command on the VM instance using instance.exec() for proper stderr capture.
 
     Args:
         instance: MorphVM instance
         command: Command to execute
-        timeout: Optional timeout in seconds
+        timeout: Optional timeout in seconds (Note: exec() may not support timeout directly)
 
     Returns:
         dict with stdout, stderr, returncode
     """
-    ssh_context_manager = None
     try:
-        # Use the instance's SSH context manager
-        ssh_context_manager = instance.ssh()
-        ssh_context = ssh_context_manager.__enter__()
-
-        # Execute the command
-        result = ssh_context.run(command, get_pty=False, timeout=timeout or 120)
-
-        # Close the SSH connection
-        if ssh_context_manager:
-            try:
-                ssh_context_manager.__exit__(None, None, None)
-            except:
-                pass
+        # Use instance.exec() which properly captures both stdout and stderr
+        # (unlike ssh.run() which doesn't capture stderr correctly)
+        result = instance.exec(command)
+        
+        # Debug logging only for verbose mode or unusual cases
+        # Note: Non-zero exit codes are normal (model's command failed) - not a tool error
+        if result.exit_code != 0 and not result.stdout and not result.stderr:
+            # Only log if we got absolutely no output - might indicate an issue
+            print(f"⚠️  Command returned exit={result.exit_code} with no output")
 
         return {
             "stdout": result.stdout or "",
             "stderr": result.stderr or "",
-            "returncode": result.returncode
+            "returncode": result.exit_code
         }
 
     except Exception as e:
-        # Close connection on error
-        if ssh_context_manager:
-            try:
-                ssh_context_manager.__exit__(None, None, None)
-            except:
-                pass
-
         # Check if it's a timeout
         error_str = str(e).lower()
         if "timeout" in error_str:
@@ -224,7 +218,7 @@ def _execute_ssh_command(instance, command: str, timeout: Optional[int] = None) 
 
         return {
             "stdout": "",
-            "stderr": f"SSH execution failed: {str(e)}",
+            "stderr": f"Command execution failed: {str(e)}",
             "returncode": -1
         }
 
@@ -312,7 +306,7 @@ def simple_terminal_tool(
         if background:
             # Run in background with nohup and redirect output
             exec_command = f"nohup {command} > /tmp/bg_output.log 2>&1 &"
-            result = _execute_ssh_command(instance, exec_command, timeout=10)
+            result = _execute_command(instance, exec_command, timeout=10)
 
             # For background tasks, return immediately with info
             if result["returncode"] == 0:
@@ -322,24 +316,72 @@ def simple_terminal_tool(
                     "error": None
                 }, ensure_ascii=False)
             else:
+                # Include stderr in output but don't set error (command failure, not tool failure)
+                bg_output = result["stdout"]
+                if result["stderr"]:
+                    bg_output = f"{bg_output}\n{result['stderr']}" if bg_output else result["stderr"]
                 return json.dumps({
-                    "output": result["stdout"],
+                    "output": bg_output,
                     "exit_code": result["returncode"],
-                    "error": result["stderr"]
+                    "error": None  # Only set for actual tool failures
                 }, ensure_ascii=False)
         else:
-            # Run foreground command
-            result = _execute_ssh_command(instance, command, timeout=timeout)
+            # Run foreground command with retry logic for transient failures
+            max_retries = 3
+            retry_count = 0
+            result = None
+            
+            while retry_count <= max_retries:
+                result = _execute_command(instance, command, timeout=timeout)
+                
+                # Check if we should retry (only for transient errors, not normal results)
+                stdout = result.get("stdout", "")
+                stderr = result.get("stderr", "")
+                returncode = result.get("returncode", 0)
+                
+                should_retry = False
+                retry_reason = ""
+                
+                # NOTE: Empty output with exit_code=0 is NORMAL for many commands:
+                # - File writes: cat > file, echo > file
+                # - Directory ops: mkdir, cd
+                # - Silent installs: pip install --quiet
+                # So we do NOT retry on exit_code=0, even with empty output.
+                
+                # Only retry on special error codes that suggest transient/infra issues
+                if not stdout and not stderr and returncode in [-1, 124]:
+                    should_retry = True
+                    retry_reason = f"transient error (code {returncode})"
+                
+                if should_retry and retry_count < max_retries:
+                    retry_count += 1
+                    wait_time = 2 ** retry_count  # Exponential backoff: 2s, 4s, 8s
+                    print(f"⚠️  Terminal: {retry_reason}, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+                
+                # Got a result (success or normal command failure) - exit retry loop
+                break
 
             # Combine stdout and stderr for output
             output = result["stdout"]
             if result["stderr"] and result["returncode"] != 0:
                 output = f"{output}\n{result['stderr']}" if output else result["stderr"]
+            
+            # Truncate output if too long (max 50,000 chars to avoid context explosion)
+            MAX_OUTPUT_CHARS = 50000
+            if len(output) > MAX_OUTPUT_CHARS:
+                truncated_notice = f"\n\n... [OUTPUT TRUNCATED - showing last {MAX_OUTPUT_CHARS} chars of {len(output)} total] ..."
+                output = truncated_notice + output[-MAX_OUTPUT_CHARS:]
 
+            # NOTE: error is only set for FUNCTIONAL tool failures (VM issues, timeouts, etc.)
+            # Non-zero exit codes from the model's commands are NOT tool failures - 
+            # the model can self-correct. The exit_code field tells the model if the command succeeded.
+            # Retries that eventually succeed also don't count as failures.
             return json.dumps({
                 "output": output.strip(),
                 "exit_code": result["returncode"],
-                "error": result["stderr"] if result["returncode"] != 0 else None
+                "error": None  # Only set for actual tool failures, not command failures
             }, ensure_ascii=False)
 
     except Exception as e:

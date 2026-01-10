@@ -270,6 +270,7 @@ def terminal_tool(
         except ImportError as import_error:
             return json.dumps({
                 "output": "",
+                "stderr": "",
                 "screen": "",
                 "exit_code": -1,
                 "error": f"Terminal tool is disabled due to import error: {import_error}",
@@ -287,6 +288,7 @@ def terminal_tool(
         if not morph_api_key:
             return json.dumps({
                 "output": "",
+                "stderr": "",
                 "screen": "",
                 "exit_code": -1,
                 "error": "MORPH_API_KEY environment variable not set",
@@ -349,29 +351,85 @@ def terminal_tool(
         # Generate unique tool block ID
         tool_block_id = f"tool_{uuid.uuid4().hex[:8]}"
 
-        # Execute the tool with hecate
-        result = run_tool(
-            tool_call=tool_call,
-            instance=instance,
-            console=console,
-            tool_block_id=tool_block_id,
-            ctx=ctx
-        )
+        # Retry configuration for handling transient empty responses
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count <= max_retries:
+            # Execute the tool with hecate
+            result = run_tool(
+                tool_call=tool_call,
+                instance=instance,
+                console=console,
+                tool_block_id=tool_block_id,
+                ctx=ctx
+            )
 
-        # Format the result with only essential fields for the LLM
-        # Map hecate's "stdout" to "output" for compatibility
-        formatted_result = {
-            "output": result.get("stdout", result.get("output", "")),
-            "screen": result.get("screen", ""),
-            "exit_code": result.get("returncode", result.get("exit_code", -1)),
-            "error": result.get("error")
-        }
+            # Format the result with only essential fields for the LLM
+            # Map hecate's "stdout" to "output" for compatibility
+            stdout = result.get("stdout", result.get("output", ""))
+            stderr = result.get("stderr", "")
+            exit_code = result.get("returncode", result.get("exit_code", -1))
+            error = result.get("error")
+            screen = result.get("screen", "")
+            
+            # If there's no explicit error but there's stderr, include it in error field
+            # This helps capture why commands failed even without an explicit error message
+            if not error and stderr:
+                error = stderr
+            # If exit code is non-zero but no error info, note that
+            elif not error and exit_code and exit_code != 0 and not stdout:
+                error = f"Command exited with code {exit_code}"
+            
+            # Check if we should retry:
+            # 1. Empty output with non-zero exit code (clear failure)
+            # 2. Completely empty response (may indicate timing/VM issue)
+            should_retry = False
+            retry_reason = ""
+            
+            if not stdout and not stderr and not screen and not error and exit_code == 0:
+                # Completely empty response - might be a timing issue
+                should_retry = True
+                retry_reason = "completely empty response (possible timing issue)"
+            elif not stdout and not stderr and exit_code != 0 and exit_code != -1:
+                # Non-zero exit with no output at all - might be transient
+                should_retry = True
+                retry_reason = f"empty output with exit code {exit_code}"
+            
+            if should_retry and retry_count < max_retries:
+                retry_count += 1
+                wait_time = 2 ** retry_count  # Exponential backoff: 2s, 4s, 8s
+                print(f"⚠️  Terminal: {retry_reason}, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            
+            # Success or max retries reached - return the result
+            formatted_result = {
+                "output": stdout,
+                "stderr": stderr,  # Now capturing stderr separately too
+                "screen": screen,
+                "exit_code": exit_code,
+                "error": error
+            }
+            
+            if retry_count > 0:
+                formatted_result["retries"] = retry_count
 
-        return json.dumps(formatted_result, ensure_ascii=False)
+            return json.dumps(formatted_result, ensure_ascii=False)
+        
+        # Should never reach here, but just in case
+        return json.dumps({
+            "output": "",
+            "stderr": "",
+            "screen": "",
+            "exit_code": -1,
+            "error": "Terminal tool: max retries exceeded"
+        }, ensure_ascii=False)
 
     except Exception as e:
         return json.dumps({
             "output": "",
+            "stderr": "",
             "screen": "",
             "exit_code": -1,
             "error": f"Failed to execute terminal command: {str(e)}",

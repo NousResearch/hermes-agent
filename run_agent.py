@@ -43,7 +43,7 @@ else:
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
-from tools.terminal_tool import cleanup_vm
+from tools.simple_terminal_tool import cleanup_vm
 
 
 class AIAgent:
@@ -177,9 +177,11 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets
         )
         
-        # Show tool configuration
+        # Show tool configuration and store valid tool names for validation
+        self.valid_tool_names = set()
         if self.tools:
-            tool_names = [tool["function"]["name"] for tool in self.tools]
+            self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
+            tool_names = sorted(self.valid_tool_names)
             print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
             
             # Show filtering info if applied
@@ -495,6 +497,49 @@ class AIAgent:
                     if self.verbose_logging:
                         logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
+                    # Validate response has valid choices before proceeding
+                    if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
+                        # This is often rate limiting or provider returning malformed response
+                        retry_count += 1
+                        error_details = []
+                        if response is None:
+                            error_details.append("response is None")
+                        elif not hasattr(response, 'choices'):
+                            error_details.append("response has no 'choices' attribute")
+                        elif response.choices is None:
+                            error_details.append("response.choices is None")
+                        else:
+                            error_details.append("response.choices is empty")
+                        
+                        # Check for error field in response (some providers include this)
+                        error_msg = "Unknown"
+                        if response and hasattr(response, 'error') and response.error:
+                            error_msg = str(response.error)
+                        elif response and hasattr(response, 'message') and response.message:
+                            error_msg = str(response.message)
+                        
+                        print(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
+                        print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
+                        print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
+                        
+                        if retry_count > max_retries:
+                            print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                            logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Invalid API response (choices is None/empty). Likely rate limited by provider.",
+                                "failed": True  # Mark as failure for filtering
+                            }
+                        
+                        # Longer backoff for rate limiting (likely cause of None choices)
+                        wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
+                        print(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...")
+                        logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)}")
+                        time.sleep(wait_time)
+                        continue  # Retry the API call
+
                     break  # Success, exit retry loop
 
                 except Exception as api_error:
@@ -503,12 +548,31 @@ class AIAgent:
                     
                     # Enhanced error logging
                     error_type = type(api_error).__name__
-                    error_msg = str(api_error)
+                    error_msg = str(api_error).lower()
                     
                     print(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}")
                     print(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
-                    print(f"{self.log_prefix}   📝 Error: {error_msg[:200]}")
+                    print(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}")
                     print(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+                    
+                    # Check for non-retryable errors (context length exceeded)
+                    is_context_length_error = any(phrase in error_msg for phrase in [
+                        'context length', 'maximum context', 'token limit', 
+                        'too many tokens', 'reduce the length', 'exceeds the limit'
+                    ])
+                    
+                    if is_context_length_error:
+                        print(f"{self.log_prefix}❌ Context length exceeded - this error cannot be resolved by retrying.")
+                        print(f"{self.log_prefix}   💡 The conversation has accumulated too much content from tool responses.")
+                        logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot continue.")
+                        # Return a partial result instead of crashing
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Conversation terminated early.",
+                            "partial": True
+                        }
                     
                     if retry_count > max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
@@ -536,6 +600,43 @@ class AIAgent:
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
                             logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                    
+                    # Validate tool call names - detect model hallucinations
+                    invalid_tool_calls = [
+                        tc.function.name for tc in assistant_message.tool_calls 
+                        if tc.function.name not in self.valid_tool_names
+                    ]
+                    
+                    if invalid_tool_calls:
+                        # Track retries for invalid tool calls
+                        if not hasattr(self, '_invalid_tool_retries'):
+                            self._invalid_tool_retries = 0
+                        self._invalid_tool_retries += 1
+                        
+                        invalid_preview = invalid_tool_calls[0][:80] + "..." if len(invalid_tool_calls[0]) > 80 else invalid_tool_calls[0]
+                        print(f"{self.log_prefix}⚠️  Invalid tool call detected: '{invalid_preview}'")
+                        print(f"{self.log_prefix}   Valid tools: {sorted(self.valid_tool_names)}")
+                        
+                        if self._invalid_tool_retries < 3:
+                            print(f"{self.log_prefix}🔄 Retrying API call ({self._invalid_tool_retries}/3)...")
+                            # Don't add anything to messages, just retry the API call
+                            continue
+                        else:
+                            print(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.")
+                            # Return partial result - don't include the bad tool call in messages
+                            self._invalid_tool_retries = 0  # Reset for next conversation
+                            return {
+                                "final_response": None,
+                                "messages": messages,  # Messages up to last valid point
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": f"Model generated invalid tool call: {invalid_preview}"
+                            }
+                    
+                    # Reset retry counter on successful tool call validation
+                    if hasattr(self, '_invalid_tool_retries'):
+                        self._invalid_tool_retries = 0
                     
                     # Extract reasoning from response if available (for reasoning models like minimax, kimi, etc.)
                     reasoning_content = None
@@ -669,7 +770,8 @@ class AIAgent:
             "final_response": final_response,
             "messages": messages,
             "api_calls": api_call_count,
-            "completed": completed
+            "completed": completed,
+            "partial": False  # True only when stopped due to invalid tool calls
         }
     
     def chat(self, message: str) -> str:

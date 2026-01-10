@@ -192,6 +192,7 @@ def _process_single_prompt(
             "trajectory": trajectory,
             "tool_stats": tool_stats,
             "completed": result["completed"],
+            "partial": result.get("partial", False),
             "api_calls": result["api_calls"],
             "toolsets_used": selected_toolsets,
             "metadata": {
@@ -272,13 +273,23 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
         
         # Save trajectory if successful
         if result["success"] and result["trajectory"]:
+            # Create tool_error_counts mapping tool names to their failure counts
+            tool_stats = result.get("tool_stats", {})
+            tool_error_counts = {
+                tool_name: stats.get("failure", 0) 
+                for tool_name, stats in tool_stats.items()
+            }
+            
             trajectory_entry = {
                 "prompt_index": prompt_index,
                 "conversations": result["trajectory"],
                 "metadata": result["metadata"],
                 "completed": result["completed"],
+                "partial": result.get("partial", False),  # True if stopped due to invalid tool calls
                 "api_calls": result["api_calls"],
-                "toolsets_used": result["toolsets_used"]
+                "toolsets_used": result["toolsets_used"],
+                "tool_stats": tool_stats,  # Full stats: {tool: {count, success, failure}}
+                "tool_error_counts": tool_error_counts  # Simple: {tool: failure_count}
             }
             
             # Append to batch output file
@@ -601,8 +612,15 @@ class BatchRunner:
                 stats["failure_rate"] = 0.0
         
         # Combine all batch files into a single trajectories.jsonl file
+        # Also filter out corrupted entries (where model generated invalid tool names)
         combined_file = self.output_dir / "trajectories.jsonl"
         print(f"\n📦 Combining batch files into {combined_file.name}...")
+        
+        VALID_TOOLS = {'web_search', 'web_extract', 'web_crawl', 'terminal', 'vision_analyze', 
+                       'image_generate', 'mixture_of_agents'}
+        
+        total_entries = 0
+        filtered_entries = 0
         
         with open(combined_file, 'w', encoding='utf-8') as outfile:
             for batch_num in range(len(self.batches)):
@@ -610,9 +628,28 @@ class BatchRunner:
                 if batch_file.exists():
                     with open(batch_file, 'r', encoding='utf-8') as infile:
                         for line in infile:
-                            outfile.write(line)
+                            total_entries += 1
+                            try:
+                                data = json.loads(line)
+                                tool_stats = data.get('tool_stats', {})
+                                
+                                # Check for invalid tool names (model hallucinations)
+                                invalid_tools = [k for k in tool_stats.keys() if k not in VALID_TOOLS]
+                                
+                                if invalid_tools:
+                                    filtered_entries += 1
+                                    invalid_preview = invalid_tools[0][:50] + "..." if len(invalid_tools[0]) > 50 else invalid_tools[0]
+                                    print(f"   ⚠️  Filtering corrupted entry (batch {batch_num}): invalid tool '{invalid_preview}'")
+                                    continue
+                                
+                                outfile.write(line)
+                            except json.JSONDecodeError:
+                                filtered_entries += 1
+                                print(f"   ⚠️  Filtering invalid JSON entry (batch {batch_num})")
         
-        print(f"✅ Combined {len(self.batches)} batch files into trajectories.jsonl")
+        if filtered_entries > 0:
+            print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
+        print(f"✅ Combined {len(self.batches)} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
         
         # Save final statistics
         final_stats = {

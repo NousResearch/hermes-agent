@@ -513,7 +513,7 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
         full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
         
         # Run async function in event loop
-        return asyncio.run(vision_analyze_tool(image_url, full_prompt, "gemini-2.5-flash"))
+        return asyncio.run(vision_analyze_tool(image_url, full_prompt, "google/gemini-3-flash-preview"))
     
     else:
         return json.dumps({"error": f"Unknown vision function: {function_name}"}, ensure_ascii=False)

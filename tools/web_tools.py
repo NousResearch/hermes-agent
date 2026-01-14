@@ -285,7 +285,13 @@ Create a markdown summary that captures all key information in a well-organized,
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                extra_body={
+                    "reasoning": {
+                        "enabled": True,
+                        "effort": "xhigh"
+                    }
+                }
             )
             return response.choices[0].message.content.strip()
         except Exception as api_error:
@@ -398,7 +404,13 @@ Create a single, unified markdown summary."""
                 {"role": "user", "content": synthesis_prompt}
             ],
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=4000,
+            extra_body={
+                "reasoning": {
+                    "enabled": True,
+                    "effort": "xhigh"
+                }
+            }
         )
         final_summary = response.choices[0].message.content.strip()
         

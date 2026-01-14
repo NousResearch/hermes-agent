@@ -30,6 +30,7 @@ from datetime import datetime
 from multiprocessing import Pool, Manager, Lock
 import traceback
 
+from tqdm import tqdm
 import fire
 
 from run_agent import AIAgent
@@ -642,8 +643,14 @@ class BatchRunner:
             print(f"✅ Created {len(tasks)} batch tasks")
             print(f"🚀 Starting parallel batch processing...\n")
             
-            # Use map to process batches in parallel
-            results = pool.map(_process_batch_worker, tasks)
+            # Use imap_unordered with tqdm for progress tracking
+            results = list(tqdm(
+                pool.imap_unordered(_process_batch_worker, tasks),
+                total=len(tasks),
+                desc="📦 Batches",
+                unit="batch",
+                ncols=80
+            ))
         
         # Aggregate all batch statistics and update checkpoint
         all_completed_prompts = list(completed_prompts_set)

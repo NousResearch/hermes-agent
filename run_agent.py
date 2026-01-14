@@ -102,6 +102,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        self.base_url = base_url or ""  # Store for OpenRouter detection
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed

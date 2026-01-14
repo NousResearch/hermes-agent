@@ -24,9 +24,9 @@ Architecture:
 2. Aggregator model synthesizes responses into a high-quality output
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
-Models Used:
-- Reference Models: claude-opus-4-20250514, gemini-2.5-pro, o4-mini, deepseek-r1
-- Aggregator Model: claude-opus-4-20250514 (highest capability for synthesis)
+Models Used (via OpenRouter):
+- Reference Models: claude-opus-4, gemini-2.5-pro, gpt-4.1, deepseek-r1
+- Aggregator Model: claude-opus-4 (highest capability for synthesis)
 
 Configuration:
     To customize the MoA setup, modify the configuration constants at the top of this file:
@@ -54,23 +54,23 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from openai import AsyncOpenAI
 
-# Initialize Nous Research API client for MoA processing
-nous_client = AsyncOpenAI(
-    api_key=os.getenv("NOUS_API_KEY"),
-    base_url="https://inference-api.nousresearch.com/v1"
+# Initialize OpenRouter API client for MoA processing
+openrouter_client = AsyncOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"
 )
 
 # Configuration for MoA processing
-# Reference models - these generate diverse initial responses in parallel
+# Reference models - these generate diverse initial responses in parallel (OpenRouter slugs)
 REFERENCE_MODELS = [
-    "claude-opus-4-20250514",
-    "gemini-2.5-pro", 
-    "gpt-5",
-    "deepseek-r1"
+    "anthropic/claude-opus-4.5",
+    "google/gemini-3-pro-preview", 
+    "openai/gpt-5.2-pro",
+    "deepseek/deepseek-v3.2"
 ]
 
 # Aggregator model - synthesizes reference responses into final output
-AGGREGATOR_MODEL = "claude-opus-4-20250514"  # Use highest capability model for aggregation
+AGGREGATOR_MODEL = "anthropic/claude-opus-4.5"  # Use highest capability model for aggregation
 
 # Temperature settings optimized for MoA performance
 REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives
@@ -187,7 +187,13 @@ async def _run_reference_model_safe(
             # Build parameters for the API call
             api_params = {
                 "model": model,
-                "messages": [{"role": "user", "content": user_prompt}]
+                "messages": [{"role": "user", "content": user_prompt}],
+                "extra_body": {
+                    "reasoning": {
+                        "enabled": True,
+                        "effort": "xhigh"
+                    }
+                }
             }
             
             # GPT models (especially gpt-4o-mini) don't support custom temperature values
@@ -195,7 +201,7 @@ async def _run_reference_model_safe(
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
             
-            response = await nous_client.chat.completions.create(**api_params)
+            response = await openrouter_client.chat.completions.create(**api_params)
             
             content = response.choices[0].message.content.strip()
             print(f"✅ {model} responded ({len(content)} characters)")
@@ -248,7 +254,13 @@ async def _run_aggregator_model(
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
-        ]
+        ],
+        "extra_body": {
+            "reasoning": {
+                "enabled": True,
+                "effort": "xhigh"
+            }
+        }
     }
     
     # GPT models (especially gpt-4o-mini) don't support custom temperature values
@@ -256,7 +268,7 @@ async def _run_aggregator_model(
     if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
         api_params["temperature"] = temperature
     
-    response = await nous_client.chat.completions.create(**api_params)
+    response = await openrouter_client.chat.completions.create(**api_params)
     
     content = response.choices[0].message.content.strip()
     print(f"✅ Aggregation complete ({len(content)} characters)")
@@ -330,8 +342,8 @@ async def mixture_of_agents_tool(
         print(f"📝 Query: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}")
         
         # Validate API key availability
-        if not os.getenv("NOUS_API_KEY"):
-            raise ValueError("NOUS_API_KEY environment variable not set")
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise ValueError("OPENROUTER_API_KEY environment variable not set")
         
         # Use provided models or defaults
         ref_models = reference_models or REFERENCE_MODELS
@@ -439,14 +451,14 @@ async def mixture_of_agents_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-def check_nous_api_key() -> bool:
+def check_openrouter_api_key() -> bool:
     """
-    Check if the Nous Research API key is available in environment variables.
+    Check if the OpenRouter API key is available in environment variables.
     
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("NOUS_API_KEY"))
+    return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
 def check_moa_requirements() -> bool:
@@ -456,7 +468,7 @@ def check_moa_requirements() -> bool:
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    return check_nous_api_key()
+    return check_openrouter_api_key()
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -522,15 +534,15 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # Check if API key is available
-    api_available = check_nous_api_key()
+    api_available = check_openrouter_api_key()
     
     if not api_available:
-        print("❌ NOUS_API_KEY environment variable not set")
-        print("Please set your API key: export NOUS_API_KEY='your-key-here'")
-        print("Get API key at: https://inference-api.nousresearch.com/")
+        print("❌ OPENROUTER_API_KEY environment variable not set")
+        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
+        print("Get API key at: https://openrouter.ai/")
         exit(1)
     else:
-        print("✅ Nous Research API key found")
+        print("✅ OpenRouter API key found")
     
     print("🛠️  MoA tools ready for use!")
     

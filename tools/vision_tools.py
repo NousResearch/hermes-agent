@@ -3,7 +3,7 @@
 Vision Tools Module
 
 This module provides vision analysis tools that work with image URLs.
-Uses Gemini Flash via Nous Research API for intelligent image understanding.
+Uses Gemini 3 Flash Preview via OpenRouter API for intelligent image understanding.
 
 Available tools:
 - vision_analyze_tool: Analyze images from URLs with custom prompts
@@ -38,14 +38,14 @@ from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
 import httpx  # Use httpx for async HTTP requests
 
-# Initialize Nous Research API client for vision processing
-nous_client = AsyncOpenAI(
-    api_key=os.getenv("NOUS_API_KEY"),
-    base_url="https://inference-api.nousresearch.com/v1"
+# Initialize OpenRouter API client for vision processing
+openrouter_client = AsyncOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"
 )
 
 # Configuration for vision processing
-DEFAULT_VISION_MODEL = "gemini-2.5-flash"
+DEFAULT_VISION_MODEL = "google/gemini-3-flash-preview"
 
 # Debug mode configuration
 DEBUG_MODE = os.getenv("VISION_TOOLS_DEBUG", "false").lower() == "true"
@@ -220,7 +220,7 @@ async def vision_analyze_tool(
     Analyze an image from a URL using vision AI.
     
     This tool downloads images from URLs, converts them to base64, and processes
-    them using Gemini Flash via Nous Research API. The image is downloaded to a
+    them using Gemini 3 Flash Preview via OpenRouter API. The image is downloaded to a
     temporary location and automatically cleaned up after processing.
     
     The user_prompt parameter is expected to be pre-formatted by the calling
@@ -230,7 +230,7 @@ async def vision_analyze_tool(
     Args:
         image_url (str): The URL of the image to analyze (must be http:// or https://)
         user_prompt (str): The pre-formatted prompt for the vision model
-        model (str): The vision model to use (default: gemini-2.5-flash)
+        model (str): The vision model to use (default: google/gemini-3-flash-preview)
     
     Returns:
         str: JSON string containing the analysis results with the following structure:
@@ -271,8 +271,8 @@ async def vision_analyze_tool(
             raise ValueError("Invalid image URL format. Must start with http:// or https://")
         
         # Check API key availability
-        if not os.getenv("NOUS_API_KEY"):
-            raise ValueError("NOUS_API_KEY environment variable not set")
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise ValueError("OPENROUTER_API_KEY environment variable not set")
         
         # Download the image to a temporary location
         print(f"⬇️  Downloading image from URL...", flush=True)
@@ -319,12 +319,18 @@ async def vision_analyze_tool(
         
         print(f"🧠 Processing image with {model}...", flush=True)
         
-        # Call the vision API
-        response = await nous_client.chat.completions.create(
+        # Call the vision API with reasoning enabled
+        response = await openrouter_client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.1,  # Low temperature for consistent analysis
-            max_tokens=2000   # Generous limit for detailed analysis
+            max_tokens=2000,  # Generous limit for detailed analysis
+            extra_body={
+                "reasoning": {
+                    "enabled": True,
+                    "effort": "xhigh"
+                }
+            }
         )
         
         # Extract the analysis
@@ -374,14 +380,14 @@ async def vision_analyze_tool(
                 print(f"⚠️  Warning: Could not delete temporary file: {cleanup_error}", flush=True)
 
 
-def check_nous_api_key() -> bool:
+def check_openrouter_api_key() -> bool:
     """
-    Check if the Nous Research API key is available in environment variables.
+    Check if the OpenRouter API key is available in environment variables.
     
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("NOUS_API_KEY"))
+    return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
 def check_vision_requirements() -> bool:
@@ -391,7 +397,7 @@ def check_vision_requirements() -> bool:
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    return check_nous_api_key()
+    return check_openrouter_api_key()
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -425,15 +431,15 @@ if __name__ == "__main__":
     print("=" * 40)
     
     # Check if API key is available
-    api_available = check_nous_api_key()
+    api_available = check_openrouter_api_key()
     
     if not api_available:
-        print("❌ NOUS_API_KEY environment variable not set")
-        print("Please set your API key: export NOUS_API_KEY='your-key-here'")
-        print("Get API key at: https://inference-api.nousresearch.com/")
+        print("❌ OPENROUTER_API_KEY environment variable not set")
+        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
+        print("Get API key at: https://openrouter.ai/")
         exit(1)
     else:
-        print("✅ Nous Research API key found")
+        print("✅ OpenRouter API key found")
     
     print("🛠️ Vision tools ready for use!")
     print(f"🧠 Using model: {DEFAULT_VISION_MODEL}")

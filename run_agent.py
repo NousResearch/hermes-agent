@@ -555,9 +555,22 @@ class AIAgent:
                         "timeout": 600.0  # 10 minute timeout for very long responses
                     }
                     
-                    # Add provider preferences for OpenRouter via extra_body
+                    # Add extra_body for OpenRouter (provider preferences + reasoning)
+                    extra_body = {}
+                    
+                    # Add provider preferences if specified
                     if provider_preferences:
-                        api_kwargs["extra_body"] = {"provider": provider_preferences}
+                        extra_body["provider"] = provider_preferences
+                    
+                    # Enable reasoning with xhigh effort for OpenRouter
+                    if "openrouter" in self.base_url.lower():
+                        extra_body["reasoning"] = {
+                            "enabled": True,
+                            "effort": "xhigh"
+                        }
+                    
+                    if extra_body:
+                        api_kwargs["extra_body"] = extra_body
                     
                     response = self.client.chat.completions.create(**api_kwargs)
                     

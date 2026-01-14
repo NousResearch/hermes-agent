@@ -7,3 +7,4 @@ tenacity
 python-dotenv
 fire
 httpx
+rich

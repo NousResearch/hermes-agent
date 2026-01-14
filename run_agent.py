@@ -127,7 +127,8 @@ class AIAgent:
             logging.getLogger('openai._base_client').setLevel(logging.WARNING)
             logging.getLogger('httpx').setLevel(logging.WARNING)
             logging.getLogger('httpcore').setLevel(logging.WARNING)
-            print("🔍 Verbose logging enabled (OpenAI/httpx internal logs suppressed)")
+            logging.getLogger('asyncio').setLevel(logging.WARNING)  # Suppress asyncio debug
+            print("🔍 Verbose logging enabled (OpenAI/httpx/asyncio internal logs suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(

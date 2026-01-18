@@ -2,14 +2,14 @@
 """
 Image Generation Tools Module
 
-This module provides image generation tools using FAL.ai's FLUX.1 Krea model with 
+This module provides image generation tools using FAL.ai's FLUX 2 Pro model with 
 automatic upscaling via FAL.ai's Clarity Upscaler for enhanced image quality.
 
 Available tools:
 - image_generate_tool: Generate images from text prompts with automatic upscaling
 
 Features:
-- High-quality image generation using FLUX.1 Krea model
+- High-quality image generation using FLUX 2 Pro model
 - Automatic 2x upscaling using Clarity Upscaler for enhanced quality
 - Comprehensive parameter control (size, steps, guidance, etc.)
 - Proper error handling and validation with fallback to original images
@@ -38,12 +38,24 @@ from typing import Dict, Any, Optional, Union
 import fal_client
 
 # Configuration for image generation
-DEFAULT_MODEL = "fal-ai/flux/krea"
-DEFAULT_IMAGE_SIZE = "landscape_4_3"
+DEFAULT_MODEL = "fal-ai/flux-2-pro"
+DEFAULT_ASPECT_RATIO = "landscape"
 DEFAULT_NUM_INFERENCE_STEPS = 50
 DEFAULT_GUIDANCE_SCALE = 4.5
 DEFAULT_NUM_IMAGES = 1
 DEFAULT_OUTPUT_FORMAT = "png"
+
+# Safety settings
+ENABLE_SAFETY_CHECKER = False
+SAFETY_TOLERANCE = "5"  # Maximum tolerance (1-5, where 5 is most permissive)
+
+# Aspect ratio mapping - simplified choices for model to select
+ASPECT_RATIO_MAP = {
+    "landscape": "landscape_16_9",
+    "square": "square_hd",
+    "portrait": "portrait_16_9"
+}
+VALID_ASPECT_RATIOS = list(ASPECT_RATIO_MAP.keys())
 
 # Configuration for automatic upscaling
 UPSCALER_MODEL = "fal-ai/clarity-upscaler"
@@ -56,7 +68,7 @@ UPSCALER_RESEMBLANCE = 0.6
 UPSCALER_GUIDANCE_SCALE = 4
 UPSCALER_NUM_INFERENCE_STEPS = 18
 
-# Valid parameter values for validation based on FLUX Krea documentation
+# Valid parameter values for validation based on FLUX 2 Pro documentation
 VALID_IMAGE_SIZES = [
     "square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"
 ]
@@ -133,7 +145,7 @@ def _validate_parameters(
     acceleration: str = "none"
 ) -> Dict[str, Any]:
     """
-    Validate and normalize image generation parameters for FLUX Krea model.
+    Validate and normalize image generation parameters for FLUX 2 Pro model.
     
     Args:
         image_size: Either a preset string or custom size dict
@@ -174,7 +186,7 @@ def _validate_parameters(
         raise ValueError("num_inference_steps must be an integer between 1 and 100")
     validated["num_inference_steps"] = num_inference_steps
     
-    # Validate guidance_scale (FLUX Krea default is 4.5)
+    # Validate guidance_scale (FLUX 2 Pro default is 4.5)
     if not isinstance(guidance_scale, (int, float)) or guidance_scale < 0.1 or guidance_scale > 20.0:
         raise ValueError("guidance_scale must be a number between 0.1 and 20.0")
     validated["guidance_scale"] = float(guidance_scale)
@@ -254,34 +266,28 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
 
 async def image_generate_tool(
     prompt: str,
-    image_size: Union[str, Dict[str, int]] = DEFAULT_IMAGE_SIZE,
+    aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
     guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
     num_images: int = DEFAULT_NUM_IMAGES,
-    enable_safety_checker: bool = True,
     output_format: str = DEFAULT_OUTPUT_FORMAT,
-    acceleration: str = "none",
-    allow_nsfw_images: bool = True,
     seed: Optional[int] = None
 ) -> str:
     """
-    Generate images from text prompts using FAL.ai's FLUX.1 Krea model with automatic upscaling.
+    Generate images from text prompts using FAL.ai's FLUX 2 Pro model with automatic upscaling.
     
-    This tool uses FAL.ai's FLUX.1 Krea model for high-quality text-to-image generation 
+    This tool uses FAL.ai's FLUX 2 Pro model for high-quality text-to-image generation 
     with extensive customization options. Generated images are automatically upscaled 2x 
     using FAL.ai's Clarity Upscaler for enhanced quality. The final upscaled images are 
     returned as URLs that can be displayed using <img src="{URL}"></img> tags.
     
     Args:
         prompt (str): The text prompt describing the desired image
-        image_size (Union[str, Dict[str, int]]): Preset size or custom {"width": int, "height": int}
-        num_inference_steps (int): Number of denoising steps (1-50, default: 28)
+        aspect_ratio (str): Image aspect ratio - "landscape", "square", or "portrait" (default: "landscape")
+        num_inference_steps (int): Number of denoising steps (1-50, default: 50)
         guidance_scale (float): How closely to follow prompt (0.1-20.0, default: 4.5)
         num_images (int): Number of images to generate (1-4, default: 1)
-        enable_safety_checker (bool): Enable content safety filtering (default: True)
         output_format (str): Image format "jpeg" or "png" (default: "png")
-        acceleration (str): Generation speed "none", "regular", or "high" (default: "none")
-        allow_nsfw_images (bool): Allow generation of NSFW content (default: True)
         seed (Optional[int]): Random seed for reproducible results (optional)
     
     Returns:
@@ -291,17 +297,22 @@ async def image_generate_tool(
                  "image": str or None  # URL of the upscaled image, or None if failed
              }
     """
+    # Validate and map aspect_ratio to actual image_size
+    aspect_ratio_lower = aspect_ratio.lower().strip() if aspect_ratio else DEFAULT_ASPECT_RATIO
+    if aspect_ratio_lower not in ASPECT_RATIO_MAP:
+        print(f"⚠️  Invalid aspect_ratio '{aspect_ratio}', defaulting to '{DEFAULT_ASPECT_RATIO}'")
+        aspect_ratio_lower = DEFAULT_ASPECT_RATIO
+    image_size = ASPECT_RATIO_MAP[aspect_ratio_lower]
+    
     debug_call_data = {
         "parameters": {
             "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
             "image_size": image_size,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_images": num_images,
-            "enable_safety_checker": enable_safety_checker,
             "output_format": output_format,
-            "acceleration": acceleration,
-            "allow_nsfw_images": allow_nsfw_images,
             "seed": seed
         },
         "error": None,
@@ -313,7 +324,7 @@ async def image_generate_tool(
     start_time = datetime.datetime.now()
     
     try:
-        print(f"🎨 Generating {num_images} image(s) with FLUX Krea: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+        print(f"🎨 Generating {num_images} image(s) with FLUX 2 Pro: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
         
         # Validate prompt
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
@@ -323,22 +334,21 @@ async def image_generate_tool(
         if not os.getenv("FAL_KEY"):
             raise ValueError("FAL_KEY environment variable not set")
         
-        # Validate parameters
+        # Validate other parameters
         validated_params = _validate_parameters(
-            image_size, num_inference_steps, guidance_scale, num_images, output_format, acceleration
+            image_size, num_inference_steps, guidance_scale, num_images, output_format, "none"
         )
         
-        # Prepare arguments for FAL.ai FLUX Krea API
+        # Prepare arguments for FAL.ai FLUX 2 Pro API
         arguments = {
             "prompt": prompt.strip(),
             "image_size": validated_params["image_size"],
             "num_inference_steps": validated_params["num_inference_steps"],
             "guidance_scale": validated_params["guidance_scale"],
             "num_images": validated_params["num_images"],
-            "enable_safety_checker": enable_safety_checker,
             "output_format": validated_params["output_format"],
-            "acceleration": validated_params["acceleration"],
-            "allow_nsfw_images": allow_nsfw_images,
+            "enable_safety_checker": ENABLE_SAFETY_CHECKER,
+            "safety_tolerance": SAFETY_TOLERANCE,
             "sync_mode": True  # Use sync mode for immediate results
         }
         
@@ -346,12 +356,11 @@ async def image_generate_tool(
         if seed is not None and isinstance(seed, int):
             arguments["seed"] = seed
         
-        print(f"🚀 Submitting generation request to FAL.ai FLUX Krea...")
+        print(f"🚀 Submitting generation request to FAL.ai FLUX 2 Pro...")
         print(f"   Model: {DEFAULT_MODEL}")
-        print(f"   Size: {validated_params['image_size']}")
+        print(f"   Aspect Ratio: {aspect_ratio_lower} → {image_size}")
         print(f"   Steps: {validated_params['num_inference_steps']}")
         print(f"   Guidance: {validated_params['guidance_scale']}")
-        print(f"   Acceleration: {validated_params['acceleration']}")
         
         # Submit request to FAL.ai
         handler = await fal_client.submit_async(
@@ -492,7 +501,7 @@ if __name__ == "__main__":
     """
     Simple test/demo when run directly
     """
-    print("🎨 Image Generation Tools Module - FLUX.1 Krea + Auto Upscaling")
+    print("🎨 Image Generation Tools Module - FLUX 2 Pro + Auto Upscaling")
     print("=" * 60)
     
     # Check if API key is available

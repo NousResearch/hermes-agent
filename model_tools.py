@@ -220,7 +220,7 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "image_generate",
-                "description": "Generate high-quality images from text prompts using FLUX Krea model with automatic 2x upscaling. Creates detailed, artistic images that are automatically enhanced for superior quality. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
+                "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -228,11 +228,11 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "string",
                             "description": "The text prompt describing the desired image. Be detailed and descriptive."
                         },
-                        "image_size": {
+                        "aspect_ratio": {
                             "type": "string",
-                            "enum": ["square","portrait_16_9", "landscape_16_9"],
-                            "description": "The size/aspect ratio of the generated image (default: landscape_4_3)",
-                            "default": "landscape_16_9"
+                            "enum": ["landscape", "square", "portrait"],
+                            "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                            "default": "landscape"
                         }
                     },
                     "required": ["prompt"]
@@ -560,16 +560,13 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         if not prompt:
             return json.dumps({"success": False, "image": None}, ensure_ascii=False)
         
-        image_size = function_args.get("image_size", "landscape_16_9")
+        aspect_ratio = function_args.get("aspect_ratio", "landscape")
         
         # Use fixed internal defaults for all other parameters (not exposed to model)
         num_inference_steps = 50
         guidance_scale = 4.5
         num_images = 1
-        enable_safety_checker = True
         output_format = "png"
-        acceleration = "none"
-        allow_nsfw_images = True
         seed = None
         
         # Run async function in event loop with proper handling for multiprocessing
@@ -588,14 +585,11 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         # Run the coroutine in the event loop
         result = loop.run_until_complete(image_generate_tool(
             prompt=prompt,
-            image_size=image_size,
+            aspect_ratio=aspect_ratio,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             num_images=num_images,
-            enable_safety_checker=enable_safety_checker,
             output_format=output_format,
-            acceleration=acceleration,
-            allow_nsfw_images=allow_nsfw_images,
             seed=seed
         ))
         

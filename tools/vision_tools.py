@@ -131,35 +131,52 @@ def _validate_image_url(url: str) -> bool:
     return True  # Allow all HTTP/HTTPS URLs for flexibility
 
 
-async def _download_image(image_url: str, destination: Path) -> Path:
+async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
     """
-    Download an image from a URL to a local destination (async).
+    Download an image from a URL to a local destination (async) with retry logic.
     
     Args:
         image_url (str): The URL of the image to download
         destination (Path): The path where the image should be saved
+        max_retries (int): Maximum number of retry attempts (default: 3)
         
     Returns:
         Path: The path to the downloaded image
         
     Raises:
-        Exception: If download fails or response is invalid
+        Exception: If download fails after all retries
     """
+    import asyncio
+    
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     
-    # Download the image with appropriate headers using async httpx
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(
-            image_url,
-            headers={"User-Agent": "hermes-agent-vision/1.0"},
-        )
-        response.raise_for_status()
-        
-        # Save the image content
-        destination.write_bytes(response.content)
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            # Download the image with appropriate headers using async httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    image_url,
+                    headers={"User-Agent": "hermes-agent-vision/1.0"},
+                )
+                response.raise_for_status()
+                
+                # Save the image content
+                destination.write_bytes(response.content)
+            
+            return destination
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                print(f"⚠️  Image download failed (attempt {attempt + 1}/{max_retries}): {str(e)[:50]}")
+                print(f"   Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"❌ Image download failed after {max_retries} attempts: {str(e)[:100]}")
     
-    return destination
+    raise last_error
 
 
 def _determine_mime_type(image_path: Path) -> str:

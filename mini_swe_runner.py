@@ -149,7 +149,7 @@ class MiniSWERunner:
     
     def __init__(
         self,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "anthropic/claude-sonnet-4-20250514",
         base_url: str = None,
         api_key: str = None,
         env_type: str = "local",
@@ -189,14 +189,18 @@ class MiniSWERunner:
         )
         self.logger = logging.getLogger(__name__)
         
-        # Initialize OpenAI client
+        # Initialize OpenAI client - defaults to OpenRouter
         from openai import OpenAI
         
         client_kwargs = {}
+        
+        # Default to OpenRouter if no base_url provided
         if base_url:
             client_kwargs["base_url"] = base_url
+        else:
+            client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
         
-        # Handle API key with fallbacks
+        # Handle API key - OpenRouter is the primary provider
         if api_key:
             client_kwargs["api_key"] = api_key
         else:

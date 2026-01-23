@@ -6,7 +6,8 @@ This package contains all the specific tool implementations for the Hermes Agent
 Each module provides specialized functionality for different capabilities:
 
 - web_tools: Web search, content extraction, and crawling
-- simple_terminal_tool: Simple command execution on virtual machines (no session persistence)
+- terminal_tool: Command execution using mini-swe-agent (local/docker/modal backends)
+- terminal_hecate: Command execution on MorphCloud/Hecate cloud VMs (alternative backend)
 - vision_tools: Image analysis and understanding
 - mixture_of_agents_tool: Multi-model collaborative reasoning
 - image_generation_tool: Text-to-image generation with upscaling
@@ -23,11 +24,19 @@ from .web_tools import (
     check_firecrawl_api_key
 )
 
-from .simple_terminal_tool import (
-    simple_terminal_tool,
-    check_requirements as check_terminal_requirements,
+# Primary terminal tool (mini-swe-agent backend: local/docker/modal)
+from .terminal_tool import (
+    terminal_tool,
+    check_terminal_requirements,
     cleanup_vm,
-    SIMPLE_TERMINAL_TOOL_DESCRIPTION
+    TERMINAL_TOOL_DESCRIPTION
+)
+
+# Alternative terminal tool (Hecate/MorphCloud cloud VMs)
+from .terminal_hecate import (
+    terminal_hecate_tool,
+    check_hecate_requirements,
+    TERMINAL_HECATE_DESCRIPTION
 )
 
 from .vision_tools import (
@@ -51,11 +60,15 @@ __all__ = [
     'web_extract_tool',
     'web_crawl_tool',
     'check_firecrawl_api_key',
-    # Terminal tools (simple - no session persistence)
-    'simple_terminal_tool',
+    # Terminal tools (mini-swe-agent backend)
+    'terminal_tool',
     'check_terminal_requirements',
     'cleanup_vm',
-    'SIMPLE_TERMINAL_TOOL_DESCRIPTION',
+    'TERMINAL_TOOL_DESCRIPTION',
+    # Terminal tools (Hecate/MorphCloud backend)
+    'terminal_hecate_tool',
+    'check_hecate_requirements',
+    'TERMINAL_HECATE_DESCRIPTION',
     # Vision tools
     'vision_analyze_tool',
     'check_vision_requirements',

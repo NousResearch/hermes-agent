@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-Simple Terminal Tool Module
+Terminal Hecate Tool Module
 
-A simplified terminal tool that executes commands on MorphCloud VMs without tmux.
-No session persistence, no interactive app support - just simple command execution.
+A terminal tool that executes commands on MorphCloud/Hecate VMs.
+Uses E2B-style cloud VMs for execution with automatic lifecycle management.
 
 Features:
-- Direct SSH command execution
+- Direct SSH command execution on cloud VMs
 - Background task support
 - VM lifecycle management with TTL
 - Automatic cleanup after inactivity
 
 Usage:
-    from simple_terminal_tool import simple_terminal_tool
+    from terminal_hecate import terminal_hecate_tool
 
     # Execute a simple command
-    result = simple_terminal_tool("ls -la")
+    result = terminal_hecate_tool("ls -la")
 
     # Execute in background
-    result = simple_terminal_tool("python server.py", background=True)
+    result = terminal_hecate_tool("python server.py", background=True)
 """
 
 import json
@@ -29,7 +29,7 @@ import atexit
 from typing import Optional, Dict, Any
 
 # Tool description for LLM
-SIMPLE_TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux VM environment.
+TERMINAL_HECATE_DESCRIPTION = """Execute commands on a secure cloud Linux VM environment (Hecate/MorphCloud).
 
 **Environment:**
 - Minimal Debian-based OS with internet access
@@ -223,14 +223,14 @@ def _execute_command(instance, command: str, timeout: Optional[int] = None) -> D
         }
 
 
-def simple_terminal_tool(
+def terminal_hecate_tool(
     command: str,
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None
 ) -> str:
     """
-    Execute a command on a MorphCloud VM without session persistence.
+    Execute a command on a MorphCloud/Hecate VM without session persistence.
 
     Args:
         command: The command to execute
@@ -243,13 +243,13 @@ def simple_terminal_tool(
 
     Examples:
         # Execute a simple command
-        >>> result = simple_terminal_tool(command="ls -la /tmp")
+        >>> result = terminal_hecate_tool(command="ls -la /tmp")
 
         # Run a background task
-        >>> result = simple_terminal_tool(command="python server.py", background=True)
+        >>> result = terminal_hecate_tool(command="python server.py", background=True)
 
         # With custom timeout
-        >>> result = simple_terminal_tool(command="long_task.sh", timeout=300)
+        >>> result = terminal_hecate_tool(command="long_task.sh", timeout=300)
     """
     global _active_instances, _last_activity
 
@@ -393,8 +393,8 @@ def simple_terminal_tool(
         }, ensure_ascii=False)
 
 
-def check_requirements() -> bool:
-    """Check if all requirements for the simple terminal tool are met."""
+def check_hecate_requirements() -> bool:
+    """Check if all requirements for the Hecate terminal tool are met."""
     required_vars = ["MORPH_API_KEY"]
     missing_required = [var for var in required_vars if not os.getenv(var)]
 
@@ -412,23 +412,23 @@ def check_requirements() -> bool:
 
 if __name__ == "__main__":
     """Simple test when run directly."""
-    print("Simple Terminal Tool Module")
+    print("Terminal Hecate Tool Module (MorphCloud/E2B)")
     print("=" * 40)
 
-    if not check_requirements():
+    if not check_hecate_requirements():
         print("Requirements not met. Please check the messages above.")
         exit(1)
 
     print("All requirements met!")
     print("\nAvailable Tool:")
-    print("  - simple_terminal_tool: Execute commands without session persistence")
+    print("  - terminal_hecate_tool: Execute commands on cloud VMs")
 
     print("\nUsage Examples:")
     print("  # Execute a command")
-    print("  result = simple_terminal_tool(command='ls -la')")
+    print("  result = terminal_hecate_tool(command='ls -la')")
     print("  ")
     print("  # Run a background task")
-    print("  result = simple_terminal_tool(command='python server.py', background=True)")
+    print("  result = terminal_hecate_tool(command='python server.py', background=True)")
 
     print("\nEnvironment Variables:")
     print(f"  MORPH_API_KEY: {'Set' if os.getenv('MORPH_API_KEY') else 'Not set'}")

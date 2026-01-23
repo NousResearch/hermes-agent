@@ -31,9 +31,9 @@ import asyncio
 from typing import Dict, Any, List, Optional
 
 from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
-from tools.simple_terminal_tool import simple_terminal_tool, check_requirements as check_simple_terminal_requirements, SIMPLE_TERMINAL_TOOL_DESCRIPTION
-# Keep old terminal tool for backwards compatibility if needed
-# from tools.terminal_tool import terminal_tool, check_hecate_requirements, TERMINAL_TOOL_DESCRIPTION
+from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION, cleanup_vm
+# Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
+from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirements, TERMINAL_HECATE_DESCRIPTION
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
@@ -113,6 +113,8 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
 def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get tool definitions for terminal tools in OpenAI's expected format.
+    
+    Uses mini-swe-agent backend (local/docker/modal) by default.
 
     Returns:
         List[Dict]: List of terminal tool definitions compatible with OpenAI API
@@ -122,7 +124,7 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "terminal",
-                "description": SIMPLE_TERMINAL_TOOL_DESCRIPTION,
+                "description": TERMINAL_TOOL_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -255,8 +257,8 @@ def get_all_tool_names() -> List[str]:
     if check_firecrawl_api_key():
         tool_names.extend(["web_search", "web_extract", "web_crawl"])
 
-    # Terminal tools
-    if check_simple_terminal_requirements():
+    # Terminal tools (mini-swe-agent backend)
+    if check_terminal_requirements():
         tool_names.extend(["terminal"])
 
     # Vision tools
@@ -339,7 +341,7 @@ def get_tool_definitions(
         for tool in get_web_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
 
-    if check_simple_terminal_requirements():
+    if check_terminal_requirements():
         for tool in get_terminal_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
 
@@ -475,11 +477,13 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
 def handle_terminal_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
     """
     Handle function calls for terminal tools.
+    
+    Uses mini-swe-agent backend (local/docker/modal) by default.
 
     Args:
         function_name (str): Name of the terminal function to call
         function_args (Dict): Arguments for the function
-        task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+        task_id (str): Unique identifier for this task to isolate environments between concurrent tasks (optional)
 
     Returns:
         str: Function result as JSON string
@@ -489,7 +493,7 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
 
-        return simple_terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
+        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
@@ -665,10 +669,10 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "requirements": ["FIRECRAWL_API_KEY environment variable"]
         },
         "terminal_tools": {
-            "available": check_simple_terminal_requirements(),
-            "tools": ["simple_terminal_tool"],
-            "description": "Execute commands on secure Linux VMs without session persistence",
-            "requirements": ["MORPH_API_KEY environment variable"]
+            "available": check_terminal_requirements(),
+            "tools": ["terminal_tool"],
+            "description": "Execute commands using mini-swe-agent (local/docker/modal)",
+            "requirements": ["mini-swe-agent package, TERMINAL_ENV to select backend"]
         },
         "vision_tools": {
             "available": check_vision_requirements(),
@@ -701,7 +705,7 @@ def check_toolset_requirements() -> Dict[str, bool]:
     """
     return {
         "web_tools": check_firecrawl_api_key(),
-        "terminal_tools": check_simple_terminal_requirements(),
+        "terminal_tools": check_terminal_requirements(),
         "vision_tools": check_vision_requirements(),
         "moa_tools": check_moa_requirements(),
         "image_tools": check_image_generation_requirements()

@@ -1,514 +1,446 @@
 #!/usr/bin/env python3
 """
-Terminal Tool Module
+Terminal Tool Module (mini-swe-agent backend)
 
-This module provides a single terminal tool using Hecate's VM infrastructure.
-It wraps Hecate's functionality to provide a simple interface for executing commands
-on Morph VMs with automatic lifecycle management.
+A terminal tool that executes commands using mini-swe-agent's execution environments.
+Supports local execution, Docker containers, and Modal cloud sandboxes.
 
-VM Lifecycle:
-- VMs have a TTL (time to live) set at creation (default: 20 minutes)
-- VMs are also cleaned up locally after 5 minutes of inactivity
-- Timer resets with each use
+Environment Selection (via TERMINAL_ENV environment variable):
+- "local": Execute directly on the host machine (default, fastest)
+- "docker": Execute in Docker containers (isolated, requires Docker)
+- "modal": Execute in Modal cloud sandboxes (scalable, requires Modal account)
 
-Available tool:
-- terminal_tool: Execute commands with optional interactive session support
+Features:
+- Multiple execution backends (local, docker, modal)
+- Background task support
+- VM/container lifecycle management
+- Automatic cleanup after inactivity
 
 Usage:
     from terminal_tool import terminal_tool
 
-    # Execute a single command
+    # Execute a simple command
     result = terminal_tool("ls -la")
 
-    # Execute in an interactive session
-    result = terminal_tool("python", input_keys="print('hello')\\nexit()\\n")
+    # Execute in background
+    result = terminal_tool("python server.py", background=True)
 """
 
 import json
 import os
-import uuid
-import threading
+import sys
 import time
+import threading
 import atexit
+from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Detailed description for the terminal tool based on Hermes Terminal system prompt
-TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure, persistent Linux VM environment with full interactive application support.
+# Add mini-swe-agent to path if not installed
+mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
+if mini_swe_path.exists():
+    sys.path.insert(0, str(mini_swe_path))
 
-**Environment:** 
-- Minimal Debian-based OS with internet access
-- Automatic VM lifecycle management (creates on-demand, reuses, cleans up)
-- **Full state persistence across tool calls**: current directory (pwd), environment variables, activated virtual environments (conda/venv), running processes, and command history all persist between consecutive tool calls
-- Session state managed automatically via tmux
+# Tool description for LLM
+TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
+
+**Environment:**
+- Isolated execution environment (local, Docker, or Modal cloud based on configuration)
+- Filesystem persists between tool calls within the same task
+- Internet access available
 
 **Command Execution:**
 - Simple commands: Just provide the 'command' parameter
 - Background processes: Set 'background': True for servers/long-running tasks
-- Interactive applications automatically detected and handled
-
-**Interactive Applications (TUIs/Pagers/Prompts):**
-When commands enter interactive mode (vim, nano, less, git prompts, package managers, etc.), you'll receive screen content with "frozen" status. This is NORMAL - the session is still active and waiting for input.
-
-**To interact with frozen sessions:**
-1. Use 'input_keys' parameter with keystrokes to send
-2. System auto-detects and uses the active session
-3. Session stays active until application exits
-
-**Special Key Syntax for input_keys:**
-- `<ESC>`: Escape key
-- `<ENTER>`: Enter/Return  
-- `<CTRL+C>`, `<CTRL+D>`, `<CTRL+Z>`: Control combinations
-- `<UP>`, `<DOWN>`, `<LEFT>`, `<RIGHT>`: Arrow keys
-- `<TAB>`, `<BACKSPACE>`: Tab and Backspace
-- `<F1>` through `<F12>`: Function keys
-- `<SHIFT+TAB>`: Shift+Tab
-- Uppercase letters for Shift+letter (e.g., 'V' for Shift+V)
-- Symbols for Shift+number (e.g., '!' for Shift+1, ':' for Shift+;)
+- Command timeout: Optional 'timeout' parameter in seconds
 
 **Examples:**
-- Start vim: `{"command": "vim file.txt"}`
-- Type in vim: `{"input_keys": "iHello World<ESC>"}`  
-- Save and quit: `{"input_keys": ":wq<ENTER>"}`
-- Navigate in less: `{"input_keys": "j"}`
-- Quit less: `{"input_keys": "q"}`
+- Run command: `{"command": "ls -la"}`
+- Background task: `{"command": "source venv/bin/activate && python server.py", "background": True}`
+- With timeout: `{"command": "long_task.sh", "timeout": 300}`
 
 **Best Practices:**
-- Run servers/long processes in background with separate tool calls
-- Chain multiple foreground commands in single call if needed
-- Monitor disk usage for large tasks, clean up to free space
-- Test components incrementally with mock inputs
-- Install whatever tools needed - full system access provided"""
+- Run servers/long processes in background
+- Monitor disk usage for large tasks
+- Install whatever tools you need with apt-get or pip
+- Do not be afraid to run pip with --break-system-packages
 
-# Global state for VM lifecycle management
-# These persist across tool calls to enable session continuity
-# Changed to dictionaries keyed by task_id to prevent leakage between concurrent tasks
-_active_instances: Dict[str, Any] = {}
-_active_contexts: Dict[str, Any] = {}
-_last_activity: Dict[str, float] = {}  # Track last activity time for each VM
-_instance_lock = threading.Lock()
+**Things to avoid:**
+- Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck.
+- Even git sometimes becomes interactive if the output is large. If you're not sure, pipe to cat.
+"""
+
+# Global state for environment lifecycle management
+_active_environments: Dict[str, Any] = {}
+_last_activity: Dict[str, float] = {}
+_env_lock = threading.Lock()
 _cleanup_thread = None
 _cleanup_running = False
 
-def _cleanup_inactive_vms(vm_lifetime_seconds: int = 300):
-    """
-    Clean up VMs that have been inactive for longer than vm_lifetime_seconds.
-    This function should be called periodically by a background thread.
+# Configuration from environment variables
+def _get_env_config() -> Dict[str, Any]:
+    """Get terminal environment configuration from environment variables."""
+    return {
+        "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, or modal
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim"),
+        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11-slim"),
+        "cwd": os.getenv("TERMINAL_CWD", "/tmp"),
+        "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
+        "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
+    }
 
-    Args:
-        vm_lifetime_seconds: Maximum lifetime in seconds for inactive VMs (default: 300)
+
+def _create_environment(env_type: str, image: str, cwd: str, timeout: int):
     """
-    global _active_instances, _active_contexts, _last_activity
+    Create an execution environment from mini-swe-agent.
+    
+    Args:
+        env_type: One of "local", "docker", "modal"
+        image: Docker/Modal image name (ignored for local)
+        cwd: Working directory
+        timeout: Default command timeout
+        
+    Returns:
+        Environment instance with execute() method
+    """
+    if env_type == "local":
+        from minisweagent.environments.local import LocalEnvironment
+        return LocalEnvironment(cwd=cwd, timeout=timeout)
+    
+    elif env_type == "docker":
+        from minisweagent.environments.docker import DockerEnvironment
+        return DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
+    
+    elif env_type == "modal":
+        from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+        return SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+    
+    else:
+        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
+
+
+def _cleanup_inactive_envs(lifetime_seconds: int = 300):
+    """Clean up environments that have been inactive for longer than lifetime_seconds."""
+    global _active_environments, _last_activity
 
     current_time = time.time()
     tasks_to_cleanup = []
 
-    with _instance_lock:
-        # Find all VMs that have been inactive for too long
+    with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
-            if current_time - last_time > vm_lifetime_seconds:
+            if current_time - last_time > lifetime_seconds:
                 tasks_to_cleanup.append(task_id)
 
-        # Clean up the inactive VMs
         for task_id in tasks_to_cleanup:
             try:
-                if task_id in _active_instances:
-                    instance = _active_instances[task_id]
-                    # Terminate the VM instance
-                    if hasattr(instance, 'terminate'):
-                        instance.terminate()
-                    elif hasattr(instance, 'stop'):
-                        instance.stop()
-                    elif hasattr(instance, 'delete'):
-                        instance.delete()
+                if task_id in _active_environments:
+                    env = _active_environments[task_id]
+                    # Try various cleanup methods
+                    if hasattr(env, 'cleanup'):
+                        env.cleanup()
+                    elif hasattr(env, 'stop'):
+                        env.stop()
+                    elif hasattr(env, 'terminate'):
+                        env.terminate()
 
-                    # Remove from tracking dictionaries
-                    del _active_instances[task_id]
-                    print(f"[VM Cleanup] Terminated inactive VM for task: {task_id}")
-
-                if task_id in _active_contexts:
-                    del _active_contexts[task_id]
+                    del _active_environments[task_id]
+                    print(f"[Terminal Cleanup] Cleaned up inactive environment for task: {task_id}")
 
                 if task_id in _last_activity:
                     del _last_activity[task_id]
 
             except Exception as e:
-                print(f"[VM Cleanup] Error cleaning up VM for task {task_id}: {e}")
+                error_str = str(e)
+                if "404" in error_str or "not found" in error_str.lower():
+                    print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
+                else:
+                    print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
+                
+                # Always remove from tracking dicts
+                if task_id in _active_environments:
+                    del _active_environments[task_id]
+                if task_id in _last_activity:
+                    del _last_activity[task_id]
+
 
 def _cleanup_thread_worker():
-    """
-    Background thread worker that periodically cleans up inactive VMs.
-    Runs every 60 seconds.
-    """
+    """Background thread worker that periodically cleans up inactive environments."""
     global _cleanup_running
 
     while _cleanup_running:
         try:
-            vm_lifetime = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
-            _cleanup_inactive_vms(vm_lifetime)
+            config = _get_env_config()
+            _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:
-            print(f"[VM Cleanup] Error in cleanup thread: {e}")
+            print(f"[Terminal Cleanup] Error in cleanup thread: {e}")
 
-        # Sleep for 60 seconds, but check every second if we should stop
         for _ in range(60):
             if not _cleanup_running:
                 break
             time.sleep(1)
 
+
 def _start_cleanup_thread():
-    """
-    Start the background cleanup thread if it's not already running.
-    """
+    """Start the background cleanup thread if not already running."""
     global _cleanup_thread, _cleanup_running
 
-    with _instance_lock:
+    with _env_lock:
         if _cleanup_thread is None or not _cleanup_thread.is_alive():
             _cleanup_running = True
             _cleanup_thread = threading.Thread(target=_cleanup_thread_worker, daemon=True)
             _cleanup_thread.start()
 
+
 def _stop_cleanup_thread():
-    """
-    Stop the background cleanup thread.
-    """
+    """Stop the background cleanup thread."""
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
         _cleanup_thread.join(timeout=5)
 
+
 def cleanup_vm(task_id: str):
-    """
-    Manually clean up a specific VM by task_id.
-    This should be called when a task is completed.
+    """Manually clean up a specific environment by task_id."""
+    global _active_environments, _last_activity
 
-    Args:
-        task_id: The task ID of the VM to clean up
-    """
-    global _active_instances, _active_contexts, _last_activity
-
-    with _instance_lock:
+    with _env_lock:
         try:
-            if task_id in _active_instances:
-                instance = _active_instances[task_id]
-                # Terminate the VM instance
-                if hasattr(instance, 'terminate'):
-                    instance.terminate()
-                elif hasattr(instance, 'stop'):
-                    instance.stop()
-                elif hasattr(instance, 'delete'):
-                    instance.delete()
+            if task_id in _active_environments:
+                env = _active_environments[task_id]
+                if hasattr(env, 'cleanup'):
+                    env.cleanup()
+                elif hasattr(env, 'stop'):
+                    env.stop()
+                elif hasattr(env, 'terminate'):
+                    env.terminate()
 
-                # Remove from tracking dictionaries
-                del _active_instances[task_id]
-                print(f"[VM Cleanup] Manually terminated VM for task: {task_id}")
-
-            if task_id in _active_contexts:
-                del _active_contexts[task_id]
+                del _active_environments[task_id]
+                print(f"[Terminal Cleanup] Manually cleaned up environment for task: {task_id}")
 
             if task_id in _last_activity:
                 del _last_activity[task_id]
 
         except Exception as e:
-            print(f"[VM Cleanup] Error manually cleaning up VM for task {task_id}: {e}")
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
+            else:
+                print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
 
-# Register cleanup on program exit
+
 atexit.register(_stop_cleanup_thread)
 
+
 def terminal_tool(
-    command: Optional[str] = None,
-    input_keys: Optional[str] = None,
-    session_id: Optional[str] = None,
+    command: str,
     background: bool = False,
-    idle_threshold: float = 5.0,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None
 ) -> str:
     """
-    Execute a command on a Morph VM with optional interactive session support.
-
-    This tool uses Hecate's VM lifecycle management to automatically create
-    and manage VMs. VMs are reused within the configured lifetime window
-    and automatically cleaned up after inactivity.
+    Execute a command using mini-swe-agent's execution environments.
 
     Args:
-        command: The command to execute (optional if continuing existing session)
-        input_keys: Keystrokes to send to interactive session (e.g., "hello\\n")
-        session_id: ID of existing session to continue (optional)
-        background: Whether to run the command in the background (default: False)
-        idle_threshold: Seconds to wait for output before considering session idle (default: 5.0)
-        timeout: Command timeout in seconds (optional)
-        task_id: Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+        command: The command to execute
+        background: Whether to run in background (default: False)
+        timeout: Command timeout in seconds (default: from config)
+        task_id: Unique identifier for environment isolation (optional)
 
     Returns:
-        str: JSON string containing command output, session info, exit code, and any errors
-    
+        str: JSON string with output, exit_code, and error fields
+
     Examples:
         # Execute a simple command
         >>> result = terminal_tool(command="ls -la /tmp")
-        
-        # Start an interactive Python session
-        >>> result = terminal_tool(command="python3")
-        >>> session_data = json.loads(result)
-        >>> session_id = session_data["session_id"]
-        
-        # Send input to the session
-        >>> result = terminal_tool(input_keys="print('Hello')\\n", session_id=session_id)
-        
+
         # Run a background task
-        >>> result = terminal_tool(command="sleep 60", background=True)
+        >>> result = terminal_tool(command="python server.py", background=True)
+
+        # With custom timeout
+        >>> result = terminal_tool(command="long_task.sh", timeout=300)
     """
-    global _active_instances, _active_contexts
+    global _active_environments, _last_activity
 
     try:
-        # Import required modules lazily so this module can be imported
-        # even when hecate is not installed
-        try:
-            from morphcloud._llm import ToolCall
-            from morphcloud.api import MorphCloudClient
-            from hecate.cli import run_tool, ExecutionContext
-            from rich.console import Console
-            import io
-        except ImportError as import_error:
-            return json.dumps({
-                "output": "",
-                "stderr": "",
-                "screen": "",
-                "exit_code": -1,
-                "error": f"Terminal tool is disabled due to import error: {import_error}",
-                "status": "disabled"
-            }, ensure_ascii=False)
+        # Get configuration
+        config = _get_env_config()
+        env_type = config["env_type"]
+        
+        # Select image based on env type
+        if env_type == "docker":
+            image = config["docker_image"]
+        elif env_type == "modal":
+            image = config["modal_image"]
+        else:
+            image = ""
+        
+        cwd = config["cwd"]
+        default_timeout = config["timeout"]
+        effective_timeout = timeout or default_timeout
 
-
-        # Get configuration from environment
-        vm_lifetime_seconds = int(os.getenv("HECATE_VM_LIFETIME_SECONDS", "300"))
-        vm_ttl_seconds = int(os.getenv("HECATE_VM_TTL_SECONDS", "1200"))  # 20 minutes default
-        snapshot_id = os.getenv("HECATE_DEFAULT_SNAPSHOT_ID", "snapshot_1a8xowaq")
-
-        # Check API key
-        morph_api_key = os.getenv("MORPH_API_KEY")
-        if not morph_api_key:
-            return json.dumps({
-                "output": "",
-                "stderr": "",
-                "screen": "",
-                "exit_code": -1,
-                "error": "MORPH_API_KEY environment variable not set",
-                "status": "disabled"
-            }, ensure_ascii=False)
-
-        # Use task_id to isolate VMs between concurrent tasks
-        # If no task_id provided, use "default" for backward compatibility
+        # Use task_id for environment isolation
         effective_task_id = task_id or "default"
 
-        # Start the cleanup thread if not already running
+        # Start cleanup thread
         _start_cleanup_thread()
 
-        # Get or create VM instance and execution context per task
-        # This is critical for interactive session support - the context must persist!
-        with _instance_lock:
-            if effective_task_id not in _active_instances:
-                morph_client = MorphCloudClient(api_key=morph_api_key)
-                _active_instances[effective_task_id] = morph_client.instances.start(
-                    snapshot_id=snapshot_id,
-                    ttl_seconds=vm_ttl_seconds,
-                    ttl_action="stop"
-                )
+        # Get or create environment
+        with _env_lock:
+            if effective_task_id not in _active_environments:
+                try:
+                    _active_environments[effective_task_id] = _create_environment(
+                        env_type=env_type,
+                        image=image,
+                        cwd=cwd,
+                        timeout=effective_timeout
+                    )
+                except ImportError as e:
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                        "status": "disabled"
+                    }, ensure_ascii=False)
 
-            # Get or create persistent execution context per task
-            if effective_task_id not in _active_contexts:
-                _active_contexts[effective_task_id] = ExecutionContext()
-
-            # Update last activity time for this VM (resets the inactivity timer)
+            # Update last activity time
             _last_activity[effective_task_id] = time.time()
+            env = _active_environments[effective_task_id]
 
-            instance = _active_instances[effective_task_id]
-            ctx = _active_contexts[effective_task_id]
-
-        # Build tool input based on provided parameters
-        tool_input = {}
-
-        if command:
-            tool_input["command"] = command
-        if input_keys:
-            tool_input["input_keys"] = input_keys
-        if session_id:
-            tool_input["session_id"] = session_id
+        # Prepare command for execution
         if background:
-            tool_input["background"] = background
-        if idle_threshold != 5.0:
-            tool_input["idle_threshold"] = idle_threshold
-        if timeout is not None:
-            tool_input["timeout"] = timeout
-
-        tool_call = ToolCall(
-            name="run_command",
-            input=tool_input
-        )
-
-        # Create a console for output (redirect to string buffer to avoid printing)
-        console_output = io.StringIO()
-        console = Console(file=console_output, force_terminal=False, legacy_windows=False)
-
-        # Generate unique tool block ID
-        tool_block_id = f"tool_{uuid.uuid4().hex[:8]}"
-
-        # Retry configuration for handling transient empty responses
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count <= max_retries:
-            # Execute the tool with hecate
-            result = run_tool(
-                tool_call=tool_call,
-                instance=instance,
-                console=console,
-                tool_block_id=tool_block_id,
-                ctx=ctx
-            )
-
-            # Format the result with only essential fields for the LLM
-            # Map hecate's "stdout" to "output" for compatibility
-            stdout = result.get("stdout", result.get("output", ""))
-            stderr = result.get("stderr", "")
-            exit_code = result.get("returncode", result.get("exit_code", -1))
-            error = result.get("error")
-            screen = result.get("screen", "")
+            # Run in background with nohup and redirect output
+            exec_command = f"nohup {command} > /tmp/bg_output.log 2>&1 &"
+            try:
+                result = env.execute(exec_command, timeout=10)
+                return json.dumps({
+                    "output": "Background task started successfully",
+                    "exit_code": 0,
+                    "error": None
+                }, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Failed to start background task: {str(e)}"
+                }, ensure_ascii=False)
+        else:
+            # Run foreground command with retry logic
+            max_retries = 3
+            retry_count = 0
+            result = None
             
-            # If there's no explicit error but there's stderr, include it in error field
-            # This helps capture why commands failed even without an explicit error message
-            if not error and stderr:
-                error = stderr
-            # If exit code is non-zero but no error info, note that
-            elif not error and exit_code and exit_code != 0 and not stdout:
-                error = f"Command exited with code {exit_code}"
+            while retry_count <= max_retries:
+                try:
+                    result = env.execute(command, timeout=effective_timeout)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "timeout" in error_str:
+                        return json.dumps({
+                            "output": "",
+                            "exit_code": 124,
+                            "error": f"Command timed out after {effective_timeout} seconds"
+                        }, ensure_ascii=False)
+                    
+                    # Retry on transient errors
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        wait_time = 2 ** retry_count
+                        print(f"⚠️  Terminal: execution error, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": f"Command execution failed: {str(e)}"
+                    }, ensure_ascii=False)
+                
+                # Got a result
+                break
             
-            # Check if we should retry:
-            # 1. Empty output with non-zero exit code (clear failure)
-            # 2. Completely empty response (may indicate timing/VM issue)
-            should_retry = False
-            retry_reason = ""
+            # Extract output
+            output = result.get("output", "")
+            returncode = result.get("returncode", 0)
             
-            if not stdout and not stderr and not screen and not error and exit_code == 0:
-                # Completely empty response - might be a timing issue
-                should_retry = True
-                retry_reason = "completely empty response (possible timing issue)"
-            elif not stdout and not stderr and exit_code != 0 and exit_code != -1:
-                # Non-zero exit with no output at all - might be transient
-                should_retry = True
-                retry_reason = f"empty output with exit code {exit_code}"
-            
-            if should_retry and retry_count < max_retries:
-                retry_count += 1
-                wait_time = 2 ** retry_count  # Exponential backoff: 2s, 4s, 8s
-                print(f"⚠️  Terminal: {retry_reason}, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
-                time.sleep(wait_time)
-                continue
-            
-            # Success or max retries reached - return the result
-            formatted_result = {
-                "output": stdout,
-                "stderr": stderr,  # Now capturing stderr separately too
-                "screen": screen,
-                "exit_code": exit_code,
-                "error": error
-            }
-            
-            if retry_count > 0:
-                formatted_result["retries"] = retry_count
+            # Truncate output if too long
+            MAX_OUTPUT_CHARS = 50000
+            if len(output) > MAX_OUTPUT_CHARS:
+                truncated_notice = f"\n\n... [OUTPUT TRUNCATED - showing last {MAX_OUTPUT_CHARS} chars of {len(output)} total] ..."
+                output = truncated_notice + output[-MAX_OUTPUT_CHARS:]
 
-            return json.dumps(formatted_result, ensure_ascii=False)
-        
-        # Should never reach here, but just in case
-        return json.dumps({
-            "output": "",
-            "stderr": "",
-            "screen": "",
-            "exit_code": -1,
-            "error": "Terminal tool: max retries exceeded"
-        }, ensure_ascii=False)
+            return json.dumps({
+                "output": output.strip() if output else "",
+                "exit_code": returncode,
+                "error": None
+            }, ensure_ascii=False)
 
     except Exception as e:
         return json.dumps({
             "output": "",
-            "stderr": "",
-            "screen": "",
             "exit_code": -1,
-            "error": f"Failed to execute terminal command: {str(e)}",
+            "error": f"Failed to execute command: {str(e)}",
             "status": "error"
         }, ensure_ascii=False)
 
-def check_hecate_requirements() -> bool:
-    """
-    Check if all requirements for terminal tools are met.
+
+def check_terminal_requirements() -> bool:
+    """Check if all requirements for the terminal tool are met."""
+    config = _get_env_config()
+    env_type = config["env_type"]
     
-    Returns:
-        bool: True if all requirements are met, False otherwise
-    """
-    # Check for required environment variables
-    required_vars = ["MORPH_API_KEY"]
-    optional_vars = ["OPENAI_API_KEY"]  # Needed for Hecate's LLM features
-    
-    missing_required = [var for var in required_vars if not os.getenv(var)]
-    missing_optional = [var for var in optional_vars if not os.getenv(var)]
-    
-    if missing_required:
-        print(f"Missing required environment variables: {', '.join(missing_required)}")
-        return False
-    
-    if missing_optional:
-        print(f"Warning: Missing optional environment variables: {', '.join(missing_optional)}")
-        print("   (Some Hecate features may be limited)")
-    
-    # Check if Hecate and required modules are importable
     try:
-        from morphcloud._llm import ToolCall
-        from morphcloud.api import MorphCloudClient
-        from hecate.cli import run_tool, ExecutionContext
-        from rich.console import Console
-        return True
+        if env_type == "local":
+            from minisweagent.environments.local import LocalEnvironment
+            return True
+        elif env_type == "docker":
+            from minisweagent.environments.docker import DockerEnvironment
+            # Check if docker is available
+            import subprocess
+            result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
+            return result.returncode == 0
+        elif env_type == "modal":
+            from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+            # Check for modal token
+            return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+        else:
+            return False
     except Exception as e:
-        print(f"Hecate not available: {e}")
-        print(f"Make sure hecate is installed and MORPH_API_KEY is set.")
+        print(f"Terminal requirements check failed: {e}")
         return False
 
-# Module-level initialization check
-_requirements_met = check_hecate_requirements()
 
 if __name__ == "__main__":
-    """
-    Simple test/demo when run directly
-    """
-    print("Terminal Tool Module")
-    print("=" * 40)
+    """Simple test when run directly."""
+    print("Terminal Tool Module (mini-swe-agent backend)")
+    print("=" * 50)
     
-    if not _requirements_met:
-        print("Requirements not met. Please check the messages above.")
+    config = _get_env_config()
+    print(f"\nCurrent Configuration:")
+    print(f"  Environment type: {config['env_type']}")
+    print(f"  Docker image: {config['docker_image']}")
+    print(f"  Modal image: {config['modal_image']}")
+    print(f"  Working directory: {config['cwd']}")
+    print(f"  Default timeout: {config['timeout']}s")
+    print(f"  Lifetime: {config['lifetime_seconds']}s")
+
+    if not check_terminal_requirements():
+        print("\n❌ Requirements not met. Please check the messages above.")
         exit(1)
-    
-    print("All requirements met!")
+
+    print("\n✅ All requirements met!")
     print("\nAvailable Tool:")
-    print("  - terminal_tool: Execute commands with optional interactive session support")
-    
+    print("  - terminal_tool: Execute commands using mini-swe-agent environments")
+
     print("\nUsage Examples:")
     print("  # Execute a command")
     print("  result = terminal_tool(command='ls -la')")
     print("  ")
-    print("  # Start an interactive session")
-    print("  result = terminal_tool(command='python3')")
-    print("  session_data = json.loads(result)")
-    print("  session_id = session_data['session_id']")
-    print("  ")
-    print("  # Send input to the session")
-    print("  result = terminal_tool(")
-    print("      input_keys='print(\"Hello\")\\\\n',")
-    print("      session_id=session_id")
-    print("  )")
-    print("  ")
     print("  # Run a background task")
-    print("  result = terminal_tool(command='sleep 60', background=True)")
-    
+    print("  result = terminal_tool(command='python server.py', background=True)")
+
     print("\nEnvironment Variables:")
-    print(f"  MORPH_API_KEY: {'Set' if os.getenv('MORPH_API_KEY') else 'Not set'}")
-    print(f"  OPENAI_API_KEY: {'Set' if os.getenv('OPENAI_API_KEY') else 'Not set (optional)'}")
-    print(f"  HECATE_VM_TTL_SECONDS: {os.getenv('HECATE_VM_TTL_SECONDS', '1200')} (default: 1200 / 20 minutes)")
-    print(f"  HECATE_VM_LIFETIME_SECONDS: {os.getenv('HECATE_VM_LIFETIME_SECONDS', '300')} (default: 300 / 5 minutes)")
-    print(f"  HECATE_DEFAULT_SNAPSHOT_ID: {os.getenv('HECATE_DEFAULT_SNAPSHOT_ID', 'snapshot_1a8xowaq')} (default: snapshot_1a8xowaq)")
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/modal)")
+    print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', 'python:3.11-slim')}")
+    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', 'python:3.11-slim')}")
+    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', '/tmp')}")
+    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
+    print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")

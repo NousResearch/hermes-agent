@@ -5,7 +5,7 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 ## Features
 
 - **Web Tools**: Search, extract content, and crawl websites
-- **Terminal Tools**: Execute commands with interactive session support
+- **Terminal Tools**: Execute commands via mini-swe-agent (local, Docker, or Modal backends)
 - **Vision Tools**: Analyze images from URLs
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
 - **Creative Tools**: Generate images from text prompts
@@ -15,7 +15,17 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 
 ## Setup
 
-### 1. Install Dependencies
+### 1. Clone the Repository
+```bash
+# Clone with submodules (recommended)
+git clone --recurse-submodules https://github.com/NousResearch/Hermes-Agent.git
+cd Hermes-Agent
+
+# Or if already cloned without submodules:
+git submodule update --init --recursive
+```
+
+### 2. Install Dependencies
 ```bash
 # Create and activate virtual environment (recommended)
 python3 -m venv venv
@@ -24,14 +34,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install required packages
 pip install -r requirements.txt
 
-# Install Hecate for terminal tools
-git clone git@github.com:NousResearch/hecate.git
-cd hecate
-pip install -e .
-cd ..
+# Install mini-swe-agent for terminal tools
+pip install -e ./mini-swe-agent
 ```
 
-### 2. Configure Environment Variables
+### 3. Configure Environment Variables
 ```bash
 # Copy the example environment file
 cp .env.example .env
@@ -41,14 +48,54 @@ nano .env  # or use your preferred editor
 ```
 
 **Required API Keys:**
-- `ANTHROPIC_API_KEY` - Main agent model (get at: https://console.anthropic.com/)
+- `OPENROUTER_API_KEY` - LLM access via OpenRouter (get at: https://openrouter.ai/keys)
 - `FIRECRAWL_API_KEY` - Web tools (get at: https://firecrawl.dev/)
 - `NOUS_API_KEY` - Vision & reasoning tools (get at: https://inference-api.nousresearch.com/)
-- `MORPH_API_KEY` - Terminal tools (get at: https://morph.so/)
 - `FAL_KEY` - Image generation (get at: https://fal.ai/)
-- `OPENAI_API_KEY` - Optional, for some Hecate features
 
-See `.env.example` for all available configuration options including debug settings and terminal tool configuration.
+**Optional API Keys:**
+- `ANTHROPIC_API_KEY` - Direct Anthropic access (if not using OpenRouter)
+- `OPENAI_API_KEY` - Direct OpenAI access (if not using OpenRouter)
+- `MORPH_API_KEY` - For legacy Hecate terminal backend (get at: https://morph.so/)
+
+### 4. Configure Terminal Backend
+
+The terminal tool uses **mini-swe-agent** environments. Configure in `.env`:
+
+```bash
+# Backend: "local" (host machine), "docker" (containers), or "modal" (cloud)
+TERMINAL_ENV=local          # Default: runs on host machine
+TERMINAL_ENV=docker         # Recommended: isolated Docker containers
+TERMINAL_ENV=modal          # Cloud execution via Modal
+
+# Docker settings (for docker/modal backends)
+TERMINAL_DOCKER_IMAGE=python:3.11-slim
+TERMINAL_TIMEOUT=60
+```
+
+**Backend Requirements:**
+- **local**: No extra setup (runs directly on your machine)
+- **docker**: Requires Docker installed and running. User must be in `docker` group.
+- **modal**: Requires Modal account (see setup below)
+
+### Modal Cloud Backend Setup
+
+[Modal](https://modal.com) provides serverless cloud compute for running sandboxed environments at scale.
+
+```bash
+# 1. Install Modal and dependencies
+pip install modal boto3
+
+# 2. Authenticate with Modal (opens browser)
+modal setup
+
+# 3. Set terminal backend to modal in .env
+TERMINAL_ENV=modal
+```
+
+Modal uses CLI-based authentication (stored in `~/.modal/`), so no API key is needed in `.env`. After running `modal setup`, commands will automatically execute in Modal's cloud sandboxes.
+
+See `.env.example` for all available configuration options including debug settings.
 
 ## Toolsets System
 
@@ -94,12 +141,11 @@ For detailed documentation on toolsets, see `TOOLSETS_README.md`.
 
 ### Default (all tools enabled)
 ```bash
+# Uses OpenRouter by default - just set OPENROUTER_API_KEY in .env
 python run_agent.py \
   --query "search up the latest docs on jit in python 3.13 and write me basic example that's not in their docs. profile its perf" \
   --max_turns 20 \
-  --model claude-sonnet-4-20250514 \
-  --base_url https://api.anthropic.com/v1/ \
-  --api_key $ANTHROPIC_API_KEY
+  --model anthropic/claude-sonnet-4-20250514
 ```
 
 ### With specific toolset
@@ -107,17 +153,16 @@ python run_agent.py \
 python run_agent.py \
   --query "Debug this Python error" \
   --enabled_toolsets=debugging \
-  --model claude-sonnet-4-20250514 \
-  --api_key $ANTHROPIC_API_KEY
+  --model anthropic/claude-sonnet-4-20250514
 ```
 
 ### Python API
 ```python
 from run_agent import AIAgent
 
-# Use a specific toolset
+# Uses OpenRouter by default (reads OPENROUTER_API_KEY from .env)
 agent = AIAgent(
-    model="claude-opus-4-20250514",
+    model="anthropic/claude-sonnet-4-20250514",
     enabled_toolsets=["research"]
 )
 response = agent.chat("Find information about quantum computing")
@@ -213,17 +258,32 @@ The ephemeral prompt will influence the model's behavior during execution, but *
 
 All environment variables can be configured in the `.env` file (copy from `.env.example`).
 
-**Core API Keys:**
-- `ANTHROPIC_API_KEY`: Main agent model
+**LLM Provider (OpenRouter):**
+- `OPENROUTER_API_KEY`: Primary LLM access via OpenRouter (supports Claude, GPT-4, Gemini, etc.)
+- `LLM_MODEL`: Default model (e.g., `anthropic/claude-sonnet-4`, `openai/gpt-4o`)
+
+**Tool API Keys:**
 - `FIRECRAWL_API_KEY`: Web tools (search, extract, crawl)
 - `NOUS_API_KEY`: Vision and reasoning tools
-- `MORPH_API_KEY`: Terminal tools
 - `FAL_KEY`: Image generation tools
-- `OPENAI_API_KEY`: Optional, for some Hecate features
 
-**Configuration Options:**
+**Optional Direct Provider Keys:**
+- `ANTHROPIC_API_KEY`: Direct Anthropic access (fallback if OpenRouter not set)
+- `OPENAI_API_KEY`: Direct OpenAI access (fallback if OpenRouter not set)
+
+**Terminal Tool Configuration (mini-swe-agent backend):**
+- `TERMINAL_ENV`: Backend type - `local`, `docker`, or `modal` (default: `local`)
+- `TERMINAL_DOCKER_IMAGE`: Docker image to use (default: `python:3.11-slim`)
+- `TERMINAL_TIMEOUT`: Command timeout in seconds (default: `60`)
+- `TERMINAL_LIFETIME_SECONDS`: Cleanup inactive environments after this time (default: `300`)
+- `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
+
+**Legacy Hecate Terminal Backend (optional):**
+- `MORPH_API_KEY`: For Hecate/MorphCloud terminal backend
 - `HECATE_VM_LIFETIME_SECONDS`: VM lifetime (default: 300)
 - `HECATE_DEFAULT_SNAPSHOT_ID`: Default snapshot (default: snapshot_p5294qxt)
+
+**Debug Options:**
 - `WEB_TOOLS_DEBUG`, `VISION_TOOLS_DEBUG`, `MOA_TOOLS_DEBUG`, `IMAGE_TOOLS_DEBUG`: Enable debug logging
 
 ## Documentation

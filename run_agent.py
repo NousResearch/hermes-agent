@@ -43,7 +43,7 @@ else:
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
-from tools.simple_terminal_tool import cleanup_vm
+from tools.terminal_tool import cleanup_vm
 
 
 class AIAgent:
@@ -58,7 +58,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
-        model: str = "gpt-4",
+        model: str = "anthropic/claude-sonnet-4-20250514",
         max_iterations: int = 10,
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -142,22 +142,24 @@ class AIAgent:
             logging.getLogger('httpx').setLevel(logging.ERROR)
             logging.getLogger('httpcore').setLevel(logging.ERROR)
         
-        # Initialize OpenAI client
+        # Initialize OpenAI client - defaults to OpenRouter
         client_kwargs = {}
+        
+        # Default to OpenRouter if no base_url provided
         if base_url:
             client_kwargs["base_url"] = base_url
+        else:
+            client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
         
-        # Handle API key with multiple fallbacks
+        # Handle API key - OpenRouter is the primary provider
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
-            # Try multiple common API key environment variables based on base_url
-            if base_url and "openrouter" in base_url.lower():
-                client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", os.getenv("ANTHROPIC_API_KEY", "dummy-key"))
-            elif base_url and "anthropic" in base_url.lower():
-                client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "dummy-key"))
-            else:
-                client_kwargs["api_key"] = os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", "dummy-key"))
+            # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
+            client_kwargs["api_key"] = os.getenv(
+                "OPENROUTER_API_KEY",
+                os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+            )
         
         try:
             self.client = OpenAI(**client_kwargs)

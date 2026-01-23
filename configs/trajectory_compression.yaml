@@ -1,0 +1,97 @@
+# Trajectory Compression Configuration
+# 
+# Post-processes completed agent trajectories to fit within a target token budget.
+# Compression preserves head/tail turns and summarizes middle content only as needed.
+
+# Tokenizer settings for accurate token counting
+tokenizer:
+  # HuggingFace tokenizer name
+  name: "moonshotai/Kimi-K2-Thinking"
+  
+  # Trust remote code (required for some tokenizers)
+  trust_remote_code: true
+
+# Compression targets and behavior
+compression:
+  # Target maximum tokens for compressed trajectory
+  target_max_tokens: 29000
+  
+  # Target size for summary (in tokens)
+  # This is factored into calculations when determining what to compress
+  summary_target_tokens: 750
+
+# Protected turns that should NEVER be compressed
+protected_turns:
+  # Always protect the first system message (tool definitions)
+  first_system: true
+  
+  # Always protect the first human message (original request)
+  first_human: true
+  
+  # Always protect the first gpt message (initial response/tool_call)
+  first_gpt: true
+  
+  # Always protect the first tool response (result of first action)
+  first_tool: true
+  
+  # Always protect the last 2 complete turn pairs (gpt+tool or gpt only)
+  # This ensures the model's final actions and conclusions are preserved
+  last_n_turns: 4
+
+# LLM settings for generating summaries (OpenRouter only)
+summarization:
+  # Model to use for summarization (should be fast and cheap)
+  # Using OpenRouter model path format
+  model: "google/gemini-3-flash-preview"
+  
+  # OpenRouter API settings
+  base_url: "https://openrouter.ai/api/v1"
+  
+  # Environment variable containing OpenRouter API key
+  api_key_env: "OPENROUTER_API_KEY"
+  
+  # Temperature for summarization (lower = more deterministic)
+  temperature: 0.3
+  
+  # Max retries for API failures
+  max_retries: 3
+  
+  # Delay between retries (seconds)
+  retry_delay: 2
+
+# Output settings
+output:
+  # Add notice to system message about potential summarization
+  add_summary_notice: true
+  
+  # Text to append to system message
+  summary_notice_text: "\n\nSome of the conversation may be summarized to preserve context."
+  
+  # Output directory suffix (appended to input directory name)
+  output_suffix: "_compressed"
+
+# Processing settings
+processing:
+  # Number of parallel workers for batch processing
+  num_workers: 4
+  
+  # Maximum concurrent API calls for summarization (async parallelism)
+  max_concurrent_requests: 50
+  
+  # Skip trajectories that are already under target length
+  skip_under_target: true
+  
+  # If true, save trajectories even if compression can't get under target
+  # (will compress as much as possible)
+  save_over_limit: true
+
+# Metrics to track
+metrics:
+  # Log detailed compression statistics
+  enabled: true
+  
+  # Save per-trajectory metrics in output
+  per_trajectory: false
+  
+  # Metrics file name (saved in output directory)
+  output_file: "compression_metrics.json"

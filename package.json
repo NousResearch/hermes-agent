@@ -1,0 +1,28 @@
+{
+  "name": "hermes-agent",
+  "version": "1.0.0",
+  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/Hermes-Agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/NousResearch/Hermes-Agent/issues"
+  },
+  "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
+  "dependencies": {
+    "agent-browser": "^0.7.6"
+  }
+}

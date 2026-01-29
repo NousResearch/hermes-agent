@@ -33,8 +33,14 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract", "web_crawl"],
+        "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
+    },
+    
+    "search": {
+        "description": "Web search only (no content extraction/scraping)",
+        "tools": ["web_search"],
+        "includes": []
     },
     
     "vision": {
@@ -58,6 +64,17 @@ TOOLSETS = {
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
         "tools": ["mixture_of_agents"],
+        "includes": []
+    },
+    
+    "browser": {
+        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+        "tools": [
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision", "web_search"
+        ],
         "includes": []
     },
     

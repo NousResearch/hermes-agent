@@ -155,10 +155,14 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     for attempt in range(max_retries):
         try:
             # Download the image with appropriate headers using async httpx
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.get(
                     image_url,
-                    headers={"User-Agent": "hermes-agent-vision/1.0"},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "image/*,*/*;q=0.8",
+                    },
                 )
                 response.raise_for_status()
                 

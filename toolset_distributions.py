@@ -35,7 +35,8 @@ DISTRIBUTIONS = {
             "vision": 100,
             "image_gen": 100,
             "terminal": 100,
-            "moa": 100
+            "moa": 100,
+            "browser": 100
         }
     },
     
@@ -55,22 +56,24 @@ DISTRIBUTIONS = {
     "research": {
         "description": "Web research with vision analysis and reasoning",
         "toolsets": {
-            "web": 90,      # 90% chance of web tools
-            "vision": 50,   # 50% chance of vision tools
-            "moa": 40,      # 40% chance of reasoning tools
-            "terminal": 10  # 10% chance of terminal tools
+            "web": 90,       # 90% chance of web tools
+            "browser": 70,   # 70% chance of browser tools for deep research
+            "vision": 50,    # 50% chance of vision tools
+            "moa": 40,       # 40% chance of reasoning tools
+            "terminal": 10   # 10% chance of terminal tools
         }
     },
 
     # Scientific problem solving focused distribution
     "science": {
-        "description": "Web research with vision analysis and reasoning",
+        "description": "Scientific research with web, terminal, and browser capabilities",
         "toolsets": {
-            "web": 94,      # 90% chance of web tools
-            "vision": 65,   # 50% chance of vision tools
-            "moa": 10,      # 40% chance of reasoning tools
-            "terminal": 94,  # 10% chance of terminal tools
-            "image_gen": 15  # 80% chance of image generation tools
+            "web": 94,       # 94% chance of web tools
+            "terminal": 94,  # 94% chance of terminal tools
+            "vision": 65,    # 65% chance of vision tools
+            "browser": 50,   # 50% chance of browser for accessing papers/databases
+            "image_gen": 15, # 15% chance of image generation tools
+            "moa": 10        # 10% chance of reasoning tools
         }
     },
 
@@ -90,6 +93,7 @@ DISTRIBUTIONS = {
         "description": "All tools except terminal for safety",
         "toolsets": {
             "web": 80,
+            "browser": 70,   # Browser is safe (no local filesystem access)
             "vision": 60,
             "image_gen": 60,
             "moa": 50
@@ -104,7 +108,8 @@ DISTRIBUTIONS = {
             "vision": 50,
             "image_gen": 50,
             "terminal": 50,
-            "moa": 50
+            "moa": 50,
+            "browser": 50
         }
     },
     
@@ -112,6 +117,23 @@ DISTRIBUTIONS = {
     "minimal": {
         "description": "Only web tools for basic research",
         "toolsets": {
+            "web": 100
+        }
+    },
+    
+    # Terminal only
+    "terminal_only": {
+        "description": "Only terminal tool for code execution tasks",
+        "toolsets": {
+            "terminal": 100
+        }
+    },
+    
+    # Terminal + web (common for coding tasks that need docs)
+    "terminal_web": {
+        "description": "Terminal with web search for documentation lookup",
+        "toolsets": {
+            "terminal": 100,
             "web": 100
         }
     },
@@ -133,6 +155,58 @@ DISTRIBUTIONS = {
             "moa": 90,
             "web": 30,
             "terminal": 20
+        }
+    },
+    
+    # Browser-based web interaction
+    "browser_use": {
+        "description": "Full browser-based web interaction with search, vision, and page control",
+        "toolsets": {
+            "browser": 100,  # All browser tools always available
+            "web": 80,       # Web search for finding URLs and quick lookups
+            "vision": 70     # Vision analysis for images found on pages
+        }
+    },
+    
+    # Browser only (no other tools)
+    "browser_only": {
+        "description": "Only browser automation tools for pure web interaction tasks",
+        "toolsets": {
+            "browser": 100
+        }
+    },
+    
+    # Browser-focused tasks distribution (for browser-use-tasks.jsonl)
+    "browser_tasks": {
+        "description": "Browser-focused distribution (browser toolset includes web_search for finding URLs since Google blocks direct browser searches)",
+        "toolsets": {
+            "browser": 97,   # 97% - browser tools (includes web_search) almost always available
+            "vision": 12,    # 12% - vision analysis occasionally
+            "terminal": 15   # 15% - terminal occasionally for local operations
+        }
+    },
+    
+    # Terminal-focused tasks distribution (for nous-terminal-tasks.jsonl)
+    "terminal_tasks": {
+        "description": "Terminal-focused distribution with high terminal availability, occasional other tools",
+        "toolsets": {
+            "terminal": 97,   # 97% - terminal almost always available
+            "web": 15,        # 15% - web search/scrape for documentation
+            "browser": 10,    # 10% - browser occasionally for web interaction
+            "vision": 8,      # 8% - vision analysis rarely
+            "image_gen": 3    # 3% - image generation very rarely
+        }
+    },
+    
+    # Mixed browser+terminal tasks distribution (for mixed-browser-terminal-tasks.jsonl)
+    "mixed_tasks": {
+        "description": "Mixed distribution with high browser and terminal availability for complex tasks",
+        "toolsets": {
+            "browser": 92,    # 92% - browser tools highly available
+            "terminal": 92,   # 92% - terminal highly available  
+            "web": 35,        # 35% - web search/scrape fairly common
+            "vision": 15,     # 15% - vision analysis occasionally
+            "image_gen": 15   # 15% - image generation occasionally
         }
     }
 }

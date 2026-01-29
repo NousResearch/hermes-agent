@@ -24,11 +24,13 @@ from .web_tools import (
     check_firecrawl_api_key
 )
 
-# Primary terminal tool (mini-swe-agent backend: local/docker/modal)
+# Primary terminal tool (mini-swe-agent backend: local/docker/singularity/modal)
 from .terminal_tool import (
     terminal_tool,
     check_terminal_requirements,
     cleanup_vm,
+    cleanup_all_environments,
+    get_active_environments_info,
     TERMINAL_TOOL_DESCRIPTION
 )
 
@@ -54,6 +56,25 @@ from .image_generation_tool import (
     check_image_generation_requirements
 )
 
+# Browser automation tools (agent-browser + Browserbase)
+from .browser_tool import (
+    browser_navigate,
+    browser_snapshot,
+    browser_click,
+    browser_type,
+    browser_scroll,
+    browser_back,
+    browser_press,
+    browser_close,
+    browser_get_images,
+    browser_vision,
+    cleanup_browser,
+    cleanup_all_browsers,
+    get_active_browser_sessions,
+    check_browser_requirements,
+    BROWSER_TOOL_SCHEMAS
+)
+
 __all__ = [
     # Web tools
     'web_search_tool',
@@ -64,6 +85,8 @@ __all__ = [
     'terminal_tool',
     'check_terminal_requirements',
     'cleanup_vm',
+    'cleanup_all_environments',
+    'get_active_environments_info',
     'TERMINAL_TOOL_DESCRIPTION',
     # Terminal tools (Hecate/MorphCloud backend)
     'terminal_hecate_tool',
@@ -78,5 +101,21 @@ __all__ = [
     # Image generation tools
     'image_generate_tool',
     'check_image_generation_requirements',
+    # Browser automation tools
+    'browser_navigate',
+    'browser_snapshot',
+    'browser_click',
+    'browser_type',
+    'browser_scroll',
+    'browser_back',
+    'browser_press',
+    'browser_close',
+    'browser_get_images',
+    'browser_vision',
+    'cleanup_browser',
+    'cleanup_all_browsers',
+    'get_active_browser_sessions',
+    'check_browser_requirements',
+    'BROWSER_TOOL_SCHEMAS',
 ]
 

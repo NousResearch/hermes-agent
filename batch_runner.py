@@ -49,8 +49,13 @@ _WORKER_CONFIG = {}
 # All possible tools - used to ensure consistent schema across all trajectory entries
 # This is required because Arrow/Parquet (used by HuggingFace datasets) needs identical schemas
 ALL_POSSIBLE_TOOLS = {
-    'terminal', 'web_search', 'web_extract', 'web_crawl',
-    'vision_analyze', 'image_generate', 'mixture_of_agents'
+    'terminal', 'web_search', 'web_extract',
+    'vision_analyze', 'image_generate', 'mixture_of_agents',
+    # Browser automation tools
+    'browser_navigate', 'browser_snapshot', 'browser_click',
+    'browser_type', 'browser_scroll', 'browser_back',
+    'browser_press', 'browser_close', 'browser_get_images',
+    'browser_vision'
 }
 
 # Default stats for tools that weren't used
@@ -828,8 +833,13 @@ class BatchRunner:
         combined_file = self.output_dir / "trajectories.jsonl"
         print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
         
-        VALID_TOOLS = {'web_search', 'web_extract', 'web_crawl', 'terminal', 'vision_analyze', 
-                       'image_generate', 'mixture_of_agents'}
+        VALID_TOOLS = {'web_search', 'web_extract', 'terminal', 'vision_analyze', 
+                       'image_generate', 'mixture_of_agents',
+                       # Browser automation tools
+                       'browser_navigate', 'browser_snapshot', 'browser_click',
+                       'browser_type', 'browser_scroll', 'browser_back',
+                       'browser_press', 'browser_close', 'browser_get_images',
+                       'browser_vision'}
         
         total_entries = 0
         filtered_entries = 0
@@ -928,9 +938,9 @@ def main(
     batch_size: int = None,
     run_name: str = None,
     distribution: str = "default",
-    model: str = "claude-opus-4-20250514",
+    model: str = "anthropic/claude-sonnet-4-20250514",
     api_key: str = None,
-    base_url: str = "https://api.anthropic.com/v1/",
+    base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
     num_workers: int = 4,
     resume: bool = False,

@@ -37,6 +37,22 @@ from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirement
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
+# Browser automation tools (agent-browser + Browserbase)
+from tools.browser_tool import (
+    browser_navigate,
+    browser_snapshot,
+    browser_click,
+    browser_type,
+    browser_scroll,
+    browser_back,
+    browser_press,
+    browser_close,
+    browser_get_images,
+    browser_vision,
+    cleanup_browser,
+    check_browser_requirements,
+    BROWSER_TOOL_SCHEMAS
+)
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -55,7 +71,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles and URLs. Uses advanced search depth for comprehensive results.",
+                "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles and URLs. Uses advanced search depth for comprehensive results. PREFERRED over browser tools for finding information - faster and more cost-effective. Use browser tools only when you need to interact with pages (click, fill forms, handle dynamic content).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -72,7 +88,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_extract",
-                "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window.",
+                "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window. PREFERRED over browser tools for reading page content - faster and more cost-effective. Use browser tools only when pages require interaction or have dynamic content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -87,27 +103,6 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
                 }
             }
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_crawl",
-                "description": "Crawl a website with specific instructions to find and extract targeted content. Uses AI to intelligently navigate and extract relevant information from across the site. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "The base URL to crawl (can include or exclude https://)"
-                        },
-                        "instructions": {
-                            "type": "string",
-                            "description": "Specific instructions for what to crawl/extract using AI intelligence (e.g., 'Find pricing information', 'Get documentation pages', 'Extract contact details')"
-                        }
-                    },
-                    "required": ["url"]
-                }
-            }
-        }
     ]
 
 def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
@@ -244,6 +239,18 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_browser_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for browser automation tools in OpenAI's expected format.
+    
+    Uses agent-browser CLI with Browserbase cloud execution.
+    
+    Returns:
+        List[Dict]: List of browser tool definitions compatible with OpenAI API
+    """
+    return [{"type": "function", "function": schema} for schema in BROWSER_TOOL_SCHEMAS]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -255,7 +262,7 @@ def get_all_tool_names() -> List[str]:
     
     # Web tools
     if check_firecrawl_api_key():
-        tool_names.extend(["web_search", "web_extract", "web_crawl"])
+        tool_names.extend(["web_search", "web_extract"])
 
     # Terminal tools (mini-swe-agent backend)
     if check_terminal_requirements():
@@ -273,6 +280,15 @@ def get_all_tool_names() -> List[str]:
     if check_image_generation_requirements():
         tool_names.extend(["image_generate"])
     
+    # Browser automation tools
+    if check_browser_requirements():
+        tool_names.extend([
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision"
+        ])
+    
     return tool_names
 
 
@@ -288,12 +304,22 @@ def get_toolset_for_tool(tool_name: str) -> str:
     """
     toolset_mapping = {
         "web_search": "web_tools",
-        "web_extract": "web_tools", 
-        "web_crawl": "web_tools",
+        "web_extract": "web_tools",
         "terminal": "terminal_tools",
         "vision_analyze": "vision_tools",
         "mixture_of_agents": "moa_tools",
-        "image_generate": "image_tools"
+        "image_generate": "image_tools",
+        # Browser automation tools
+        "browser_navigate": "browser_tools",
+        "browser_snapshot": "browser_tools",
+        "browser_click": "browser_tools",
+        "browser_type": "browser_tools",
+        "browser_scroll": "browser_tools",
+        "browser_back": "browser_tools",
+        "browser_press": "browser_tools",
+        "browser_close": "browser_tools",
+        "browser_get_images": "browser_tools",
+        "browser_vision": "browser_tools"
     }
     
     return toolset_mapping.get(tool_name, "unknown")
@@ -357,6 +383,10 @@ def get_tool_definitions(
         for tool in get_image_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
+    if check_browser_requirements():
+        for tool in get_browser_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
     # Determine which tools to include based on toolsets
     tools_to_include = set()
     
@@ -369,14 +399,20 @@ def get_tool_definitions(
                 print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "browser_tools"]:
                     # Map legacy names to new system
                     legacy_map = {
-                        "web_tools": ["web_search", "web_extract", "web_crawl"],
+                        "web_tools": ["web_search", "web_extract"],
                         "terminal_tools": ["terminal"],
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
-                        "image_tools": ["image_generate"]
+                        "image_tools": ["image_generate"],
+                        "browser_tools": [
+                            "browser_navigate", "browser_snapshot", "browser_click",
+                            "browser_type", "browser_scroll", "browser_back",
+                            "browser_press", "browser_close", "browser_get_images",
+                            "browser_vision"
+                        ]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.update(legacy_tools)
@@ -404,13 +440,19 @@ def get_tool_definitions(
                 print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "browser_tools"]:
                     legacy_map = {
-                        "web_tools": ["web_search", "web_extract", "web_crawl"],
+                        "web_tools": ["web_search", "web_extract"],
                         "terminal_tools": ["terminal"],
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
-                        "image_tools": ["image_generate"]
+                        "image_tools": ["image_generate"],
+                        "browser_tools": [
+                            "browser_navigate", "browser_snapshot", "browser_click",
+                            "browser_type", "browser_scroll", "browser_back",
+                            "browser_press", "browser_close", "browser_get_images",
+                            "browser_vision"
+                        ]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.difference_update(legacy_tools)
@@ -464,12 +506,6 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         urls = urls[:5] if isinstance(urls, list) else []
         # Run async function in event loop
         return asyncio.run(web_extract_tool(urls, "markdown"))
-    
-    elif function_name == "web_crawl":
-        url = function_args.get("url", "")
-        instructions = function_args.get("instructions")
-        # Run async function in event loop
-        return asyncio.run(web_crawl_tool(url, instructions, "basic"))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
@@ -603,7 +639,58 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
 
 
-def handle_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
+# Browser tool handlers mapping
+BROWSER_HANDLERS = {
+    "browser_navigate": browser_navigate,
+    "browser_click": browser_click,
+    "browser_type": browser_type,
+    "browser_scroll": browser_scroll,
+    "browser_back": browser_back,
+    "browser_press": browser_press,
+    "browser_close": browser_close,
+    "browser_get_images": browser_get_images,
+    "browser_vision": browser_vision,
+}
+
+
+def handle_browser_function_call(
+    function_name: str, 
+    function_args: Dict[str, Any], 
+    task_id: Optional[str] = None,
+    user_task: Optional[str] = None
+) -> str:
+    """
+    Handle function calls for browser automation tools.
+    
+    Args:
+        function_name (str): Name of the browser function to call
+        function_args (Dict): Arguments for the function
+        task_id (str): Task identifier for session isolation
+        user_task (str): User's current task (for task-aware extraction in snapshots)
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    # Special handling for browser_snapshot which needs user_task for extraction
+    if function_name == "browser_snapshot":
+        full = function_args.get("full", False)
+        return browser_snapshot(full=full, task_id=task_id, user_task=user_task)
+    
+    # Handle other browser tools
+    if function_name in BROWSER_HANDLERS:
+        handler = BROWSER_HANDLERS[function_name]
+        # Add task_id to args
+        return handler(**function_args, task_id=task_id)
+    
+    return json.dumps({"error": f"Unknown browser function: {function_name}"}, ensure_ascii=False)
+
+
+def handle_function_call(
+    function_name: str, 
+    function_args: Dict[str, Any], 
+    task_id: Optional[str] = None,
+    user_task: Optional[str] = None
+) -> str:
     """
     Main function call dispatcher that routes calls to appropriate toolsets.
 
@@ -614,7 +701,8 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any], task
     Args:
         function_name (str): Name of the function to call
         function_args (Dict): Arguments for the function
-        task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional)
+        task_id (str): Unique identifier for this task to isolate VMs/sessions between concurrent tasks (optional)
+        user_task (str): The user's original task/query (used for task-aware content extraction) (optional)
 
     Returns:
         str: Function result as JSON string
@@ -624,7 +712,7 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any], task
     """
     try:
         # Route web tools
-        if function_name in ["web_search", "web_extract", "web_crawl"]:
+        if function_name in ["web_search", "web_extract"]:
             return handle_web_function_call(function_name, function_args)
 
         # Route terminal tools
@@ -642,6 +730,15 @@ def handle_function_call(function_name: str, function_args: Dict[str, Any], task
         # Route image generation tools
         elif function_name in ["image_generate"]:
             return handle_image_function_call(function_name, function_args)
+
+        # Route browser automation tools
+        elif function_name in [
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision"
+        ]:
+            return handle_browser_function_call(function_name, function_args, task_id, user_task)
 
         else:
             error_msg = f"Unknown function: {function_name}"
@@ -664,8 +761,8 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
     toolsets = {
         "web_tools": {
             "available": check_firecrawl_api_key(),
-            "tools": ["web_search_tool", "web_extract_tool", "web_crawl_tool"],
-            "description": "Web search, content extraction, and website crawling tools",
+            "tools": ["web_search_tool", "web_extract_tool"],
+            "description": "Web search and content extraction tools",
             "requirements": ["FIRECRAWL_API_KEY environment variable"]
         },
         "terminal_tools": {
@@ -691,6 +788,17 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["image_generate_tool"],
             "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling for enhanced quality",
             "requirements": ["FAL_KEY environment variable", "fal-client package"]
+        },
+        "browser_tools": {
+            "available": check_browser_requirements(),
+            "tools": [
+                "browser_navigate", "browser_snapshot", "browser_click",
+                "browser_type", "browser_scroll", "browser_back",
+                "browser_press", "browser_close", "browser_get_images",
+                "browser_vision"
+            ],
+            "description": "Browser automation for web interaction using agent-browser CLI with Browserbase cloud execution",
+            "requirements": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "agent-browser npm package"]
         }
     }
     
@@ -708,7 +816,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "terminal_tools": check_terminal_requirements(),
         "vision_tools": check_vision_requirements(),
         "moa_tools": check_moa_requirements(),
-        "image_tools": check_image_generation_requirements()
+        "image_tools": check_image_generation_requirements(),
+        "browser_tools": check_browser_requirements()
     }
 
 if __name__ == "__main__":

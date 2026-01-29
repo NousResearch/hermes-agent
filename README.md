@@ -6,6 +6,7 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 
 - **Web Tools**: Search, extract content, and crawl websites
 - **Terminal Tools**: Execute commands via mini-swe-agent (local, Docker, or Modal backends)
+- **Browser Tools**: Automate web browsers to navigate, click, type, and extract content
 - **Vision Tools**: Analyze images from URLs
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
 - **Creative Tools**: Generate images from text prompts
@@ -53,9 +54,9 @@ nano .env  # or use your preferred editor
 - `NOUS_API_KEY` - Vision & reasoning tools (get at: https://inference-api.nousresearch.com/)
 - `FAL_KEY` - Image generation (get at: https://fal.ai/)
 
-**Optional API Keys:**
-- `ANTHROPIC_API_KEY` - Direct Anthropic access (if not using OpenRouter)
-- `OPENAI_API_KEY` - Direct OpenAI access (if not using OpenRouter)
+**Optional API Keys (for specific features):**
+- `BROWSERBASE_API_KEY` - Browser automation (get at: https://browserbase.com/)
+- `BROWSERBASE_PROJECT_ID` - From Browserbase dashboard
 - `MORPH_API_KEY` - For legacy Hecate terminal backend (get at: https://morph.so/)
 
 ### 4. Configure Terminal Backend
@@ -63,19 +64,22 @@ nano .env  # or use your preferred editor
 The terminal tool uses **mini-swe-agent** environments. Configure in `.env`:
 
 ```bash
-# Backend: "local" (host machine), "docker" (containers), or "modal" (cloud)
-TERMINAL_ENV=local          # Default: runs on host machine
-TERMINAL_ENV=docker         # Recommended: isolated Docker containers
+# Backend: "local", "docker", "singularity", or "modal"
+TERMINAL_ENV=local          # Default: runs on host machine (no isolation)
+TERMINAL_ENV=singularity    # Recommended for HPC: Apptainer/Singularity containers
+TERMINAL_ENV=docker         # Isolated Docker containers
 TERMINAL_ENV=modal          # Cloud execution via Modal
 
-# Docker settings (for docker/modal backends)
+# Container image (for docker/singularity/modal backends)
 TERMINAL_DOCKER_IMAGE=python:3.11-slim
+TERMINAL_SINGULARITY_IMAGE=docker://python:3.11-slim
 TERMINAL_TIMEOUT=60
 ```
 
 **Backend Requirements:**
-- **local**: No extra setup (runs directly on your machine)
-- **docker**: Requires Docker installed and running. User must be in `docker` group.
+- **local**: No extra setup (runs directly on your machine, no isolation)
+- **singularity**: Requires Apptainer or Singularity installed (common on HPC clusters, no root needed)
+- **docker**: Requires Docker installed and user in `docker` group
 - **modal**: Requires Modal account (see setup below)
 
 ### Modal Cloud Backend Setup
@@ -94,6 +98,55 @@ TERMINAL_ENV=modal
 ```
 
 Modal uses CLI-based authentication (stored in `~/.modal/`), so no API key is needed in `.env`. After running `modal setup`, commands will automatically execute in Modal's cloud sandboxes.
+
+### Browser Tools Setup
+
+Browser tools enable the agent to navigate websites, fill forms, click buttons, and extract content. They use [agent-browser](https://github.com/vercel-labs/agent-browser) CLI with [Browserbase](https://browserbase.com) cloud execution.
+
+```bash
+# 1. Install Node.js (if not already installed)
+# Use nvm (recommended) or your package manager
+
+# 2. Install agent-browser CLI globally
+npm install -g agent-browser
+
+# 3. Get Browserbase credentials
+# Sign up at https://browserbase.com/ and get your:
+# - API Key (from Settings → API Keys)
+# - Project ID (from your project dashboard)
+
+# 4. Add to your .env file:
+BROWSERBASE_API_KEY=your_api_key_here
+BROWSERBASE_PROJECT_ID=your_project_id_here
+```
+
+**Available Browser Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `browser_navigate` | Navigate to a URL |
+| `browser_snapshot` | Get text-based page snapshot with element refs |
+| `browser_click` | Click an element by ref (e.g., `@e5`) |
+| `browser_type` | Type text into an input field |
+| `browser_scroll` | Scroll up or down |
+| `browser_back` | Go back in browser history |
+| `browser_press` | Press a keyboard key (Enter, Tab, etc.) |
+| `browser_close` | Close the browser session |
+| `browser_get_images` | Get list of images on the page |
+
+**Example Usage:**
+```bash
+# Use browser tools with web search and vision
+python run_agent.py \
+  --query "Go to amazon.com and find the price of the latest Kindle" \
+  --enabled_toolsets=browser,web,vision
+
+# Use browser-focused distribution
+python batch_runner.py \
+  --dataset_file=browser_tasks.jsonl \
+  --distribution=browser_use \
+  --run_name=browser_run
+```
 
 See `.env.example` for all available configuration options including debug settings.
 
@@ -267,16 +320,17 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 - `NOUS_API_KEY`: Vision and reasoning tools
 - `FAL_KEY`: Image generation tools
 
-**Optional Direct Provider Keys:**
-- `ANTHROPIC_API_KEY`: Direct Anthropic access (fallback if OpenRouter not set)
-- `OPENAI_API_KEY`: Direct OpenAI access (fallback if OpenRouter not set)
-
 **Terminal Tool Configuration (mini-swe-agent backend):**
 - `TERMINAL_ENV`: Backend type - `local`, `docker`, or `modal` (default: `local`)
 - `TERMINAL_DOCKER_IMAGE`: Docker image to use (default: `python:3.11-slim`)
 - `TERMINAL_TIMEOUT`: Command timeout in seconds (default: `60`)
 - `TERMINAL_LIFETIME_SECONDS`: Cleanup inactive environments after this time (default: `300`)
 - `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
+
+**Browser Tool Configuration (agent-browser + Browserbase):**
+- `BROWSERBASE_API_KEY`: Browserbase API key for cloud browser execution
+- `BROWSERBASE_PROJECT_ID`: Browserbase project ID
+- `BROWSER_SESSION_TIMEOUT`: Session timeout in seconds (default: `300`)
 
 **Legacy Hecate Terminal Backend (optional):**
 - `MORPH_API_KEY`: For Hecate/MorphCloud terminal backend

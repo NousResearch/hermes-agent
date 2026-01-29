@@ -32,6 +32,10 @@ import sys
 import time
 import threading
 import atexit
+import shutil
+import subprocess
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -39,6 +43,168 @@ from typing import Optional, Dict, Any
 mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
 if mini_swe_path.exists():
     sys.path.insert(0, str(mini_swe_path))
+
+
+# =============================================================================
+# Custom Singularity Environment with more space
+# =============================================================================
+
+def _get_scratch_dir() -> Path:
+    """Get the best directory for Singularity sandboxes - prefers /scratch if available."""
+    # Check for configurable scratch directory first (highest priority)
+    custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
+    if custom_scratch:
+        scratch_path = Path(custom_scratch)
+        scratch_path.mkdir(parents=True, exist_ok=True)
+        return scratch_path
+    
+    # Check for /scratch (common on HPC clusters, especially GPU nodes)
+    scratch = Path("/scratch")
+    if scratch.exists() and os.access(scratch, os.W_OK):
+        # Create user-specific subdirectory
+        user_scratch = scratch / os.getenv("USER", "hermes") / "hermes-agent"
+        user_scratch.mkdir(parents=True, exist_ok=True)
+        print(f"[Terminal] Using /scratch for sandboxes: {user_scratch}")
+        return user_scratch
+    
+    # Fall back to /tmp
+    print("[Terminal] Warning: /scratch not available, using /tmp (limited space)")
+    return Path(tempfile.gettempdir())
+
+
+# Disk usage warning threshold (in GB)
+DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
+
+
+def _check_disk_usage_warning():
+    """Check if total disk usage exceeds warning threshold."""
+    scratch_dir = _get_scratch_dir()
+    
+    try:
+        # Get total size of hermes directories
+        total_bytes = 0
+        import glob
+        for path in glob.glob(str(scratch_dir / "hermes-*")):
+            for f in Path(path).rglob('*'):
+                if f.is_file():
+                    try:
+                        total_bytes += f.stat().st_size
+                    except:
+                        pass
+        
+        total_gb = total_bytes / (1024 ** 3)
+        
+        if total_gb > DISK_USAGE_WARNING_THRESHOLD_GB:
+            print(f"⚠️  [Terminal] WARNING: Disk usage ({total_gb:.1f}GB) exceeds threshold ({DISK_USAGE_WARNING_THRESHOLD_GB}GB)")
+            print(f"    Consider running cleanup_all_environments() or reducing parallel workers")
+            return True
+        
+        return False
+    except Exception as e:
+        return False
+
+
+class _SingularityEnvironment:
+    """
+    Custom Singularity/Apptainer environment with better space management.
+    
+    - Builds sandbox in /scratch (if available) or configurable location
+    - Binds a large working directory into the container
+    - Keeps container isolated from host filesystem
+    """
+    
+    def __init__(self, image: str, cwd: str = "/workspace", timeout: int = 60):
+        self.image = image
+        self.cwd = cwd
+        self.timeout = timeout
+        
+        # Use apptainer if available, otherwise singularity
+        self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
+        
+        # Get scratch directory for sandbox
+        self.scratch_dir = _get_scratch_dir()
+        
+        # Create unique sandbox directory
+        self.sandbox_id = f"hermes-{uuid.uuid4().hex[:12]}"
+        self.sandbox_dir = self.scratch_dir / self.sandbox_id
+        
+        # Create a working directory that will be bound into the container
+        self.work_dir = self.scratch_dir / f"{self.sandbox_id}-work"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Build the sandbox
+        self._build_sandbox()
+    
+    def _build_sandbox(self):
+        """Build a writable sandbox from the container image."""
+        try:
+            result = subprocess.run(
+                [self.executable, "build", "--sandbox", str(self.sandbox_dir), self.image],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 min timeout for building
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to build sandbox: {result.stderr}")
+            
+            # Create /workspace directory inside the sandbox for bind mounting
+            workspace_in_sandbox = self.sandbox_dir / "workspace"
+            workspace_in_sandbox.mkdir(parents=True, exist_ok=True)
+            
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+            raise RuntimeError("Sandbox build timed out")
+    
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+        """Execute a command in the Singularity container."""
+        cmd = [self.executable, "exec"]
+        
+        # Isolation flags - contain but allow network
+        cmd.extend(["--contain", "--cleanenv"])
+        
+        # Bind the working directory into the container at /workspace
+        # This gives the container access to a large writable space
+        cmd.extend(["--bind", f"{self.work_dir}:/workspace"])
+        
+        # Also bind it to /tmp inside container for pip cache etc.
+        cmd.extend(["--bind", f"{self.work_dir}:/tmp"])
+        
+        # Set working directory
+        work_dir = cwd or self.cwd
+        cmd.extend(["--pwd", work_dir])
+        
+        # Use writable sandbox
+        cmd.extend(["--writable", str(self.sandbox_dir)])
+        
+        # Execute the command
+        cmd.extend(["bash", "-c", command])
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                text=True,
+                timeout=timeout or self.timeout,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            return {"output": result.stdout, "returncode": result.returncode}
+        except subprocess.TimeoutExpired:
+            return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
+    
+    def cleanup(self):
+        """Clean up sandbox and working directory."""
+        shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+        shutil.rmtree(self.work_dir, ignore_errors=True)
+    
+    def stop(self):
+        """Alias for cleanup."""
+        self.cleanup()
+    
+    def __del__(self):
+        """Cleanup on destruction."""
+        self.cleanup()
 
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
@@ -71,6 +237,7 @@ TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
+_task_workdirs: Dict[str, str] = {}  # Maps task_id to working directory
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
 _cleanup_thread = None
@@ -80,9 +247,10 @@ _cleanup_running = False
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     return {
-        "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, or modal
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11-slim"),
+        "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, singularity, or modal
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11"),
+        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", "docker://python:3.11"),
+        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11"),
         "cwd": os.getenv("TERMINAL_CWD", "/tmp"),
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
@@ -94,8 +262,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int):
     Create an execution environment from mini-swe-agent.
     
     Args:
-        env_type: One of "local", "docker", "modal"
-        image: Docker/Modal image name (ignored for local)
+        env_type: One of "local", "docker", "singularity", "modal"
+        image: Docker/Singularity/Modal image name (ignored for local)
         cwd: Working directory
         timeout: Default command timeout
         
@@ -110,12 +278,16 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int):
         from minisweagent.environments.docker import DockerEnvironment
         return DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
     
+    elif env_type == "singularity":
+        # Use custom Singularity environment with better space management
+        return _SingularityEnvironment(image=image, cwd=cwd, timeout=timeout)
+    
     elif env_type == "modal":
         from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
         return SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
+        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', or 'modal'")
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -147,6 +319,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
                 if task_id in _last_activity:
                     del _last_activity[task_id]
+                if task_id in _task_workdirs:
+                    del _task_workdirs[task_id]
 
             except Exception as e:
                 error_str = str(e)
@@ -160,6 +334,8 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                     del _active_environments[task_id]
                 if task_id in _last_activity:
                     del _last_activity[task_id]
+                if task_id in _task_workdirs:
+                    del _task_workdirs[task_id]
 
 
 def _cleanup_thread_worker():
@@ -198,9 +374,63 @@ def _stop_cleanup_thread():
         _cleanup_thread.join(timeout=5)
 
 
+def get_active_environments_info() -> Dict[str, Any]:
+    """Get information about currently active environments."""
+    info = {
+        "count": len(_active_environments),
+        "task_ids": list(_active_environments.keys()),
+        "workdirs": dict(_task_workdirs),
+    }
+    
+    # Calculate total disk usage
+    total_size = 0
+    for task_id in _active_environments.keys():
+        # Check sandbox and workdir sizes
+        scratch_dir = _get_scratch_dir()
+        for pattern in [f"hermes-*{task_id[:8]}*"]:
+            import glob
+            for path in glob.glob(str(scratch_dir / "hermes-*")):
+                try:
+                    size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
+                    total_size += size
+                except:
+                    pass
+    
+    info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
+    return info
+
+
+def cleanup_all_environments():
+    """Clean up ALL active environments. Use with caution."""
+    global _active_environments, _last_activity, _task_workdirs
+    
+    task_ids = list(_active_environments.keys())
+    cleaned = 0
+    
+    for task_id in task_ids:
+        try:
+            cleanup_vm(task_id)
+            cleaned += 1
+        except Exception as e:
+            print(f"[Terminal Cleanup] Error cleaning {task_id}: {e}")
+    
+    # Also clean any orphaned directories
+    scratch_dir = _get_scratch_dir()
+    import glob
+    for path in glob.glob(str(scratch_dir / "hermes-*")):
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+            print(f"[Terminal Cleanup] Removed orphaned: {path}")
+        except:
+            pass
+    
+    print(f"[Terminal Cleanup] Cleaned {cleaned} environments")
+    return cleaned
+
+
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
-    global _active_environments, _last_activity
+    global _active_environments, _last_activity, _task_workdirs
 
     with _env_lock:
         try:
@@ -215,6 +445,9 @@ def cleanup_vm(task_id: str):
 
                 del _active_environments[task_id]
                 print(f"[Terminal Cleanup] Manually cleaned up environment for task: {task_id}")
+
+            if task_id in _task_workdirs:
+                del _task_workdirs[task_id]
 
             if task_id in _last_activity:
                 del _last_activity[task_id]
@@ -268,6 +501,8 @@ def terminal_tool(
         # Select image based on env type
         if env_type == "docker":
             image = config["docker_image"]
+        elif env_type == "singularity":
+            image = config["singularity_image"]
         elif env_type == "modal":
             image = config["modal_image"]
         else:
@@ -280,12 +515,26 @@ def terminal_tool(
         # Use task_id for environment isolation
         effective_task_id = task_id or "default"
 
+        # For local environment, create a unique subdirectory per task
+        # This prevents parallel tasks from overwriting each other's files
+        if env_type == "local":
+            import uuid
+            with _env_lock:
+                if effective_task_id not in _task_workdirs:
+                    task_workdir = Path(cwd) / f"hermes-{effective_task_id}-{uuid.uuid4().hex[:8]}"
+                    task_workdir.mkdir(parents=True, exist_ok=True)
+                    _task_workdirs[effective_task_id] = str(task_workdir)
+                cwd = _task_workdirs[effective_task_id]
+
         # Start cleanup thread
         _start_cleanup_thread()
 
         # Get or create environment
         with _env_lock:
             if effective_task_id not in _active_environments:
+                # Check disk usage before creating new environment
+                _check_disk_usage_warning()
+                
                 try:
                     _active_environments[effective_task_id] = _create_environment(
                         env_type=env_type,
@@ -397,6 +646,16 @@ def check_terminal_requirements() -> bool:
             import subprocess
             result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
             return result.returncode == 0
+        elif env_type == "singularity":
+            from minisweagent.environments.singularity import SingularityEnvironment
+            # Check if singularity/apptainer is available
+            import subprocess
+            import shutil
+            executable = shutil.which("apptainer") or shutil.which("singularity")
+            if executable:
+                result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
+                return result.returncode == 0
+            return False
         elif env_type == "modal":
             from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
             # Check for modal token

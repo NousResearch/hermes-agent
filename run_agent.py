@@ -44,6 +44,7 @@ else:
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
 from tools.terminal_tool import cleanup_vm
+from tools.browser_tool import cleanup_browser
 
 
 class AIAgent:
@@ -58,7 +59,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
-        model: str = "anthropic/claude-sonnet-4-20250514",
+        model: str = "anthropic/claude-sonnet-4-20250514",  # OpenRouter format
         max_iterations: int = 10,
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -156,10 +157,7 @@ class AIAgent:
             client_kwargs["api_key"] = api_key
         else:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
-            client_kwargs["api_key"] = os.getenv(
-                "OPENROUTER_API_KEY",
-                os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-            )
+            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         
         try:
             self.client = OpenAI(**client_kwargs)
@@ -339,11 +337,12 @@ class AIAgent:
                 # Check if this message has tool calls
                 if "tool_calls" in msg and msg["tool_calls"]:
                     # Format assistant message with tool calls
+                    # Add <think> tags around reasoning for trajectory storage
                     content = ""
                     
                     # Prepend reasoning in <think> tags if available
                     if msg.get("reasoning") and msg["reasoning"].strip():
-                        content = f"<think>{msg['reasoning']}</think>"
+                        content = f"<think>\n{msg['reasoning']}\n</think>\n"
                     
                     if msg.get("content") and msg["content"].strip():
                         content += msg["content"] + "\n"
@@ -406,17 +405,18 @@ class AIAgent:
                 
                 else:
                     # Regular assistant message without tool calls
+                    # Add <think> tags around reasoning for trajectory storage
                     content = ""
                     
                     # Prepend reasoning in <think> tags if available
                     if msg.get("reasoning") and msg["reasoning"].strip():
-                        content = f"<think>{msg['reasoning']}</think>"
+                        content = f"<think>\n{msg['reasoning']}\n</think>\n"
                     
                     content += msg["content"] or ""
                     
                     trajectory.append({
                         "from": "gpt",
-                        "value": content
+                        "value": content.strip()
                     })
             
             elif msg["role"] == "user":
@@ -515,7 +515,31 @@ class AIAgent:
             
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
-            api_messages = messages.copy()
+            # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
+            # However, providers like Moonshot AI require a separate 'reasoning_content' field
+            # on assistant messages with tool_calls. We handle both cases here.
+            api_messages = []
+            for msg in messages:
+                api_msg = msg.copy()
+                
+                # For assistant messages with tool_calls, providers require 'reasoning_content' field
+                # Extract reasoning from our stored 'reasoning' field and add it as 'reasoning_content'
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    reasoning_text = msg.get("reasoning")
+                    if reasoning_text:
+                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, etc.)
+                        api_msg["reasoning_content"] = reasoning_text
+                
+                # Remove 'reasoning' field - it's for trajectory storage only
+                # The reasoning is already in the content via <think> tags AND
+                # we've added reasoning_content for API compatibility above
+                if "reasoning" in api_msg:
+                    api_msg.pop("reasoning")
+                # Remove 'reasoning_details' if present - we use reasoning_content instead
+                if "reasoning_details" in api_msg:
+                    api_msg.pop("reasoning_details")
+                api_messages.append(api_msg)
+            
             if active_system_prompt:
                 # Insert system message at the beginning
                 api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
@@ -582,7 +606,9 @@ class AIAgent:
                     print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
                     
                     if self.verbose_logging:
-                        logging.debug(f"API Response received - Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+                        # Log response with provider info if available
+                        resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
+                        logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
                     # Validate response has valid choices before proceeding
                     if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
@@ -600,12 +626,28 @@ class AIAgent:
                         
                         # Check for error field in response (some providers include this)
                         error_msg = "Unknown"
+                        provider_name = "Unknown"
                         if response and hasattr(response, 'error') and response.error:
                             error_msg = str(response.error)
+                            # Try to extract provider from error metadata
+                            if hasattr(response.error, 'metadata') and response.error.metadata:
+                                provider_name = response.error.metadata.get('provider_name', 'Unknown')
                         elif response and hasattr(response, 'message') and response.message:
                             error_msg = str(response.message)
                         
+                        # Try to get provider from model field (OpenRouter often returns actual model used)
+                        if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+                            provider_name = f"model={response.model}"
+                        
+                        # Check for x-openrouter-provider or similar metadata
+                        if provider_name == "Unknown" and response:
+                            # Log all response attributes for debugging
+                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                            if self.verbose_logging:
+                                logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+                        
                         print(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
+                        print(f"{self.log_prefix}   🏢 Provider: {provider_name}")
                         print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
@@ -623,7 +665,7 @@ class AIAgent:
                         # Longer backoff for rate limiting (likely cause of None choices)
                         wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
                         print(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...")
-                        logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)}")
+                        logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         time.sleep(wait_time)
                         continue  # Retry the API call
 
@@ -639,12 +681,17 @@ class AIAgent:
                             print(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
                             
-                            # Clean up VM
+                            # Clean up VM and browser
                             try:
                                 cleanup_vm(effective_task_id)
                             except Exception as e:
                                 if self.verbose_logging:
                                     logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+                            try:
+                                cleanup_browser(effective_task_id)
+                            except Exception as e:
+                                if self.verbose_logging:
+                                    logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
                             
                             return {
                                 "final_response": None,
@@ -799,17 +846,21 @@ class AIAgent:
                     self._invalid_json_retries = 0
                     
                     # Extract reasoning from response if available (for reasoning models like minimax, kimi, etc.)
-                    reasoning_content = None
+                    # Extract reasoning from response for storage
+                    # The reasoning_content field will be added when preparing API messages
+                    reasoning_text = None
                     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-                        reasoning_content = assistant_message.reasoning
+                        reasoning_text = assistant_message.reasoning
                     elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-                        reasoning_content = assistant_message.reasoning_content
+                        reasoning_text = assistant_message.reasoning_content
                     
-                    # Add assistant message with tool calls to conversation
-                    messages.append({
+                    # Build assistant message with tool calls
+                    # Content stays as-is; reasoning is stored separately and will be passed
+                    # to the API via reasoning_content field when preparing api_messages
+                    assistant_msg = {
                         "role": "assistant",
-                        "content": assistant_message.content,
-                        "reasoning": reasoning_content,  # Store reasoning for trajectory
+                        "content": assistant_message.content or "",
+                        "reasoning": reasoning_text,  # Stored for trajectory extraction & API calls
                         "tool_calls": [
                             {
                                 "id": tool_call.id,
@@ -821,7 +872,9 @@ class AIAgent:
                             }
                             for tool_call in assistant_message.tool_calls
                         ]
-                    })
+                    }
+                    
+                    messages.append(assistant_msg)
                     
                     # Execute each tool call
                     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -896,12 +949,17 @@ class AIAgent:
                             
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
                             
-                            # Clean up VM
+                            # Clean up VM and browser
                             try:
                                 cleanup_vm(effective_task_id)
                             except Exception as e:
                                 if self.verbose_logging:
                                     logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+                            try:
+                                cleanup_browser(effective_task_id)
+                            except Exception as e:
+                                if self.verbose_logging:
+                                    logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
                             
                             return {
                                 "final_response": None,
@@ -917,18 +975,21 @@ class AIAgent:
                         self._empty_content_retries = 0
                     
                     # Extract reasoning from response if available
-                    reasoning_content = None
+                    reasoning_text = None
                     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-                        reasoning_content = assistant_message.reasoning
+                        reasoning_text = assistant_message.reasoning
                     elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-                        reasoning_content = assistant_message.reasoning_content
+                        reasoning_text = assistant_message.reasoning_content
                     
-                    # Add final assistant message
-                    messages.append({
+                    # Build final assistant message
+                    # Content stays as-is; reasoning stored separately for trajectory extraction
+                    final_msg = {
                         "role": "assistant", 
                         "content": final_response,
-                        "reasoning": reasoning_content  # Store reasoning for trajectory
-                    })
+                        "reasoning": reasoning_text  # Stored for trajectory extraction
+                    }
+                    
+                    messages.append(final_msg)
                     
                     print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
@@ -963,12 +1024,18 @@ class AIAgent:
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)
 
-        # Clean up VM for this task after conversation completes
+        # Clean up VM and browser for this task after conversation completes
         try:
             cleanup_vm(effective_task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
+        
+        try:
+            cleanup_browser(effective_task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
 
         return {
             "final_response": final_response,
@@ -994,14 +1061,15 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "claude-opus-4-20250514",
+    model: str = "anthropic/claude-sonnet-4-20250514",
     api_key: str = None,
-    base_url: str = "https://api.anthropic.com/v1/",
+    base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
+    save_sample: bool = False,
     verbose: bool = False,
     log_prefix_chars: int = 20
 ):
@@ -1010,16 +1078,17 @@ def main(
 
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use. Defaults to claude-opus-4-20250514.
-        api_key (str): API key for authentication. Uses ANTHROPIC_API_KEY env var if not provided.
-        base_url (str): Base URL for the model API. Defaults to https://api.anthropic.com/v1/
+        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4-20250514.
+        api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
+        base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
-        save_trajectories (bool): Save conversation trajectories to JSONL files. Defaults to False.
+        save_trajectories (bool): Save conversation trajectories to JSONL files (appends to trajectory_samples.jsonl). Defaults to False.
+        save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
         log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
 
@@ -1172,6 +1241,34 @@ def main(
         print(f"\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])
+    
+    # Save sample trajectory to UUID-named file if requested
+    if save_sample:
+        import uuid
+        sample_id = str(uuid.uuid4())[:8]
+        sample_filename = f"sample_{sample_id}.jsonl"
+        
+        # Convert messages to trajectory format (same as batch_runner)
+        trajectory = agent._convert_to_trajectory_format(
+            result['messages'], 
+            user_query, 
+            result['completed']
+        )
+        
+        entry = {
+            "conversations": trajectory,
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "completed": result['completed'],
+            "query": user_query
+        }
+        
+        try:
+            with open(sample_filename, "w", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            print(f"\n💾 Sample trajectory saved to: {sample_filename}")
+        except Exception as e:
+            print(f"\n⚠️ Failed to save sample: {e}")
     
     print("\n👋 Agent execution completed!")
 

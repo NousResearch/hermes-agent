@@ -32,11 +32,14 @@ git submodule update --init --recursive
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install required packages
+# Install Python packages
 pip install -r requirements.txt
 
 # Install mini-swe-agent for terminal tools
 pip install -e ./mini-swe-agent
+
+# Install Node.js dependencies for browser tools (requires Node.js)
+npm install
 ```
 
 ### 3. Configure Environment Variables
@@ -82,6 +85,31 @@ TERMINAL_TIMEOUT=60
 - **docker**: Requires Docker installed and user in `docker` group
 - **modal**: Requires Modal account (see setup below)
 
+### Singularity/Apptainer Setup (Recommended for HPC)
+
+Singularity/Apptainer provides rootless container execution, ideal for HPC clusters:
+
+```bash
+# 1. Verify Apptainer is installed
+apptainer --version  # or: singularity --version
+
+# 2. Set up cache directories (important for parallel workers)
+# Use /scratch if available (HPC), otherwise /tmp
+export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer
+export APPTAINER_TMPDIR=/scratch/$USER/.apptainer/tmp
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+
+# 3. Pre-build SIF image (recommended for parallel batch processing)
+# This avoids race conditions when multiple workers start simultaneously
+apptainer build $APPTAINER_CACHEDIR/python-nodejs.sif docker://nikolaik/python-nodejs:python3.11-nodejs20
+
+# 4. Configure .env to use the local SIF
+TERMINAL_ENV=singularity
+TERMINAL_SINGULARITY_IMAGE=/scratch/$USER/.apptainer/python-nodejs.sif
+```
+
+**Tip:** The batch scripts in `configs/` automatically handle SIF pre-building if `/scratch` is available.
+
 ### Modal Cloud Backend Setup
 
 [Modal](https://modal.com) provides serverless cloud compute for running sandboxed environments at scale.
@@ -107,8 +135,9 @@ Browser tools enable the agent to navigate websites, fill forms, click buttons, 
 # 1. Install Node.js (if not already installed)
 # Use nvm (recommended) or your package manager
 
-# 2. Install agent-browser CLI globally
-npm install -g agent-browser
+# 2. Install agent-browser CLI (choose one option):
+npm install -g agent-browser     # Option A: Global install (recommended)
+npm install                      # Option B: Local install (uses npx fallback)
 
 # 3. Get Browserbase credentials
 # Sign up at https://browserbase.com/ and get your:
@@ -188,7 +217,7 @@ python run_agent.py --enabled_toolsets=safe --query "Help without running comman
 python run_agent.py --list_tools
 ```
 
-For detailed documentation on toolsets, see `TOOLSETS_README.md`.
+See `toolsets.py` for the complete list of available toolsets and how to create custom ones.
 
 ## Basic Usage
 
@@ -260,8 +289,36 @@ python batch_runner.py \
 - Combined output in `data/<run_name>/trajectories.jsonl`
 - Tool usage statistics and success rates
 
-**Quick Start:** See [QUICKSTART_BATCH.md](QUICKSTART_BATCH.md) for a 5-minute getting started guide.  
-**Full Documentation:** See [BATCH_PROCESSING.md](BATCH_PROCESSING.md) for comprehensive documentation.
+Use `--list_distributions` to see available toolset distributions for varied data generation.
+
+### Trajectory Compression
+
+Post-process trajectories to fit within token budgets for training:
+
+```bash
+# Compress a directory of JSONL files
+python trajectory_compressor.py --input=data/my_run
+
+# Compress a single JSONL file
+python trajectory_compressor.py --input=data/trajectories.jsonl
+
+# Compress a 15% sample (useful for creating smaller training sets)
+python trajectory_compressor.py --input=data/trajectories.jsonl --sample_percent=15
+
+# Custom output and token target
+python trajectory_compressor.py \
+  --input=data/trajectories.jsonl \
+  --output=data/compressed.jsonl \
+  --target_max_tokens=16000
+```
+
+**Features:**
+- Protects first turns (system, human, first GPT response, first tool call)
+- Protects last N turns (configurable)
+- Summarizes middle turns using LLM to fit target token budget
+- Supports both directory and single file input
+- Optional random sampling with `--sample_percent`
+- Configurable via `configs/trajectory_compression.yaml`
 
 ### Ephemeral System Prompts
 
@@ -282,7 +339,7 @@ python batch_runner.py \
 
 The ephemeral prompt will influence the model's behavior during execution, but **only the standard tool-calling system prompt** will be saved in the trajectory files.
 
-**Documentation:** See [docs/ephemeral_system_prompt.md](docs/ephemeral_system_prompt.md) for complete details.
+The ephemeral prompt influences model behavior during execution, but **only the standard tool-calling system prompt** is saved in trajectory files.
 
 ## Command Line Arguments
 
@@ -321,11 +378,13 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 - `FAL_KEY`: Image generation tools
 
 **Terminal Tool Configuration (mini-swe-agent backend):**
-- `TERMINAL_ENV`: Backend type - `local`, `docker`, or `modal` (default: `local`)
-- `TERMINAL_DOCKER_IMAGE`: Docker image to use (default: `python:3.11-slim`)
+- `TERMINAL_ENV`: Backend type - `local`, `docker`, `singularity`, or `modal` (default: `local`)
+- `TERMINAL_DOCKER_IMAGE`: Docker image for docker backend (default: `python:3.11-slim`)
+- `TERMINAL_SINGULARITY_IMAGE`: Singularity/Apptainer image (can be `docker://...` URL or local `.sif` path)
 - `TERMINAL_TIMEOUT`: Command timeout in seconds (default: `60`)
 - `TERMINAL_LIFETIME_SECONDS`: Cleanup inactive environments after this time (default: `300`)
 - `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
+- `TERMINAL_SCRATCH_DIR`: Custom scratch directory for sandbox storage (optional, auto-detects `/scratch`)
 
 **Browser Tool Configuration (agent-browser + Browserbase):**
 - `BROWSERBASE_API_KEY`: Browserbase API key for cloud browser execution
@@ -340,18 +399,16 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 **Debug Options:**
 - `WEB_TOOLS_DEBUG`, `VISION_TOOLS_DEBUG`, `MOA_TOOLS_DEBUG`, `IMAGE_TOOLS_DEBUG`: Enable debug logging
 
-## Documentation
+## Key Files
 
-**Single Agent Usage:**
-- `TOOLSETS_README.md`: Comprehensive guide to the toolsets system
-- `toolsets.py`: View and modify available toolsets
-- `model_tools.py`: Core tool definitions and handlers
-
-**Batch Processing:**
-- `QUICKSTART_BATCH.md`: 5-minute quick start guide
-- `BATCH_PROCESSING.md`: Complete batch processing documentation
-- `toolset_distributions.py`: Toolset distributions for data generation
-
-## Examples
-
-See `TOOLSETS_README.md` for extensive examples of using different toolsets for various scenarios.
+| File | Purpose |
+|------|---------|
+| `run_agent.py` | Main agent runner - single query execution |
+| `batch_runner.py` | Parallel batch processing with checkpointing |
+| `model_tools.py` | Core tool definitions and handlers |
+| `toolsets.py` | Toolset definitions and composition |
+| `toolset_distributions.py` | Probability distributions for data generation |
+| `trajectory_compressor.py` | Post-process trajectories for training |
+| `tools/` | Individual tool implementations |
+| `architecture/` | Design documentation |
+| `configs/` | Example batch run scripts |

@@ -1,55 +1,104 @@
 # Agents
 
-Agents can be viewed as an FSM using an LLM to generate inputs into the system that operates over a DAG.
+The agent is the core loop that orchestrates LLM calls and tool execution.
 
-What this really means is that the agent is just a function without memory that uses text inputs and outputs in a
-defined order.
+## AIAgent Class
 
-```python
-def my_agent(*args, **kwargs) -> str:
-    # do whatever you want!
-    return "Hi I'm an agent!"
-```
-
-Now obviously, that's like saying water's wet, but we're going to be using that definition to inform our design of the
-library, namely, that we should *not* store agent state outside the function call.
-
-## The Agent Class
-
-So we don't have state, why are we using a class?
-
-Well, we want to initialize things, we want to have some configuration, and we want to have some helper functions.
-Preferably all in a single place.
+The main agent is implemented in `run_agent.py`:
 
 ```python
-class BaseAgent:
-    def agent_primitives(self) -> list[BaseAgent]:
-        # Returns a list of Agents that are utilized by this agent to generate inputs
-        # We use agent primitives here instead of subagents because these are going to be part
-        # of the message graph, not a subagent tool call.
-        raise NotImplementedError
+class AIAgent:
+    def __init__(
+        self,
+        model: str = "anthropic/claude-sonnet-4",
+        api_key: str = None,
+        base_url: str = "https://openrouter.ai/api/v1",
+        max_turns: int = 20,
+        enabled_toolsets: list = None,
+        disabled_toolsets: list = None,
+        verbose_logging: bool = False,
+    ):
+        # Initialize OpenAI client, load tools based on toolsets
+        ...
     
-    def tools(self) -> list[BaseTool]:
-        # Returns a list of tools that the agent needs to run
-        raise NotImplementedError
-    
-    
-    def run(self, config, *args, **kwargs) -> ConversationGraph:
-        llm = get_llm(config)
-        tools = self.tools()
-        for agent in self.agent_primitives():
-            tools.extend(agent.tools())
-        tools = remove_duplicates(tools)
-        tools = initialize_tools(tools, config)
-        return self(llm, tools, config, *args, **kwargs)
-    
-    @staticmethod
-    def __call__(self, llm, tools, config, *args, **kwargs) -> ConversationGraph:
-        # Returns a ConversationGraph that can be parsed to get the output of the agent
-        # Use w/e args/kwargs you want, as long as llm/tools/config are satisfied. 
-        raise NotImplementedError
+    def chat(self, user_message: str, task_id: str = None) -> str:
+        # Main entry point - runs the agent loop
+        ...
 ```
 
-Doesn't seem too bad (I hope), it is a bit annoying that we don't initialize everything in the constructor, but
-hopefully we all kinda like it :)
+## Agent Loop
 
+The core loop in `_run_agent_loop()`:
+
+```
+1. Add user message to conversation
+2. Call LLM with tools
+3. If LLM returns tool calls:
+   - Execute each tool
+   - Add tool results to conversation
+   - Go to step 2
+4. If LLM returns text response:
+   - Return response to user
+```
+
+```python
+while turns < max_turns:
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        tools=tool_schemas,
+    )
+    
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            result = await execute_tool(tool_call)
+            messages.append(tool_result_message(result))
+        turns += 1
+    else:
+        return response.content
+```
+
+## Conversation Management
+
+Messages are stored as a list of dicts following OpenAI format:
+
+```python
+messages = [
+    {"role": "system", "content": "You are a helpful assistant..."},
+    {"role": "user", "content": "Search for Python tutorials"},
+    {"role": "assistant", "content": None, "tool_calls": [...]},
+    {"role": "tool", "tool_call_id": "...", "content": "..."},
+    {"role": "assistant", "content": "Here's what I found..."},
+]
+```
+
+## Reasoning Context
+
+For models that support reasoning (chain-of-thought), the agent:
+1. Extracts `reasoning_content` from API responses
+2. Stores it in `assistant_msg["reasoning"]` for trajectory export
+3. Passes it back via `reasoning_content` field on subsequent turns
+
+## Trajectory Export
+
+Conversations can be exported for training:
+
+```python
+agent = AIAgent(save_trajectories=True)
+agent.chat("Do something")
+# Saves to trajectories/*.jsonl in ShareGPT format
+```
+
+## Batch Processing
+
+For processing multiple prompts, use `batch_runner.py`:
+
+```bash
+python batch_runner.py \
+    --dataset_file=prompts.jsonl \
+    --batch_size=20 \
+    --num_workers=4 \
+    --run_name=my_run
+```
+
+See `batch_runner.py` for parallel execution with checkpointing.

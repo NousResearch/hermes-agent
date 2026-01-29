@@ -8,21 +8,38 @@ version = "0.1.0"
 description = "AI agent with advanced tool-calling and toolsets"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Hermes Agent" }]
+authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
-  "firecrawl-py",
+  # Core
   "openai",
-  "fal-client",
   "python-dotenv",
-  "fire"
+  "fire",
+  "httpx",
+  "rich",
+  "tenacity",
+  "pyyaml",
+  "requests",
+  "jinja2",
+  "pydantic>=2.0",
+  # Tools
+  "firecrawl-py",
+  "fal-client",
+  # mini-swe-agent deps (terminal tool)
+  "litellm>=1.75.5",
+  "typer",
+  "platformdirs",
 ]
+
+[project.optional-dependencies]
+modal = ["modal", "boto3"]
+dev = ["pytest", "pytest-asyncio"]
 
 [project.scripts]
 hermes-agent = "run_agent:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions"]
 
 [tool.setuptools.packages.find]
 include = ["tools"]

@@ -1,16 +1,102 @@
 # Tools
 
-Not much on this, yet. Tools are just a stateful wrapper around a function, so we can do things like:
-- Keep a docker container running
-- Keep a game online
+Tools are functions that extend the agent's capabilities. Each tool is defined with an OpenAI-compatible JSON schema and an async handler function.
+
+## Tool Structure
+
+Each tool module in `tools/` exports:
+1. **Schema definitions** - OpenAI function-calling format
+2. **Handler functions** - Async functions that execute the tool
 
 ```python
-class BaseTool:
-    def definitions(self) -> List[Dict[str, Any]]:
-        # OpenAI API compatible definitions
-        raise NotImplementedError
-    
-    def __call__(self, *args, **kwargs) -> Dict[str, Any]:
-        # Returns at minimum {'role': 'tool', 'content': '...'}
-        raise NotImplementedError
+# Example: tools/web_tools.py
+
+# Schema definition
+WEB_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for information",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"}
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+# Handler function
+async def web_search(query: str) -> dict:
+    """Execute web search and return results."""
+    # Implementation...
+    return {"results": [...]}
 ```
+
+## Tool Categories
+
+| Category | Module | Tools |
+|----------|--------|-------|
+| **Web** | `web_tools.py` | `web_search`, `web_extract`, `web_crawl` |
+| **Terminal** | `terminal_tool.py` | `terminal` (local/docker/singularity/modal backends) |
+| **Browser** | `browser_tool.py` | `browser_navigate`, `browser_click`, `browser_type`, etc. |
+| **Vision** | `vision_tools.py` | `vision_analyze` |
+| **Image Gen** | `image_generation_tool.py` | `image_generate` |
+| **Reasoning** | `mixture_of_agents_tool.py` | `mixture_of_agents` |
+
+## Tool Registration
+
+Tools are registered in `model_tools.py`:
+
+```python
+# model_tools.py
+TOOL_SCHEMAS = [
+    *WEB_TOOL_SCHEMAS,
+    *TERMINAL_TOOL_SCHEMAS,
+    *BROWSER_TOOL_SCHEMAS,
+    # ...
+]
+
+TOOL_HANDLERS = {
+    "web_search": web_search,
+    "terminal": terminal_tool,
+    "browser_navigate": browser_navigate,
+    # ...
+}
+```
+
+## Toolsets
+
+Tools are grouped into **toolsets** for logical organization (see `toolsets.py`):
+
+```python
+TOOLSETS = {
+    "web": {
+        "description": "Web search and content extraction",
+        "tools": ["web_search", "web_extract", "web_crawl"]
+    },
+    "terminal": {
+        "description": "Command execution",
+        "tools": ["terminal"]
+    },
+    # ...
+}
+```
+
+## Adding a New Tool
+
+1. Create handler function in `tools/your_tool.py`
+2. Define JSON schema following OpenAI format
+3. Register in `model_tools.py` (schemas and handlers)
+4. Add to appropriate toolset in `toolsets.py`
+5. Update `tools/__init__.py` exports
+
+## Stateful Tools
+
+Some tools maintain state across calls within a session:
+
+- **Terminal**: Keeps container/sandbox running between commands
+- **Browser**: Maintains browser session for multi-step navigation
+
+State is managed per `task_id` and cleaned up automatically.

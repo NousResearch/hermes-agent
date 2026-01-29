@@ -38,11 +38,21 @@ from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
 import httpx  # Use httpx for async HTTP requests
 
-# Initialize OpenRouter API client for vision processing
-openrouter_client = AsyncOpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
+# Initialize OpenRouter API client lazily (only when needed)
+_openrouter_client = None
+
+def _get_openrouter_client():
+    """Get or create the OpenRouter client (lazy initialization)."""
+    global _openrouter_client
+    if _openrouter_client is None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        _openrouter_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+    return _openrouter_client
 
 # Configuration for vision processing
 DEFAULT_VISION_MODEL = "google/gemini-3-flash-preview"
@@ -341,7 +351,7 @@ async def vision_analyze_tool(
         print(f"🧠 Processing image with {model}...", flush=True)
         
         # Call the vision API with reasoning enabled
-        response = await openrouter_client.chat.completions.create(
+        response = await _get_openrouter_client().chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.1,  # Low temperature for consistent analysis

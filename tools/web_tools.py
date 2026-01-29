@@ -51,14 +51,35 @@ from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
 
-# Initialize Firecrawl client once at module level
-firecrawl_client = Firecrawl(api_key=os.getenv("FIRECRAWL_API_KEY"))
+# Initialize Firecrawl client lazily (only when needed)
+# This prevents import errors when FIRECRAWL_API_KEY is not set
+_firecrawl_client = None
 
-# Initialize OpenRouter API client for LLM processing (async)
-summarizer_client = AsyncOpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
+def _get_firecrawl_client():
+    """Get or create the Firecrawl client (lazy initialization)."""
+    global _firecrawl_client
+    if _firecrawl_client is None:
+        api_key = os.getenv("FIRECRAWL_API_KEY")
+        if not api_key:
+            raise ValueError("FIRECRAWL_API_KEY environment variable not set")
+        _firecrawl_client = Firecrawl(api_key=api_key)
+    return _firecrawl_client
+
+# Initialize OpenRouter API client lazily (only when needed)
+_summarizer_client = None
+
+def _get_summarizer_client():
+    """Get or create the summarizer client (lazy initialization)."""
+    global _summarizer_client
+    if _summarizer_client is None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        _summarizer_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+    return _summarizer_client
 
 # Configuration for LLM processing
 DEFAULT_SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
@@ -278,7 +299,7 @@ Create a markdown summary that captures all key information in a well-organized,
 
     for attempt in range(max_retries):
         try:
-            response = await summarizer_client.chat.completions.create(
+            response = await _get_summarizer_client().chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -397,7 +418,7 @@ Synthesize these into ONE cohesive, comprehensive summary that:
 Create a single, unified markdown summary."""
 
     try:
-        response = await summarizer_client.chat.completions.create(
+        response = await _get_summarizer_client().chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
@@ -518,7 +539,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # Use Firecrawl's v2 search functionality WITHOUT scraping
         # We only want search result metadata, not scraped content
         # Docs: https://docs.firecrawl.dev/features/search
-        response = firecrawl_client.search(
+        response = _get_firecrawl_client().search(
             query=query,
             limit=limit
         )
@@ -652,7 +673,7 @@ async def web_extract_tool(
         for url in urls:
             try:
                 print(f"  📄 Scraping: {url}")
-                scrape_result = firecrawl_client.scrape(
+                scrape_result = _get_firecrawl_client().scrape(
                     url=url,
                     formats=formats
                 )
@@ -926,7 +947,7 @@ async def web_crawl_tool(
         
         # Use the crawl method which waits for completion automatically
         try:
-            crawl_result = firecrawl_client.crawl(
+            crawl_result = _get_firecrawl_client().crawl(
                 url=url,
                 **crawl_params
             )

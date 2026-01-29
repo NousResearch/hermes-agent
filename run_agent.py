@@ -122,14 +122,20 @@ class AIAgent:
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
-            # Keep OpenAI and httpx at WARNING level to reduce noise
+            # Keep third-party libraries at WARNING level to reduce noise
             # We have our own retry and error logging that's more informative
             logging.getLogger('openai').setLevel(logging.WARNING)
             logging.getLogger('openai._base_client').setLevel(logging.WARNING)
             logging.getLogger('httpx').setLevel(logging.WARNING)
             logging.getLogger('httpcore').setLevel(logging.WARNING)
-            logging.getLogger('asyncio').setLevel(logging.WARNING)  # Suppress asyncio debug
-            print("🔍 Verbose logging enabled (OpenAI/httpx/asyncio internal logs suppressed)")
+            logging.getLogger('asyncio').setLevel(logging.WARNING)
+            # Suppress Modal/gRPC related debug spam
+            logging.getLogger('hpack').setLevel(logging.WARNING)
+            logging.getLogger('hpack.hpack').setLevel(logging.WARNING)
+            logging.getLogger('grpc').setLevel(logging.WARNING)
+            logging.getLogger('modal').setLevel(logging.WARNING)
+            logging.getLogger('rex-deploy').setLevel(logging.INFO)  # Keep INFO for sandbox status
+            print("🔍 Verbose logging enabled (third-party library logs suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(

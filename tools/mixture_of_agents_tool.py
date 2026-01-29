@@ -54,11 +54,21 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from openai import AsyncOpenAI
 
-# Initialize OpenRouter API client for MoA processing
-openrouter_client = AsyncOpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
+# Initialize OpenRouter API client lazily (only when needed)
+_openrouter_client = None
+
+def _get_openrouter_client():
+    """Get or create the OpenRouter client (lazy initialization)."""
+    global _openrouter_client
+    if _openrouter_client is None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        _openrouter_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+    return _openrouter_client
 
 # Configuration for MoA processing
 # Reference models - these generate diverse initial responses in parallel (OpenRouter slugs)
@@ -201,7 +211,7 @@ async def _run_reference_model_safe(
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
             
-            response = await openrouter_client.chat.completions.create(**api_params)
+            response = await _get_openrouter_client().chat.completions.create(**api_params)
             
             content = response.choices[0].message.content.strip()
             print(f"✅ {model} responded ({len(content)} characters)")
@@ -268,7 +278,7 @@ async def _run_aggregator_model(
     if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
         api_params["temperature"] = temperature
     
-    response = await openrouter_client.chat.completions.create(**api_params)
+    response = await _get_openrouter_client().chat.completions.create(**api_params)
     
     content = response.choices[0].message.content.strip()
     print(f"✅ Aggregation complete ({len(content)} characters)")

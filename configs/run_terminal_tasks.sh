@@ -2,7 +2,7 @@
 
 # Terminal-focused data generation run
 # Uses nous-terminal-tasks.jsonl (597 tasks)
-# Distribution: terminal 97%, web 15%, browser 10%, vision 8%, image_gen 3%
+# Distribution: terminal 97%, web 15%, browser 0%, vision 8%, image_gen 3%
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
@@ -13,8 +13,10 @@ LOG_FILE="logs/terminal_tasks_$(date +%Y%m%d_%H%M%S).log"
 echo "📝 Logging output to: $LOG_FILE"
 echo "💻 Running terminal-focused tasks with terminal_tasks distribution"
 
-# Set terminal environment (using Singularity for containerized execution)
+# Set terminal environment
+# SIF images are automatically built/cached by terminal_tool.py
 export TERMINAL_ENV=singularity
+export TERMINAL_SINGULARITY_IMAGE="docker://nikolaik/python-nodejs:python3.11-nodejs20"
 export TERMINAL_TIMEOUT=300
 
 # Set up Apptainer cache directories (use /scratch if available, otherwise /tmp)
@@ -27,28 +29,8 @@ export APPTAINER_CACHEDIR="$CACHE_BASE"
 export APPTAINER_TMPDIR="$CACHE_BASE/tmp"
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
-# Pre-build SIF image if it doesn't exist (avoids 40 workers all downloading simultaneously)
-SIF_IMAGE="$CACHE_BASE/python-nodejs-3.11-20.sif"
-DOCKER_IMAGE="docker://nikolaik/python-nodejs:python3.11-nodejs20"
-
-if [ ! -f "$SIF_IMAGE" ]; then
-    echo "🔨 Building Singularity image (one-time setup)..."
-    echo "   Source: $DOCKER_IMAGE"
-    echo "   Target: $SIF_IMAGE"
-    apptainer build "$SIF_IMAGE" "$DOCKER_IMAGE"
-    if [ $? -ne 0 ]; then
-        echo "❌ Failed to build SIF image. Falling back to docker:// URL"
-        export TERMINAL_SINGULARITY_IMAGE="$DOCKER_IMAGE"
-    else
-        echo "✅ SIF image built successfully"
-        export TERMINAL_SINGULARITY_IMAGE="$SIF_IMAGE"
-    fi
-else
-    echo "✅ Using pre-built SIF image: $SIF_IMAGE"
-    export TERMINAL_SINGULARITY_IMAGE="$SIF_IMAGE"
-fi
-
 echo "📁 Apptainer cache: $APPTAINER_CACHEDIR"
+echo "🐳 Image: $TERMINAL_SINGULARITY_IMAGE (auto-converted to SIF on first use)"
 
 python batch_runner.py \
   --dataset_file="nous-terminal-tasks.jsonl" \

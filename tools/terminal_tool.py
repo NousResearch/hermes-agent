@@ -72,6 +72,104 @@ def _get_scratch_dir() -> Path:
     return Path(tempfile.gettempdir())
 
 
+def _get_apptainer_cache_dir() -> Path:
+    """Get the Apptainer cache directory for SIF images."""
+    # Check for APPTAINER_CACHEDIR env var
+    cache_dir = os.getenv("APPTAINER_CACHEDIR")
+    if cache_dir:
+        cache_path = Path(cache_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        return cache_path
+    
+    # Use scratch dir parent for cache (one level up from sandboxes)
+    scratch = _get_scratch_dir()
+    cache_path = scratch.parent / ".apptainer"
+    cache_path.mkdir(parents=True, exist_ok=True)
+    return cache_path
+
+
+# Lock for SIF building to prevent race conditions
+_sif_build_lock = threading.Lock()
+
+
+def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
+    """
+    Get or build a SIF image from a docker:// URL.
+    
+    If the image is already a .sif file, returns it as-is.
+    If the image is a docker:// URL, checks for cached SIF and builds if needed.
+    
+    Args:
+        image: Image path (docker://... URL or .sif path)
+        executable: apptainer or singularity
+        
+    Returns:
+        Path to SIF file, or original image if not a docker:// URL
+    """
+    # If already a .sif file, use it directly
+    if image.endswith('.sif') and Path(image).exists():
+        return image
+    
+    # If not a docker:// URL, return as-is (could be a local sandbox or other format)
+    if not image.startswith('docker://'):
+        return image
+    
+    # Generate SIF filename from docker image name
+    # docker://nikolaik/python-nodejs:python3.11-nodejs20 -> python-nodejs-python3.11-nodejs20.sif
+    image_name = image.replace('docker://', '').replace('/', '-').replace(':', '-')
+    cache_dir = _get_apptainer_cache_dir()
+    sif_path = cache_dir / f"{image_name}.sif"
+    
+    # Check if SIF already exists
+    if sif_path.exists():
+        return str(sif_path)
+    
+    # Build SIF with lock to prevent multiple workers building simultaneously
+    with _sif_build_lock:
+        # Double-check after acquiring lock (another thread may have built it)
+        if sif_path.exists():
+            return str(sif_path)
+        
+        print(f"[Terminal] Building SIF image (one-time setup)...")
+        print(f"[Terminal]   Source: {image}")
+        print(f"[Terminal]   Target: {sif_path}")
+        
+        # Ensure tmp directory exists for build
+        tmp_dir = cache_dir / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set APPTAINER_TMPDIR for the build
+        env = os.environ.copy()
+        env["APPTAINER_TMPDIR"] = str(tmp_dir)
+        env["APPTAINER_CACHEDIR"] = str(cache_dir)
+        
+        try:
+            result = subprocess.run(
+                [executable, "build", str(sif_path), image],
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 min timeout for pulling and building
+                env=env
+            )
+            if result.returncode != 0:
+                print(f"[Terminal] ⚠️ SIF build failed, falling back to docker:// URL")
+                print(f"[Terminal]   Error: {result.stderr[:500]}")
+                return image
+            
+            print(f"[Terminal] ✅ SIF image built successfully")
+            return str(sif_path)
+            
+        except subprocess.TimeoutExpired:
+            print(f"[Terminal] ⚠️ SIF build timed out, falling back to docker:// URL")
+            # Clean up partial file
+            if sif_path.exists():
+                sif_path.unlink()
+            return image
+        except Exception as e:
+            print(f"[Terminal] ⚠️ SIF build error: {e}, falling back to docker:// URL")
+            return image
+
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
@@ -108,18 +206,21 @@ class _SingularityEnvironment:
     """
     Custom Singularity/Apptainer environment with better space management.
     
+    - Automatically builds/caches SIF images from docker:// URLs
     - Builds sandbox in /scratch (if available) or configurable location
     - Binds a large working directory into the container
     - Keeps container isolated from host filesystem
     """
     
     def __init__(self, image: str, cwd: str = "/workspace", timeout: int = 60):
-        self.image = image
         self.cwd = cwd
         self.timeout = timeout
         
         # Use apptainer if available, otherwise singularity
         self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
+        
+        # Get or build SIF from docker:// URL (fast if already cached)
+        self.image = _get_or_build_sif(image, self.executable)
         
         # Get scratch directory for sandbox
         self.scratch_dir = _get_scratch_dir()
@@ -136,7 +237,7 @@ class _SingularityEnvironment:
         self._build_sandbox()
     
     def _build_sandbox(self):
-        """Build a writable sandbox from the container image."""
+        """Build a writable sandbox from the container image (SIF or other)."""
         try:
             result = subprocess.run(
                 [self.executable, "build", "--sandbox", str(self.sandbox_dir), self.image],

@@ -84,6 +84,10 @@ processing:
   # If true, save trajectories even if compression can't get under target
   # (will compress as much as possible)
   save_over_limit: true
+  
+  # Timeout per trajectory in seconds (skip if takes longer)
+  # Helps avoid hanging on problematic entries
+  per_trajectory_timeout: 300  # 5 minutes
 
 # Metrics to track
 metrics:

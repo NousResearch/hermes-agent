@@ -1252,7 +1252,7 @@ def main(
     if save_sample:
         import uuid
         sample_id = str(uuid.uuid4())[:8]
-        sample_filename = f"sample_{sample_id}.jsonl"
+        sample_filename = f"sample_{sample_id}.json"
         
         # Convert messages to trajectory format (same as batch_runner)
         trajectory = agent._convert_to_trajectory_format(
@@ -1271,7 +1271,8 @@ def main(
         
         try:
             with open(sample_filename, "w", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                # Pretty-print JSON with indent for readability
+                f.write(json.dumps(entry, ensure_ascii=False, indent=2))
             print(f"\n💾 Sample trajectory saved to: {sample_filename}")
         except Exception as e:
             print(f"\n⚠️ Failed to save sample: {e}")

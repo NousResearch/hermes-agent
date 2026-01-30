@@ -1,0 +1,641 @@
+#!/usr/bin/env python3
+"""
+Skills Tool Module
+
+This module provides tools for listing and viewing skill documents.
+Skills are organized as directories containing a SKILL.md file (the main instructions)
+and optional supporting files like references, templates, and examples.
+
+Inspired by Anthropic's Claude Skills system with progressive disclosure architecture:
+- Metadata (name ≤64 chars, description ≤1024 chars) - shown in skills_list
+- Full Instructions - loaded via skill_view when needed
+- Linked Files (references, templates) - loaded on demand
+
+Directory Structure:
+    skills/
+    ├── my-skill/
+    │   ├── SKILL.md           # Main instructions (required)
+    │   ├── references/        # Supporting documentation
+    │   │   ├── api.md
+    │   │   └── examples.md
+    │   └── templates/         # Templates for output
+    │       └── template.md
+    └── category/              # Category folder for organization
+        └── another-skill/
+            └── SKILL.md
+
+SKILL.md Format (YAML Frontmatter):
+    ---
+    name: skill-name              # Required, max 64 chars
+    description: Brief description # Required, max 1024 chars
+    tags: [fine-tuning, llm]      # Optional, for filtering
+    related_skills: [peft, lora]  # Optional, for composability
+    version: 1.0.0                # Optional, for tracking
+    ---
+    
+    # Skill Title
+    
+    Full instructions and content here...
+
+Available tools:
+- skills_list: List skills with metadata (progressive disclosure tier 1)
+- skill_view: Load full skill content (progressive disclosure tier 2-3)
+
+Usage:
+    from tools.skills_tool import skills_list, skill_view, check_skills_requirements
+    
+    # List all skills (returns metadata only - token efficient)
+    result = skills_list()
+    
+    # View a skill's main content (loads full instructions)
+    content = skill_view("axolotl")
+    
+    # View a reference file within a skill (loads linked file)
+    content = skill_view("axolotl", "references/dataset-formats.md")
+"""
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
+
+
+# Default skills directory (relative to repo root)
+SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+# Anthropic-recommended limits for progressive disclosure efficiency
+MAX_NAME_LENGTH = 64
+MAX_DESCRIPTION_LENGTH = 1024
+
+
+def check_skills_requirements() -> bool:
+    """
+    Check if skills tool requirements are met.
+    
+    Returns:
+        bool: True if the skills directory exists, False otherwise
+    """
+    return SKILLS_DIR.exists() and SKILLS_DIR.is_dir()
+
+
+def _parse_frontmatter(content: str) -> Tuple[Dict[str, str], str]:
+    """
+    Parse YAML frontmatter from markdown content.
+    
+    Args:
+        content: Full markdown file content
+        
+    Returns:
+        Tuple of (frontmatter dict, remaining content)
+    """
+    frontmatter = {}
+    body = content
+    
+    # Check for YAML frontmatter (starts with ---)
+    if content.startswith("---"):
+        # Find the closing ---
+        end_match = re.search(r'\n---\s*\n', content[3:])
+        if end_match:
+            yaml_content = content[3:end_match.start() + 3]
+            body = content[end_match.end() + 3:]
+            
+            # Simple YAML parsing for key: value pairs
+            for line in yaml_content.strip().split('\n'):
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    frontmatter[key.strip()] = value.strip()
+    
+    return frontmatter, body
+
+
+def _get_category_from_path(skill_path: Path) -> Optional[str]:
+    """
+    Extract category from skill path based on directory structure.
+    
+    For paths like: skills/03-fine-tuning/axolotl/SKILL.md
+    Returns: "03-fine-tuning"
+    
+    Args:
+        skill_path: Path to SKILL.md file
+        
+    Returns:
+        Category name or None if skill is at root level
+    """
+    try:
+        # Get path relative to skills directory
+        rel_path = skill_path.relative_to(SKILLS_DIR)
+        parts = rel_path.parts
+        
+        # If there are at least 2 parts (category/skill/SKILL.md), return category
+        if len(parts) >= 3:
+            return parts[0]
+        return None
+    except ValueError:
+        return None
+
+
+def _estimate_tokens(content: str) -> int:
+    """
+    Rough token estimate (4 chars per token average).
+    
+    Args:
+        content: Text content
+        
+    Returns:
+        Estimated token count
+    """
+    return len(content) // 4
+
+
+def _parse_tags(tags_value: str) -> List[str]:
+    """
+    Parse tags from frontmatter value.
+    
+    Handles both:
+    - YAML list format: [tag1, tag2]
+    - Comma-separated: tag1, tag2
+    
+    Args:
+        tags_value: Raw tags string from frontmatter
+        
+    Returns:
+        List of tag strings
+    """
+    if not tags_value:
+        return []
+    
+    # Remove brackets if present
+    tags_value = tags_value.strip()
+    if tags_value.startswith('[') and tags_value.endswith(']'):
+        tags_value = tags_value[1:-1]
+    
+    # Split by comma and clean up
+    return [t.strip().strip('"\'') for t in tags_value.split(',') if t.strip()]
+
+
+def _find_all_skills() -> List[Dict[str, Any]]:
+    """
+    Recursively find all skills in the skills directory.
+    
+    Returns metadata for progressive disclosure (tier 1):
+    - name (≤64 chars)
+    - description (≤1024 chars)  
+    - category, path, tags, related_skills
+    - reference/template file counts
+    - estimated token count for full content
+    
+    Skills can be:
+    1. Directories containing SKILL.md (preferred)
+    2. Flat .md files (legacy support)
+    
+    Returns:
+        List of skill metadata dicts
+    """
+    skills = []
+    
+    if not SKILLS_DIR.exists():
+        return skills
+    
+    # Find all SKILL.md files recursively
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        # Skip hidden directories and common non-skill folders
+        path_str = str(skill_md)
+        if '/.git/' in path_str or '/.github/' in path_str:
+            continue
+            
+        skill_dir = skill_md.parent
+        
+        try:
+            content = skill_md.read_text(encoding='utf-8')
+            frontmatter, body = _parse_frontmatter(content)
+            
+            # Get name from frontmatter or directory name (max 64 chars)
+            name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
+            
+            # Get description from frontmatter or first paragraph (max 1024 chars)
+            description = frontmatter.get('description', '')
+            if not description:
+                for line in body.strip().split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        description = line
+                        break
+            
+            # Truncate description to limit
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+            
+            # Get category from path
+            category = _get_category_from_path(skill_md)
+            
+            # Track the path internally for excluding from legacy search
+            skill_path = str(skill_dir.relative_to(SKILLS_DIR))
+            
+            # Minimal entry for list - full details in skill_view()
+            skills.append({
+                "name": name,
+                "description": description,
+                "category": category,
+                "_path": skill_path  # Internal only, removed before return
+            })
+            
+        except Exception as e:
+            # Skip files that can't be read
+            continue
+    
+    # Also find flat .md files at any level (legacy support)
+    # But exclude files in skill directories (already handled above)
+    skill_dirs = {s["_path"] for s in skills}
+    
+    for md_file in SKILLS_DIR.rglob("*.md"):
+        # Skip SKILL.md files (already handled)
+        if md_file.name == "SKILL.md":
+            continue
+            
+        # Skip hidden directories
+        path_str = str(md_file)
+        if '/.git/' in path_str or '/.github/' in path_str:
+            continue
+        
+        # Skip files inside skill directories (they're references, not standalone skills)
+        rel_dir = str(md_file.parent.relative_to(SKILLS_DIR))
+        if any(rel_dir.startswith(sd) for sd in skill_dirs):
+            continue
+            
+        # Skip common non-skill files
+        if md_file.name in ['README.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'LICENSE']:
+            continue
+        if md_file.name.startswith('_'):
+            continue
+            
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            frontmatter, body = _parse_frontmatter(content)
+            
+            name = frontmatter.get('name', md_file.stem)[:MAX_NAME_LENGTH]
+            description = frontmatter.get('description', '')
+            
+            if not description:
+                for line in body.strip().split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        description = line
+                        break
+            
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+            
+            # Get category from parent directory if not at root
+            category = None
+            rel_path = md_file.relative_to(SKILLS_DIR)
+            if len(rel_path.parts) > 1:
+                category = rel_path.parts[0]
+            
+            # Parse optional fields
+            tags = _parse_tags(frontmatter.get('tags', ''))
+            
+            # Minimal entry for list - full details in skill_view()
+            skills.append({
+                "name": name,
+                "description": description,
+                "category": category
+            })
+            
+        except Exception:
+            continue
+    
+    # Strip internal _path field before returning
+    for skill in skills:
+        skill.pop("_path", None)
+    
+    return skills
+
+
+def skills_categories(task_id: str = None) -> str:
+    """
+    List available skill categories (progressive disclosure tier 0).
+    
+    Returns just category names for efficient discovery before filtering.
+    
+    Args:
+        task_id: Optional task identifier (unused, for API consistency)
+        
+    Returns:
+        JSON string with list of category names
+    """
+    try:
+        if not SKILLS_DIR.exists():
+            return json.dumps({
+                "success": True,
+                "categories": [],
+                "message": "No skills directory found."
+            }, ensure_ascii=False)
+        
+        # Scan for categories (top-level directories containing skills)
+        categories = set()
+        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+            category = _get_category_from_path(skill_md)
+            if category:
+                categories.add(category)
+        
+        return json.dumps({
+            "success": True,
+            "categories": sorted(categories),
+            "hint": "Use skills_list(category) to see skills in a category"
+        }, ensure_ascii=False)
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, ensure_ascii=False)
+
+
+def skills_list(category: str = None, task_id: str = None) -> str:
+    """
+    List all available skills (progressive disclosure tier 1 - minimal metadata).
+    
+    Returns only name + description to minimize token usage. Use skill_view() to 
+    load full content, tags, related files, etc.
+    
+    Args:
+        category: Optional category filter (e.g., "mlops")
+        task_id: Optional task identifier (unused, for API consistency)
+        
+    Returns:
+        JSON string with minimal skill info: name, description, category
+    """
+    try:
+        # Ensure skills directory exists
+        if not SKILLS_DIR.exists():
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            return json.dumps({
+                "success": True,
+                "skills": [],
+                "categories": [],
+                "message": "Skills directory created. No skills available yet."
+            }, ensure_ascii=False)
+        
+        # Find all skills
+        all_skills = _find_all_skills()
+        
+        if not all_skills:
+            return json.dumps({
+                "success": True,
+                "skills": [],
+                "categories": [],
+                "message": "No skills found in skills/ directory."
+            }, ensure_ascii=False)
+        
+        # Filter by category if specified
+        if category:
+            all_skills = [s for s in all_skills if s.get("category") == category]
+        
+        # Sort by category then name
+        all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
+        
+        # Extract unique categories
+        categories = sorted(set(s.get("category") for s in all_skills if s.get("category")))
+        
+        return json.dumps({
+            "success": True,
+            "skills": all_skills,
+            "categories": categories,
+            "count": len(all_skills),
+            "hint": "Use skill_view(name) to see full content, tags, and linked files"
+        }, ensure_ascii=False)
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, ensure_ascii=False)
+
+
+def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
+    """
+    View the content of a skill or a specific file within a skill directory.
+    
+    Args:
+        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl")
+        file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
+        task_id: Optional task identifier (unused, for API consistency)
+        
+    Returns:
+        JSON string with skill content or error message
+    """
+    try:
+        if not SKILLS_DIR.exists():
+            return json.dumps({
+                "success": False,
+                "error": "Skills directory does not exist."
+            }, ensure_ascii=False)
+        
+        # Find the skill
+        skill_dir = None
+        skill_md = None
+        
+        # Try direct path first (e.g., "03-fine-tuning/axolotl")
+        direct_path = SKILLS_DIR / name
+        if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+            skill_dir = direct_path
+            skill_md = direct_path / "SKILL.md"
+        elif direct_path.with_suffix('.md').exists():
+            # Legacy flat file
+            skill_md = direct_path.with_suffix('.md')
+        else:
+            # Search for skill by name
+            for found_skill_md in SKILLS_DIR.rglob("SKILL.md"):
+                if found_skill_md.parent.name == name:
+                    skill_dir = found_skill_md.parent
+                    skill_md = found_skill_md
+                    break
+            
+            # Also check flat .md files
+            if not skill_md:
+                for found_md in SKILLS_DIR.rglob(f"{name}.md"):
+                    if found_md.name != "SKILL.md":
+                        skill_md = found_md
+                        break
+        
+        if not skill_md or not skill_md.exists():
+            # List available skills in error message
+            all_skills = _find_all_skills()
+            available = [s["name"] for s in all_skills[:20]]  # Limit to 20
+            return json.dumps({
+                "success": False,
+                "error": f"Skill '{name}' not found.",
+                "available_skills": available,
+                "hint": "Use skills_list to see all available skills"
+            }, ensure_ascii=False)
+        
+        # If a specific file path is requested, read that instead
+        if file_path and skill_dir:
+            target_file = skill_dir / file_path
+            if not target_file.exists():
+                # List available files in the skill directory, organized by type
+                available_files = {
+                    "references": [],
+                    "templates": [],
+                    "scripts": [],
+                    "other": []
+                }
+                
+                # Scan for all readable files
+                for f in skill_dir.rglob("*"):
+                    if f.is_file() and f.name != "SKILL.md":
+                        rel = str(f.relative_to(skill_dir))
+                        if rel.startswith("references/"):
+                            available_files["references"].append(rel)
+                        elif rel.startswith("templates/"):
+                            available_files["templates"].append(rel)
+                        elif rel.startswith("scripts/"):
+                            available_files["scripts"].append(rel)
+                        elif f.suffix in ['.md', '.py', '.yaml', '.yml', '.json', '.tex', '.sh']:
+                            available_files["other"].append(rel)
+                
+                # Remove empty categories
+                available_files = {k: v for k, v in available_files.items() if v}
+                
+                return json.dumps({
+                    "success": False,
+                    "error": f"File '{file_path}' not found in skill '{name}'.",
+                    "available_files": available_files,
+                    "hint": "Use one of the available file paths listed above"
+                }, ensure_ascii=False)
+            
+            # Read the file content
+            try:
+                content = target_file.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                # Binary file - return info about it instead
+                return json.dumps({
+                    "success": True,
+                    "name": name,
+                    "file": file_path,
+                    "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
+                    "is_binary": True
+                }, ensure_ascii=False)
+            
+            return json.dumps({
+                "success": True,
+                "name": name,
+                "file": file_path,
+                "content": content,
+                "file_type": target_file.suffix
+            }, ensure_ascii=False)
+        
+        # Read the main skill content
+        content = skill_md.read_text(encoding='utf-8')
+        frontmatter, body = _parse_frontmatter(content)
+        
+        # Get reference, template, and script files if this is a directory-based skill
+        reference_files = []
+        template_files = []
+        script_files = []
+        
+        if skill_dir:
+            # References (documentation)
+            references_dir = skill_dir / "references"
+            if references_dir.exists():
+                reference_files = [str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")]
+            
+            # Templates (output formats, boilerplate)
+            templates_dir = skill_dir / "templates"
+            if templates_dir.exists():
+                for ext in ['*.md', '*.py', '*.yaml', '*.yml', '*.json', '*.tex', '*.sh']:
+                    template_files.extend([str(f.relative_to(skill_dir)) for f in templates_dir.rglob(ext)])
+            
+            # Scripts (executable helpers)
+            scripts_dir = skill_dir / "scripts"
+            if scripts_dir.exists():
+                for ext in ['*.py', '*.sh', '*.bash', '*.js', '*.ts', '*.rb']:
+                    script_files.extend([str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)])
+        
+        # Parse metadata
+        tags = _parse_tags(frontmatter.get('tags', ''))
+        related_skills = _parse_tags(frontmatter.get('related_skills', ''))
+        
+        # Build linked files structure for clear discovery
+        linked_files = {}
+        if reference_files:
+            linked_files["references"] = reference_files
+        if template_files:
+            linked_files["templates"] = template_files
+        if script_files:
+            linked_files["scripts"] = script_files
+        
+        return json.dumps({
+            "success": True,
+            "name": frontmatter.get('name', skill_md.stem if not skill_dir else skill_dir.name),
+            "description": frontmatter.get('description', ''),
+            "tags": tags,
+            "related_skills": related_skills,
+            "content": content,
+            "path": str(skill_md.relative_to(SKILLS_DIR)),
+            "linked_files": linked_files if linked_files else None,
+            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'templates/config.yaml'" if linked_files else None
+        }, ensure_ascii=False)
+        
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        }, ensure_ascii=False)
+
+
+# Tool description for model_tools.py
+SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
+
+Progressive disclosure workflow:
+1. skills_list() - Returns metadata (name, description, tags, linked_file_count) for all skills
+2. skill_view(name) - Loads full SKILL.md content + shows available linked_files (references/templates/scripts)
+3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
+
+Skills may include:
+- references/: Additional documentation, API specs, examples
+- templates/: Output formats, config files, boilerplate code
+- scripts/: Executable helpers (Python, shell scripts)"""
+
+
+if __name__ == "__main__":
+    """Test the skills tool"""
+    print("🎯 Skills Tool Test")
+    print("=" * 60)
+    
+    # Test listing skills
+    print("\n📋 Listing all skills:")
+    result = json.loads(skills_list())
+    if result["success"]:
+        print(f"Found {result['count']} skills in {len(result.get('categories', []))} categories")
+        print(f"Categories: {result.get('categories', [])}")
+        print("\nFirst 10 skills:")
+        for skill in result["skills"][:10]:
+            cat = f"[{skill['category']}] " if skill.get('category') else ""
+            refs = f" (+{len(skill['reference_files'])} refs)" if skill.get('reference_files') else ""
+            print(f"  • {cat}{skill['name']}: {skill['description'][:60]}...{refs}")
+    else:
+        print(f"Error: {result['error']}")
+    
+    # Test viewing a skill
+    print("\n📖 Viewing skill 'axolotl':")
+    result = json.loads(skill_view("axolotl"))
+    if result["success"]:
+        print(f"Name: {result['name']}")
+        print(f"Description: {result.get('description', 'N/A')[:100]}...")
+        print(f"Content length: {len(result['content'])} chars")
+        if result.get('reference_files'):
+            print(f"Reference files: {result['reference_files']}")
+    else:
+        print(f"Error: {result['error']}")
+    
+    # Test viewing a reference file
+    print("\n📄 Viewing reference file 'axolotl/references/dataset-formats.md':")
+    result = json.loads(skill_view("axolotl", "references/dataset-formats.md"))
+    if result["success"]:
+        print(f"File: {result['file']}")
+        print(f"Content length: {len(result['content'])} chars")
+        print(f"Preview: {result['content'][:150]}...")
+    else:
+        print(f"Error: {result['error']}")

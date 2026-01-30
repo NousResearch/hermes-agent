@@ -67,6 +67,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "skills": {
+        "description": "Access skill documents with specialized instructions and knowledge",
+        "tools": ["skills_categories", "skills_list", "skill_view"],
+        "includes": []
+    },
+    
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [

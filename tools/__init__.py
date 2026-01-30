@@ -56,6 +56,14 @@ from .image_generation_tool import (
     check_image_generation_requirements
 )
 
+from .skills_tool import (
+    skills_categories,
+    skills_list,
+    skill_view,
+    check_skills_requirements,
+    SKILLS_TOOL_DESCRIPTION
+)
+
 # Browser automation tools (agent-browser + Browserbase)
 from .browser_tool import (
     browser_navigate,
@@ -101,6 +109,12 @@ __all__ = [
     # Image generation tools
     'image_generate_tool',
     'check_image_generation_requirements',
+    # Skills tools
+    'skills_categories',
+    'skills_list',
+    'skill_view',
+    'check_skills_requirements',
+    'SKILLS_TOOL_DESCRIPTION',
     # Browser automation tools
     'browser_navigate',
     'browser_snapshot',

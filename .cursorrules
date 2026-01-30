@@ -1,23 +1,128 @@
 Hermes-Agent is an agent harness for LLMs.
 
-When building, the tool functionality is in the tools/ directory, where each specific tool (or in some cases, tools that are built for the same execution category or api) are placed in a script each their own.
+## Project Structure
 
-Each tool is then consolidated in the model_tools.py file in the repo root.
+- `tools/` - Individual tool implementations (web, terminal, browser, vision, etc.)
+- `tools/__init__.py` - Exports all tools for importing
+- `model_tools.py` - Consolidates tool schemas and handlers for the agent
+- `toolsets.py` - Groups tools into logical toolsets (web, terminal, browser, etc.)
+- `toolset_distributions.py` - Probability-based tool selection for data generation
+- `run_agent.py` - Primary agent runner with AIAgent class
+- `batch_runner.py` - Parallel batch processing with checkpointing
+- `tests/` - Test scripts
 
-There is also a way to consolidate sets of tools in toolsets.py for the agent to use.
+## File Dependency Chain
 
-The primary agent runner code is in run_agent, but other runners could be developed using the tools and framework.
+```
+tools/*.py → tools/__init__.py → model_tools.py → toolsets.py → toolset_distributions.py
+                                       ↑
+run_agent.py ──────────────────────────┘
+batch_runner.py → run_agent.py + toolset_distributions.py
+```
 
-Always ensure consistency between tools, the model_tools.py and toolsets.py when changing any of them, otherwise they could become desynced in a way that is detrimental to functionality.
+Always ensure consistency between tools, model_tools.py, and toolsets.py when changing any of them.
 
-The expected pathway for using API keys is to setup and place them in a .env file in the repo root.
+## Adding a New Tool
 
-Test scripts will be placed in tests/
+Follow this strict order to maintain consistency:
 
-The run_agent loop is setup to:
-- Process the enabled toolsets to provide to the model,
-- Pipe in a prompt or problem from the input to the agent,
-- Loop the LLM each time it calls a tool, until the model decides no more tools are needed and provides a natural language response,
-- Return that response.
+1. Create `tools/your_tool.py` with:
+   - Handler function (sync or async) returning a JSON string via `json.dumps()`
+   - `check_*_requirements()` function to verify dependencies (e.g., API keys)
+   - Schema definition following OpenAI function-calling format
 
-There are additional caveats for logging, where we restructure the "tools" as a system prompt for storage later into a format that can be used and handled properly later.
+2. Export in `tools/__init__.py`:
+   - Import the handler and check function
+   - Add to `__all__` list
+
+3. Register in `model_tools.py`:
+   - Create `get_*_tool_definitions()` function or add to existing
+   - Add routing in `handle_function_call()` dispatcher
+   - Update `get_all_tool_names()` with the tool name
+   - Update `get_toolset_for_tool()` mapping
+   - Update `get_available_toolsets()` and `check_toolset_requirements()`
+
+4. Add to toolset in `toolsets.py`:
+   - Add to existing toolset or create new one in TOOLSETS dict
+
+5. Optionally add to `toolset_distributions.py` for batch processing
+
+## Tool Implementation Pattern
+
+```python
+# tools/example_tool.py
+import json
+import os
+
+def check_example_requirements() -> bool:
+    """Check if required API keys/dependencies are available."""
+    return bool(os.getenv("EXAMPLE_API_KEY"))
+
+def example_tool(param: str, task_id: str = None) -> str:
+    """Execute the tool and return JSON string result."""
+    try:
+        result = {"success": True, "data": "..."}
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+```
+
+All tool handlers MUST return a JSON string. Never return raw dicts.
+
+## Stateful Tools
+
+Tools that maintain state (terminal, browser) require:
+- `task_id` parameter for session isolation between concurrent tasks
+- `cleanup_*()` function to release resources
+- Cleanup is called automatically in run_agent.py after conversation completes
+
+## Environment Variables
+
+API keys are loaded from `.env` file in repo root:
+- `OPENROUTER_API_KEY` - Main LLM API access (primary provider)
+- `FIRECRAWL_API_KEY` - Web search/extract tools
+- `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
+- `FAL_KEY` - Image generation (FLUX model)
+- `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
+
+## Agent Loop (run_agent.py)
+
+The AIAgent class handles:
+- Processing enabled toolsets to provide to the model
+- Piping prompts to the agent
+- Looping LLM calls when tools are invoked, until natural language response
+- Returning the final response
+
+Uses OpenAI-compatible API (primarily OpenRouter) with the OpenAI Python SDK.
+
+## Reasoning Model Support
+
+For models that support chain-of-thought reasoning:
+- Extract `reasoning_content` from API responses
+- Store in `assistant_msg["reasoning"]` for trajectory export
+- Pass back via `reasoning_content` field on subsequent turns
+
+## Trajectory Format
+
+Conversations are saved in ShareGPT format for training:
+```json
+{"from": "system", "value": "System prompt with <tools>...</tools>"}
+{"from": "human", "value": "User message"}
+{"from": "gpt", "value": "<think>reasoning</think>\n<tool_call>{...}</tool_call>"}
+{"from": "tool", "value": "<tool_response>{...}</tool_response>"}
+{"from": "gpt", "value": "Final response"}
+```
+
+Tool calls use `<tool_call>` XML tags, responses use `<tool_response>` tags, reasoning uses `<think>` tags.
+
+## Batch Processing (batch_runner.py)
+
+For processing multiple prompts:
+- Parallel execution with multiprocessing
+- Content-based resume for fault tolerance (matches on prompt text, not indices)
+- Toolset distributions control probabilistic tool availability per prompt
+- Output: `data/<run_name>/trajectories.jsonl` (combined) + individual batch files
+
+## Logging
+
+Trajectories restructure tools as a system prompt for storage in a format suitable for later training use.

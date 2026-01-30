@@ -51,6 +51,8 @@ _WORKER_CONFIG = {}
 ALL_POSSIBLE_TOOLS = {
     'terminal', 'web_search', 'web_extract',
     'vision_analyze', 'image_generate', 'mixture_of_agents',
+    # Skills tools
+    'skills_categories', 'skills_list', 'skill_view',
     # Browser automation tools
     'browser_navigate', 'browser_snapshot', 'browser_click',
     'browser_type', 'browser_scroll', 'browser_back',
@@ -835,6 +837,8 @@ class BatchRunner:
         
         VALID_TOOLS = {'web_search', 'web_extract', 'terminal', 'vision_analyze', 
                        'image_generate', 'mixture_of_agents',
+                       # Skills tools
+                       'skills_categories', 'skills_list', 'skill_view',
                        # Browser automation tools
                        'browser_navigate', 'browser_snapshot', 'browser_click',
                        'browser_type', 'browser_scroll', 'browser_back',

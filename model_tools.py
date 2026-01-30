@@ -37,6 +37,7 @@ from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirement
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
+from tools.skills_tool import skills_categories, skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
 # Browser automation tools (agent-browser + Browserbase)
 from tools.browser_tool import (
     browser_navigate,
@@ -239,6 +240,67 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_skills_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for skills tools in OpenAI's expected format.
+    
+    Returns:
+        List[Dict]: List of skills tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "skills_list",
+                "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category filter (from skills_categories)"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "skills_categories",
+                "description": "List available skill categories. Call first if you want to discover categories, then use skills_list(category) to filter, or call skills_list if unsure.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "skill_view",
+                "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The skill name (use skills_list to see available skills)"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content."
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }
+    ]
+
+
 def get_browser_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get tool definitions for browser automation tools in OpenAI's expected format.
@@ -280,6 +342,10 @@ def get_all_tool_names() -> List[str]:
     if check_image_generation_requirements():
         tool_names.extend(["image_generate"])
     
+    # Skills tools
+    if check_skills_requirements():
+        tool_names.extend(["skills_categories", "skills_list", "skill_view"])
+    
     # Browser automation tools
     if check_browser_requirements():
         tool_names.extend([
@@ -309,6 +375,10 @@ def get_toolset_for_tool(tool_name: str) -> str:
         "vision_analyze": "vision_tools",
         "mixture_of_agents": "moa_tools",
         "image_generate": "image_tools",
+        # Skills tools
+        "skills_categories": "skills_tools",
+        "skills_list": "skills_tools",
+        "skill_view": "skills_tools",
         # Browser automation tools
         "browser_navigate": "browser_tools",
         "browser_snapshot": "browser_tools",
@@ -383,6 +453,10 @@ def get_tool_definitions(
         for tool in get_image_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
+    if check_skills_requirements():
+        for tool in get_skills_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
     if check_browser_requirements():
         for tool in get_browser_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
@@ -399,7 +473,7 @@ def get_tool_definitions(
                 print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
                     # Map legacy names to new system
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
@@ -407,6 +481,7 @@ def get_tool_definitions(
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
+                        "skills_tools": ["skills_categories", "skills_list", "skill_view"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -440,13 +515,14 @@ def get_tool_definitions(
                 print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
                         "terminal_tools": ["terminal"],
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
+                        "skills_tools": ["skills_categories", "skills_list", "skill_view"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -639,6 +715,35 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
 
 
+def handle_skills_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
+    """
+    Handle function calls for skills tools.
+    
+    Args:
+        function_name (str): Name of the skills function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "skills_categories":
+        return skills_categories()
+    
+    elif function_name == "skills_list":
+        category = function_args.get("category")
+        return skills_list(category=category)
+    
+    elif function_name == "skill_view":
+        name = function_args.get("name", "")
+        if not name:
+            return json.dumps({"error": "Skill name is required"}, ensure_ascii=False)
+        file_path = function_args.get("file_path")
+        return skill_view(name, file_path=file_path)
+    
+    else:
+        return json.dumps({"error": f"Unknown skills function: {function_name}"}, ensure_ascii=False)
+
+
 # Browser tool handlers mapping
 BROWSER_HANDLERS = {
     "browser_navigate": browser_navigate,
@@ -731,6 +836,10 @@ def handle_function_call(
         elif function_name in ["image_generate"]:
             return handle_image_function_call(function_name, function_args)
 
+        # Route skills tools
+        elif function_name in ["skills_categories", "skills_list", "skill_view"]:
+            return handle_skills_function_call(function_name, function_args)
+
         # Route browser automation tools
         elif function_name in [
             "browser_navigate", "browser_snapshot", "browser_click",
@@ -789,6 +898,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "description": "Generate high-quality images from text prompts using FAL.ai's FLUX.1 Krea model with automatic 2x upscaling for enhanced quality",
             "requirements": ["FAL_KEY environment variable", "fal-client package"]
         },
+        "skills_tools": {
+            "available": check_skills_requirements(),
+            "tools": ["skills_categories", "skills_list", "skill_view"],
+            "description": "Access skill documents that provide specialized instructions, guidelines, or knowledge the agent can load on demand",
+            "requirements": ["skills/ directory in repo root"]
+        },
         "browser_tools": {
             "available": check_browser_requirements(),
             "tools": [
@@ -817,6 +932,7 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "vision_tools": check_vision_requirements(),
         "moa_tools": check_moa_requirements(),
         "image_tools": check_image_generation_requirements(),
+        "skills_tools": check_skills_requirements(),
         "browser_tools": check_browser_requirements()
     }
 

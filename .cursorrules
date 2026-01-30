@@ -1,5 +1,12 @@
 Hermes-Agent is an agent harness for LLMs.
 
+## Development Environment
+
+**IMPORTANT**: Always use the virtual environment if it exists:
+```bash
+source venv/bin/activate  # Before running any Python commands
+```
+
 ## Project Structure
 
 - `tools/` - Individual tool implementations (web, terminal, browser, vision, etc.)
@@ -126,3 +133,39 @@ For processing multiple prompts:
 ## Logging
 
 Trajectories restructure tools as a system prompt for storage in a format suitable for later training use.
+
+## Skills System
+
+Skills are on-demand knowledge documents the agent can load. Located in `skills/` directory:
+
+```
+skills/
+├── mlops/                    # Category folder
+│   ├── axolotl/             # Skill folder
+│   │   ├── SKILL.md         # Main instructions (required)
+│   │   ├── references/      # Additional docs, API specs
+│   │   └── templates/       # Output formats, configs
+│   └── vllm/
+│       └── SKILL.md
+└── example-skill/
+    └── SKILL.md
+```
+
+**Progressive disclosure** (token-efficient):
+1. `skills_categories()` - List category names (~50 tokens)
+2. `skills_list(category)` - Name + description per skill (~3k tokens)
+3. `skill_view(name)` - Full content + tags + linked files
+
+SKILL.md files use YAML frontmatter:
+```yaml
+---
+name: skill-name
+description: Brief description for listing
+tags: [tag1, tag2]
+related_skills: [other-skill]
+version: 1.0.0
+---
+# Skill Content...
+```
+
+Tool files: `tools/skills_tool.py` → `model_tools.py` → `toolsets.py`

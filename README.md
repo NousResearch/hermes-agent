@@ -10,6 +10,7 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Vision Tools**: Analyze images from URLs
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
 - **Creative Tools**: Generate images from text prompts
+- **Skills Tools**: On-demand knowledge documents with progressive disclosure
 - **Toolsets System**: Organize tools into logical groups for different scenarios
 - **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
 - **Ephemeral System Prompts**: Guide model behavior without polluting training datasets
@@ -178,6 +179,58 @@ python batch_runner.py \
 ```
 
 See `.env.example` for all available configuration options including debug settings.
+
+### Skills Tools
+
+Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage:
+
+```
+skills/
+├── mlops/                    # Category folder
+│   ├── axolotl/             # Skill folder
+│   │   ├── SKILL.md         # Main instructions (required)
+│   │   ├── references/      # Additional docs, API specs
+│   │   └── templates/       # Output formats, configs
+│   └── vllm/
+│       └── SKILL.md
+```
+
+**Available Skills Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `skills_categories` | List available skill categories (~50 tokens) |
+| `skills_list` | List skills with name + description (~3k tokens for 40 skills) |
+| `skill_view` | Load full skill content, tags, and linked files |
+
+**Example Usage:**
+```bash
+# Use skills tools
+python run_agent.py \
+  --query "What skills do you have for fine-tuning? Show me the axolotl skill." \
+  --enabled_toolsets=skills
+```
+
+**Creating Skills:**
+
+Skills use YAML frontmatter for metadata:
+```yaml
+---
+name: my-skill
+description: Brief description shown in skills_list
+tags: [tag1, tag2]
+related_skills: [other-skill]
+version: 1.0.0
+---
+# Skill Content
+
+Instructions, examples, and guidelines here...
+```
+
+Skills can include:
+- `references/` - Additional documentation, API specs, examples
+- `templates/` - Output formats, config files, boilerplate code
+- `scripts/` - Executable helpers (Python, shell scripts)
 
 ## Toolsets System
 
@@ -410,5 +463,7 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 | `toolset_distributions.py` | Probability distributions for data generation |
 | `trajectory_compressor.py` | Post-process trajectories for training |
 | `tools/` | Individual tool implementations |
+| `tools/skills_tool.py` | Skills system with progressive disclosure |
+| `skills/` | On-demand knowledge documents |
 | `architecture/` | Design documentation |
 | `configs/` | Example batch run scripts |

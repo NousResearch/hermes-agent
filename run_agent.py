@@ -30,7 +30,6 @@ import threading
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
-import fire
 from datetime import datetime
 from pathlib import Path
 
@@ -1711,4 +1710,11 @@ def main(
 
 
 if __name__ == "__main__":
+    try:
+        import fire  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "Missing optional dependency 'fire'. Install hermes-agent with its CLI extras or add `fire` "
+            f"to your environment. Original error: {exc}"
+        ) from exc
     fire.Fire(main)

@@ -30,30 +30,118 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional
 
-from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
-from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION, cleanup_vm
-# Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
-from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirements, TERMINAL_HECATE_DESCRIPTION
-from tools.vision_tools import vision_analyze_tool, check_vision_requirements
-from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
-from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
-from tools.skills_tool import skills_categories, skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
-# Browser automation tools (agent-browser + Browserbase)
-from tools.browser_tool import (
-    browser_navigate,
-    browser_snapshot,
-    browser_click,
-    browser_type,
-    browser_scroll,
-    browser_back,
-    browser_press,
-    browser_close,
-    browser_get_images,
-    browser_vision,
-    cleanup_browser,
-    check_browser_requirements,
-    BROWSER_TOOL_SCHEMAS
-)
+from tools.terminal_tool import TERMINAL_TOOL_DESCRIPTION, cleanup_vm, check_terminal_requirements, terminal_tool
+
+# Optional toolsets: keep Hermes importable even when some deps aren't installed.
+try:
+    from tools.web_tools import check_firecrawl_api_key, web_crawl_tool, web_extract_tool, web_search_tool
+except ModuleNotFoundError:
+    web_search_tool = None  # type: ignore[assignment]
+    web_extract_tool = None  # type: ignore[assignment]
+    web_crawl_tool = None  # type: ignore[assignment]
+
+    def check_firecrawl_api_key() -> bool:  # type: ignore[no-redef]
+        return False
+
+try:
+    # Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
+    from tools.terminal_hecate import TERMINAL_HECATE_DESCRIPTION, check_hecate_requirements, terminal_hecate_tool
+except ModuleNotFoundError:
+    terminal_hecate_tool = None  # type: ignore[assignment]
+    TERMINAL_HECATE_DESCRIPTION = ""
+
+    def check_hecate_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+try:
+    from tools.vision_tools import check_vision_requirements, vision_analyze_tool
+except ModuleNotFoundError:
+    vision_analyze_tool = None  # type: ignore[assignment]
+
+    def check_vision_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+try:
+    from tools.mixture_of_agents_tool import check_moa_requirements, mixture_of_agents_tool
+except ModuleNotFoundError:
+    mixture_of_agents_tool = None  # type: ignore[assignment]
+
+    def check_moa_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+try:
+    from tools.image_generation_tool import check_image_generation_requirements, image_generate_tool
+except ModuleNotFoundError:
+    image_generate_tool = None  # type: ignore[assignment]
+
+    def check_image_generation_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+try:
+    from tools.skills_tool import (
+        SKILLS_TOOL_DESCRIPTION,
+        check_skills_requirements,
+        skill_view,
+        skills_categories,
+        skills_list,
+    )
+except ModuleNotFoundError:
+    SKILLS_TOOL_DESCRIPTION = ""
+
+    def check_skills_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+    def skills_categories() -> str:  # type: ignore[no-redef]
+        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
+
+    def skills_list(category: Optional[str] = None) -> str:  # type: ignore[no-redef]
+        _ = category
+        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
+
+    def skill_view(name: str, file_path: Optional[str] = None) -> str:  # type: ignore[no-redef]
+        _ = (name, file_path)
+        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
+
+try:
+    # Browser automation tools (agent-browser + Browserbase)
+    from tools.browser_tool import (
+        BROWSER_TOOL_SCHEMAS,
+        browser_back,
+        browser_click,
+        browser_close,
+        browser_get_images,
+        browser_navigate,
+        browser_press,
+        browser_scroll,
+        browser_snapshot,
+        browser_type,
+        browser_vision,
+        check_browser_requirements,
+        cleanup_browser,
+    )
+except ModuleNotFoundError:
+    BROWSER_TOOL_SCHEMAS: List[Dict[str, Any]] = []
+
+    def check_browser_requirements() -> bool:  # type: ignore[no-redef]
+        return False
+
+    def cleanup_browser(task_id: Optional[str] = None) -> None:  # type: ignore[no-redef]
+        _ = task_id
+        return None
+
+    def _browser_unavailable(*_args: Any, **_kwargs: Any) -> str:
+        return json.dumps({"error": "Browser toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
+
+    browser_navigate = _browser_unavailable  # type: ignore[assignment]
+    browser_snapshot = _browser_unavailable  # type: ignore[assignment]
+    browser_click = _browser_unavailable  # type: ignore[assignment]
+    browser_type = _browser_unavailable  # type: ignore[assignment]
+    browser_scroll = _browser_unavailable  # type: ignore[assignment]
+    browser_back = _browser_unavailable  # type: ignore[assignment]
+    browser_press = _browser_unavailable  # type: ignore[assignment]
+    browser_close = _browser_unavailable  # type: ignore[assignment]
+    browser_get_images = _browser_unavailable  # type: ignore[assignment]
+    browser_vision = _browser_unavailable  # type: ignore[assignment]
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -572,6 +660,17 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
+    if web_search_tool is None or web_extract_tool is None or web_crawl_tool is None:
+        return json.dumps(
+            {
+                "error": (
+                    "Web toolset is unavailable (missing dependencies and/or FIRECRAWL_API_KEY). "
+                    "Install web tool deps and set FIRECRAWL_API_KEY to enable."
+                )
+            },
+            ensure_ascii=False,
+        )
+
     if function_name == "web_search":
         query = function_args.get("query", "")
         # Always use fixed limit of 5
@@ -624,6 +723,17 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
     Returns:
         str: Function result as JSON string
     """
+    if vision_analyze_tool is None:
+        return json.dumps(
+            {
+                "error": (
+                    "Vision toolset is unavailable (missing dependencies and/or NOUS_API_KEY). "
+                    "Install vision deps and set NOUS_API_KEY to enable."
+                )
+            },
+            ensure_ascii=False,
+        )
+
     if function_name == "vision_analyze":
         image_url = function_args.get("image_url", "")
         question = function_args.get("question", "")
@@ -648,6 +758,17 @@ def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
+    if mixture_of_agents_tool is None:
+        return json.dumps(
+            {
+                "error": (
+                    "Mixture-of-Agents toolset is unavailable (missing dependencies and/or NOUS_API_KEY). "
+                    "Install MoA deps and set NOUS_API_KEY to enable."
+                )
+            },
+            ensure_ascii=False,
+        )
+
     if function_name == "mixture_of_agents":
         user_prompt = function_args.get("user_prompt", "")
         
@@ -672,6 +793,17 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
     Returns:
         str: Function result as JSON string
     """
+    if image_generate_tool is None:
+        return json.dumps(
+            {
+                "error": (
+                    "Image generation toolset is unavailable (missing dependencies and/or FAL_KEY). "
+                    "Install image deps and set FAL_KEY to enable."
+                )
+            },
+            ensure_ascii=False,
+        )
+
     if function_name == "image_generate":
         prompt = function_args.get("prompt", "")
         

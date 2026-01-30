@@ -1231,12 +1231,16 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
-            return True
+            # Prefer mini-swe-agent when available, but allow a subprocess fallback.
+            try:
+                from minisweagent.environments.local import LocalEnvironment
+
+                return True
+            except ImportError:
+                return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment
             # Check if docker is available
-            import subprocess
             result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":

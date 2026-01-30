@@ -39,7 +39,15 @@ dev = ["pytest", "pytest-asyncio"]
 hermes-agent = "run_agent:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions"]
+py-modules = [
+  "run_agent",
+  "model_tools",
+  "toolsets",
+  "batch_runner",
+  "trajectory_compressor",
+  "toolset_distributions",
+  "atropos_compatible_agent",
+]
 
 [tool.setuptools.packages.find]
 include = ["tools"]

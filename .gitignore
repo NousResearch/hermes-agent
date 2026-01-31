@@ -34,3 +34,10 @@ data/*
 node_modules/
 browser-use/
 agent-browser/
+# Private keys
+*.ppk
+*.pem
+privvy*
+
+# CLI config (may contain sensitive SSH paths)
+cli-config.yaml

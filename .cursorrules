@@ -1,4 +1,4 @@
-Hermes-Agent is an agent harness for LLMs.
+Hermes-Agent is an agent harness for LLMs with an interactive CLI.
 
 ## Development Environment
 
@@ -9,12 +9,15 @@ source venv/bin/activate  # Before running any Python commands
 
 ## Project Structure
 
+- `hermes` - CLI launcher script (run with `./hermes`)
+- `cli.py` - Interactive CLI with Rich UI, prompt_toolkit, animated spinners
+- `cli-config.yaml` - CLI configuration (model, terminal, toolsets, personalities)
 - `tools/` - Individual tool implementations (web, terminal, browser, vision, etc.)
 - `tools/__init__.py` - Exports all tools for importing
 - `model_tools.py` - Consolidates tool schemas and handlers for the agent
 - `toolsets.py` - Groups tools into logical toolsets (web, terminal, browser, etc.)
 - `toolset_distributions.py` - Probability-based tool selection for data generation
-- `run_agent.py` - Primary agent runner with AIAgent class
+- `run_agent.py` - Primary agent runner with AIAgent class and KawaiiSpinner
 - `batch_runner.py` - Parallel batch processing with checkpointing
 - `tests/` - Test scripts
 
@@ -24,10 +27,32 @@ source venv/bin/activate  # Before running any Python commands
 tools/*.py → tools/__init__.py → model_tools.py → toolsets.py → toolset_distributions.py
                                        ↑
 run_agent.py ──────────────────────────┘
+cli.py → run_agent.py (uses AIAgent with quiet_mode=True)
 batch_runner.py → run_agent.py + toolset_distributions.py
 ```
 
 Always ensure consistency between tools, model_tools.py, and toolsets.py when changing any of them.
+
+## CLI Architecture (cli.py)
+
+The interactive CLI uses:
+- **Rich** - For the welcome banner and styled panels
+- **prompt_toolkit** - For fixed input area with history and `patch_stdout`
+- **KawaiiSpinner** (in run_agent.py) - Animated feedback during API calls and tool execution
+
+Key components:
+- `HermesCLI` class - Main CLI controller with commands and conversation loop
+- `load_cli_config()` - Loads `cli-config.yaml`, sets environment variables for terminal
+- `build_welcome_banner()` - Displays ASCII art logo, tools, and skills summary
+- `/commands` - Process user commands like `/help`, `/clear`, `/personality`, etc.
+
+CLI uses `quiet_mode=True` when creating AIAgent to suppress verbose logging and enable kawaii-style feedback instead.
+
+### Adding CLI Commands
+
+1. Add to `COMMANDS` dict with description
+2. Add handler in `process_command()` method
+3. For persistent settings, use `save_config_value()` to update `cli-config.yaml`
 
 ## Adding a New Tool
 
@@ -91,6 +116,11 @@ API keys are loaded from `.env` file in repo root:
 - `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
 - `FAL_KEY` - Image generation (FLUX model)
 - `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
+
+Terminal tool configuration (can also be set in `cli-config.yaml`):
+- `TERMINAL_ENV` - Backend: local, docker, singularity, modal, or ssh
+- `TERMINAL_CWD` - Working directory
+- `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` - For SSH backend
 
 ## Agent Loop (run_agent.py)
 

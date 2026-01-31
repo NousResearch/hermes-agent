@@ -4,8 +4,9 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 
 ## Features
 
+- **Interactive CLI**: Beautiful terminal interface with animated feedback, personalities, and session management
 - **Web Tools**: Search, extract content, and crawl websites
-- **Terminal Tools**: Execute commands via mini-swe-agent (local, Docker, or Modal backends)
+- **Terminal Tools**: Execute commands via local, Docker, Singularity, Modal, or SSH backends
 - **Browser Tools**: Automate web browsers to navigate, click, type, and extract content
 - **Vision Tools**: Analyze images from URLs
 - **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
@@ -14,6 +15,23 @@ An AI agent with advanced tool-calling capabilities, featuring a flexible toolse
 - **Toolsets System**: Organize tools into logical groups for different scenarios
 - **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
 - **Ephemeral System Prompts**: Guide model behavior without polluting training datasets
+
+## Quick Start (CLI)
+
+```bash
+# After setup (see below), just run:
+./hermes
+
+# Or with options:
+./hermes --model "anthropic/claude-sonnet-4" --toolsets "web,terminal"
+```
+
+The CLI provides:
+- Animated spinners during thinking and tool execution
+- Kawaii-style feedback messages
+- `/commands` for configuration, history, and session management
+- Customizable personalities (`/personality kawaii`, `/personality pirate`, etc.)
+- Persistent configuration via `cli-config.yaml`
 
 ## Setup
 
@@ -65,11 +83,12 @@ nano .env  # or use your preferred editor
 
 ### 4. Configure Terminal Backend
 
-The terminal tool uses **mini-swe-agent** environments. Configure in `.env`:
+The terminal tool uses **mini-swe-agent** environments. Configure in `.env` or `cli-config.yaml`:
 
 ```bash
-# Backend: "local", "docker", "singularity", or "modal"
+# Backend: "local", "docker", "singularity", "modal", or "ssh"
 TERMINAL_ENV=local          # Default: runs on host machine (no isolation)
+TERMINAL_ENV=ssh            # Remote execution via SSH (agent code stays local)
 TERMINAL_ENV=singularity    # Recommended for HPC: Apptainer/Singularity containers
 TERMINAL_ENV=docker         # Isolated Docker containers
 TERMINAL_ENV=modal          # Cloud execution via Modal
@@ -78,10 +97,16 @@ TERMINAL_ENV=modal          # Cloud execution via Modal
 TERMINAL_DOCKER_IMAGE=python:3.11-slim
 TERMINAL_SINGULARITY_IMAGE=docker://python:3.11-slim
 TERMINAL_TIMEOUT=60
+
+# SSH backend (for ssh)
+TERMINAL_SSH_HOST=my-server.example.com
+TERMINAL_SSH_USER=myuser
+TERMINAL_SSH_KEY=~/.ssh/id_rsa  # Optional, uses ssh-agent if not set
 ```
 
 **Backend Requirements:**
 - **local**: No extra setup (runs directly on your machine, no isolation)
+- **ssh**: SSH access to remote machine (great for sandboxing - agent can't touch its own code)
 - **singularity**: Requires Apptainer or Singularity installed (common on HPC clusters, no root needed)
 - **docker**: Requires Docker installed and user in `docker` group
 - **modal**: Requires Modal account (see setup below)
@@ -231,6 +256,80 @@ Skills can include:
 - `references/` - Additional documentation, API specs, examples
 - `templates/` - Output formats, config files, boilerplate code
 - `scripts/` - Executable helpers (Python, shell scripts)
+
+## Interactive CLI
+
+The CLI provides a rich interactive experience for working with the agent.
+
+### Running the CLI
+
+```bash
+# Basic usage
+./hermes
+
+# With specific model
+./hermes --model "anthropic/claude-sonnet-4"
+
+# With specific toolsets
+./hermes --toolsets "web,terminal,skills"
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/tools` | List available tools by toolset |
+| `/toolsets` | List available toolsets |
+| `/model [name]` | Show or change the current model |
+| `/prompt [text]` | View/set custom system prompt |
+| `/personality [name]` | Set a predefined personality |
+| `/clear` | Clear screen and reset conversation |
+| `/reset` | Reset conversation only |
+| `/history` | Show conversation history |
+| `/save` | Save current conversation to file |
+| `/config` | Show current configuration |
+| `/quit` | Exit the CLI |
+
+### Configuration
+
+Copy `cli-config.yaml.example` to `cli-config.yaml` and customize:
+
+```yaml
+# Model settings
+model:
+  default: "anthropic/claude-sonnet-4"
+
+# Terminal backend (local, docker, singularity, modal, or ssh)
+terminal:
+  env_type: "local"
+  cwd: "."  # Use current directory
+
+# Or use SSH for remote execution (keeps agent code isolated)
+# terminal:
+#   env_type: "ssh"
+#   ssh_host: "my-server.example.com"
+#   ssh_user: "myuser"
+#   ssh_key: "~/.ssh/id_rsa"
+#   cwd: "/home/myuser/project"
+
+# Enable specific toolsets
+toolsets:
+  - all  # or: web, terminal, browser, vision, etc.
+
+# Custom personalities (use with /personality command)
+agent:
+  personalities:
+    helpful: "You are a helpful assistant."
+    kawaii: "You are a kawaii assistant! Use cute expressions..."
+```
+
+### Personalities
+
+Built-in personalities available via `/personality`:
+- `helpful`, `concise`, `technical`, `creative`, `teacher`
+- `kawaii`, `catgirl`, `pirate`, `shakespeare`, `surfer`
+- `noir`, `uwu`, `philosopher`, `hype`
 
 ## Toolsets System
 
@@ -456,6 +555,9 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 
 | File | Purpose |
 |------|---------|
+| `hermes` | CLI launcher script (run with `./hermes`) |
+| `cli.py` | Interactive CLI implementation |
+| `cli-config.yaml` | CLI configuration (copy from `.example`) |
 | `run_agent.py` | Main agent runner - single query execution |
 | `batch_runner.py` | Parallel batch processing with checkpointing |
 | `model_tools.py` | Core tool definitions and handlers |
@@ -465,5 +567,5 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 | `tools/` | Individual tool implementations |
 | `tools/skills_tool.py` | Skills system with progressive disclosure |
 | `skills/` | On-demand knowledge documents |
-| `architecture/` | Design documentation |
+| `docs/` | Documentation |
 | `configs/` | Example batch run scripts |

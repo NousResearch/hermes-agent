@@ -39,7 +39,7 @@ async def web_search(query: str) -> dict:
 | Category | Module | Tools |
 |----------|--------|-------|
 | **Web** | `web_tools.py` | `web_search`, `web_extract`, `web_crawl` |
-| **Terminal** | `terminal_tool.py` | `terminal` (local/docker/singularity/modal backends) |
+| **Terminal** | `terminal_tool.py` | `terminal` (local/docker/singularity/modal/ssh backends) |
 | **Browser** | `browser_tool.py` | `browser_navigate`, `browser_click`, `browser_type`, etc. |
 | **Vision** | `vision_tools.py` | `vision_analyze` |
 | **Image Gen** | `image_generation_tool.py` | `image_generate` |
@@ -101,6 +101,32 @@ Some tools maintain state across calls within a session:
 - **Browser**: Maintains browser session for multi-step navigation
 
 State is managed per `task_id` and cleaned up automatically.
+
+## Terminal Backends
+
+The terminal tool supports multiple execution backends:
+
+| Backend | Description | Use Case |
+|---------|-------------|----------|
+| `local` | Direct execution on host | Development, simple tasks |
+| `ssh` | Remote execution via SSH | Sandboxing (agent can't modify its own code) |
+| `docker` | Docker container | Isolation, reproducibility |
+| `singularity` | Singularity/Apptainer | HPC clusters, rootless containers |
+| `modal` | Modal cloud | Scalable cloud compute, GPUs |
+
+Configure via environment variables or `cli-config.yaml`:
+
+```yaml
+# SSH backend example (in cli-config.yaml)
+terminal:
+  env_type: "ssh"
+  ssh_host: "my-server.example.com"
+  ssh_user: "myuser"
+  ssh_key: "~/.ssh/id_rsa"
+  cwd: "/home/myuser/project"
+```
+
+The SSH backend uses ControlMaster for connection persistence, making subsequent commands fast.
 
 ## Skills Tools (Progressive Disclosure)
 

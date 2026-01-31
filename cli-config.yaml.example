@@ -1,0 +1,188 @@
+# Hermes Agent CLI Configuration
+# Copy this file to cli-config.yaml and customize as needed.
+# This file configures the CLI behavior. Environment variables in .env take precedence.
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  # Default model to use (can be overridden with --model flag)
+  default: "anthropic/claude-sonnet-4"
+  
+  # API configuration (falls back to OPENROUTER_API_KEY env var)
+  # api_key: "your-key-here"  # Uncomment to set here instead of .env
+  base_url: "https://openrouter.ai/api/v1"
+
+# =============================================================================
+# Terminal Tool Configuration
+# =============================================================================
+# Choose ONE of the following terminal configurations by uncommenting it.
+# The terminal tool executes commands in the specified environment.
+
+# -----------------------------------------------------------------------------
+# OPTION 1: Local execution (default)
+# Commands run directly on your machine in the current directory
+# -----------------------------------------------------------------------------
+terminal:
+  env_type: "local"
+  cwd: "."  # Use "." for current directory, or specify absolute path
+  timeout: 180
+  lifetime_seconds: 300
+
+# -----------------------------------------------------------------------------
+# OPTION 2: SSH remote execution
+# Commands run on a remote server - agent code stays local (sandboxed)
+# Great for: keeping agent isolated from its own code, using powerful remote hardware
+# -----------------------------------------------------------------------------
+# terminal:
+#   env_type: "ssh"
+#   cwd: "/home/myuser/project"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   ssh_host: "my-server.example.com"
+#   ssh_user: "myuser"
+#   ssh_port: 22
+#   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
+
+# -----------------------------------------------------------------------------
+# OPTION 3: Docker container
+# Commands run in an isolated Docker container
+# Great for: reproducible environments, testing, isolation
+# -----------------------------------------------------------------------------
+# terminal:
+#   env_type: "docker"
+#   cwd: "/workspace"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   docker_image: "python:3.11"
+
+# -----------------------------------------------------------------------------
+# OPTION 4: Singularity/Apptainer container
+# Commands run in a Singularity container (common in HPC environments)
+# Great for: HPC clusters, shared compute environments
+# -----------------------------------------------------------------------------
+# terminal:
+#   env_type: "singularity"
+#   cwd: "/workspace"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   singularity_image: "docker://python:3.11"
+
+# -----------------------------------------------------------------------------
+# OPTION 5: Modal cloud execution
+# Commands run on Modal's cloud infrastructure
+# Great for: GPU access, scalable compute, serverless execution
+# -----------------------------------------------------------------------------
+# terminal:
+#   env_type: "modal"
+#   cwd: "/workspace"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   modal_image: "python:3.11"
+
+# =============================================================================
+# Agent Behavior
+# =============================================================================
+agent:
+  # Maximum conversation turns before stopping
+  max_turns: 20
+  
+  # Enable verbose logging
+  verbose: false
+  
+  # Custom system prompt (personality, instructions, etc.)
+  # Leave empty or remove to use default agent behavior
+  system_prompt: ""
+  
+  # Predefined personalities (use with /personality command)
+  personalities:
+    helpful: "You are a helpful, friendly AI assistant."
+    concise: "You are a concise assistant. Keep responses brief and to the point."
+    technical: "You are a technical expert. Provide detailed, accurate technical information."
+    creative: "You are a creative assistant. Think outside the box and offer innovative solutions."
+    teacher: "You are a patient teacher. Explain concepts clearly with examples."
+    kawaii: "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ"
+    catgirl: "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!"
+    pirate: "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!"
+    shakespeare: "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?"
+    surfer: "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga! 🤙"
+    noir: "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?"
+    uwu: "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<"
+    philosopher: "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself."
+    hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
+
+# =============================================================================
+# Toolsets
+# =============================================================================
+# Control which tools the agent has access to.
+# Use "all" to enable everything, or specify individual toolsets.
+
+# Available toolsets:
+#
+#   web          - Web search and content extraction (web_search, web_extract)
+#   search       - Web search only, no scraping (web_search)
+#   terminal     - Command execution (terminal)
+#   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
+#   vision       - Image analysis (vision_analyze)
+#   image_gen    - Image generation with FLUX (image_generate)
+#   skills       - Load skill documents (skills_categories, skills_list, skill_view)
+#   moa          - Mixture of Agents reasoning (mixture_of_agents)
+#
+# Composite toolsets:
+#   debugging    - terminal + web (for troubleshooting)
+#   safe         - web + vision + moa (no terminal access)
+
+# -----------------------------------------------------------------------------
+# OPTION 1: Enable all tools (default)
+# -----------------------------------------------------------------------------
+toolsets:
+  - all
+
+# -----------------------------------------------------------------------------
+# OPTION 2: Minimal - just web search and terminal
+# Great for: Simple coding tasks, quick lookups
+# -----------------------------------------------------------------------------
+# toolsets:
+#   - web
+#   - terminal
+
+# -----------------------------------------------------------------------------
+# OPTION 3: Research mode - no execution capabilities
+# Great for: Safe information gathering, research tasks
+# -----------------------------------------------------------------------------
+# toolsets:
+#   - web
+#   - vision
+#   - skills
+
+# -----------------------------------------------------------------------------
+# OPTION 4: Full automation - browser + terminal
+# Great for: Web scraping, automation tasks, testing
+# -----------------------------------------------------------------------------
+# toolsets:
+#   - terminal
+#   - browser
+#   - web
+
+# -----------------------------------------------------------------------------
+# OPTION 5: Creative mode - vision + image generation
+# Great for: Design work, image analysis, creative tasks
+# -----------------------------------------------------------------------------
+# toolsets:
+#   - vision
+#   - image_gen
+#   - web
+
+# -----------------------------------------------------------------------------
+# OPTION 6: Safe mode - no terminal or browser
+# Great for: Restricted environments, untrusted queries
+# -----------------------------------------------------------------------------
+# toolsets:
+#   - safe
+
+# =============================================================================
+# Display
+# =============================================================================
+display:
+  # Use compact banner mode
+  compact: false

@@ -397,7 +397,8 @@ def get_toolset_for_tool(tool_name: str) -> str:
 
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None
+    disabled_toolsets: List[str] = None,
+    quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -551,11 +552,12 @@ def get_tool_definitions(
     # Sort tools for consistent ordering
     filtered_tools.sort(key=lambda t: t["function"]["name"])
     
-    if filtered_tools:
-        tool_names = [t["function"]["name"] for t in filtered_tools]
-        print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
-    else:
-        print("🛠️  No tools selected (all filtered out or unavailable)")
+    if not quiet_mode:
+        if filtered_tools:
+            tool_names = [t["function"]["name"] for t in filtered_tools]
+            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+        else:
+            print("🛠️  No tools selected (all filtered out or unavailable)")
     
     return filtered_tools
 

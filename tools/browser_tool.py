@@ -1343,8 +1343,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if task_id is None:
         task_id = "default"
     
-    print(f"[browser_tool] cleanup_browser called for task_id: {task_id}", file=sys.stderr)
-    print(f"[browser_tool] Active sessions: {list(_active_sessions.keys())}", file=sys.stderr)
+    if not os.getenv("HERMES_QUIET"):
+        print(f"[browser_tool] cleanup_browser called for task_id: {task_id}", file=sys.stderr)
+        print(f"[browser_tool] Active sessions: {list(_active_sessions.keys())}", file=sys.stderr)
     
     if task_id in _active_sessions:
         session_info = _active_sessions[task_id]
@@ -1368,8 +1369,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             print(f"[browser_tool] Exception during BrowserBase session close: {e}", file=sys.stderr)
         
         del _active_sessions[task_id]
-        print(f"[browser_tool] Removed task {task_id} from active sessions", file=sys.stderr)
-    else:
+        if not os.getenv("HERMES_QUIET"):
+            print(f"[browser_tool] Removed task {task_id} from active sessions", file=sys.stderr)
+    elif not os.getenv("HERMES_QUIET"):
         print(f"[browser_tool] No active session found for task_id: {task_id}", file=sys.stderr)
 
 

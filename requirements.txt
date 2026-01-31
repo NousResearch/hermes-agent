@@ -5,6 +5,7 @@ fire
 httpx
 rich
 tenacity
+prompt_toolkit
 
 # Web tools
 firecrawl-py

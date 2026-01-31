@@ -23,7 +23,10 @@ Usage:
 import json
 import logging
 import os
+import random
+import sys
 import time
+import threading
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
@@ -37,14 +40,112 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
     load_dotenv(dotenv_path=env_path)
-    print(f"✅ Loaded environment variables from {env_path}")
-else:
+    if not os.getenv("HERMES_QUIET"):
+        print(f"✅ Loaded environment variables from {env_path}")
+elif not os.getenv("HERMES_QUIET"):
     print(f"ℹ️  No .env file found at {env_path}. Using system environment variables.")
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
 from tools.terminal_tool import cleanup_vm
 from tools.browser_tool import cleanup_browser
+
+
+class KawaiiSpinner:
+    """
+    Animated spinner with kawaii faces for CLI feedback during tool execution.
+    Runs in a background thread and can be stopped when the operation completes.
+    
+    Uses stdout with carriage return to animate in place.
+    """
+    
+    # Different spinner animation sets
+    SPINNERS = {
+        'dots': ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+        'bounce': ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
+        'grow': ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
+        'arrows': ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
+        'star': ['✶', '✷', '✸', '✹', '✺', '✹', '✸', '✷'],
+        'moon': ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'],
+        'pulse': ['◜', '◠', '◝', '◞', '◡', '◟'],
+        'brain': ['🧠', '💭', '💡', '✨', '💫', '🌟', '💡', '💭'],
+        'sparkle': ['⁺', '˚', '*', '✧', '✦', '✧', '*', '˚'],
+    }
+    
+    # General waiting faces
+    KAWAII_WAITING = [
+        "(｡◕‿◕｡)", "(◕‿◕✿)", "٩(◕‿◕｡)۶", "(✿◠‿◠)", "( ˘▽˘)っ",
+        "♪(´ε` )", "(◕ᴗ◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "(★ω★)",
+    ]
+    
+    # Thinking-specific faces and messages
+    KAWAII_THINKING = [
+        "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( •_•)>⌐■-■", "(⌐■_■)",
+        "(´･_･`)", "◉_◉", "(°ロ°)", "( ˘⌣˘)♡", "ヽ(>∀<☆)☆",
+        "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
+    ]
+    
+    THINKING_VERBS = [
+        "pondering", "contemplating", "musing", "cogitating", "ruminating",
+        "deliberating", "mulling", "reflecting", "processing", "reasoning",
+        "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
+    ]
+    
+    def __init__(self, message: str = "", spinner_type: str = 'dots'):
+        self.message = message
+        self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
+        self.running = False
+        self.thread = None
+        self.frame_idx = 0
+        self.start_time = None
+        self.last_line_len = 0
+        
+    def _animate(self):
+        """Animation loop that runs in background thread."""
+        while self.running:
+            frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
+            elapsed = time.time() - self.start_time
+            
+            # Build the spinner line
+            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+            
+            # Clear previous line and write new one
+            clear = '\r' + ' ' * self.last_line_len + '\r'
+            print(clear + line, end='', flush=True)
+            self.last_line_len = len(line)
+            
+            self.frame_idx += 1
+            time.sleep(0.12)  # ~8 FPS animation
+    
+    def start(self):
+        """Start the spinner animation."""
+        if self.running:
+            return
+        self.running = True
+        self.start_time = time.time()
+        self.thread = threading.Thread(target=self._animate, daemon=True)
+        self.thread.start()
+    
+    def stop(self, final_message: str = None):
+        """Stop the spinner and optionally print a final message."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=0.5)
+        
+        # Clear the spinner line
+        print('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
+        
+        # Print final message if provided
+        if final_message:
+            print(f"  {final_message}", flush=True)
+    
+    def __enter__(self):
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
 
 
 class AIAgent:
@@ -66,6 +167,7 @@ class AIAgent:
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
+        quiet_mode: bool = False,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
@@ -87,6 +189,7 @@ class AIAgent:
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
             save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
+            quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
             log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
             log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
@@ -100,6 +203,7 @@ class AIAgent:
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
+        self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -135,7 +239,8 @@ class AIAgent:
             logging.getLogger('grpc').setLevel(logging.WARNING)
             logging.getLogger('modal').setLevel(logging.WARNING)
             logging.getLogger('rex-deploy').setLevel(logging.INFO)  # Keep INFO for sandbox status
-            print("🔍 Verbose logging enabled (third-party library logs suppressed)")
+            if not self.quiet_mode:
+                print("🔍 Verbose logging enabled (third-party library logs suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(
@@ -167,22 +272,24 @@ class AIAgent:
         
         try:
             self.client = OpenAI(**client_kwargs)
-            print(f"🤖 AI Agent initialized with model: {self.model}")
-            if base_url:
-                print(f"🔗 Using custom base URL: {base_url}")
-            # Always show API key info (masked) for debugging auth issues
-            key_used = client_kwargs.get("api_key", "none")
-            if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
-            else:
-                print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model}")
+                if base_url:
+                    print(f"🔗 Using custom base URL: {base_url}")
+                # Always show API key info (masked) for debugging auth issues
+                key_used = client_kwargs.get("api_key", "none")
+                if key_used and key_used != "dummy-key" and len(key_used) > 12:
+                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                else:
+                    print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
         # Get available tools with filtering
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=self.quiet_mode,
         )
         
         # Show tool configuration and store valid tool names for validation
@@ -190,31 +297,196 @@ class AIAgent:
         if self.tools:
             self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
             tool_names = sorted(self.valid_tool_names)
-            print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
-            
-            # Show filtering info if applied
-            if enabled_toolsets:
-                print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
-            if disabled_toolsets:
-                print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
-        else:
+            if not self.quiet_mode:
+                print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
+                
+                # Show filtering info if applied
+                if enabled_toolsets:
+                    print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
+                if disabled_toolsets:
+                    print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
+        elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
         
         # Check tool requirements
-        if self.tools:
+        if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
             missing_reqs = [name for name, available in requirements.items() if not available]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
         
         # Show trajectory saving status
-        if self.save_trajectories:
+        if self.save_trajectories and not self.quiet_mode:
             print("📝 Trajectory saving enabled")
         
         # Show ephemeral system prompt status
-        if self.ephemeral_system_prompt:
+        if self.ephemeral_system_prompt and not self.quiet_mode:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
+    
+    # Pools of kawaii faces for random selection
+    KAWAII_SEARCH = [
+        "♪(´ε` )", "(｡◕‿◕｡)", "ヾ(＾∇＾)", "(◕ᴗ◕✿)", "( ˘▽˘)っ",
+        "٩(◕‿◕｡)۶", "(✿◠‿◠)", "♪～(´ε｀ )", "(ノ´ヮ`)ノ*:・゚✧", "＼(◎o◎)／",
+    ]
+    KAWAII_READ = [
+        "φ(゜▽゜*)♪", "( ˘▽˘)っ", "(⌐■_■)", "٩(｡•́‿•̀｡)۶", "(◕‿◕✿)",
+        "ヾ(＠⌒ー⌒＠)ノ", "(✧ω✧)", "♪(๑ᴖ◡ᴖ๑)♪", "(≧◡≦)", "( ´ ▽ ` )ノ",
+    ]
+    KAWAII_TERMINAL = [
+        "ヽ(>∀<☆)ノ", "(ノ°∀°)ノ", "٩(^ᴗ^)۶", "ヾ(⌐■_■)ノ♪", "(•̀ᴗ•́)و",
+        "┗(＾0＾)┓", "(｀・ω・´)", "＼(￣▽￣)／", "(ง •̀_•́)ง", "ヽ(´▽`)/",
+    ]
+    KAWAII_BROWSER = [
+        "(ノ°∀°)ノ", "(☞゚ヮ゚)☞", "( ͡° ͜ʖ ͡°)", "┌( ಠ_ಠ)┘", "(⊙_⊙)？",
+        "ヾ(•ω•`)o", "(￣ω￣)", "( ˇωˇ )", "(ᵔᴥᵔ)", "＼(◎o◎)／",
+    ]
+    KAWAII_CREATE = [
+        "✧*。٩(ˊᗜˋ*)و✧", "(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "٩(♡ε♡)۶", "(◕‿◕)♡",
+        "✿◕ ‿ ◕✿", "(*≧▽≦)", "ヾ(＾-＾)ノ", "(☆▽☆)", "°˖✧◝(⁰▿⁰)◜✧˖°",
+    ]
+    KAWAII_SKILL = [
+        "ヾ(＠⌒ー⌒＠)ノ", "(๑˃ᴗ˂)ﻭ", "٩(◕‿◕｡)۶", "(✿╹◡╹)", "ヽ(・∀・)ノ",
+        "(ノ´ヮ`)ノ*:・ﾟ✧", "♪(๑ᴖ◡ᴖ๑)♪", "(◠‿◠)", "٩(ˊᗜˋ*)و", "(＾▽＾)",
+        "ヾ(＾∇＾)", "(★ω★)/", "٩(｡•́‿•̀｡)۶", "(◕ᴗ◕✿)", "＼(◎o◎)／",
+        "(✧ω✧)", "ヽ(>∀<☆)ノ", "( ˘▽˘)っ", "(≧◡≦) ♡", "ヾ(￣▽￣)",
+    ]
+    KAWAII_THINK = [
+        "(っ°Д°;)っ", "(；′⌒`)", "(・_・ヾ", "( ´_ゝ`)", "(￣ヘ￣)",
+        "(。-`ω´-)", "( ˘︹˘ )", "(¬_¬)", "ヽ(ー_ー )ノ", "(；一_一)",
+    ]
+    KAWAII_GENERIC = [
+        "♪(´ε` )", "(◕‿◕✿)", "ヾ(＾∇＾)", "٩(◕‿◕｡)۶", "(✿◠‿◠)",
+        "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
+    ]
+    
+    def _get_cute_tool_message(self, tool_name: str, args: dict, duration: float) -> str:
+        """
+        Generate a kawaii ASCII/unicode art message for tool execution in CLI mode.
+        
+        Args:
+            tool_name: Name of the tool being called
+            args: Arguments passed to the tool
+            duration: How long the tool took to execute
+        
+        Returns:
+            A cute ASCII art message about what the tool did
+        """
+        time_str = f"⏱ {duration:.1f}s"
+        
+        # Web tools - show what we're searching/reading
+        if tool_name == "web_search":
+            query = args.get("query", "the web")
+            if len(query) > 40:
+                query = query[:37] + "..."
+            face = random.choice(self.KAWAII_SEARCH)
+            return f"{face} 🔍 Searching for '{query}'... {time_str}"
+        
+        elif tool_name == "web_extract":
+            urls = args.get("urls", [])
+            face = random.choice(self.KAWAII_READ)
+            if urls:
+                url = urls[0] if isinstance(urls, list) else str(urls)
+                domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+                if len(domain) > 25:
+                    domain = domain[:22] + "..."
+                if len(urls) > 1:
+                    return f"{face} 📖 Reading {domain} +{len(urls)-1} more... {time_str}"
+                return f"{face} 📖 Reading {domain}... {time_str}"
+            return f"{face} 📖 Reading pages... {time_str}"
+        
+        elif tool_name == "web_crawl":
+            url = args.get("url", "website")
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            if len(domain) > 25:
+                domain = domain[:22] + "..."
+            face = random.choice(self.KAWAII_READ)
+            return f"{face} 🕸️ Crawling {domain}... {time_str}"
+        
+        # Terminal tool
+        elif tool_name == "terminal":
+            command = args.get("command", "")
+            if len(command) > 30:
+                command = command[:27] + "..."
+            face = random.choice(self.KAWAII_TERMINAL)
+            return f"{face} 💻 $ {command} {time_str}"
+        
+        # Browser tools
+        elif tool_name == "browser_navigate":
+            url = args.get("url", "page")
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            if len(domain) > 25:
+                domain = domain[:22] + "..."
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 🌐 → {domain} {time_str}"
+        
+        elif tool_name == "browser_snapshot":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 📸 *snap* {time_str}"
+        
+        elif tool_name == "browser_click":
+            element = args.get("ref", "element")
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 👆 *click* {element} {time_str}"
+        
+        elif tool_name == "browser_type":
+            text = args.get("text", "")
+            if len(text) > 15:
+                text = text[:12] + "..."
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} ⌨️ typing '{text}' {time_str}"
+        
+        elif tool_name == "browser_scroll":
+            direction = args.get("direction", "down")
+            arrow = "↓" if direction == "down" else "↑"
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} {arrow} scrolling {direction}... {time_str}"
+        
+        elif tool_name == "browser_back":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} ← going back... {time_str}"
+        
+        elif tool_name == "browser_vision":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 👁️ analyzing visually... {time_str}"
+        
+        # Image generation
+        elif tool_name == "image_generate":
+            prompt = args.get("prompt", "image")
+            if len(prompt) > 20:
+                prompt = prompt[:17] + "..."
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} 🎨 creating '{prompt}'... {time_str}"
+        
+        # Skills - use large pool for variety
+        elif tool_name == "skills_categories":
+            face = random.choice(self.KAWAII_SKILL)
+            return f"{face} 📚 listing categories... {time_str}"
+        
+        elif tool_name == "skills_list":
+            category = args.get("category", "skills")
+            face = random.choice(self.KAWAII_SKILL)
+            return f"{face} 📋 listing {category} skills... {time_str}"
+        
+        elif tool_name == "skill_view":
+            name = args.get("name", "skill")
+            face = random.choice(self.KAWAII_SKILL)
+            return f"{face} 📖 loading {name}... {time_str}"
+        
+        # Vision tools
+        elif tool_name == "vision_analyze":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 👁️✨ analyzing image... {time_str}"
+        
+        # Mixture of agents
+        elif tool_name == "mixture_of_agents":
+            face = random.choice(self.KAWAII_THINK)
+            return f"{face} 🧠💭 thinking REALLY hard... {time_str}"
+        
+        # Default fallback - random generic kawaii
+        else:
+            face = random.choice(self.KAWAII_GENERIC)
+            return f"{face} ⚡ {tool_name}... {time_str}"
     
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -506,7 +778,8 @@ class AIAgent:
             "content": user_message
         })
         
-        print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+        if not self.quiet_mode:
+            print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
         # Determine which system prompt to use for API calls (ephemeral)
         # Priority: explicit system_message > ephemeral_system_prompt > None
@@ -554,9 +827,20 @@ class AIAgent:
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
             
-            print(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
-            print(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-            print(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+            # Thinking spinner for quiet mode (animated during API call)
+            thinking_spinner = None
+            
+            if not self.quiet_mode:
+                print(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
+                print(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+                print(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+            else:
+                # Animated thinking spinner in quiet mode
+                face = random.choice(KawaiiSpinner.KAWAII_THINKING)
+                verb = random.choice(KawaiiSpinner.THINKING_VERBS)
+                spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                thinking_spinner.start()
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -609,7 +893,15 @@ class AIAgent:
                     response = self.client.chat.completions.create(**api_kwargs)
                     
                     api_duration = time.time() - api_start_time
-                    print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
+                    
+                    # Stop thinking spinner with cute completion message
+                    if thinking_spinner:
+                        face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
+                        thinking_spinner.stop(f"{face} got it! ({api_duration:.1f}s)")
+                        thinking_spinner = None
+                    
+                    if not self.quiet_mode:
+                        print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
                     
                     if self.verbose_logging:
                         # Log response with provider info if available
@@ -618,6 +910,11 @@ class AIAgent:
 
                     # Validate response has valid choices before proceeding
                     if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
+                        # Stop spinner before printing error messages
+                        if thinking_spinner:
+                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            thinking_spinner = None
+                        
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
                         error_details = []
@@ -722,6 +1019,11 @@ class AIAgent:
                     break  # Success, exit retry loop
 
                 except Exception as api_error:
+                    # Stop spinner before printing error messages
+                    if thinking_spinner:
+                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        thinking_spinner = None
+                    
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     
@@ -769,12 +1071,13 @@ class AIAgent:
                 assistant_message = response.choices[0].message
                 
                 # Handle assistant response
-                if assistant_message.content:
+                if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
                 
                 # Check for tool calls
                 if assistant_message.tool_calls:
-                    print(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+                    if not self.quiet_mode:
+                        print(f"{self.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                     
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
@@ -894,17 +1197,49 @@ class AIAgent:
                             logging.warning(f"Unexpected JSON error after validation: {e}")
                             function_args = {}
                         
-                        # Preview tool call arguments
-                        args_str = json.dumps(function_args, ensure_ascii=False)
-                        args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                        print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                        # Preview tool call - cleaner format for quiet mode
+                        if not self.quiet_mode:
+                            args_str = json.dumps(function_args, ensure_ascii=False)
+                            args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
+                            print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
                         tool_start_time = time.time()
 
-                        # Execute the tool with task_id to isolate VMs between concurrent tasks
-                        function_result = handle_function_call(function_name, function_args, effective_task_id)
+                        # Execute the tool - with animated spinner in quiet mode
+                        if self.quiet_mode:
+                            # Tool-specific spinner animations
+                            tool_spinners = {
+                                'web_search': ('arrows', ['🔍', '🌐', '📡', '🔎']),
+                                'web_extract': ('grow', ['📄', '📖', '📑', '🗒️']),
+                                'web_crawl': ('arrows', ['🕷️', '🕸️', '🔗', '🌐']),
+                                'terminal': ('dots', ['💻', '⌨️', '🖥️', '📟']),
+                                'browser_navigate': ('moon', ['🌐', '🧭', '🔗', '🚀']),
+                                'browser_click': ('bounce', ['👆', '🖱️', '👇', '✨']),
+                                'browser_type': ('dots', ['⌨️', '✍️', '📝', '💬']),
+                                'browser_screenshot': ('star', ['📸', '🖼️', '📷', '✨']),
+                                'image_generate': ('sparkle', ['🎨', '✨', '🖼️', '🌟']),
+                                'skill_view': ('star', ['📚', '📖', '🎓', '✨']),
+                                'skills_list': ('pulse', ['📋', '📝', '📑', '📜']),
+                                'skills_categories': ('pulse', ['📂', '🗂️', '📁', '🏷️']),
+                                'moa_query': ('brain', ['🧠', '💭', '🤔', '💡']),
+                                'analyze_image': ('sparkle', ['👁️', '🔍', '📷', '✨']),
+                            }
+                            
+                            spinner_type, tool_emojis = tool_spinners.get(function_name, ('dots', ['⚙️', '🔧', '⚡', '✨']))
+                            face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                            tool_emoji = random.choice(tool_emojis)
+                            spinner = KawaiiSpinner(f"{face} {tool_emoji} {function_name}...", spinner_type=spinner_type)
+                            spinner.start()
+                            try:
+                                function_result = handle_function_call(function_name, function_args, effective_task_id)
+                            finally:
+                                tool_duration = time.time() - tool_start_time
+                                cute_msg = self._get_cute_tool_message(function_name, function_args, tool_duration)
+                                spinner.stop(cute_msg)
+                        else:
+                            function_result = handle_function_call(function_name, function_args, effective_task_id)
+                            tool_duration = time.time() - tool_start_time
 
-                        tool_duration = time.time() - tool_start_time
                         result_preview = function_result[:200] if len(function_result) > 200 else function_result
 
                         if self.verbose_logging:
@@ -918,9 +1253,10 @@ class AIAgent:
                             "tool_call_id": tool_call.id
                         })
 
-                        # Preview tool response
-                        response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                        print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                        # Preview tool response (only in non-quiet mode)
+                        if not self.quiet_mode:
+                            response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
+                            print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -997,7 +1333,8 @@ class AIAgent:
                     
                     messages.append(final_msg)
                     
-                    print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+                    if not self.quiet_mode:
+                        print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
                 
             except Exception as e:

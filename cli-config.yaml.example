@@ -28,6 +28,7 @@ terminal:
   cwd: "."  # Use "." for current directory, or specify absolute path
   timeout: 180
   lifetime_seconds: 300
+  # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
@@ -79,6 +80,30 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   modal_image: "python:3.11"
+
+# -----------------------------------------------------------------------------
+# SUDO SUPPORT (works with ALL backends above)
+# -----------------------------------------------------------------------------
+# Add sudo_password to any terminal config above to enable sudo commands.
+# The password is piped via `sudo -S`. Works with local, ssh, docker, etc.
+#
+# SECURITY WARNING: Password stored in plaintext!
+#
+# ALTERNATIVES:
+# - SSH backend: Configure passwordless sudo on the remote server
+# - Containers: Run as root inside the container (no sudo needed)
+# - Local: Configure /etc/sudoers for specific commands
+#
+# Example (add to your terminal section):
+#   sudo_password: "your-password-here"
+
+# =============================================================================
+# Browser Tool Configuration
+# =============================================================================
+browser:
+  # Inactivity timeout in seconds - browser sessions are automatically closed
+  # after this period of no activity between agent loops (default: 120 = 2 minutes)
+  inactivity_timeout: 120
 
 # =============================================================================
 # Agent Behavior

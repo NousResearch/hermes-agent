@@ -117,6 +117,29 @@ terminal:
   modal_image: "python:3.11"
 ```
 
+### Sudo Support
+
+The CLI supports interactive sudo prompts:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  🔐 SUDO PASSWORD REQUIRED                               │
+├──────────────────────────────────────────────────────────┤
+│  Enter password below (input is hidden), or:             │
+│    • Press Enter to skip (command fails gracefully)      │
+│    • Wait 45s to auto-skip                               │
+└──────────────────────────────────────────────────────────┘
+
+  Password (hidden): 
+```
+
+**Options:**
+- **Interactive**: Leave `sudo_password` unset - you'll be prompted when needed
+- **Configured**: Set `sudo_password` in `cli-config.yaml` to auto-fill
+- **Environment**: Set `SUDO_PASSWORD` in `.env` for all runs
+
+Password is cached for the session once entered.
+
 ### Toolsets
 
 Control which tools are available:
@@ -202,6 +225,30 @@ This allows you to have different terminal configs for CLI vs batch processing.
 - **History**: Command history is saved to `~/.hermes_history`
 - **Conversations**: Use `/save` to export conversations
 - **Reset**: Use `/clear` for full reset, `/reset` to just clear history
+- **Session Logs**: Every session automatically logs to `logs/session_{session_id}.json`
+
+### Session Logging
+
+Sessions are automatically logged to the `logs/` directory:
+
+```
+logs/
+├── session_20260201_143052_a1b2c3.json
+├── session_20260201_150217_d4e5f6.json
+└── ...
+```
+
+The session ID is displayed in the welcome banner and follows the format: `YYYYMMDD_HHMMSS_UUID`.
+
+Log files contain:
+- Full conversation history in trajectory format
+- Timestamps for session start and last update
+- Model and message count metadata
+
+This is useful for:
+- Debugging agent behavior
+- Replaying conversations
+- Training data inspection
 
 ## Quiet Mode
 

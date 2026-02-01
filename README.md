@@ -257,6 +257,39 @@ Skills can include:
 - `templates/` - Output formats, config files, boilerplate code
 - `scripts/` - Executable helpers (Python, shell scripts)
 
+## Session Logging
+
+Every conversation is automatically logged to `logs/` for debugging and inspection:
+
+```
+logs/
+├── session_20260201_143052_a1b2c3.json
+├── session_20260201_150217_d4e5f6.json
+└── ...
+```
+
+**Log Format:**
+```json
+{
+  "session_id": "20260201_143052_a1b2c3",
+  "model": "anthropic/claude-sonnet-4",
+  "session_start": "2026-02-01T14:30:52.123456",
+  "last_updated": "2026-02-01T14:35:12.789012",
+  "message_count": 8,
+  "conversations": [
+    {"from": "system", "value": "..."},
+    {"from": "human", "value": "..."},
+    {"from": "gpt", "value": "..."},
+    {"from": "tool", "value": "..."}
+  ]
+}
+```
+
+- **Automatic**: Logs are created and updated automatically after each conversation turn
+- **Session ID in Banner**: The CLI displays the session ID in the welcome banner
+- **Trajectory Format**: Uses the same format as batch processing for consistency
+- **Git Ignored**: `logs/` is in `.gitignore` so logs aren't committed
+
 ## Interactive CLI
 
 The CLI provides a rich interactive experience for working with the agent.
@@ -538,6 +571,7 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 - `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
 - `TERMINAL_SCRATCH_DIR`: Custom scratch directory for sandbox storage (optional, auto-detects `/scratch`)
 - `SUDO_PASSWORD`: Enable sudo commands by piping password via `sudo -S` (works with all backends)
+  - If unset in CLI mode, you'll be prompted interactively when sudo is needed (45s timeout)
 
 **SSH Backend Configuration (for remote execution):**
 - `TERMINAL_SSH_HOST`: Remote server hostname or IP

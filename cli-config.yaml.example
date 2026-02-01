@@ -89,6 +89,13 @@ terminal:
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
+# INTERACTIVE PROMPT: If no sudo_password is set and the CLI is running,
+# you'll be prompted to enter your password when sudo is needed:
+# - 45-second timeout (auto-skips if no input)
+# - Press Enter to skip (command fails gracefully)
+# - Password is hidden while typing
+# - Password is cached for the session
+#
 # ALTERNATIVES:
 # - SSH backend: Configure passwordless sudo on the remote server
 # - Containers: Run as root inside the container (no sudo needed)
@@ -204,6 +211,21 @@ toolsets:
 # -----------------------------------------------------------------------------
 # toolsets:
 #   - safe
+
+# =============================================================================
+# Session Logging
+# =============================================================================
+# Session trajectories are automatically saved to logs/ directory.
+# Each session creates: logs/session_YYYYMMDD_HHMMSS_UUID.json
+#
+# The session ID is displayed in the welcome banner for easy reference.
+# Logs contain full conversation history in trajectory format:
+# - System prompt, user messages, assistant responses
+# - Tool calls with inputs/outputs
+# - Timestamps for debugging
+#
+# No configuration needed - logging is always enabled.
+# To disable, you would need to modify the source code.
 
 # =============================================================================
 # Display

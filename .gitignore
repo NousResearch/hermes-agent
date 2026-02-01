@@ -38,6 +38,7 @@ agent-browser/
 *.ppk
 *.pem
 privvy*
+images/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml

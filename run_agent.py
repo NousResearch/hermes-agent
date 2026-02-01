@@ -51,6 +51,20 @@ from tools.terminal_tool import cleanup_vm
 from tools.browser_tool import cleanup_browser
 
 
+# =============================================================================
+# Default System Prompt Components
+# =============================================================================
+
+# Skills guidance - instructs the model to check skills before technical tasks
+SKILLS_SYSTEM_PROMPT = """## Skills
+Before answering technical questions about tools, frameworks, or workflows:
+1. Check skills_categories to see if a relevant category exists
+2. If a category matches your task, use skills_list with that category
+3. If a skill matches, load it with skill_view and follow its instructions
+
+Skills contain vetted, up-to-date instructions for specific tools and workflows."""
+
+
 class KawaiiSpinner:
     """
     Animated spinner with kawaii faces for CLI feedback during tool execution.
@@ -783,7 +797,17 @@ class AIAgent:
         
         # Determine which system prompt to use for API calls (ephemeral)
         # Priority: explicit system_message > ephemeral_system_prompt > None
-        active_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
+        base_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
+        
+        # Auto-include skills guidance if skills tools are available
+        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skills_categories', 'skill_view'])
+        if has_skills_tools:
+            if base_system_prompt:
+                active_system_prompt = f"{base_system_prompt}\n\n{SKILLS_SYSTEM_PROMPT}"
+            else:
+                active_system_prompt = SKILLS_SYSTEM_PROMPT
+        else:
+            active_system_prompt = base_system_prompt
         
         # Main conversation loop
         api_call_count = 0

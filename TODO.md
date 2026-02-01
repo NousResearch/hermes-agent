@@ -23,32 +23,62 @@ These items need to be addressed ASAP:
 - [x] **Optional sudo support via `SUDO_PASSWORD` env var:**
   - Shared `_transform_sudo_command()` helper used by all environments
   - If set, auto-transforms `sudo cmd` → pipes password via `sudo -S`
-  - Documented in `.env.example` with security warnings
+  - Documented in `.env.example`, `cli-config.yaml`, and README
   - Works for chained commands: `cmd1 && sudo cmd2`
-- [ ] **Optional future enhancements:**
-  - Interactive password prompt in CLI mode only
-  - Document passwordless sudo setup in /etc/sudoers for power users
+- [x] **Interactive sudo prompt in CLI mode:**
+  - When sudo detected and no password configured, prompts user
+  - 45-second timeout (auto-skips if no input)
+  - Hidden password input via `getpass` (password not visible)
+  - Password cached for session (don't ask repeatedly)
+  - Spinner pauses during prompt for clean UX
+  - Uses `HERMES_INTERACTIVE` env var to detect CLI mode
 
-### 2. Fix `browser_get_images` Tool 🖼️
-- [ ] **Problem:** `browser_get_images` tool is broken/not working correctly
-- [ ] **Debug:** Investigate what's failing - selector issues? async timing? 
-- [ ] **Fix:** Ensure it properly extracts image URLs and alt text from pages
+### 2. Fix `browser_get_images` Tool 🖼️ ✅ VERIFIED WORKING
+- [x] **Tested:** Tool works correctly on multiple sites
+- [x] **Results:** Successfully extracts image URLs, alt text, dimensions
+- [x] **Note:** Some sites (Pixabay, etc.) have Cloudflare bot protection that blocks headless browsers - this is expected behavior, not a bug
 
-### 3. Better Action Logging for Debugging 📝
-- [ ] **Problem:** Need better logging of agent actions for debugging
-- [ ] **Implementation:**
-  - Log all tool calls with inputs/outputs
-  - Timestamps for each action
-  - Structured log format (JSON?) for easy parsing
-  - Log levels (DEBUG, INFO, ERROR)
-  - Option to write to file vs stdout
+### 3. Better Action Logging for Debugging 📝 ✅ COMPLETE
+- [x] **Problem:** Need better logging of agent actions for debugging
+- [x] **Implementation:**
+  - Save full session trajectories to `logs/` directory as JSON
+  - Each session gets a unique file: `session_YYYYMMDD_HHMMSS_UUID.json`
+  - Logs all messages, tool calls with inputs/outputs, timestamps
+  - Structured JSON format for easy parsing and replay
+  - Automatic on CLI runs (configurable)
 
-### 4. Stream Thinking Summaries in Real-Time 💭
+### 4. Stream Thinking Summaries in Real-Time 💭 ⏸️ DEFERRED
 - [ ] **Problem:** Thinking/reasoning summaries not shown while streaming
-- [ ] **Implementation:**
-  - Use streaming API to show thinking summaries as they're generated
-  - Display intermediate reasoning before final response
-  - Let user see the agent "thinking" in real-time
+- [ ] **Complexity:** This is a significant refactor - leaving for later
+
+**OpenRouter Streaming Info:**
+- Uses `stream=True` with OpenAI SDK
+- Reasoning comes in `choices[].delta.reasoning_details` chunks
+- Types: `reasoning.summary`, `reasoning.text`, `reasoning.encrypted`
+- Tool call arguments stream as partial JSON (need accumulation)
+- Items paradigm: same ID emitted multiple times with updated content
+
+**Key Challenges:**
+- Tool call JSON accumulation (partial `{"query": "wea` → `{"query": "weather"}`)
+- Multiple concurrent outputs (thinking + tool calls + text simultaneously)
+- State management for partial responses
+- Error handling if connection drops mid-stream
+- Deciding when tool calls are "complete" enough to execute
+
+**UX Questions to Resolve:**
+- Show raw thinking text or summarized?
+- Live expanding text vs. spinner replacement?
+- Markdown rendering while streaming?
+- How to handle thinking + tool call display simultaneously?
+
+**Implementation Options:**
+- New `run_conversation_streaming()` method (keep non-streaming as fallback)
+- Wrapper that handles streaming internally
+- Big refactor of existing `run_conversation()`
+
+**References:**
+- https://openrouter.ai/docs/api/reference/streaming
+- https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#streaming-response
 
 ---
 

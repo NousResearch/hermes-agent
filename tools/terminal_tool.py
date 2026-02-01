@@ -204,6 +204,106 @@ def _check_disk_usage_warning():
         return False
 
 
+# Session-cached sudo password (persists until CLI exits)
+_cached_sudo_password: str = ""
+
+
+def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+    """
+    Prompt user for sudo password with timeout.
+    
+    Returns the password if entered, or empty string if:
+    - User presses Enter without input (skip)
+    - Timeout expires (45s default)
+    - Any error occurs
+    
+    Only works in interactive mode (HERMES_INTERACTIVE=1).
+    Uses getpass for hidden input with threading for timeout support.
+    """
+    import getpass
+    import sys
+    import time as time_module
+    
+    # ANSI escape codes for terminal control
+    CLEAR_LINE = "\033[2K"      # Clear entire line
+    CURSOR_START = "\r"         # Move cursor to start of line
+    
+    # Result container for thread
+    result = {"password": None, "done": False}
+    
+    def get_password_thread():
+        """Thread function to get password with getpass (hidden input)."""
+        try:
+            result["password"] = getpass.getpass("  Password (hidden): ")
+        except (EOFError, KeyboardInterrupt):
+            result["password"] = ""
+        except Exception:
+            result["password"] = ""
+        finally:
+            result["done"] = True
+    
+    try:
+        # Pause the spinner animation while prompting for password
+        os.environ["HERMES_SPINNER_PAUSE"] = "1"
+        time_module.sleep(0.2)  # Give spinner time to pause
+        
+        # Clear any spinner/animation on current line
+        sys.stdout.write(CURSOR_START + CLEAR_LINE)
+        sys.stdout.flush()
+        
+        # Print a clear visual break with empty lines for separation
+        print("\n")  # Extra spacing
+        print("┌" + "─" * 58 + "┐")
+        print("│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│")
+        print("├" + "─" * 58 + "┤")
+        print("│  Enter password below (input is hidden), or:            │")
+        print("│    • Press Enter to skip (command fails gracefully)     │")
+        print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
+        print("└" + "─" * 58 + "┘")
+        print()
+        sys.stdout.flush()
+        
+        # Start password input in a thread so we can timeout
+        password_thread = threading.Thread(target=get_password_thread, daemon=True)
+        password_thread.start()
+        
+        # Wait for either completion or timeout
+        password_thread.join(timeout=timeout_seconds)
+        
+        if result["done"]:
+            # Got input (or user pressed Enter/Ctrl+C)
+            password = result["password"] or ""
+            if password:
+                print("  ✓ Password received (cached for this session)")
+            else:
+                print("  ⏭ Skipped - continuing without sudo")
+            print()
+            sys.stdout.flush()
+            return password
+        else:
+            # Timeout - thread is still waiting for input
+            print("\n  ⏱ Timeout - continuing without sudo")
+            print("    (Press Enter to dismiss the password prompt)")
+            print()
+            sys.stdout.flush()
+            return ""
+            
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("  ⏭ Cancelled - continuing without sudo")
+        print()
+        sys.stdout.flush()
+        return ""
+    except Exception as e:
+        print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
+        sys.stdout.flush()
+        return ""
+    finally:
+        # Always resume the spinner when done
+        if "HERMES_SPINNER_PAUSE" in os.environ:
+            del os.environ["HERMES_SPINNER_PAUSE"]
+
+
 def _transform_sudo_command(command: str) -> str:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
@@ -211,20 +311,35 @@ def _transform_sudo_command(command: str) -> str:
     This is a shared helper used by all execution environments to provide
     consistent sudo handling across local, SSH, and container environments.
     
-    If SUDO_PASSWORD is set, transforms:
+    If SUDO_PASSWORD is set (via env, config, or interactive prompt):
       'sudo apt install curl' -> password piped via sudo -S
       
-    If SUDO_PASSWORD is not set, command runs as-is (will fail gracefully
-    with "sudo: a password is required" error due to stdin=DEVNULL).
+    If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
+      Prompts user for password with 45s timeout, caches for session.
+      
+    If SUDO_PASSWORD is not set and NOT interactive:
+      Command runs as-is (fails gracefully with "sudo: a password is required").
     """
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
+    global _cached_sudo_password
+    import re
+    
+    # Check if command even contains sudo
+    if not re.search(r'\bsudo\b', command):
+        return command  # No sudo in command, return as-is
+    
+    # Try to get password from: env var -> session cache -> interactive prompt
+    sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
+    
+    if not sudo_password:
+        # No password configured - check if we're in interactive mode
+        if os.getenv("HERMES_INTERACTIVE"):
+            # Prompt user for password
+            sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+            if sudo_password:
+                _cached_sudo_password = sudo_password  # Cache for session
     
     if not sudo_password:
         return command  # No password, let it fail gracefully
-    
-    # Check if command contains sudo (simple detection)
-    # Handle: "sudo cmd", "sudo -flag cmd", "cmd && sudo cmd2", etc.
-    import re
     
     def replace_sudo(match):
         # Replace 'sudo' with password-piped version

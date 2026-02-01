@@ -276,6 +276,26 @@ These items need to be addressed ASAP:
 
 ### Medium-Impact
 
+- [ ] **Canvas / Visual Workspace** 🖼️
+  - Agent-controlled visual panel for rendering interactive UI
+  - Inspired by OpenClaw's Canvas feature
+  - **Capabilities:**
+    - `present` / `hide` - Show/hide the canvas panel
+    - `navigate` - Load HTML files or URLs into the canvas
+    - `eval` - Execute JavaScript in the canvas context
+    - `snapshot` - Capture the rendered UI as an image
+  - **Use cases:**
+    - Display generated HTML/CSS/JS previews
+    - Show interactive data visualizations (charts, graphs)
+    - Render diagrams (Mermaid → rendered output)
+    - Present structured information in rich format
+    - A2UI-style component system for structured agent UI
+  - **Implementation options:**
+    - Electron-based panel for CLI
+    - WebSocket-connected web app
+    - VS Code webview extension
+  - *Would let agent "show" things rather than just describe them*
+
 - [ ] **Document Generation** 📄
   - Create styled PDFs, Word docs, presentations
   - *Can do basic PDF via terminal tools, but limited*

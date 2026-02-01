@@ -51,6 +51,8 @@ import subprocess
 import shutil
 import sys
 import asyncio
+import threading
+import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -85,6 +87,22 @@ _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, bb
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
+
+# =============================================================================
+# Inactivity Timeout Configuration
+# =============================================================================
+
+# Session inactivity timeout (seconds) - cleanup if no activity for this long
+# Default: 2 minutes. Can be configured via environment variable.
+BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "120"))
+
+# Track last activity time per session
+_session_last_activity: Dict[str, float] = {}
+
+# Background cleanup thread state
+_cleanup_thread = None
+_cleanup_running = False
+_cleanup_lock = threading.Lock()
 
 
 def _emergency_cleanup_all_sessions():
@@ -155,6 +173,100 @@ try:
         signal.signal(signal.SIGTERM, _signal_handler)
 except (OSError, AttributeError):
     pass  # Signal handling not available (e.g., Windows or worker process)
+
+
+# =============================================================================
+# Inactivity Cleanup Functions
+# =============================================================================
+
+def _cleanup_inactive_browser_sessions():
+    """
+    Clean up browser sessions that have been inactive for longer than the timeout.
+    
+    This function is called periodically by the background cleanup thread to
+    automatically close sessions that haven't been used recently, preventing
+    orphaned Browserbase sessions from accumulating.
+    """
+    current_time = time.time()
+    sessions_to_cleanup = []
+    
+    with _cleanup_lock:
+        for task_id, last_time in list(_session_last_activity.items()):
+            if current_time - last_time > BROWSER_SESSION_INACTIVITY_TIMEOUT:
+                sessions_to_cleanup.append(task_id)
+    
+    for task_id in sessions_to_cleanup:
+        try:
+            if not os.getenv("HERMES_QUIET"):
+                elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
+                print(f"[browser_tool] Cleaning up inactive session for task: {task_id} "
+                      f"(inactive for {elapsed}s)", file=sys.stderr)
+            cleanup_browser(task_id)
+            with _cleanup_lock:
+                if task_id in _session_last_activity:
+                    del _session_last_activity[task_id]
+        except Exception as e:
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[browser_tool] Error cleaning up inactive session {task_id}: {e}", file=sys.stderr)
+
+
+def _browser_cleanup_thread_worker():
+    """
+    Background thread that periodically cleans up inactive browser sessions.
+    
+    Runs every 30 seconds and checks for sessions that haven't been used
+    within the BROWSER_SESSION_INACTIVITY_TIMEOUT period.
+    """
+    global _cleanup_running
+    
+    while _cleanup_running:
+        try:
+            _cleanup_inactive_browser_sessions()
+        except Exception as e:
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[browser_tool] Cleanup thread error: {e}", file=sys.stderr)
+        
+        # Sleep in 1-second intervals so we can stop quickly if needed
+        for _ in range(30):
+            if not _cleanup_running:
+                break
+            time.sleep(1)
+
+
+def _start_browser_cleanup_thread():
+    """Start the background cleanup thread if not already running."""
+    global _cleanup_thread, _cleanup_running
+    
+    with _cleanup_lock:
+        if _cleanup_thread is None or not _cleanup_thread.is_alive():
+            _cleanup_running = True
+            _cleanup_thread = threading.Thread(
+                target=_browser_cleanup_thread_worker,
+                daemon=True,
+                name="browser-cleanup"
+            )
+            _cleanup_thread.start()
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[browser_tool] Started inactivity cleanup thread "
+                      f"(timeout: {BROWSER_SESSION_INACTIVITY_TIMEOUT}s)", file=sys.stderr)
+
+
+def _stop_browser_cleanup_thread():
+    """Stop the background cleanup thread."""
+    global _cleanup_running
+    _cleanup_running = False
+    if _cleanup_thread is not None:
+        _cleanup_thread.join(timeout=5)
+
+
+def _update_session_activity(task_id: str):
+    """Update the last activity timestamp for a session."""
+    with _cleanup_lock:
+        _session_last_activity[task_id] = time.time()
+
+
+# Register cleanup thread stop on exit
+atexit.register(_stop_browser_cleanup_thread)
 
 
 # ============================================================================
@@ -461,6 +573,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     Get or create session info for the given task.
     
     Creates a Browserbase session with proxies enabled if one doesn't exist.
+    Also starts the inactivity cleanup thread and updates activity tracking.
     
     Args:
         task_id: Unique identifier for the task
@@ -470,6 +583,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     if task_id is None:
         task_id = "default"
+    
+    # Start the cleanup thread if not running (handles inactivity timeouts)
+    _start_browser_cleanup_thread()
+    
+    # Update activity timestamp for this session
+    _update_session_activity(task_id)
     
     # Check if we already have a session for this task
     if task_id in _active_sessions:
@@ -1334,7 +1453,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
     Clean up browser session for a task.
     
-    Called automatically when a task completes.
+    Called automatically when a task completes or when inactivity timeout is reached.
     Closes both the agent-browser session and the Browserbase session.
     
     Args:
@@ -1373,6 +1492,11 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             print(f"[browser_tool] Removed task {task_id} from active sessions", file=sys.stderr)
     elif not os.getenv("HERMES_QUIET"):
         print(f"[browser_tool] No active session found for task_id: {task_id}", file=sys.stderr)
+    
+    # Clean up activity tracking
+    with _cleanup_lock:
+        if task_id in _session_last_activity:
+            del _session_last_activity[task_id]
 
 
 def cleanup_all_browsers() -> None:
@@ -1383,6 +1507,10 @@ def cleanup_all_browsers() -> None:
     """
     for task_id in list(_active_sessions.keys()):
         cleanup_browser(task_id)
+    
+    # Clear any remaining activity tracking
+    with _cleanup_lock:
+        _session_last_activity.clear()
 
 
 def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:

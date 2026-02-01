@@ -134,6 +134,8 @@ def load_cli_config() -> Dict[str, Any]:
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
+        # Sudo support (works with all backends)
+        "sudo_password": "SUDO_PASSWORD",
     }
     
     # CLI config overrides .env for terminal settings

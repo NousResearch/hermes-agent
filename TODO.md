@@ -141,7 +141,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 2. Self-Reflection & Course Correction 🔄
+## 3. Self-Reflection & Course Correction 🔄
 
 **Problem:** Current retry logic handles malformed outputs but not semantic failures. Agent doesn't reason about *why* something failed.
 
@@ -166,7 +166,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 3. Tool Composition & Learning 🔧
+## 4. Tool Composition & Learning 🔧
 
 **Problem:** Tools are atomic. Complex tasks require repeated manual orchestration of the same tool sequences.
 
@@ -197,7 +197,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 4. Dynamic Skills Expansion 📚
+## 5. Dynamic Skills Expansion 📚
 
 **Problem:** Skills system is elegant but static. Skills must be manually created and added.
 
@@ -226,7 +226,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 5. Task Continuation Hints 🎯
+## 6. Task Continuation Hints 🎯
 
 **Problem:** Could be more helpful by suggesting logical next steps.
 
@@ -240,7 +240,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Interactive Clarifying Questions Tool ❓
+## 7. Interactive Clarifying Questions Tool ❓
 
 **Problem:** Agent sometimes makes assumptions or guesses when it should ask the user. Currently can only ask via text, which gets lost in long outputs.
 
@@ -273,23 +273,6 @@ These items need to be addressed ASAP:
   - Checkpoint complex multi-step workflows
 
 **Files to modify:** New `tools/ask_user_tool.py`, `cli.py` (detect interactive mode), `model_tools.py`
-
----
-
-## 7. Uncertainty & Honesty Calibration 🎚️
-
-**Problem:** Sometimes confidently wrong. Should be better calibrated about what I know vs. don't know.
-
-**Ideas:**
-- [ ] **Source attribution** - Track where information came from:
-  - "According to the docs I just fetched..." vs "From my training data (may be outdated)..."
-  - Let user assess reliability themselves
-
-- [ ] **Cross-reference high-stakes claims** - Self-check for made-up details:
-  - When stakes are high, verify with tools before presenting as fact
-  - "Let me verify that before you act on it..."
-
-**Files to modify:** `run_agent.py`, response generation logic
 
 ---
 

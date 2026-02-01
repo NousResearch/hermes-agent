@@ -4,7 +4,42 @@
 
 ---
 
-## 1. Memory & Context Management 🧠
+## 🚨 HIGH PRIORITY - Immediate Fixes
+
+These items need to be addressed ASAP:
+
+### 1. SUDO Breaking Terminal Tool 🔐
+- [ ] **Problem:** SUDO commands break the terminal tool execution
+- [ ] **Fix:** Handle password prompts / TTY requirements gracefully
+- [ ] **Options:**
+  - Configure passwordless sudo for specific commands
+  - Detect sudo and warn user / request alternative approach
+  - Use `sudo -S` with stdin handling if password can be provided securely
+
+### 2. Fix `browser_get_images` Tool 🖼️
+- [ ] **Problem:** `browser_get_images` tool is broken/not working correctly
+- [ ] **Debug:** Investigate what's failing - selector issues? async timing? 
+- [ ] **Fix:** Ensure it properly extracts image URLs and alt text from pages
+
+### 3. Better Action Logging for Debugging 📝
+- [ ] **Problem:** Need better logging of agent actions for debugging
+- [ ] **Implementation:**
+  - Log all tool calls with inputs/outputs
+  - Timestamps for each action
+  - Structured log format (JSON?) for easy parsing
+  - Log levels (DEBUG, INFO, ERROR)
+  - Option to write to file vs stdout
+
+### 4. Stream Thinking Summaries in Real-Time 💭
+- [ ] **Problem:** Thinking/reasoning summaries not shown while streaming
+- [ ] **Implementation:**
+  - Use streaming API to show thinking summaries as they're generated
+  - Display intermediate reasoning before final response
+  - Let user see the agent "thinking" in real-time
+
+---
+
+## 1. Context Management
 
 **Problem:** Context grows unbounded during long conversations. Trajectory compression exists for training data post-hoc, but live conversations lack intelligent context management.
 

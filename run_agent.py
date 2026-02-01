@@ -27,6 +27,7 @@ import random
 import sys
 import time
 import threading
+import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 import fire
@@ -117,6 +118,11 @@ class KawaiiSpinner:
     def _animate(self):
         """Animation loop that runs in background thread."""
         while self.running:
+            # Check for pause signal (e.g., during sudo password prompt)
+            if os.getenv("HERMES_SPINNER_PAUSE"):
+                time.sleep(0.1)
+                continue
+            
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
             
@@ -189,6 +195,7 @@ class AIAgent:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        session_id: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -211,6 +218,7 @@ class AIAgent:
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
+            session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -337,6 +345,25 @@ class AIAgent:
         if self.ephemeral_system_prompt and not self.quiet_mode:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
+        
+        # Session logging setup - auto-save conversation trajectories for debugging
+        self.session_start = datetime.now()
+        if session_id:
+            # Use provided session ID (e.g., from CLI)
+            self.session_id = session_id
+        else:
+            # Generate a new session ID
+            timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            self.session_id = f"{timestamp_str}_{short_uuid}"
+        
+        # Setup logs directory
+        self.logs_dir = Path(__file__).parent / "logs"
+        self.logs_dir.mkdir(exist_ok=True)
+        self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        
+        # Track conversation messages for session logging
+        self._session_messages: List[Dict[str, Any]] = []
     
     # Pools of kawaii faces for random selection
     KAWAII_SEARCH = [
@@ -754,6 +781,44 @@ class AIAgent:
             print(f"💾 Trajectory saved to {filename}")
         except Exception as e:
             print(f"⚠️ Failed to save trajectory: {e}")
+    
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+        """
+        Save the current session trajectory to the logs directory.
+        
+        Automatically called after each conversation turn to maintain
+        a complete log of the session for debugging and inspection.
+        
+        Args:
+            messages: Message history to save (uses self._session_messages if not provided)
+        """
+        messages = messages or self._session_messages
+        if not messages:
+            return
+        
+        try:
+            # Convert to trajectory format (reuse existing method)
+            # Use empty string as user_query since it's embedded in messages
+            trajectory = self._convert_to_trajectory_format(messages, "", True)
+            
+            # Build the session log entry
+            entry = {
+                "session_id": self.session_id,
+                "model": self.model,
+                "session_start": self.session_start.isoformat(),
+                "last_updated": datetime.now().isoformat(),
+                "message_count": len(messages),
+                "conversations": trajectory,
+            }
+            
+            # Write to session log file (overwrite with latest state)
+            with open(self.session_log_file, "w", encoding="utf-8") as f:
+                json.dump(entry, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            # Silent fail - don't interrupt the user experience for logging issues
+            if self.verbose_logging:
+                logging.warning(f"Failed to save session log: {e}")
     
     def run_conversation(
         self,
@@ -1404,6 +1469,10 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
 
+        # Update session messages and save session log
+        self._session_messages = messages
+        self._save_session_log(messages)
+        
         return {
             "final_response": final_response,
             "messages": messages,

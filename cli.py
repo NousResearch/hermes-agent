@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import atexit
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -255,7 +256,7 @@ def _get_available_skills() -> Dict[str, List[str]]:
     return skills_by_category
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None):
+def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None):
     """
     Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
     
@@ -265,6 +266,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         cwd: Current working directory
         tools: List of tool definitions
         enabled_toolsets: List of enabled toolset names
+        session_id: Unique session identifier for logging
     """
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
@@ -284,6 +286,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     
     left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
     left_lines.append(f"[dim #B8860B]{cwd}[/]")
+    
+    # Add session ID if provided
+    if session_id:
+        left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
     
     # Build right content: tools list grouped by toolset
@@ -487,6 +493,12 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         
+        # Generate session ID with timestamp for display and logging
+        # Format: YYYYMMDD_HHMMSS_shortUUID (e.g., 20260201_143052_a1b2c3)
+        timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        self.session_id = f"{timestamp_str}_{short_uuid}"
+        
         # Setup prompt_toolkit session with history
         self._setup_prompt_session()
     
@@ -528,6 +540,7 @@ class HermesCLI:
                 verbose_logging=self.verbose,
                 quiet_mode=True,  # Suppress verbose output for clean CLI
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                session_id=self.session_id,  # Pass CLI's session ID to agent
             )
             return True
         except Exception as e:
@@ -555,6 +568,7 @@ class HermesCLI:
                 cwd=cwd,
                 tools=tools,
                 enabled_toolsets=self.enabled_toolsets,
+                session_id=self.session_id,
             )
         
         self.console.print()
@@ -1064,6 +1078,10 @@ def main(
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
     """
+    # Signal to terminal_tool that we're in interactive mode
+    # This enables interactive sudo password prompts with timeout
+    os.environ["HERMES_INTERACTIVE"] = "1"
+    
     # Handle query shorthand
     query = query or q
     

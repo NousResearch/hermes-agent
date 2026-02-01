@@ -67,6 +67,9 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
         },
+        "browser": {
+            "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
+        },
         "agent": {
             "max_turns": 20,
             "verbose": False,
@@ -137,6 +140,16 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
             os.environ[env_var] = str(terminal_config[config_key])
+    
+    # Apply browser config to environment variables
+    browser_config = defaults.get("browser", {})
+    browser_env_mappings = {
+        "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
+    }
+    
+    for config_key, env_var in browser_env_mappings.items():
+        if config_key in browser_config:
+            os.environ[env_var] = str(browser_config[config_key])
     
     return defaults
 

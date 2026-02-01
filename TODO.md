@@ -39,7 +39,85 @@ These items need to be addressed ASAP:
 
 ---
 
-## 1. Context Management
+## 1. Subagent Architecture (Context Isolation) 🎯
+
+**Problem:** Long-running tools (terminal commands, browser automation, complex file operations) consume massive context. A single `ls -la` can add hundreds of lines. Browser snapshots, debugging sessions, and iterative terminal work quickly bloat the main conversation, leaving less room for actual reasoning.
+
+**Solution:** The main agent becomes an **orchestrator** that delegates context-heavy tasks to **subagents**.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ORCHESTRATOR (main agent)                                      │
+│  - Receives user request                                        │
+│  - Plans approach                                               │
+│  - Delegates heavy tasks to subagents                           │
+│  - Receives summarized results                                  │
+│  - Maintains clean, focused context                             │
+└─────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│ TERMINAL AGENT  │  │ BROWSER AGENT   │  │ CODE AGENT      │
+│ - terminal tool │  │ - browser tools │  │ - file tools    │
+│ - file tools    │  │ - web_search    │  │ - terminal      │
+│                 │  │ - web_extract   │  │                 │
+│ Isolated context│  │ Isolated context│  │ Isolated context│
+│ Returns summary │  │ Returns summary │  │ Returns summary │
+└─────────────────┘  └─────────────────┘  └─────────────────┘
+```
+
+**How it works:**
+1. User asks: "Set up a new Python project with FastAPI and tests"
+2. Orchestrator plans: "I need to create files, install deps, write code"
+3. Orchestrator calls: `terminal_task(goal="Create venv, install fastapi pytest", context="New project in ~/myapp")`
+4. **Subagent spawns** with fresh context, only terminal/file tools
+5. Subagent iterates (may take 10+ tool calls, lots of output)
+6. Subagent completes → returns summary: "Created venv, installed fastapi==0.109.0, pytest==8.0.0"
+7. Orchestrator receives **only the summary**, context stays clean
+8. Orchestrator continues with next subtask
+
+**Key tools to implement:**
+- [ ] `terminal_task(goal, context, cwd?)` - Delegate terminal/shell work
+- [ ] `browser_task(goal, context, start_url?)` - Delegate web research/automation  
+- [ ] `code_task(goal, context, files?)` - Delegate code writing/modification
+- [ ] Generic `delegate_task(goal, context, toolsets=[])` - Flexible delegation
+
+**Implementation details:**
+- [ ] Subagent uses same `run_agent.py` but with:
+  - Fresh/empty conversation history
+  - Limited toolset (only what's needed)
+  - Smaller max_iterations (focused task)
+  - Task-specific system prompt
+- [ ] Subagent returns structured result:
+  ```python
+  {
+    "success": True,
+    "summary": "Installed 3 packages, created 2 files",
+    "details": "Optional longer explanation if needed",
+    "artifacts": ["~/myapp/requirements.txt", "~/myapp/main.py"],  # Files created
+    "errors": []  # Any issues encountered
+  }
+  ```
+- [ ] Orchestrator sees only the summary in its context
+- [ ] Full subagent transcript saved separately for debugging
+
+**Benefits:**
+- 🧹 **Clean context** - Orchestrator stays focused, doesn't drown in tool output
+- 📊 **Better token efficiency** - 50 terminal outputs → 1 summary paragraph
+- 🎯 **Focused subagents** - Each agent has just the tools it needs
+- 🔄 **Parallel potential** - Independent subtasks could run concurrently
+- 🐛 **Easier debugging** - Each subtask has its own isolated transcript
+
+**When to use subagents vs direct tools:**
+- **Subagent**: Multi-step tasks, iteration likely, lots of output expected
+- **Direct**: Quick one-off commands, simple file reads, user needs to see output
+
+**Files to modify:** `run_agent.py` (add orchestration mode), new `tools/delegate_tools.py`, new `subagent_runner.py`
+
+---
+
+## 2. Context Management (complements Subagents)
 
 **Problem:** Context grows unbounded during long conversations. Trajectory compression exists for training data post-hoc, but live conversations lack intelligent context management.
 
@@ -162,7 +240,43 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Uncertainty & Honesty Calibration 🎚️
+## 6. Interactive Clarifying Questions Tool ❓
+
+**Problem:** Agent sometimes makes assumptions or guesses when it should ask the user. Currently can only ask via text, which gets lost in long outputs.
+
+**Ideas:**
+- [ ] **Multiple-choice prompt tool** - Let agent present structured choices to user:
+  ```
+  ask_user_choice(
+    question="Should the language switcher enable only German or all languages?",
+    choices=[
+      "Only enable German - works immediately",
+      "Enable all, mark untranslated - show fallback notice",
+      "Let me specify something else"
+    ]
+  )
+  ```
+  - Renders as interactive terminal UI with arrow key / Tab navigation
+  - User selects option, result returned to agent
+  - Up to 4 choices + optional free-text option
+  
+- [ ] **Implementation:**
+  - Use `inquirer` or `questionary` Python library for rich terminal prompts
+  - Tool returns selected option text (or user's custom input)
+  - **CLI-only** - only works when running via `cli.py` (not API/programmatic use)
+  - Graceful fallback: if not in interactive mode, return error asking agent to rephrase as text
+  
+- [ ] **Use cases:**
+  - Clarify ambiguous requirements before starting work
+  - Confirm destructive operations with clear options
+  - Let user choose between implementation approaches
+  - Checkpoint complex multi-step workflows
+
+**Files to modify:** New `tools/ask_user_tool.py`, `cli.py` (detect interactive mode), `model_tools.py`
+
+---
+
+## 7. Uncertainty & Honesty Calibration 🎚️
 
 **Problem:** Sometimes confidently wrong. Should be better calibrated about what I know vs. don't know.
 
@@ -179,7 +293,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 7. Resource Awareness & Efficiency 💰
+## 8. Resource Awareness & Efficiency 💰
 
 **Problem:** No awareness of costs, time, or resource usage. Could be smarter about efficiency.
 
@@ -197,7 +311,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 8. Collaborative Problem Solving 🤝
+## 9. Collaborative Problem Solving 🤝
 
 **Problem:** Interaction is command/response. Complex problems benefit from dialogue.
 
@@ -216,7 +330,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 9. Project-Local Context 💾
+## 10. Project-Local Context 💾
 
 **Problem:** Valuable context lost between sessions.
 
@@ -236,7 +350,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 10. Graceful Degradation & Robustness 🛡️
+## 11. Graceful Degradation & Robustness 🛡️
 
 **Problem:** When things go wrong, recovery is limited. Should fail gracefully.
 
@@ -257,17 +371,17 @@ These items need to be addressed ASAP:
 
 ---
 
-## 11. Tools & Skills Wishlist 🧰
+## 12. Tools & Skills Wishlist 🧰
 
 *Things that would need new tool implementations (can't do well with current tools):*
 
 ### High-Impact
 
-- [ ] **Audio/Video Transcription** 🎬
+- [ ] **Audio/Video Transcription** 🎬 *(See also: Section 16 for detailed spec)*
   - Transcribe audio files, podcasts, YouTube videos
   - Extract key moments from video
-  - Currently blind to multimedia content
-  - *Could potentially use whisper via terminal, but native tool would be cleaner*
+  - Voice memo transcription for messaging integrations
+  - *Provider options: Whisper API, Deepgram, local Whisper*
   
 - [ ] **Diagram Rendering** 📊
   - Render Mermaid/PlantUML to actual images
@@ -324,13 +438,169 @@ These items need to be addressed ASAP:
 
 ---
 
+## 13. Messaging Platform Integrations 💬
+
+**Problem:** Agent currently only works via `cli.py` which requires direct terminal access. Users may want to interact via messaging apps from their phone or other devices.
+
+**Architecture:**
+- `run_agent.py` already accepts `conversation_history` parameter and returns updated messages ✅
+- Need: persistent session storage, platform monitors, session key resolution
+
+**Implementation approach:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Platform Monitor (e.g., telegram_monitor.py)               │
+│  ├─ Long-running daemon connecting to messaging platform    │
+│  ├─ On message: resolve session key → load history from disk│
+│  ├─ Call run_agent.py with loaded history                   │
+│  ├─ Save updated history back to disk (JSONL)               │
+│  └─ Send response back to platform                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Platform support (each user sets up their own credentials):**
+- [ ] **Telegram** - via `python-telegram-bot` or `grammy` equivalent
+  - Bot token from @BotFather
+  - Easiest to set up, good for personal use
+- [ ] **Discord** - via `discord.py`
+  - Bot token from Discord Developer Portal
+  - Can work in servers (group sessions) or DMs
+- [ ] **WhatsApp** - via `baileys` (WhatsApp Web protocol)
+  - QR code scan to authenticate
+  - More complex, but reaches most people
+
+**Session management:**
+- [ ] **Session store** - JSONL persistence per session key
+  - `~/.hermes/sessions/{session_key}.jsonl`
+  - Session keys: `telegram:dm:{user_id}`, `discord:channel:{id}`, etc.
+- [ ] **Session expiry** - Configurable reset policies
+  - Daily reset (default 4am) OR idle timeout (e.g., 2 hours)
+  - Manual reset via `/reset` or `/new` command in chat
+- [ ] **Session continuity** - Conversations persist across messages until reset
+
+**Files to create:** `monitors/telegram_monitor.py`, `monitors/discord_monitor.py`, `monitors/session_store.py`
+
+---
+
+## 14. Scheduled Tasks / Cron Jobs ⏰
+
+**Problem:** Agent only runs on-demand. Some tasks benefit from scheduled execution (daily summaries, monitoring, reminders).
+
+**Ideas:**
+- [ ] **Cron-style scheduler** - Run agent turns on a schedule
+  - Store jobs in `~/.hermes/cron/jobs.json`
+  - Each job: `{ id, schedule, prompt, session_mode, delivery }`
+  - Uses APScheduler or similar Python library
+  
+- [ ] **Session modes:**
+  - `isolated` - Fresh session each run (no history, clean context)
+  - `main` - Append to main session (agent remembers previous scheduled runs)
+  
+- [ ] **Delivery options:**
+  - Write output to file (`~/.hermes/cron/output/{job_id}/{timestamp}.md`)
+  - Send to messaging channel (if integrations enabled)
+  - Both
+  
+- [ ] **CLI interface:**
+  ```bash
+  # List scheduled jobs
+  python cli.py --cron list
+  
+  # Add a job (runs daily at 9am)
+  python cli.py --cron add "Summarize my email inbox" --schedule "0 9 * * *"
+  
+  # Quick syntax for simple intervals  
+  python cli.py --cron add "Check server status" --every 30m
+  
+  # Remove a job
+  python cli.py --cron remove <job_id>
+  ```
+
+- [ ] **Agent self-scheduling** - Let the agent create its own cron jobs
+  - New tool: `schedule_task(prompt, schedule, session_mode)`
+  - "Remind me to check the deployment tomorrow at 9am"
+  - Agent can set follow-up tasks for itself
+
+- [ ] **In-chat command:** `/cronjob {prompt} {frequency}` when using messaging integrations
+
+**Files to create:** `cron/scheduler.py`, `cron/jobs.py`, `tools/schedule_tool.py`
+
+---
+
+## 15. Text-to-Speech (TTS) 🔊
+
+**Problem:** Agent can only respond with text. Some users prefer audio responses (accessibility, hands-free use, podcasts).
+
+**Ideas:**
+- [ ] **TTS tool** - Generate audio files from text
+  ```python
+  tts_generate(text="Here's your summary...", voice="nova", output="summary.mp3")
+  ```
+  - Returns path to generated audio file
+  - For messaging integrations: can send as voice message
+  
+- [ ] **Provider options:**
+  - Edge TTS (free, good quality, many voices)
+  - OpenAI TTS (paid, excellent quality)
+  - ElevenLabs (paid, best quality, voice cloning)
+  - Local options (Coqui TTS, Bark)
+  
+- [ ] **Modes:**
+  - On-demand: User explicitly asks "read this to me"
+  - Auto-TTS: Configurable to always generate audio for responses
+  - Long-text handling: Summarize or chunk very long responses
+  
+- [ ] **Integration with messaging:**
+  - When enabled, can send voice notes instead of/alongside text
+  - User preference per channel
+
+**Files to create:** `tools/tts_tool.py`, config in `cli-config.yaml`
+
+---
+
+## 16. Speech-to-Text / Audio Transcription 🎤
+
+**Problem:** Users may want to send voice memos instead of typing. Agent is blind to audio content.
+
+**Ideas:**
+- [ ] **Voice memo transcription** - For messaging integrations
+  - User sends voice message → transcribe → process as text
+  - Seamless: user speaks, agent responds
+  
+- [ ] **Audio/video file transcription** - Existing idea, expanded:
+  - Transcribe local audio files (mp3, wav, m4a)
+  - Transcribe YouTube videos (download audio → transcribe)
+  - Extract key moments with timestamps
+  
+- [ ] **Provider options:**
+  - OpenAI Whisper API (good quality, cheap)
+  - Deepgram (fast, good for real-time)
+  - Local Whisper (free, runs on GPU)
+  - Groq Whisper (fast, free tier available)
+  
+- [ ] **Tool interface:**
+  ```python
+  transcribe(source="audio.mp3")  # Local file
+  transcribe(source="https://youtube.com/...")  # YouTube
+  transcribe(source="voice_message", data=bytes)  # Voice memo
+  ```
+
+**Files to create:** `tools/transcribe_tool.py`, integrate with messaging monitors
+
+---
+
 ## Priority Order (Suggested)
 
-1. **Memory & Context Management** - Biggest impact on complex tasks
-2. **Self-Reflection** - Improves reliability and reduces wasted tool calls  
-3. **Project-Local Context** - Practical win, keeps useful info across sessions
-4. **Tool Composition** - Quality of life, builds on other improvements
-5. **Dynamic Skills** - Force multiplier for repeated tasks
+1. **🎯 Subagent Architecture** - Critical for context management, enables everything else
+2. **Memory & Context Management** - Complements subagents for remaining context
+3. **Self-Reflection** - Improves reliability and reduces wasted tool calls  
+4. **Project-Local Context** - Practical win, keeps useful info across sessions
+5. **Messaging Integrations** - Unlocks mobile access, new interaction patterns
+6. **Scheduled Tasks / Cron Jobs** - Enables automation, reminders, monitoring
+7. **Tool Composition** - Quality of life, builds on other improvements
+8. **Dynamic Skills** - Force multiplier for repeated tasks
+9. **Interactive Clarifying Questions** - Better UX for ambiguous tasks
+10. **TTS / Audio Transcription** - Accessibility, hands-free use
 
 ---
 
@@ -339,11 +609,13 @@ These items need to be addressed ASAP:
 The following were removed because they're architecturally impossible:
 
 - ~~Proactive suggestions / Prefetching~~ - Agent only runs on user request, can't interject
-- ~~Session save/restore across conversations~~ - Agent doesn't control session persistence
-- ~~User preference learning across sessions~~ - Same issue
 - ~~Clipboard integration~~ - No access to user's local system clipboard
-- ~~Voice/TTS playback~~ - Can generate audio but can't play it to user
-- ~~Set reminders~~ - No persistent background execution
+
+The following **moved to active TODO** (now possible with new architecture):
+
+- ~~Session save/restore~~ → See **Messaging Integrations** (session persistence)
+- ~~Voice/TTS playback~~ → See **TTS** (can generate audio files, send via messaging)
+- ~~Set reminders~~ → See **Scheduled Tasks / Cron Jobs**
 
 The following were removed because they're **already possible**:
 
@@ -354,6 +626,77 @@ The following were removed because they're **already possible**:
 - ~~Code Quality Tools~~ → Run linters (`eslint`, `black`, `mypy`) in terminal
 - ~~Testing Framework~~ → Run `pytest`, `jest`, etc. in terminal
 - ~~Translation~~ → LLM handles this fine, or use translation APIs
+
+---
+
+---
+
+## 🧪 Brainstorm Ideas (Not Yet Fleshed Out)
+
+*These are early-stage ideas that need more thinking before implementation. Captured here so they don't get lost.*
+
+### Remote/Distributed Execution 🌐
+
+**Concept:** Run agent on a powerful remote server while interacting from a thin client.
+
+**Why interesting:**
+- Run on beefy GPU server for local LLM inference
+- Agent has access to remote machine's resources (files, tools, internet)
+- User interacts via lightweight client (phone, low-power laptop)
+
+**Open questions:**
+- How does this differ from just SSH + running cli.py on remote?
+- Would need secure communication channel (WebSocket? gRPC?)
+- How to handle tool outputs that reference remote paths?
+- Credential management for remote execution
+- Latency considerations for interactive use
+
+**Possible architecture:**
+```
+┌─────────────┐         ┌─────────────────────────┐
+│ Thin Client │ ◄─────► │ Remote Hermes Server    │
+│ (phone/web) │  WS/API │ - Full agent + tools    │
+└─────────────┘         │ - GPU for local LLM     │
+                        │ - Access to server files│
+                        └─────────────────────────┘
+```
+
+**Related to:** Messaging integrations (could be the "server" that monitors receive from)
+
+---
+
+### Multi-Agent Parallel Execution 🤖🤖
+
+**Concept:** Extension of Subagent Architecture (Section 1) - run multiple subagents in parallel.
+
+**Why interesting:**
+- Independent subtasks don't need to wait for each other
+- "Research X while setting up Y" - both run simultaneously
+- Faster completion for complex multi-part tasks
+
+**Open questions:**
+- How to detect which tasks are truly independent?
+- Resource management (API rate limits, concurrent connections)
+- How to merge results when parallel tasks have conflicts?
+- Cost implications of multiple parallel LLM calls
+
+*Note: Basic subagent delegation (Section 1) should be implemented first, parallel execution is an optimization on top.*
+
+---
+
+### Plugin/Extension System 🔌
+
+**Concept:** Allow users to add custom tools/skills without modifying core code.
+
+**Why interesting:**
+- Community contributions
+- Organization-specific tools
+- Clean separation of core vs. extensions
+
+**Open questions:**
+- Security implications of loading arbitrary code
+- Versioning and compatibility
+- Discovery and installation UX
 
 ---
 

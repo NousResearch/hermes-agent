@@ -530,13 +530,20 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 - `FAL_KEY`: Image generation tools
 
 **Terminal Tool Configuration (mini-swe-agent backend):**
-- `TERMINAL_ENV`: Backend type - `local`, `docker`, `singularity`, or `modal` (default: `local`)
+- `TERMINAL_ENV`: Backend type - `local`, `docker`, `singularity`, `modal`, or `ssh` (default: `local`)
 - `TERMINAL_DOCKER_IMAGE`: Docker image for docker backend (default: `python:3.11-slim`)
 - `TERMINAL_SINGULARITY_IMAGE`: Singularity/Apptainer image (can be `docker://...` URL or local `.sif` path)
 - `TERMINAL_TIMEOUT`: Command timeout in seconds (default: `60`)
 - `TERMINAL_LIFETIME_SECONDS`: Cleanup inactive environments after this time (default: `300`)
 - `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
 - `TERMINAL_SCRATCH_DIR`: Custom scratch directory for sandbox storage (optional, auto-detects `/scratch`)
+- `SUDO_PASSWORD`: Enable sudo commands by piping password via `sudo -S` (works with all backends)
+
+**SSH Backend Configuration (for remote execution):**
+- `TERMINAL_SSH_HOST`: Remote server hostname or IP
+- `TERMINAL_SSH_USER`: SSH username
+- `TERMINAL_SSH_PORT`: SSH port (default: `22`)
+- `TERMINAL_SSH_KEY`: Path to SSH private key (optional, uses ssh-agent if not set)
 
 **Browser Tool Configuration (agent-browser + Browserbase):**
 - `BROWSERBASE_API_KEY`: Browserbase API key for cloud browser execution

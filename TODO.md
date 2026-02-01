@@ -8,13 +8,26 @@
 
 These items need to be addressed ASAP:
 
-### 1. SUDO Breaking Terminal Tool 🔐
-- [ ] **Problem:** SUDO commands break the terminal tool execution
-- [ ] **Fix:** Handle password prompts / TTY requirements gracefully
-- [ ] **Options:**
-  - Configure passwordless sudo for specific commands
-  - Detect sudo and warn user / request alternative approach
-  - Use `sudo -S` with stdin handling if password can be provided securely
+### 1. SUDO Breaking Terminal Tool 🔐 ✅ COMPLETE
+- [x] **Problem:** SUDO commands break the terminal tool execution (hangs indefinitely)
+- [x] **Fix:** Created custom environment wrappers in `tools/terminal_tool.py`
+  - `stdin=subprocess.DEVNULL` prevents hanging on interactive prompts
+  - Sudo fails gracefully with clear error if no password configured
+  - Same UX as Claude Code - agent sees error, tells user to run it themselves
+- [x] **All 5 environments now have consistent behavior:**
+  - `_LocalEnvironment` - local execution
+  - `_DockerEnvironment` - Docker containers
+  - `_SingularityEnvironment` - Singularity/Apptainer containers
+  - `_ModalEnvironment` - Modal cloud sandboxes
+  - `_SSHEnvironment` - remote SSH execution
+- [x] **Optional sudo support via `SUDO_PASSWORD` env var:**
+  - Shared `_transform_sudo_command()` helper used by all environments
+  - If set, auto-transforms `sudo cmd` → pipes password via `sudo -S`
+  - Documented in `.env.example` with security warnings
+  - Works for chained commands: `cmd1 && sudo cmd2`
+- [ ] **Optional future enhancements:**
+  - Interactive password prompt in CLI mode only
+  - Document passwordless sudo setup in /etc/sudoers for power users
 
 ### 2. Fix `browser_get_images` Tool 🖼️
 - [ ] **Problem:** `browser_get_images` tool is broken/not working correctly

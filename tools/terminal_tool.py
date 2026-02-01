@@ -204,6 +204,94 @@ def _check_disk_usage_warning():
         return False
 
 
+def _transform_sudo_command(command: str) -> str:
+    """
+    Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
+    
+    This is a shared helper used by all execution environments to provide
+    consistent sudo handling across local, SSH, and container environments.
+    
+    If SUDO_PASSWORD is set, transforms:
+      'sudo apt install curl' -> password piped via sudo -S
+      
+    If SUDO_PASSWORD is not set, command runs as-is (will fail gracefully
+    with "sudo: a password is required" error due to stdin=DEVNULL).
+    """
+    sudo_password = os.getenv("SUDO_PASSWORD", "")
+    
+    if not sudo_password:
+        return command  # No password, let it fail gracefully
+    
+    # Check if command contains sudo (simple detection)
+    # Handle: "sudo cmd", "sudo -flag cmd", "cmd && sudo cmd2", etc.
+    import re
+    
+    def replace_sudo(match):
+        # Replace 'sudo' with password-piped version
+        # The -S flag makes sudo read password from stdin
+        # The -p '' suppresses the password prompt
+        return f"echo '{sudo_password}' | sudo -S -p ''"
+    
+    # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
+    # This handles: sudo, sudo -flag, etc.
+    return re.sub(r'\bsudo\b', replace_sudo, command)
+
+
+class _LocalEnvironment:
+    """
+    Local execution environment with sudo support and non-blocking stdin.
+    
+    Features:
+    - Uses stdin=DEVNULL to prevent hanging on interactive prompts (sudo, etc.)
+    - Optional SUDO_PASSWORD support: if set, transforms `sudo` commands to use `sudo -S`
+    - Graceful failure: sudo commands fail fast with clear error if no password configured
+    
+    Environment variables:
+    - SUDO_PASSWORD: If set, enables sudo commands by piping password via `sudo -S`
+    """
+    
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        self.cwd = cwd or os.getcwd()
+        self.timeout = timeout
+        self.env = env or {}
+    
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+        """Execute a command locally with sudo support."""
+        work_dir = cwd or self.cwd or os.getcwd()
+        effective_timeout = timeout or self.timeout
+        
+        # Transform sudo commands if SUDO_PASSWORD is available
+        exec_command = _transform_sudo_command(command)
+        
+        try:
+            result = subprocess.run(
+                exec_command,
+                shell=True,
+                text=True,
+                cwd=work_dir,
+                env=os.environ | self.env,
+                timeout=effective_timeout,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
+            )
+            return {"output": result.stdout, "returncode": result.returncode}
+        except subprocess.TimeoutExpired:
+            return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
+        except Exception as e:
+            return {"output": f"Execution error: {str(e)}", "returncode": 1}
+    
+    def cleanup(self):
+        """No cleanup needed for local environment."""
+        pass
+    
+    def stop(self):
+        """Alias for cleanup."""
+        pass
+
+
 class _SingularityEnvironment:
     """
     Custom Singularity/Apptainer environment with better space management.
@@ -279,8 +367,11 @@ class _SingularityEnvironment:
         # Use writable sandbox
         cmd.extend(["--writable", str(self.sandbox_dir)])
         
+        # Transform sudo commands if SUDO_PASSWORD is available
+        exec_command = _transform_sudo_command(command)
+        
         # Execute the command
-        cmd.extend(["bash", "-c", command])
+        cmd.extend(["bash", "-c", exec_command])
         
         try:
             result = subprocess.run(
@@ -291,6 +382,7 @@ class _SingularityEnvironment:
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
             )
             return {"output": result.stdout, "returncode": result.returncode}
         except subprocess.TimeoutExpired:
@@ -395,9 +487,12 @@ class _SSHEnvironment:
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
         
+        # Transform sudo commands if SUDO_PASSWORD is available
+        exec_command = _transform_sudo_command(command)
+        
         # Wrap command to run in the correct directory
         # Use bash -c to handle complex commands properly
-        wrapped_command = f'cd {work_dir} && {command}'
+        wrapped_command = f'cd {work_dir} && {exec_command}'
         
         cmd = self._build_ssh_command()
         cmd.extend(["bash", "-c", wrapped_command])
@@ -411,6 +506,7 @@ class _SSHEnvironment:
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
             )
             return {"output": result.stdout, "returncode": result.returncode}
         except subprocess.TimeoutExpired:
@@ -437,6 +533,112 @@ class _SSHEnvironment:
     
     def stop(self):
         """Alias for cleanup."""
+        self.cleanup()
+    
+    def __del__(self):
+        """Cleanup on destruction."""
+        try:
+            self.cleanup()
+        except:
+            pass
+
+
+class _DockerEnvironment:
+    """
+    Docker execution environment wrapper with sudo support and non-blocking stdin.
+    
+    Wraps mini-swe-agent's DockerEnvironment but adds:
+    - stdin=DEVNULL to prevent hanging on interactive prompts
+    - SUDO_PASSWORD support via _transform_sudo_command
+    """
+    
+    def __init__(self, image: str, cwd: str = "/", timeout: int = 60):
+        from minisweagent.environments.docker import DockerEnvironment
+        self._inner = DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
+        self.cwd = cwd
+        self.timeout = timeout
+    
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+        """Execute a command in the Docker container with sudo support."""
+        # Transform sudo commands if SUDO_PASSWORD is available
+        exec_command = _transform_sudo_command(command)
+        
+        work_dir = cwd or self.cwd
+        effective_timeout = timeout or self.timeout
+        
+        # Get container_id from inner environment
+        assert self._inner.container_id, "Container not started"
+        
+        cmd = [self._inner.config.executable, "exec", "-w", work_dir]
+        for key in self._inner.config.forward_env:
+            if (value := os.getenv(key)) is not None:
+                cmd.extend(["-e", f"{key}={value}"])
+        for key, value in self._inner.config.env.items():
+            cmd.extend(["-e", f"{key}={value}"])
+        cmd.extend([self._inner.container_id, "bash", "-lc", exec_command])
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                text=True,
+                timeout=effective_timeout,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
+            )
+            return {"output": result.stdout, "returncode": result.returncode}
+        except subprocess.TimeoutExpired:
+            return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
+    
+    def cleanup(self):
+        """Cleanup the Docker container."""
+        self._inner.cleanup()
+    
+    def stop(self):
+        """Alias for cleanup."""
+        self.cleanup()
+    
+    def __del__(self):
+        """Cleanup on destruction."""
+        try:
+            self.cleanup()
+        except:
+            pass
+
+
+class _ModalEnvironment:
+    """
+    Modal cloud execution environment wrapper with sudo support.
+    
+    Wraps mini-swe-agent's SwerexModalEnvironment but adds:
+    - SUDO_PASSWORD support via _transform_sudo_command
+    
+    Note: stdin handling is not needed for Modal since it uses remote async execution.
+    """
+    
+    def __init__(self, image: str, cwd: str = "/", timeout: int = 60):
+        from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
+        self._inner = SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+        self.cwd = cwd
+        self.timeout = timeout
+    
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+        """Execute a command in Modal with sudo support."""
+        # Transform sudo commands if SUDO_PASSWORD is available
+        exec_command = _transform_sudo_command(command)
+        
+        # Delegate to inner environment with transformed command
+        return self._inner.execute(exec_command, cwd=cwd, timeout=timeout)
+    
+    def cleanup(self):
+        """Cleanup the Modal deployment."""
+        if hasattr(self._inner, 'stop'):
+            self._inner.stop()
+    
+    def stop(self):
+        """Stop the Modal deployment."""
         self.cleanup()
     
     def __del__(self):
@@ -518,20 +720,20 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
         Environment instance with execute() method
     """
     if env_type == "local":
-        from minisweagent.environments.local import LocalEnvironment
-        return LocalEnvironment(cwd=cwd, timeout=timeout)
+        # Use our custom LocalEnvironment with sudo support and non-blocking stdin
+        return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        from minisweagent.environments.docker import DockerEnvironment
-        return DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
+        # Use custom Docker wrapper with sudo support and non-blocking stdin
+        return _DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "singularity":
         # Use custom Singularity environment with better space management
         return _SingularityEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "modal":
-        from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
-        return SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+        # Use custom Modal wrapper with sudo support
+        return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):

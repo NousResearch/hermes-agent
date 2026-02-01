@@ -312,17 +312,56 @@ def _find_all_skills() -> List[Dict[str, Any]]:
     return skills
 
 
+def _load_category_description(category_dir: Path) -> Optional[str]:
+    """
+    Load category description from DESCRIPTION.md if it exists.
+    
+    Args:
+        category_dir: Path to the category directory
+        
+    Returns:
+        Description string or None if not found
+    """
+    desc_file = category_dir / "DESCRIPTION.md"
+    if not desc_file.exists():
+        return None
+    
+    try:
+        content = desc_file.read_text(encoding='utf-8')
+        # Parse frontmatter if present
+        frontmatter, body = _parse_frontmatter(content)
+        
+        # Prefer frontmatter description, fall back to first non-header line
+        description = frontmatter.get('description', '')
+        if not description:
+            for line in body.strip().split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    description = line
+                    break
+        
+        # Truncate to reasonable length
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+        
+        return description if description else None
+    except Exception:
+        return None
+
+
 def skills_categories(task_id: str = None) -> str:
     """
-    List available skill categories (progressive disclosure tier 0).
+    List available skill categories with descriptions (progressive disclosure tier 0).
     
-    Returns just category names for efficient discovery before filtering.
+    Returns category names and descriptions for efficient discovery before drilling down.
+    Categories can have a DESCRIPTION.md file with a description frontmatter field
+    or first paragraph to explain what skills are in that category.
     
     Args:
         task_id: Optional task identifier (unused, for API consistency)
         
     Returns:
-        JSON string with list of category names
+        JSON string with list of categories and their descriptions
     """
     try:
         if not SKILLS_DIR.exists():
@@ -333,16 +372,36 @@ def skills_categories(task_id: str = None) -> str:
             }, ensure_ascii=False)
         
         # Scan for categories (top-level directories containing skills)
-        categories = set()
+        category_dirs = {}
         for skill_md in SKILLS_DIR.rglob("SKILL.md"):
             category = _get_category_from_path(skill_md)
             if category:
-                categories.add(category)
+                category_dir = SKILLS_DIR / category
+                if category not in category_dirs:
+                    category_dirs[category] = category_dir
+        
+        # Build category list with descriptions
+        categories = []
+        for name in sorted(category_dirs.keys()):
+            category_dir = category_dirs[name]
+            description = _load_category_description(category_dir)
+            
+            # Count skills in this category
+            skill_count = sum(1 for _ in category_dir.rglob("SKILL.md"))
+            
+            cat_entry = {
+                "name": name,
+                "skill_count": skill_count
+            }
+            if description:
+                cat_entry["description"] = description
+            
+            categories.append(cat_entry)
         
         return json.dumps({
             "success": True,
-            "categories": sorted(categories),
-            "hint": "Use skills_list(category) to see skills in a category"
+            "categories": categories,
+            "hint": "If a category is relevant to your task, use skills_list with that category to see available skills"
         }, ensure_ascii=False)
         
     except Exception as e:

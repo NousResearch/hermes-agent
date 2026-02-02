@@ -30,6 +30,10 @@ Requires-Dist: pytest; extra == "dev"
 Requires-Dist: pytest-asyncio; extra == "dev"
 Provides-Extra: atropos
 Requires-Dist: atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git ; extra == "atropos"
+Requires-Dist: aiohttp; extra == "atropos"
+Requires-Dist: fastapi; extra == "atropos"
+Requires-Dist: uvicorn; extra == "atropos"
+Requires-Dist: pyte; extra == "atropos"
 
 # Hermes Agent
 

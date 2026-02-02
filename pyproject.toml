@@ -36,7 +36,14 @@ dependencies = [
 modal = ["modal", "boto3"]
 dev = ["pytest", "pytest-asyncio"]
 # Install Atropos from source (PyPI is often stale for this internal dependency).
-atropos = ["atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git"]
+atropos = [
+  "atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git",
+  # Atropos integration runtime deps (kept optional for Hermes-only users)
+  "aiohttp",
+  "fastapi",
+  "uvicorn",
+  "pyte",
+]
 
 [project.scripts]
 hermes-agent = "run_agent:main"
@@ -54,4 +61,4 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["tools"]
+include = ["tools", "atropos", "atropos.*"]

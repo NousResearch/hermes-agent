@@ -42,3 +42,5 @@ images/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
+
+.DS_Store

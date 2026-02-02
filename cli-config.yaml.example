@@ -113,6 +113,33 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Context Compression (Auto-shrinks long conversations)
+# =============================================================================
+# When conversation approaches model's context limit, middle turns are
+# automatically summarized to free up space while preserving important context.
+#
+# HOW IT WORKS:
+# 1. Tracks actual token usage from API responses (not estimates)
+# 2. When prompt_tokens >= threshold% of model's context_length, triggers compression
+# 3. Protects first 3 turns (system prompt, initial request, first response)
+# 4. Protects last 4 turns (recent context is most relevant)
+# 5. Summarizes middle turns using a fast/cheap model
+# 6. Inserts summary as a user message, continues conversation seamlessly
+#
+compression:
+  # Enable automatic context compression (default: true)
+  # Set to false if you prefer to manage context manually or want errors on overflow
+  enabled: true
+  
+  # Trigger compression at this % of model's context limit (default: 0.85 = 85%)
+  # Lower values = more aggressive compression, higher values = compress later
+  threshold: 0.85
+  
+  # Model to use for generating summaries (fast/cheap recommended)
+  # This model compresses the middle turns into a concise summary
+  summary_model: "google/gemini-2.0-flash-001"
+
+# =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:

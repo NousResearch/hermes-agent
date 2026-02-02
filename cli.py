@@ -71,6 +71,11 @@ def load_cli_config() -> Dict[str, Any]:
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
         },
+        "compression": {
+            "enabled": True,      # Auto-compress when approaching context limit
+            "threshold": 0.85,    # Compress at 85% of model's context limit
+            "summary_model": "google/gemini-2.0-flash-001",  # Fast/cheap model for summaries
+        },
         "agent": {
             "max_turns": 20,
             "verbose": False,
@@ -153,6 +158,18 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in browser_env_mappings.items():
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
+    
+    # Apply compression config to environment variables
+    compression_config = defaults.get("compression", {})
+    compression_env_mappings = {
+        "enabled": "CONTEXT_COMPRESSION_ENABLED",
+        "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
+        "summary_model": "CONTEXT_COMPRESSION_MODEL",
+    }
+    
+    for config_key, env_var in compression_env_mappings.items():
+        if config_key in compression_config:
+            os.environ[env_var] = str(compression_config[config_key])
     
     return defaults
 

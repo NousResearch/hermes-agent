@@ -250,6 +250,38 @@ This is useful for:
 - Replaying conversations
 - Training data inspection
 
+### Context Compression
+
+Long conversations can exceed model context limits. The CLI automatically compresses context when approaching the limit:
+
+```yaml
+# In cli-config.yaml
+compression:
+  enabled: true                    # Enable auto-compression
+  threshold: 0.85                  # Compress at 85% of context limit  
+  summary_model: "google/gemini-2.0-flash-001"
+```
+
+**How it works:**
+1. Tracks actual token usage from each API response
+2. When tokens reach threshold, middle turns are summarized
+3. First 3 and last 4 turns are always protected
+4. Conversation continues seamlessly after compression
+
+**When compression triggers:**
+```
+📦 Context compression triggered (170,000 tokens ≥ 170,000 threshold)
+   📊 Model context limit: 200,000 tokens (85% = 170,000)
+   🗜️  Summarizing turns 4-15 (12 turns)
+   ✅ Compressed: 20 → 9 messages (~45,000 tokens saved)
+```
+
+To disable compression:
+```yaml
+compression:
+  enabled: false
+```
+
 ## Quiet Mode
 
 The CLI runs in "quiet mode" (`HERMES_QUIET=1`), which:

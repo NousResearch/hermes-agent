@@ -51,6 +51,410 @@ from model_tools import get_tool_definitions, handle_function_call, check_toolse
 from tools.terminal_tool import cleanup_vm
 from tools.browser_tool import cleanup_browser
 
+import requests
+
+# =============================================================================
+# Model Context Management
+# =============================================================================
+
+# Cache for model metadata from OpenRouter
+_model_metadata_cache: Dict[str, Dict[str, Any]] = {}
+_model_metadata_cache_time: float = 0
+_MODEL_CACHE_TTL = 3600  # 1 hour cache TTL
+
+# Default context lengths for common models (fallback if API fails)
+DEFAULT_CONTEXT_LENGTHS = {
+    "anthropic/claude-opus-4": 200000,
+    "anthropic/claude-opus-4.5": 200000,
+    "anthropic/claude-sonnet-4": 200000,
+    "anthropic/claude-sonnet-4-20250514": 200000,
+    "anthropic/claude-haiku-4.5": 200000,
+    "openai/gpt-4o": 128000,
+    "openai/gpt-4-turbo": 128000,
+    "openai/gpt-4o-mini": 128000,
+    "google/gemini-2.0-flash": 1048576,
+    "google/gemini-2.5-pro": 1048576,
+    "meta-llama/llama-3.3-70b-instruct": 131072,
+    "deepseek/deepseek-chat-v3": 65536,
+    "qwen/qwen-2.5-72b-instruct": 32768,
+}
+
+
+def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch model metadata from OpenRouter's /api/v1/models endpoint.
+    Results are cached for 1 hour to minimize API calls.
+    
+    Returns:
+        Dict mapping model_id to metadata (context_length, max_completion_tokens, etc.)
+    """
+    global _model_metadata_cache, _model_metadata_cache_time
+    
+    # Return cached data if fresh
+    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+        return _model_metadata_cache
+    
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        # Build cache mapping model_id to relevant metadata
+        cache = {}
+        for model in data.get("data", []):
+            model_id = model.get("id", "")
+            cache[model_id] = {
+                "context_length": model.get("context_length", 128000),
+                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+                "name": model.get("name", model_id),
+                "pricing": model.get("pricing", {}),
+            }
+            # Also cache by canonical slug if different
+            canonical = model.get("canonical_slug", "")
+            if canonical and canonical != model_id:
+                cache[canonical] = cache[model_id]
+        
+        _model_metadata_cache = cache
+        _model_metadata_cache_time = time.time()
+        
+        if not os.getenv("HERMES_QUIET"):
+            logging.debug(f"Fetched metadata for {len(cache)} models from OpenRouter")
+        
+        return cache
+        
+    except Exception as e:
+        logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+        # Return cached data even if stale, or empty dict
+        return _model_metadata_cache or {}
+
+
+def get_model_context_length(model: str) -> int:
+    """
+    Get the context length for a specific model.
+    
+    Args:
+        model: Model identifier (e.g., "anthropic/claude-sonnet-4")
+        
+    Returns:
+        Context length in tokens (defaults to 128000 if unknown)
+    """
+    # Try to get from OpenRouter API
+    metadata = fetch_model_metadata()
+    if model in metadata:
+        return metadata[model].get("context_length", 128000)
+    
+    # Check default fallbacks (handles partial matches)
+    for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
+        if default_model in model or model in default_model:
+            return length
+    
+    # Conservative default
+    return 128000
+
+
+def estimate_tokens_rough(text: str) -> int:
+    """
+    Rough token estimate for pre-flight checks (before API call).
+    Uses ~4 chars per token heuristic.
+    
+    For accurate counts, use the `usage.prompt_tokens` from API responses.
+    
+    Args:
+        text: Text to estimate tokens for
+        
+    Returns:
+        Rough estimated token count
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
+    """
+    Rough token estimate for messages (pre-flight check only).
+    
+    For accurate counts, use the `usage.prompt_tokens` from API responses.
+    
+    Args:
+        messages: List of message dicts
+        
+    Returns:
+        Rough estimated token count
+    """
+    total_chars = sum(len(str(msg)) for msg in messages)
+    return total_chars // 4
+
+
+class ContextCompressor:
+    """
+    Compresses conversation context when approaching model's context limit.
+    
+    Uses similar logic to trajectory_compressor but operates in real-time:
+    1. Protects first few turns (system, initial user, first assistant response)
+    2. Protects last N turns (recent context is most relevant)
+    3. Summarizes middle turns when threshold is reached
+    
+    Token tracking uses actual counts from API responses (usage.prompt_tokens)
+    rather than estimates for accuracy.
+    """
+    
+    def __init__(
+        self,
+        model: str,
+        threshold_percent: float = 0.85,
+        summary_model: str = "google/gemini-2.0-flash-001",
+        protect_first_n: int = 3,
+        protect_last_n: int = 4,
+        summary_target_tokens: int = 500,
+        quiet_mode: bool = False,
+    ):
+        """
+        Initialize the context compressor.
+        
+        Args:
+            model: The main model being used (to determine context limit)
+            threshold_percent: Trigger compression at this % of context (default 85%)
+            summary_model: Model to use for generating summaries (cheap/fast)
+            protect_first_n: Number of initial turns to always keep
+            protect_last_n: Number of recent turns to always keep
+            summary_target_tokens: Target token count for summaries
+            quiet_mode: Suppress compression notifications
+        """
+        self.model = model
+        self.threshold_percent = threshold_percent
+        self.summary_model = summary_model
+        self.protect_first_n = protect_first_n
+        self.protect_last_n = protect_last_n
+        self.summary_target_tokens = summary_target_tokens
+        self.quiet_mode = quiet_mode
+        
+        self.context_length = get_model_context_length(model)
+        self.threshold_tokens = int(self.context_length * threshold_percent)
+        self.compression_count = 0
+        
+        # Track actual token usage from API responses
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        
+        # Initialize OpenRouter client for summarization
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        ) if api_key else None
+    
+    def update_from_response(self, usage: Dict[str, Any]):
+        """
+        Update tracked token usage from API response.
+        
+        Args:
+            usage: The usage dict from response (contains prompt_tokens, completion_tokens, total_tokens)
+        """
+        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        self.last_completion_tokens = usage.get("completion_tokens", 0)
+        self.last_total_tokens = usage.get("total_tokens", 0)
+    
+    def should_compress(self, prompt_tokens: int = None) -> bool:
+        """
+        Check if context exceeds the compression threshold.
+        
+        Uses actual token count from API response for accuracy.
+        
+        Args:
+            prompt_tokens: Actual prompt tokens from last API response.
+                          If None, uses last tracked value.
+            
+        Returns:
+            True if compression should be triggered
+        """
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        return tokens >= self.threshold_tokens
+    
+    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
+        """
+        Quick pre-flight check using rough estimate (before API call).
+        
+        Use this to avoid making an API call that would fail due to context overflow.
+        For post-response compression decisions, use should_compress() with actual tokens.
+        
+        Args:
+            messages: Current conversation messages
+            
+        Returns:
+            True if compression is likely needed
+        """
+        rough_estimate = estimate_messages_tokens_rough(messages)
+        return rough_estimate >= self.threshold_tokens
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get current compression status for display/logging.
+        
+        Returns:
+            Dict with token usage and threshold info
+        """
+        return {
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "threshold_tokens": self.threshold_tokens,
+            "context_length": self.context_length,
+            "usage_percent": (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0,
+            "compression_count": self.compression_count,
+        }
+    
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> str:
+        """
+        Generate a concise summary of conversation turns using a fast model.
+        
+        Args:
+            turns_to_summarize: List of message dicts to summarize
+            
+        Returns:
+            Summary string
+        """
+        if not self.client:
+            # Fallback if no API key
+            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed to save space. The assistant performed various actions and received responses."
+        
+        # Format turns for summarization
+        parts = []
+        for i, msg in enumerate(turns_to_summarize):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            
+            # Truncate very long content
+            if len(content) > 2000:
+                content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
+            
+            # Include tool call info if present
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls if isinstance(tc, dict)]
+                content += f"\n[Tool calls: {', '.join(tool_names)}]"
+            
+            parts.append(f"[{role.upper()}]: {content}")
+        
+        content_to_summarize = "\n\n".join(parts)
+        
+        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
+
+Write from a neutral perspective describing:
+1. What actions were taken (tool calls, searches, file operations)
+2. Key information or results obtained
+3. Important decisions or findings
+4. Relevant data, file names, or outputs
+
+Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
+
+---
+TURNS TO SUMMARIZE:
+{content_to_summarize}
+---
+
+Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.summary_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=self.summary_target_tokens * 2,
+                timeout=30.0,
+            )
+            
+            summary = response.choices[0].message.content.strip()
+            if not summary.startswith("[CONTEXT SUMMARY]:"):
+                summary = "[CONTEXT SUMMARY]: " + summary
+            
+            return summary
+            
+        except Exception as e:
+            logging.warning(f"Failed to generate context summary: {e}")
+            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+    
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
+        """
+        Compress conversation messages by summarizing middle turns.
+        
+        Algorithm:
+        1. Keep first N turns (system prompt, initial context)
+        2. Keep last N turns (recent/relevant context)
+        3. Summarize everything in between
+        4. Insert summary as a user message
+        
+        Args:
+            messages: Current conversation messages
+            current_tokens: Actual token count from API (for logging). If None, uses estimate.
+            
+        Returns:
+            Compressed message list
+        """
+        n_messages = len(messages)
+        
+        # Not enough messages to compress
+        if n_messages <= self.protect_first_n + self.protect_last_n + 1:
+            if not self.quiet_mode:
+                print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
+            return messages
+        
+        # Determine compression boundaries
+        compress_start = self.protect_first_n
+        compress_end = n_messages - self.protect_last_n
+        
+        # Nothing to compress
+        if compress_start >= compress_end:
+            return messages
+        
+        # Extract turns to summarize
+        turns_to_summarize = messages[compress_start:compress_end]
+        
+        # Use actual token count if provided, otherwise estimate
+        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        
+        if not self.quiet_mode:
+            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
+            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
+            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+        
+        # Generate summary
+        summary = self._generate_summary(turns_to_summarize)
+        
+        # Build compressed messages
+        compressed = []
+        
+        # Keep protected head turns
+        for i in range(compress_start):
+            msg = messages[i].copy()
+            # Add notice to system message on first compression
+            if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
+                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+            compressed.append(msg)
+        
+        # Add summary as user message
+        compressed.append({
+            "role": "user",
+            "content": summary
+        })
+        
+        # Keep protected tail turns
+        for i in range(compress_end, n_messages):
+            compressed.append(messages[i].copy())
+        
+        self.compression_count += 1
+        
+        if not self.quiet_mode:
+            # Estimate new size (actual will be known after next API call)
+            new_estimate = estimate_messages_tokens_rough(compressed)
+            saved_estimate = display_tokens - new_estimate
+            print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
+            print(f"   💡 Compression #{self.compression_count} complete")
+        
+        return compressed
+
 
 # =============================================================================
 # Default System Prompt Components
@@ -364,6 +768,30 @@ class AIAgent:
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
+        
+        # Initialize context compressor for automatic context management
+        # Compresses conversation when approaching model's context limit
+        # Configuration via environment variables (can be set in .env or cli-config.yaml)
+        compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.85"))
+        compression_model = os.getenv("CONTEXT_COMPRESSION_MODEL", "google/gemini-2.0-flash-001")
+        compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+        
+        self.context_compressor = ContextCompressor(
+            model=self.model,
+            threshold_percent=compression_threshold,
+            summary_model=compression_model,
+            protect_first_n=3,  # Keep system, first user, first assistant
+            protect_last_n=4,   # Keep recent context
+            summary_target_tokens=500,
+            quiet_mode=self.quiet_mode,
+        )
+        self.compression_enabled = compression_enabled
+        
+        if not self.quiet_mode:
+            if compression_enabled:
+                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
+            else:
+                print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
     # Pools of kawaii faces for random selection
     KAWAII_SEARCH = [
@@ -1105,6 +1533,18 @@ class AIAgent:
                                 "error": "First response truncated due to output length limit"
                             }
                     
+                    # Track actual token usage from response for context management
+                    if hasattr(response, 'usage') and response.usage:
+                        usage_dict = {
+                            "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                            "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                            "total_tokens": getattr(response.usage, 'total_tokens', 0),
+                        }
+                        self.context_compressor.update_from_response(usage_dict)
+                        
+                        if self.verbose_logging:
+                            logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
+                    
                     break  # Success, exit retry loop
 
                 except Exception as api_error:
@@ -1132,17 +1572,28 @@ class AIAgent:
                     ])
                     
                     if is_context_length_error:
-                        print(f"{self.log_prefix}❌ Context length exceeded - this error cannot be resolved by retrying.")
-                        print(f"{self.log_prefix}   💡 The conversation has accumulated too much content from tool responses.")
-                        logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot continue.")
-                        # Return a partial result instead of crashing
-                        return {
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Conversation terminated early.",
-                            "partial": True
-                        }
+                        print(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
+                        
+                        # Try to compress and retry
+                        original_len = len(messages)
+                        messages = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+                        
+                        if len(messages) < original_len:
+                            # Compression was possible, retry
+                            print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            continue  # Retry with compressed messages
+                        else:
+                            # Can't compress further
+                            print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
+                            print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
+                            logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                                "partial": True
+                            }
                     
                     if retry_count > max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
@@ -1350,6 +1801,14 @@ class AIAgent:
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                             time.sleep(self.tool_delay)
+                    
+                    # Check if context compression is needed before next API call
+                    # Uses actual token count from last API response
+                    if self.compression_enabled and self.context_compressor.should_compress():
+                        messages = self.context_compressor.compress(
+                            messages, 
+                            current_tokens=self.context_compressor.last_prompt_tokens
+                        )
                     
                     # Continue loop for next response
                     continue

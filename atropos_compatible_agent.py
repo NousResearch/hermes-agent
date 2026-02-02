@@ -70,9 +70,11 @@ class AtroposAIAgent(AIAgent):
         disabled_toolsets: Optional[List[str]] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
+        quiet_mode: bool = False,
         ephemeral_system_prompt: Optional[str] = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
+        session_id: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ):
@@ -87,9 +89,11 @@ class AtroposAIAgent(AIAgent):
             disabled_toolsets=disabled_toolsets,
             save_trajectories=save_trajectories,
             verbose_logging=verbose_logging,
+            quiet_mode=quiet_mode,
             ephemeral_system_prompt=ephemeral_system_prompt,
             log_prefix_chars=log_prefix_chars,
             log_prefix=log_prefix,
+            session_id=session_id,
         )
 
         self.server = server
@@ -131,13 +135,18 @@ class AtroposAIAgent(AIAgent):
         return "\n".join(parts) if parts else "(no tools available)"
 
     def _build_system_prompt(self, system_message: Optional[str]) -> Optional[str]:
-        if system_message is not None:
-            return system_message
-        if self.ephemeral_system_prompt:
-            return self.ephemeral_system_prompt
-        return ATROPOS_TOOL_SYSTEM_PROMPT.format(
+        tool_prompt = ATROPOS_TOOL_SYSTEM_PROMPT.format(
             tool_descriptions=self._tool_descriptions_text()
         )
+
+        parts: List[str] = []
+        if system_message:
+            parts.append(system_message)
+        if self.ephemeral_system_prompt:
+            parts.append(self.ephemeral_system_prompt)
+        parts.append(tool_prompt)
+
+        return "\n\n".join(parts)
 
     def _parse_tool_calls(self, content: str) -> Tuple[List[Tuple[str, Dict[str, Any]]], List[str]]:
         """
@@ -284,10 +293,29 @@ class AtroposAIAgent(AIAgent):
         """
         Sync wrapper for convenience.
 
-        If already inside an event loop, call `await run_conversation_async(...)` instead.
+        If called from within a running event loop (e.g. prompt_toolkit), this
+        runs the async conversation in a dedicated thread to avoid nested loops.
         """
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.run_conversation_async(*args, **kwargs))
-        raise RuntimeError("AtroposAIAgent.run_conversation() cannot be called from a running event loop; use await run_conversation_async().")
+
+        import queue
+        import threading
+
+        out: "queue.Queue[object]" = queue.Queue(maxsize=1)
+
+        def runner() -> None:
+            try:
+                out.put(asyncio.run(self.run_conversation_async(*args, **kwargs)))
+            except BaseException as exc:  # noqa: BLE001
+                out.put(exc)
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+
+        result = out.get()
+        if isinstance(result, BaseException):
+            raise result
+        return result  # type: ignore[return-value]

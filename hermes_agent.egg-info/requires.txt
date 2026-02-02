@@ -1,0 +1,27 @@
+openai
+python-dotenv
+fire
+httpx
+rich
+tenacity
+pyyaml
+prompt_toolkit
+requests
+jinja2
+pydantic>=2.0
+firecrawl-py
+fal-client
+litellm>=1.75.5
+typer
+platformdirs
+
+[atropos]
+atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git
+
+[dev]
+pytest
+pytest-asyncio
+
+[modal]
+modal
+boto3

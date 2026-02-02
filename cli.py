@@ -447,6 +447,7 @@ class HermesCLI:
         toolsets: List[str] = None,
         api_key: str = None,
         base_url: str = None,
+        backend: str = None,
         max_turns: int = 20,
         verbose: bool = False,
         compact: bool = False,
@@ -459,6 +460,7 @@ class HermesCLI:
             toolsets: List of toolsets to enable (default: all)
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
+            backend: Agent backend ("openai" or "atropos")
             max_turns: Maximum conversation turns
             verbose: Enable verbose logging
             compact: Use compact display mode
@@ -473,6 +475,13 @@ class HermesCLI:
         self.base_url = base_url or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
+
+        self.backend = (backend or os.getenv("HERMES_BACKEND") or "openai").strip().lower()
+        if self.backend not in {"openai", "atropos"}:
+            self.console.print(
+                f"[bold yellow]Warning:[/] unknown backend '{self.backend}', falling back to 'openai'"
+            )
+            self.backend = "openai"
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -531,17 +540,53 @@ class HermesCLI:
             return True
         
         try:
-            self.agent = AIAgent(
-                model=self.model,
-                api_key=self.api_key,
-                base_url=self.base_url,
-                max_iterations=self.max_turns,
-                enabled_toolsets=self.enabled_toolsets,
-                verbose_logging=self.verbose,
-                quiet_mode=True,  # Suppress verbose output for clean CLI
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
-                session_id=self.session_id,  # Pass CLI's session ID to agent
-            )
+            if self.backend == "atropos":
+                try:
+                    from atroposlib.envs.server_handling.server_baseline import APIServerConfig
+                    from atroposlib.envs.server_handling.server_manager import ServerManager
+                except ModuleNotFoundError as exc:
+                    raise RuntimeError(
+                        "Atropos backend requires `atroposlib`. Install Hermes-Agent with the extra "
+                        "`.[atropos]` (e.g. `pip install -e '.[atropos]'` or `uv sync --extra atropos`)."
+                    ) from exc
+
+                from atropos_compatible_agent import AtroposAIAgent
+
+                server_cfg = APIServerConfig(
+                    server_type="openai",
+                    model_name=self.model,
+                    base_url=self.base_url,
+                    api_key=self.api_key or "",
+                    timeout=120,
+                    num_max_requests_at_once=1,
+                    num_requests_for_eval=1,
+                    health_check=False,
+                )
+                server = ServerManager([server_cfg], slurm=False, testing=False)
+
+                self.agent = AtroposAIAgent(
+                    server=server,
+                    tokenizer=None,
+                    model=self.model,
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    verbose_logging=self.verbose,
+                    quiet_mode=True,  # Suppress verbose output for clean CLI
+                    ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                    session_id=self.session_id,
+                )
+            else:
+                self.agent = AIAgent(
+                    model=self.model,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    verbose_logging=self.verbose,
+                    quiet_mode=True,  # Suppress verbose output for clean CLI
+                    ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                    session_id=self.session_id,  # Pass CLI's session ID to agent
+                )
             return True
         except Exception as e:
             self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -1046,10 +1091,13 @@ class HermesCLI:
 def main(
     query: str = None,
     q: str = None,
+    prompt: str = None,
+    p: str = None,
     toolsets: str = None,
     model: str = None,
     api_key: str = None,
     base_url: str = None,
+    backend: str = None,
     max_turns: int = 20,
     verbose: bool = False,
     compact: bool = False,
@@ -1062,10 +1110,13 @@ def main(
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
+        prompt: Alias for query (bypass TUI). Shorthand: -p
+        p: Shorthand for --prompt
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         api_key: API key for authentication
         base_url: Base URL for the API
+        backend: Agent backend ("openai" default, or "atropos")
         max_turns: Maximum conversation turns (default: 20)
         verbose: Enable verbose logging
         compact: Use compact display mode
@@ -1076,6 +1127,7 @@ def main(
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py -q "What is Python?"       # Single query mode
+        python cli.py -p "What is Python?"       # Single query mode (alias)
         python cli.py --list-tools               # List tools and exit
     """
     # Signal to terminal_tool that we're in interactive mode
@@ -1083,7 +1135,7 @@ def main(
     os.environ["HERMES_INTERACTIVE"] = "1"
     
     # Handle query shorthand
-    query = query or q
+    query = query or q or prompt or p
     
     # Parse toolsets - handle both string and tuple/list inputs
     toolsets_list = None
@@ -1105,6 +1157,7 @@ def main(
         toolsets=toolsets_list,
         api_key=api_key,
         base_url=base_url,
+        backend=backend,
         max_turns=max_turns,
         verbose=verbose,
         compact=compact,

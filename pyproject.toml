@@ -19,6 +19,7 @@ dependencies = [
   "rich",
   "tenacity",
   "pyyaml",
+  "prompt_toolkit",
   "requests",
   "jinja2",
   "pydantic>=2.0",
@@ -34,6 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["modal", "boto3"]
 dev = ["pytest", "pytest-asyncio"]
+# Install Atropos from source (PyPI is often stale for this internal dependency).
+atropos = ["atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git"]
 
 [project.scripts]
 hermes-agent = "run_agent:main"
@@ -47,6 +50,7 @@ py-modules = [
   "trajectory_compressor",
   "toolset_distributions",
   "atropos_compatible_agent",
+  "local_server",
 ]
 
 [tool.setuptools.packages.find]

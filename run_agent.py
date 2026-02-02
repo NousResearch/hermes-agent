@@ -910,6 +910,16 @@ class AIAgent:
             if active_system_prompt:
                 # Insert system message at the beginning
                 api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
+
+            if os.getenv("HERMES_DEBUG_OPENAI_REQUEST") == "1":
+                meta = {
+                    "model": self.model,
+                    "base_url": self.base_url,
+                    "messages": api_messages,
+                    "tools": self.tools if self.tools else None,
+                }
+                print("\n=== HERMES_DEBUG_OPENAI_REQUEST ===", flush=True)
+                print(json.dumps(meta, ensure_ascii=False, indent=2)[:200_000], flush=True)
             
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
@@ -923,12 +933,13 @@ class AIAgent:
                 print(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 print(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
             else:
-                # Animated thinking spinner in quiet mode
-                face = random.choice(KawaiiSpinner.KAWAII_THINKING)
-                verb = random.choice(KawaiiSpinner.THINKING_VERBS)
-                spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
-                thinking_spinner.start()
+                # Animated thinking spinner in quiet mode (disable for wrappers/non-TTY usage)
+                if os.getenv("HERMES_DISABLE_SPINNER") != "1":
+                    face = random.choice(KawaiiSpinner.KAWAII_THINKING)
+                    verb = random.choice(KawaiiSpinner.THINKING_VERBS)
+                    spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                    thinking_spinner.start()
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -979,6 +990,14 @@ class AIAgent:
                         api_kwargs["extra_body"] = extra_body
                     
                     response = self.client.chat.completions.create(**api_kwargs)
+
+                    if os.getenv("HERMES_DEBUG_OPENAI_RESPONSE") == "1":
+                        try:
+                            dumped = response.model_dump()
+                        except Exception:
+                            dumped = getattr(response, "__dict__", {"repr": repr(response)})
+                        print("\n=== HERMES_DEBUG_OPENAI_RESPONSE: ChatCompletion (raw) ===", flush=True)
+                        print(json.dumps(dumped, ensure_ascii=False, indent=2), flush=True)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -1294,7 +1313,7 @@ class AIAgent:
                         tool_start_time = time.time()
 
                         # Execute the tool - with animated spinner in quiet mode
-                        if self.quiet_mode:
+                        if self.quiet_mode and os.getenv("HERMES_DISABLE_SPINNER") != "1":
                             # Tool-specific spinner animations
                             tool_spinners = {
                                 'web_search': ('arrows', ['🔍', '🌐', '📡', '🔎']),
@@ -1324,6 +1343,9 @@ class AIAgent:
                                 tool_duration = time.time() - tool_start_time
                                 cute_msg = self._get_cute_tool_message(function_name, function_args, tool_duration)
                                 spinner.stop(cute_msg)
+                        elif self.quiet_mode:
+                            function_result = handle_function_call(function_name, function_args, effective_task_id)
+                            tool_duration = time.time() - tool_start_time
                         else:
                             function_result = handle_function_call(function_name, function_args, effective_task_id)
                             tool_duration = time.time() - tool_start_time

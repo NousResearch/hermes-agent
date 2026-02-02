@@ -1,7 +1,7 @@
 """
 Local OpenAI-compatible server implementation for Hermes-Agent (Atropos integration).
 
-Extends the Atropos APIServer to work with local OpenAI-compatible APIs (e.g. Ollama),
+Extends the Atropos APIServer to work with local OpenAI-compatible APIs (e.g. vLLM, SGLang),
 providing tokens_and_logprobs_completion support via client-side tokenization.
 """
 
@@ -104,27 +104,35 @@ class LocalServer(APIServer):
         Create a LocalServer from environment variables (or explicit overrides).
         
         Env vars (checked in order):
-        - base URL: LOCAL_LLM_BASE_URL, LLM_BASE_URL, OLLAMA_BASE_URL
-        - model:    LOCAL_LLM_MODEL,    LLM_MODEL,    OLLAMA_MODEL
+        - base URL: ATROPOS_SERVER_BASE_URL, OPENAI_BASE_URL, LOCAL_LLM_BASE_URL, LLM_BASE_URL
+        - model:    ATROPOS_SERVER_MODEL,    LLM_MODEL,       LOCAL_LLM_MODEL
+        - api key:  ATROPOS_SERVER_API_KEY,  OPENAI_API_KEY,  LOCAL_LLM_API_KEY, LLM_API_KEY
         """
         from dotenv import load_dotenv
         load_dotenv()
         
         base_url = (
             base_url
+            or os.getenv("ATROPOS_SERVER_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
             or os.getenv("LOCAL_LLM_BASE_URL")
             or os.getenv("LLM_BASE_URL")
-            or os.getenv("OLLAMA_BASE_URL")
             or "http://localhost:11434"
         )
         model = (
             model
-            or os.getenv("LOCAL_LLM_MODEL")
+            or os.getenv("ATROPOS_SERVER_MODEL")
             or os.getenv("LLM_MODEL")
-            or os.getenv("OLLAMA_MODEL")
+            or os.getenv("LOCAL_LLM_MODEL")
             or "hermes3:8b"
         )
-        api_key = api_key or os.getenv("LOCAL_LLM_API_KEY") or os.getenv("LLM_API_KEY") or os.getenv("OLLAMA_API_KEY")
+        api_key = (
+            api_key
+            or os.getenv("ATROPOS_SERVER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("LOCAL_LLM_API_KEY")
+            or os.getenv("LLM_API_KEY")
+        )
         
         config = APIServerConfig(
             model_name=model,
@@ -173,7 +181,7 @@ class LocalServer(APIServer):
         
         n = kwargs.get("n", 1)
         
-        # Ollama doesn't support n > 1, so we make multiple requests
+        # Some OpenAI-compatible servers don't support n > 1, so we make multiple requests.
         if n > 1:
             completion_list = await asyncio.gather(
                 *[self.openai.chat.completions.create(**{**kwargs, "n": 1}) for _ in range(n)]
@@ -197,7 +205,7 @@ class LocalServer(APIServer):
         
         n = kwargs.get("n", 1)
         
-        # Ollama doesn't support n > 1
+        # Some OpenAI-compatible servers don't support n > 1.
         if n > 1:
             completion_list = await asyncio.gather(
                 *[self.openai.completions.create(**{**kwargs, "n": 1}) for _ in range(n)]
@@ -283,7 +291,7 @@ class LocalServer(APIServer):
             # Tokenize output
             output_tokens = self.tokenizer.encode(text, add_special_tokens=False)
             
-            # Placeholder logprobs (Ollama doesn't provide per-token logprobs easily)
+            # Placeholder logprobs (many local servers don't provide per-token logprobs).
             # In production, use vLLM/SGLang which return real logprobs
             output_logprobs = [0.0] * len(output_tokens)
             

@@ -24,6 +24,8 @@ from typing import List, Dict, Any, Optional
 # Suppress startup messages for clean CLI experience
 os.environ["MSWEA_SILENT_STARTUP"] = "1"  # mini-swe-agent
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 import yaml
 
@@ -451,6 +453,7 @@ class HermesCLI:
         max_turns: int = 20,
         verbose: bool = False,
         compact: bool = False,
+        interactive: bool = True,
     ):
         """
         Initialize the Hermes CLI.
@@ -471,9 +474,38 @@ class HermesCLI:
         self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
         
         # Configuration - priority: CLI args > env vars > config file
-        self.model = model or os.getenv("LLM_MODEL", CLI_CONFIG["model"]["default"])
-        self.base_url = base_url or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self.model = (
+            model
+            or os.getenv("LLM_MODEL")
+            or os.getenv("ATROPOS_SERVER_MODEL")
+            or CLI_CONFIG["model"]["default"]
+        )
+
+        env_openai_base_url = os.getenv("OPENAI_BASE_URL")
+        if env_openai_base_url:
+            env_openai_base_url = env_openai_base_url.rstrip("/")
+            if not env_openai_base_url.endswith("/v1"):
+                env_openai_base_url = f"{env_openai_base_url}/v1"
+
+        env_atropos_base_url = os.getenv("ATROPOS_SERVER_BASE_URL")
+        if env_atropos_base_url:
+            env_atropos_base_url = env_atropos_base_url.rstrip("/")
+            if not env_atropos_base_url.endswith("/v1"):
+                env_atropos_base_url = f"{env_atropos_base_url}/v1"
+
+        self.base_url = (
+            base_url
+            or env_atropos_base_url
+            or env_openai_base_url
+            or os.getenv("OPENROUTER_BASE_URL")
+            or CLI_CONFIG["model"]["base_url"]
+        )
+        self.api_key = (
+            api_key
+            or os.getenv("ATROPOS_SERVER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+        )
         self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
 
         self.backend = (backend or os.getenv("HERMES_BACKEND") or "openai").strip().lower()
@@ -507,9 +539,11 @@ class HermesCLI:
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         self.session_id = f"{timestamp_str}_{short_uuid}"
-        
-        # Setup prompt_toolkit session with history
-        self._setup_prompt_session()
+
+        self.interactive = interactive
+        if self.interactive:
+            # Setup prompt_toolkit session with history
+            self._setup_prompt_session()
     
     def _setup_prompt_session(self):
         """Setup prompt_toolkit session with history and styling."""
@@ -574,6 +608,9 @@ class HermesCLI:
                     quiet_mode=True,  # Suppress verbose output for clean CLI
                     ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                     session_id=self.session_id,
+                    # Do not force max_tokens/temperature by default; let the backend decide.
+                    max_tokens=None,
+                    temperature=None,
                 )
             else:
                 self.agent = AIAgent(
@@ -967,7 +1004,7 @@ class HermesCLI:
         
         return True
     
-    def chat(self, message: str) -> Optional[str]:
+    def chat(self, message: str, *, render: bool = True) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -984,8 +1021,9 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        # Visual separator after user input
-        print("─" * 60, flush=True)
+        if render:
+            # Visual separator after user input
+            print("─" * 60, flush=True)
         
         try:
             # Run the conversation
@@ -1000,7 +1038,7 @@ class HermesCLI:
             # Get the final response
             response = result.get("final_response", "")
             
-            if response:
+            if response and render:
                 # Use simple print for compatibility with prompt_toolkit's patch_stdout
                 print()
                 print("╭" + "─" * 58 + "╮")
@@ -1130,12 +1168,21 @@ def main(
         python cli.py -p "What is Python?"       # Single query mode (alias)
         python cli.py --list-tools               # List tools and exit
     """
-    # Signal to terminal_tool that we're in interactive mode
-    # This enables interactive sudo password prompts with timeout
-    os.environ["HERMES_INTERACTIVE"] = "1"
-    
-    # Handle query shorthand
-    query = query or q or prompt or p
+    # Resolve prompt modes:
+    # - query/-q: single-shot, but keep the normal banner UX
+    # - prompt/-p: single-shot, NO TUI/banner (for wrapper scripts)
+    query_text = query or q
+    prompt_text = prompt or p
+
+    # Signal to terminal_tool whether we can prompt the user (e.g. sudo password).
+    os.environ["HERMES_INTERACTIVE"] = "0" if prompt_text else "1"
+    if prompt_text:
+        # Wrapper mode should not emit spinners / interactive UX noise.
+        os.environ["HERMES_DISABLE_SPINNER"] = "1"
+
+    # Optional debug dump of the full model response objects.
+    # - HERMES_DEBUG_ATROPOS_RESPONSE=1 dumps the Atropos backend ChatCompletion
+    # - HERMES_DEBUG_OPENAI_RESPONSE=1 dumps the OpenAI backend ChatCompletion
     
     # Parse toolsets - handle both string and tuple/list inputs
     toolsets_list = None
@@ -1161,6 +1208,7 @@ def main(
         max_turns=max_turns,
         verbose=verbose,
         compact=compact,
+        interactive=not bool(prompt_text),
     )
     
     # Handle list commands (don't init agent for these)
@@ -1174,11 +1222,18 @@ def main(
         cli.show_toolsets()
         sys.exit(0)
     
+    # Handle wrapper-friendly prompt mode (no banner/TUI)
+    if prompt_text:
+        response = cli.chat(prompt_text, render=False)
+        if response is not None:
+            print(response)
+        return
+
     # Handle single query mode
-    if query:
+    if query_text:
         cli.show_banner()
-        cli.console.print(f"[bold blue]Query:[/] {query}")
-        cli.chat(query)
+        cli.console.print(f"[bold blue]Query:[/] {query_text}")
+        cli.chat(query_text)
         return
     
     # Run interactive mode

@@ -7,6 +7,40 @@ Usage: ./hermes [options]
 """
 
 if __name__ == "__main__":
+    """
+    Fire (google/python-fire) does not support POSIX-style short flags like `-p`.
+    We translate the most common shorthands to their long equivalents so wrapper
+    scripts can reliably use:
+      - `-p "..."`  -> `--prompt "..."` (no TUI/banner; print result and exit)
+      - `-q "..."`  -> `--query "..."`  (single-shot with banner UX)
+    """
+
+    import sys
+
+    def _rewrite_short_flags(argv: list[str]) -> list[str]:
+        rewritten: list[str] = []
+        i = 0
+        while i < len(argv):
+            arg = argv[i]
+            if arg == "-p":
+                rewritten.append("--prompt")
+                if i + 1 < len(argv):
+                    rewritten.append(argv[i + 1])
+                    i += 2
+                    continue
+            if arg == "-q":
+                rewritten.append("--query")
+                if i + 1 < len(argv):
+                    rewritten.append(argv[i + 1])
+                    i += 2
+                    continue
+            rewritten.append(arg)
+            i += 1
+        return rewritten
+
+    sys.argv = [sys.argv[0]] + _rewrite_short_flags(sys.argv[1:])
+
     from cli import main
     import fire
+
     fire.Fire(main)

@@ -19,6 +19,8 @@ import asyncio
 import json
 import re
 import time
+import warnings
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -75,8 +77,8 @@ class AtroposAIAgent(AIAgent):
         log_prefix_chars: int = 100,
         log_prefix: str = "",
         session_id: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         # Call parent init mainly to reuse tool selection + trajectory saving utilities.
         super().__init__(
@@ -104,8 +106,14 @@ class AtroposAIAgent(AIAgent):
     @asynccontextmanager
     async def _managed(self) -> AsyncGenerator[Any, None]:
         if hasattr(self.server, "managed_server"):
-            async with self.server.managed_server(tokenizer=self.tokenizer) as managed:
-                yield managed
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Using OpenAIServer with managed_server does not allow for state tracking",
+                    category=UserWarning,
+                )
+                async with self.server.managed_server(tokenizer=self.tokenizer) as managed:
+                    yield managed
             return
 
         # Fall back to directly wrapping a single server object.
@@ -206,20 +214,106 @@ class AtroposAIAgent(AIAgent):
                     if active_system_prompt:
                         api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
 
-                    response = await managed.chat_completion(
-                        messages=api_messages,
-                        n=1,
-                        max_tokens=self.max_tokens,
-                        temperature=self.temperature,
-                    )
+                    chat_kwargs: Dict[str, Any] = {"messages": api_messages, "n": 1}
+                    if self.max_tokens is not None:
+                        chat_kwargs["max_tokens"] = self.max_tokens
+                    if self.temperature is not None:
+                        chat_kwargs["temperature"] = self.temperature
+
+                    # Prefer OpenAI tool calling when supported by the backend:
+                    # - Many providers normalize Hermes-style <tool_call> tags into tool_calls when `tools` is provided.
+                    # - ManagedServer (atroposlib) does prompt->completion conversion and does not support `tools`.
+                    #   Only pass `tools` when we're calling an OpenAI-compatible chat endpoint directly.
+                    tool_schemas = self.tools if self.tools else None
+                    managed_cls = type(managed).__name__
+                    if tool_schemas and managed_cls != "ManagedServer":
+                        chat_kwargs["tools"] = tool_schemas
+
+                    if os.getenv("HERMES_DEBUG_ATROPOS_REQUEST") == "1":
+                        meta = {
+                            "managed_type": managed_cls,
+                            "model": getattr(getattr(managed, "config", None), "model_name", self.model),
+                            "base_url": getattr(getattr(managed, "config", None), "base_url", None),
+                            "kwargs": chat_kwargs,
+                        }
+                        # Avoid dumping megabytes of data accidentally.
+                        # (Messages can be large; this is still "full" but bounded.)
+                        print("\n=== HERMES_DEBUG_ATROPOS_REQUEST ===", flush=True)
+                        print(json.dumps(meta, ensure_ascii=False, indent=2)[:200_000], flush=True)
+
+                    response = await managed.chat_completion(**chat_kwargs)
+
+                    if os.getenv("HERMES_DEBUG_ATROPOS_RESPONSE") == "1":
+                        try:
+                            dumped = response.model_dump()  # openai pydantic model
+                        except Exception:
+                            dumped = getattr(response, "__dict__", {"repr": repr(response)})
+                        print("\n=== HERMES_DEBUG_ATROPOS_RESPONSE: ChatCompletion (raw) ===", flush=True)
+                        print(json.dumps(dumped, ensure_ascii=False, indent=2), flush=True)
 
                     if hasattr(managed, "get_state"):
                         managed_state = managed.get_state()
 
-                    assistant_content = response.choices[0].message.content or ""
-                    messages.append({"role": "assistant", "content": assistant_content})
+                    msg = response.choices[0].message
+                    assistant_content = (msg.content or "")
+                    msg_reasoning = getattr(msg, "reasoning", None)
 
-                    tool_calls, parse_errors = self._parse_tool_calls(assistant_content)
+                    # Use tool_calls if the backend provides them (preferred).
+                    structured_tool_calls = getattr(msg, "tool_calls", None)
+
+                    # If the backend emits content="" but includes useful text in reasoning,
+                    # use it for parsing *only if needed* (e.g. tool tags).
+                    if assistant_content == "" and isinstance(msg_reasoning, str) and msg_reasoning:
+                        if os.getenv("HERMES_DEBUG_ATROPOS_RESPONSE") == "1":
+                            print("\n=== HERMES_DEBUG_ATROPOS_RESPONSE: message.reasoning present (content empty) ===", flush=True)
+                            print(msg_reasoning, flush=True)
+
+                    assistant_msg: Dict[str, Any] = {"role": "assistant", "content": assistant_content}
+                    if structured_tool_calls:
+                        # Preserve tool_calls so the next request is consistent with OpenAI protocol.
+                        try:
+                            assistant_msg["tool_calls"] = [
+                                {
+                                    "id": tc.id,
+                                    "type": tc.type,
+                                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                                }
+                                for tc in structured_tool_calls
+                            ]
+                        except Exception:
+                            # Best-effort; keep conversation moving.
+                            pass
+                    messages.append(assistant_msg)
+
+                    # Mode A: OpenAI tool calling (preferred when supported)
+                    if structured_tool_calls:
+                        for tc in structured_tool_calls:
+                            tool_start = time.time()
+                            try:
+                                tool_args = json.loads(tc.function.arguments or "{}")
+                            except Exception:
+                                tool_args = {}
+                            tool_result = handle_function_call(tc.function.name, tool_args, effective_task_id)
+                            tool_duration = time.time() - tool_start
+
+                            # Keep the raw tool result as tool content (OpenAI protocol expects role=tool).
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": tool_result,
+                                }
+                            )
+
+                            if self.tool_delay and self.tool_delay > 0:
+                                await asyncio.sleep(self.tool_delay)
+
+                        # Continue loop after tool execution.
+                        continue
+
+                    # Mode B: Hermes XML tool tags in assistant text (fallback).
+                    parse_source = assistant_content or (msg_reasoning or "")
+                    tool_calls, parse_errors = self._parse_tool_calls(parse_source)
 
                     if parse_errors and not tool_calls:
                         # Ask the model to retry with valid tool JSON.
@@ -237,7 +331,7 @@ class AtroposAIAgent(AIAgent):
 
                     if not tool_calls:
                         # No tool calls: treat as final answer.
-                        final_response = assistant_content
+                        final_response = (assistant_content or "").strip()
                         completed = True
                         break
 

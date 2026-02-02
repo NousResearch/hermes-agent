@@ -278,21 +278,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 5. Task Continuation Hints 🎯
-
-**Problem:** Could be more helpful by suggesting logical next steps.
-
-**Ideas:**
-- [ ] **Suggest next steps** - At end of a task, suggest logical continuations:
-  - "Code is written. Want me to also write tests / docs / deploy?"
-  - Based on common workflows for task type
-  - Non-intrusive, just offer options
-
-**Files to modify:** `run_agent.py`, response generation logic
-
----
-
-## 7. Interactive Clarifying Questions Tool ❓
+## 5. Interactive Clarifying Questions Tool ❓
 
 **Problem:** Agent sometimes makes assumptions or guesses when it should ask the user. Currently can only ask via text, which gets lost in long outputs.
 
@@ -328,25 +314,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Resource Awareness & Efficiency 💰
-
-**Problem:** No awareness of costs, time, or resource usage. Could be smarter about efficiency.
-
-**Ideas:**
-- [ ] **Tool result caching** - Don't repeat identical operations:
-  - Cache web searches, extractions within a session
-  - Invalidation based on time-sensitivity of query
-  - Hash-based lookup: same input → cached output
-
-- [ ] **Lazy evaluation** - Don't fetch everything upfront:
-  - Get summaries first, full content only if needed
-  - "I found 5 relevant pages. Want me to deep-dive on any?"
-
-**Files to modify:** `model_tools.py`, new `resource_tracker.py`
-
----
-
-## 9. Collaborative Problem Solving 🤝
+## 6. Collaborative Problem Solving 🤝
 
 **Problem:** Interaction is command/response. Complex problems benefit from dialogue.
 

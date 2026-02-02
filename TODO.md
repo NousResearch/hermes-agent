@@ -177,56 +177,48 @@ These items need to be addressed ASAP:
 
 ---
 
-## 2. Context Management (complements Subagents)
+## 2. Planning & Task Management 📋
 
-**Problem:** Context grows unbounded during long conversations. Trajectory compression exists for training data post-hoc, but live conversations lack intelligent context management.
+**Problem:** Agent handles tasks reactively without explicit planning. Complex multi-step tasks lack structure, progress tracking, and the ability to decompose work into manageable chunks.
 
 **Ideas:**
-- [ ] **Incremental summarization** - Compress old tool outputs on-the-fly during conversations
-  - Trigger when context exceeds threshold (e.g., 80% of max tokens)
-  - Preserve recent turns fully, summarize older tool responses
-  - Could reuse logic from `trajectory_compressor.py`
+- [ ] **Task decomposition tool** - Break complex requests into subtasks:
+  ```
+  User: "Set up a new Python project with FastAPI, tests, and Docker"
   
-- [ ] **Semantic memory retrieval** - Vector store for long conversation recall
-  - Embed important facts/findings as conversation progresses
-  - Retrieve relevant memories when needed instead of keeping everything in context
-  - Consider lightweight solutions: ChromaDB, FAISS, or even a simple embedding cache
+  Agent creates plan:
+  ├── 1. Create project structure and requirements.txt
+  ├── 2. Implement FastAPI app skeleton
+  ├── 3. Add pytest configuration and initial tests
+  ├── 4. Create Dockerfile and docker-compose.yml
+  └── 5. Verify everything works together
+  ```
+  - Each subtask becomes a trackable unit
+  - Agent can report progress: "Completed 3/5 tasks"
   
-- [ ] **Working vs. episodic memory** distinction
-  - Working memory: Current task state, recent tool results (always in context)
-  - Episodic memory: Past findings, tried approaches (retrieved on demand)
-  - Clear eviction policies for each
+- [ ] **Progress checkpoints** - Periodic self-assessment:
+  - After N tool calls or time elapsed, pause to evaluate
+  - "What have I accomplished? What remains? Am I on track?"
+  - Detect if stuck in loops or making no progress
+  - Could trigger replanning if approach isn't working
+  
+- [ ] **Explicit plan storage** - Persist plan in conversation:
+  - Store as structured data (not just in context)
+  - Update status as tasks complete
+  - User can ask "What's the plan?" or "What's left?"
+  - Survives context compression (plans are protected)
 
-**Files to modify:** `run_agent.py` (add memory manager), possibly new `tools/memory_tool.py`
+- [ ] **Failure recovery with replanning** - When things go wrong:
+  - Record what failed and why
+  - Revise plan to work around the issue
+  - "Step 3 failed because X, adjusting approach to Y"
+  - Prevents repeating failed strategies
+
+**Files to modify:** `run_agent.py` (add planning hooks), new `tools/planning_tool.py`
 
 ---
 
-## 3. Self-Reflection & Course Correction 🔄
-
-**Problem:** Current retry logic handles malformed outputs but not semantic failures. Agent doesn't reason about *why* something failed.
-
-**Ideas:**
-- [ ] **Meta-reasoning after failures** - When a tool returns an error or unexpected result:
-  ```
-  Tool failed → Reflect: "Why did this fail? What assumptions were wrong?"
-  → Adjust approach → Retry with new strategy
-  ```
-  - Could be a lightweight LLM call or structured self-prompt
-  
-- [ ] **Planning/replanning module** - For complex multi-step tasks:
-  - Generate plan before execution
-  - After each step, evaluate: "Am I on track? Should I revise the plan?"
-  - Store plan in working memory, update as needed
-  
-- [ ] **Approach memory** - Remember what didn't work:
-  - "I tried X for this type of problem and it failed because Y"
-  - Prevents repeating failed strategies in the same conversation
-
-**Files to modify:** `run_agent.py` (add reflection hooks in tool loop), new `tools/reflection_tool.py`
-
----
-
-## 4. Tool Composition & Learning 🔧
+## 3. Tool Composition & Learning 🔧
 
 **Problem:** Tools are atomic. Complex tasks require repeated manual orchestration of the same tool sequences.
 
@@ -257,7 +249,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 5. Dynamic Skills Expansion 📚
+## 4. Dynamic Skills Expansion 📚
 
 **Problem:** Skills system is elegant but static. Skills must be manually created and added.
 
@@ -286,7 +278,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Task Continuation Hints 🎯
+## 5. Task Continuation Hints 🎯
 
 **Problem:** Could be more helpful by suggesting logical next steps.
 
@@ -336,7 +328,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 8. Resource Awareness & Efficiency 💰
+## 6. Resource Awareness & Efficiency 💰
 
 **Problem:** No awareness of costs, time, or resource usage. Could be smarter about efficiency.
 
@@ -373,7 +365,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 10. Project-Local Context 💾
+## 7. Project-Local Context 💾
 
 **Problem:** Valuable context lost between sessions.
 
@@ -393,7 +385,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 11. Graceful Degradation & Robustness 🛡️
+## 8. Graceful Degradation & Robustness 🛡️
 
 **Problem:** When things go wrong, recovery is limited. Should fail gracefully.
 
@@ -414,7 +406,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 12. Tools & Skills Wishlist 🧰
+## 9. Tools & Skills Wishlist 🧰
 
 *Things that would need new tool implementations (can't do well with current tools):*
 
@@ -481,7 +473,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 13. Messaging Platform Integrations 💬
+## 10. Messaging Platform Integrations 💬
 
 **Problem:** Agent currently only works via `cli.py` which requires direct terminal access. Users may want to interact via messaging apps from their phone or other devices.
 
@@ -525,7 +517,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 14. Scheduled Tasks / Cron Jobs ⏰
+## 11. Scheduled Tasks / Cron Jobs ⏰
 
 **Problem:** Agent only runs on-demand. Some tasks benefit from scheduled execution (daily summaries, monitoring, reminders).
 
@@ -570,7 +562,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 15. Text-to-Speech (TTS) 🔊
+## 12. Text-to-Speech (TTS) 🔊
 
 **Problem:** Agent can only respond with text. Some users prefer audio responses (accessibility, hands-free use, podcasts).
 
@@ -601,7 +593,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 16. Speech-to-Text / Audio Transcription 🎤
+## 13. Speech-to-Text / Audio Transcription 🎤
 
 **Problem:** Users may want to send voice memos instead of typing. Agent is blind to audio content.
 

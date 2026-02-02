@@ -47,7 +47,24 @@ These items need to be addressed ASAP:
   - Structured JSON format for easy parsing and replay
   - Automatic on CLI runs (configurable)
 
-### 4. Stream Thinking Summaries in Real-Time 💭 ⏸️ DEFERRED
+### 4. Automatic Context Compression 🗜️ ✅ COMPLETE
+- [x] **Problem:** Long conversations exceed model context limits, causing errors
+- [x] **Solution:** Auto-compress middle turns when approaching limit
+- [x] **Implementation:**
+  - Fetches model context lengths from OpenRouter `/api/v1/models` API (cached 1hr)
+  - Tracks actual token usage from API responses (`usage.prompt_tokens`)
+  - Triggers at 85% of model's context limit (configurable)
+  - Protects first 3 turns (system, initial request, first response)
+  - Protects last 4 turns (recent context most relevant)
+  - Summarizes middle turns using fast model (Gemini Flash)
+  - Inserts summary as user message, conversation continues seamlessly
+  - If context error occurs, attempts compression before failing
+- [x] **Configuration (cli-config.yaml / env vars):**
+  - `CONTEXT_COMPRESSION_ENABLED` (default: true)
+  - `CONTEXT_COMPRESSION_THRESHOLD` (default: 0.85 = 85%)
+  - `CONTEXT_COMPRESSION_MODEL` (default: google/gemini-2.0-flash-001)
+
+### 5. Stream Thinking Summaries in Real-Time 💭 ⏸️ DEFERRED
 - [ ] **Problem:** Thinking/reasoning summaries not shown while streaming
 - [ ] **Complexity:** This is a significant refactor - leaving for later
 

@@ -290,6 +290,41 @@ logs/
 - **Trajectory Format**: Uses the same format as batch processing for consistency
 - **Git Ignored**: `logs/` is in `.gitignore` so logs aren't committed
 
+## Context Compression
+
+Long conversations can exceed the model's context limit. Hermes Agent automatically compresses context when approaching the limit:
+
+**How it works:**
+1. Tracks actual token usage from API responses (`usage.prompt_tokens`)
+2. When tokens reach 85% of model's context limit, triggers compression
+3. Protects first 3 turns (system prompt, initial request, first response)
+4. Protects last 4 turns (recent context is most relevant)
+5. Summarizes middle turns using a fast/cheap model (Gemini Flash)
+6. Inserts summary as a user message, conversation continues seamlessly
+
+**Configuration (`cli-config.yaml`):**
+```yaml
+compression:
+  enabled: true                    # Enable auto-compression (default)
+  threshold: 0.85                  # Compress at 85% of context limit
+  summary_model: "google/gemini-2.0-flash-001"
+```
+
+**Or via environment variables:**
+```bash
+CONTEXT_COMPRESSION_ENABLED=true
+CONTEXT_COMPRESSION_THRESHOLD=0.85
+CONTEXT_COMPRESSION_MODEL=google/gemini-2.0-flash-001
+```
+
+**When compression triggers, you'll see:**
+```
+📦 Context compression triggered (170,000 tokens ≥ 170,000 threshold)
+   📊 Model context limit: 200,000 tokens (85% = 170,000)
+   🗜️  Summarizing turns 4-15 (12 turns)
+   ✅ Compressed: 20 → 9 messages (~45,000 tokens saved)
+```
+
 ## Interactive CLI
 
 The CLI provides a rich interactive experience for working with the agent.
@@ -578,6 +613,11 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 - `TERMINAL_SSH_USER`: SSH username
 - `TERMINAL_SSH_PORT`: SSH port (default: `22`)
 - `TERMINAL_SSH_KEY`: Path to SSH private key (optional, uses ssh-agent if not set)
+
+**Context Compression (auto-shrinks long conversations):**
+- `CONTEXT_COMPRESSION_ENABLED`: Enable auto-compression (default: `true`)
+- `CONTEXT_COMPRESSION_THRESHOLD`: Compress at this % of context limit (default: `0.85`)
+- `CONTEXT_COMPRESSION_MODEL`: Model for generating summaries (default: `google/gemini-2.0-flash-001`)
 
 **Browser Tool Configuration (agent-browser + Browserbase):**
 - `BROWSERBASE_API_KEY`: Browserbase API key for cloud browser execution

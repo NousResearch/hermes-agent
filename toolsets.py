@@ -84,6 +84,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "cronjob": {
+        "description": "Cronjob management tools - schedule, list, and remove automated tasks (CLI-only)",
+        "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {
@@ -96,6 +102,36 @@ TOOLSETS = {
         "description": "Safe toolkit without terminal access",
         "tools": ["mixture_of_agents"],
         "includes": ["web", "vision", "creative"]
+    },
+    
+    # ==========================================================================
+    # CLI-specific toolsets (only available when running via cli.py)
+    # ==========================================================================
+    
+    "hermes-cli": {
+        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
+        "tools": [
+            # Web tools
+            "web_search", "web_extract",
+            # Terminal
+            "terminal",
+            # Vision
+            "vision_analyze",
+            # Image generation
+            "image_generate",
+            # MoA
+            "mixture_of_agents",
+            # Skills
+            "skills_categories", "skills_list", "skill_view",
+            # Browser
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
+            # Cronjob management (CLI-only)
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
     }
 }
 

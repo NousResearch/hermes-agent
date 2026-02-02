@@ -38,6 +38,17 @@ from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
 from tools.skills_tool import skills_categories, skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
+# Cronjob management tools (CLI-only)
+from tools.cronjob_tools import (
+    schedule_cronjob,
+    list_cronjobs,
+    remove_cronjob,
+    check_cronjob_requirements,
+    get_cronjob_tool_definitions,
+    SCHEDULE_CRONJOB_SCHEMA,
+    LIST_CRONJOBS_SCHEMA,
+    REMOVE_CRONJOB_SCHEMA
+)
 # Browser automation tools (agent-browser + Browserbase)
 from tools.browser_tool import (
     browser_navigate,
@@ -313,6 +324,22 @@ def get_browser_tool_definitions() -> List[Dict[str, Any]]:
     return [{"type": "function", "function": schema} for schema in BROWSER_TOOL_SCHEMAS]
 
 
+def get_cronjob_tool_definitions_formatted() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for cronjob management tools in OpenAI's expected format.
+    
+    These tools are only available in the hermes-cli toolset (interactive CLI mode).
+    
+    Returns:
+        List[Dict]: List of cronjob tool definitions compatible with OpenAI API
+    """
+    return [{"type": "function", "function": schema} for schema in [
+        SCHEDULE_CRONJOB_SCHEMA,
+        LIST_CRONJOBS_SCHEMA,
+        REMOVE_CRONJOB_SCHEMA
+    ]]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -355,6 +382,12 @@ def get_all_tool_names() -> List[str]:
             "browser_vision"
         ])
     
+    # Cronjob management tools (CLI-only, checked at runtime)
+    if check_cronjob_requirements():
+        tool_names.extend([
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ])
+    
     return tool_names
 
 
@@ -389,7 +422,11 @@ def get_toolset_for_tool(tool_name: str) -> str:
         "browser_press": "browser_tools",
         "browser_close": "browser_tools",
         "browser_get_images": "browser_tools",
-        "browser_vision": "browser_tools"
+        "browser_vision": "browser_tools",
+        # Cronjob management tools
+        "schedule_cronjob": "cronjob_tools",
+        "list_cronjobs": "cronjob_tools",
+        "remove_cronjob": "cronjob_tools"
     }
     
     return toolset_mapping.get(tool_name, "unknown")
@@ -462,6 +499,11 @@ def get_tool_definitions(
         for tool in get_browser_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
+    # Cronjob management tools (CLI-only)
+    if check_cronjob_requirements():
+        for tool in get_cronjob_tool_definitions_formatted():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
     # Determine which tools to include based on toolsets
     tools_to_include = set()
     
@@ -474,7 +516,7 @@ def get_tool_definitions(
                 print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
                     # Map legacy names to new system
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
@@ -488,7 +530,8 @@ def get_tool_definitions(
                             "browser_type", "browser_scroll", "browser_back",
                             "browser_press", "browser_close", "browser_get_images",
                             "browser_vision"
-                        ]
+                        ],
+                        "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.update(legacy_tools)
@@ -516,7 +559,7 @@ def get_tool_definitions(
                 print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
                         "terminal_tools": ["terminal"],
@@ -529,7 +572,8 @@ def get_tool_definitions(
                             "browser_type", "browser_scroll", "browser_back",
                             "browser_press", "browser_close", "browser_get_images",
                             "browser_vision"
-                        ]
+                        ],
+                        "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.difference_update(legacy_tools)
@@ -792,6 +836,48 @@ def handle_browser_function_call(
     return json.dumps({"error": f"Unknown browser function: {function_name}"}, ensure_ascii=False)
 
 
+def handle_cronjob_function_call(
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str] = None
+) -> str:
+    """
+    Handle function calls for cronjob management tools.
+    
+    These tools are only available in interactive CLI mode (hermes-cli toolset).
+    
+    Args:
+        function_name (str): Name of the cronjob function to call
+        function_args (Dict): Arguments for the function
+        task_id (str): Task identifier (unused, for API consistency)
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "schedule_cronjob":
+        return schedule_cronjob(
+            prompt=function_args.get("prompt", ""),
+            schedule=function_args.get("schedule", ""),
+            name=function_args.get("name"),
+            repeat=function_args.get("repeat"),
+            task_id=task_id
+        )
+    
+    elif function_name == "list_cronjobs":
+        return list_cronjobs(
+            include_disabled=function_args.get("include_disabled", False),
+            task_id=task_id
+        )
+    
+    elif function_name == "remove_cronjob":
+        return remove_cronjob(
+            job_id=function_args.get("job_id", ""),
+            task_id=task_id
+        )
+    
+    return json.dumps({"error": f"Unknown cronjob function: {function_name}"}, ensure_ascii=False)
+
+
 def handle_function_call(
     function_name: str, 
     function_args: Dict[str, Any], 
@@ -850,6 +936,10 @@ def handle_function_call(
             "browser_vision"
         ]:
             return handle_browser_function_call(function_name, function_args, task_id, user_task)
+
+        # Route cronjob management tools
+        elif function_name in ["schedule_cronjob", "list_cronjobs", "remove_cronjob"]:
+            return handle_cronjob_function_call(function_name, function_args, task_id)
 
         else:
             error_msg = f"Unknown function: {function_name}"
@@ -916,6 +1006,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             ],
             "description": "Browser automation for web interaction using agent-browser CLI with Browserbase cloud execution",
             "requirements": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "agent-browser npm package"]
+        },
+        "cronjob_tools": {
+            "available": check_cronjob_requirements(),
+            "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+            "description": "Schedule and manage automated tasks (cronjobs) - only available in interactive CLI mode",
+            "requirements": ["HERMES_INTERACTIVE=1 (set automatically by cli.py)"]
         }
     }
     
@@ -935,7 +1031,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "moa_tools": check_moa_requirements(),
         "image_tools": check_image_generation_requirements(),
         "skills_tools": check_skills_requirements(),
-        "browser_tools": check_browser_requirements()
+        "browser_tools": check_browser_requirements(),
+        "cronjob_tools": check_cronjob_requirements()
     }
 
 if __name__ == "__main__":

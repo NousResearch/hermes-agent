@@ -30,5 +30,5 @@ platformdirs
 # modal
 # boto3
 
-# Optional: Legacy Hecate terminal backend
-# git+ssh://git@github.com/NousResearch/hecate.git
+# Optional: For cron expression parsing (cronjob scheduling)
+croniter

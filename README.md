@@ -325,6 +325,77 @@ CONTEXT_COMPRESSION_MODEL=google/gemini-2.0-flash-001
    ✅ Compressed: 20 → 9 messages (~45,000 tokens saved)
 ```
 
+## Scheduled Tasks (Cron Jobs)
+
+Hermes Agent can schedule automated tasks to run in the future - either one-time reminders or recurring jobs.
+
+### CLI Commands
+
+```bash
+# List scheduled jobs
+/cron
+
+# Add a one-shot reminder (runs once in 30 minutes)
+/cron add 30m Remind me to check the build status
+
+# Add a recurring job (every 2 hours)
+/cron add "every 2h" Check server status at 192.168.1.100 and report any issues
+
+# Add a cron expression (daily at 9am)
+/cron add "0 9 * * *" Generate a morning briefing summarizing GitHub notifications
+
+# Remove a job
+/cron remove abc123def456
+```
+
+### Agent Self-Scheduling
+
+The agent can also schedule its own follow-up tasks using tools:
+
+```python
+# Available when using hermes-cli toolset (default for CLI)
+schedule_cronjob(prompt="...", schedule="30m", repeat=1)  # One-shot
+schedule_cronjob(prompt="...", schedule="every 2h")       # Recurring
+list_cronjobs()                                            # View all jobs
+remove_cronjob(job_id="...")                              # Cancel a job
+```
+
+**⚠️ Important:** Cronjobs run in **isolated sessions with NO prior context**. The prompt must be completely self-contained with all necessary information (file paths, URLs, server addresses, etc.). The future agent will not remember anything from the current conversation.
+
+### Schedule Formats
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| Duration | `30m`, `2h`, `1d` | One-shot delay from now |
+| Interval | `every 30m`, `every 2h` | Recurring at fixed intervals |
+| Cron | `0 9 * * *` | Cron expression (requires `croniter`) |
+| Timestamp | `2026-02-03T14:00` | One-shot at specific time |
+
+### Repeat Options
+
+| repeat | Behavior |
+|--------|----------|
+| (omitted) | One-shot schedules run once; intervals/cron run forever |
+| `1` | Run once then auto-delete |
+| `N` | Run N times then auto-delete |
+
+### Running the Cron Daemon
+
+Jobs are stored in `~/.hermes/cron/jobs.json` and executed by a scheduler:
+
+```bash
+# Option 1: Built-in daemon (checks every 60 seconds)
+python cli.py --cron-daemon
+
+# Option 2: System cron integration (run once per minute)
+# Add to crontab: crontab -e
+*/1 * * * * cd ~/hermes-agent && python cli.py --cron-tick-once >> ~/.hermes/cron/cron.log 2>&1
+```
+
+### Job Output
+
+Job outputs are saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md` for review.
+
 ## Interactive CLI
 
 The CLI provides a rich interactive experience for working with the agent.
@@ -357,6 +428,7 @@ The CLI provides a rich interactive experience for working with the agent.
 | `/history` | Show conversation history |
 | `/save` | Save current conversation to file |
 | `/config` | Show current configuration |
+| `/cron` | Manage scheduled tasks (list, add, remove) |
 | `/quit` | Exit the CLI |
 
 ### Configuration

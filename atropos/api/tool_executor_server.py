@@ -19,11 +19,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..slots import SlotPool, SlotPoolConfig
-from ..tools import BashTool, ImageGenerateTool, ReadFileTool, ToolRegistry, WriteFileTool
-from ..tools.mixture_of_agents_tool import MixtureOfAgentsTool
-from ..tools.terminal_tool import TerminalTool
-from ..tools.vision_tools import VisionAnalyzeTool
-from ..tools.web_tools import WebCrawlTool, WebExtractTool, WebSearchTool
+from ..tools import ToolRegistry, build_tool_registry
 from ..tools.base import (
     ArtifactArchiveRequestPayload,
     ArtifactArchiveResponsePayload,
@@ -120,17 +116,12 @@ def _check_auth(cfg: ToolExecutorServerConfig, authorization: Optional[str]) -> 
 async def _startup() -> None:
     cfg = ToolExecutorServerConfig.from_env()
 
-    tools = ToolRegistry()
-    tools.register(BashTool())
-    tools.register(TerminalTool())
-    tools.register(ReadFileTool())
-    tools.register(WriteFileTool())
-    tools.register(ImageGenerateTool())
-    tools.register(WebSearchTool())
-    tools.register(WebExtractTool())
-    tools.register(WebCrawlTool())
-    tools.register(VisionAnalyzeTool())
-    tools.register(MixtureOfAgentsTool())
+    # Default to Atropos "full" tool surface: sandbox + external (if tool_server_url provided).
+    tools: ToolRegistry = build_tool_registry(
+        enabled_toolsets=["full"],
+        disabled_toolsets=None,
+        tool_server_url=cfg.tool_server_url,
+    )
 
     pool = SlotPool(
         SlotPoolConfig(

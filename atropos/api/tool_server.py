@@ -19,12 +19,8 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, build_tool_registry
 from ..tools.base import ToolResultPayload, ToolServerExecuteRequest
-from ..tools.image_generation_tool import ImageGenerateTool
-from ..tools.mixture_of_agents_tool import MixtureOfAgentsTool
-from ..tools.vision_tools import VisionAnalyzeTool
-from ..tools.web_tools import WebCrawlTool, WebExtractTool, WebSearchTool
 
 
 class ToolServerConfig(BaseModel):
@@ -63,21 +59,13 @@ async def root() -> Dict[str, str]:
 async def _startup() -> None:
     cfg = ToolServerConfig.from_env()
 
-    tools = ToolRegistry()
-    for tool in [
-        ImageGenerateTool(),
-        WebSearchTool(),
-        WebExtractTool(),
-        WebCrawlTool(),
-        VisionAnalyzeTool(),
-        MixtureOfAgentsTool(),
-    ]:
-        ok, reason = tool.is_available()
-        if ok:
-            tools.register(tool)
-        else:
-            # Keep startup resilient when optional deps/keys are missing.
-            print(f"[ToolServer] Skipping tool '{tool.name}': {reason}")
+    # External-only registry. It will only include tools that are enabled by toolsets and
+    # whose Hermes requirements/keys are satisfied in this process.
+    tools: ToolRegistry = build_tool_registry(
+        enabled_toolsets=["all"],
+        disabled_toolsets=["terminal", "sandbox", "filesystem", "terminal_stateful", "default"],
+        tool_server_url="enabled",
+    )
 
     app.state.cfg = cfg
     app.state.tools = tools
@@ -129,13 +117,16 @@ async def execute_tool(
     async with sem:
         try:
             kwargs = dict(req.tool.arguments)
-            # Some external tools need access to the trajectory/workspace context (e.g. fetching sandbox artifacts).
-            if req.trajectory_id and "trajectory_id" in inspect.signature(tool.execute).parameters:
+            sig = inspect.signature(tool.execute).parameters
+            # Some tools can benefit from extra context.
+            if req.trajectory_id and "trajectory_id" in sig:
                 kwargs["trajectory_id"] = req.trajectory_id
-            if req.slot_id and "slot_id" in inspect.signature(tool.execute).parameters:
+            if req.slot_id and "slot_id" in sig:
                 kwargs["slot_id"] = req.slot_id
-            if req.container_addr and "container_addr" in inspect.signature(tool.execute).parameters:
+            if req.container_addr and "container_addr" in sig:
                 kwargs["container_addr"] = req.container_addr
+            if "task_id" in sig:
+                kwargs["task_id"] = req.trajectory_id
             result = await tool.execute(**kwargs)
         except Exception as e:
             return ToolResultPayload(

@@ -20,15 +20,7 @@ from atroposlib.envs.base import APIServerConfig, BaseEnv, BaseEnvConfig, Item, 
 
 from ..agent import AgentConfig, AtroposAgent
 from ..slots import SlotPool, SlotPoolConfig
-from ..tools import BashTool, ReadFileTool, ToolRegistry, WriteFileTool
-from ..tools.image_generation_tool import ImageGenerateTool
-from ..tools.mixture_of_agents_tool import MixtureOfAgentsTool
-from ..tools.terminal_tool import TerminalTool
-from ..tools.terminal_stateful_tool import TerminalStatefulTool
-from ..tools.tmux_tool import TmuxTool
-from ..tools.toolsets import resolve_multiple_toolsets
-from ..tools.vision_tools import VisionAnalyzeTool
-from ..tools.web_tools import WebCrawlTool, WebExtractTool, WebSearchTool
+from ..tools import ToolRegistry, build_tool_registry
 from ..tools.tool_executor import ToolExecutor, ToolExecutorConfig
 
 
@@ -110,42 +102,11 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         self._tool_server_inprocess: bool = False
 
     def build_tools(self) -> ToolRegistry:
-        available_tools = [
-            BashTool(),
-            TerminalTool(),
-            TerminalStatefulTool(),
-            TmuxTool(),
-            ReadFileTool(),
-            WriteFileTool(),
-            ImageGenerateTool(),
-            WebSearchTool(),
-            WebExtractTool(),
-            WebCrawlTool(),
-            VisionAnalyzeTool(),
-            MixtureOfAgentsTool(),
-        ]
-
-        tool_by_name = {t.name: t for t in available_tools}
-
-        enabled_toolsets = self.config.enabled_toolsets or ["default"]
-        selected = set(resolve_multiple_toolsets(enabled_toolsets))
-        if self.config.disabled_toolsets:
-            selected -= set(resolve_multiple_toolsets(self.config.disabled_toolsets))
-
-        tools = ToolRegistry()
-        for name in sorted(selected):
-            tool = tool_by_name.get(name)
-            if tool is None:
-                continue
-            # External tools require a ToolServer URL; avoid advertising broken tools.
-            if tool.schema.external and not self.config.tool_server_url:
-                continue
-            ok, _reason = tool.is_available()
-            if not ok:
-                continue
-            tools.register(tool)
-
-        return tools
+        return build_tool_registry(
+            enabled_toolsets=self.config.enabled_toolsets or ["default"],
+            disabled_toolsets=self.config.disabled_toolsets or None,
+            tool_server_url=self.config.tool_server_url,
+        )
 
     @abstractmethod
     def build_task(self, item: Item) -> str:

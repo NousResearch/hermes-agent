@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Optional
 
 from .base import Tool, ToolResult, ToolSchema
-from .basic_tools import BashTool
 
 
 class TerminalStatefulTool(Tool):
@@ -39,7 +38,8 @@ class TerminalStatefulTool(Tool):
         return True, None
 
     async def execute(self, command: str, timeout: Optional[int] = None) -> ToolResult:
-        # Fallback direct execution (not stateful) when used outside ToolExecutor.
-        bash = BashTool(timeout=float(timeout) if timeout else 30.0)
-        return await bash.execute(command=command)
-
+        _ = (command, timeout)
+        return ToolResult(
+            success=False,
+            error="terminal_stateful must be executed via ToolExecutor inside the sandbox",
+        )

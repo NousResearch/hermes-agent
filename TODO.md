@@ -485,48 +485,67 @@ These items need to be addressed ASAP:
 
 ---
 
-## 11. Scheduled Tasks / Cron Jobs ⏰
+## 11. Scheduled Tasks / Cron Jobs ⏰ ✅ COMPLETE
 
 **Problem:** Agent only runs on-demand. Some tasks benefit from scheduled execution (daily summaries, monitoring, reminders).
 
-**Ideas:**
-- [ ] **Cron-style scheduler** - Run agent turns on a schedule
-  - Store jobs in `~/.hermes/cron/jobs.json`
-  - Each job: `{ id, schedule, prompt, session_mode, delivery }`
-  - Uses APScheduler or similar Python library
+**Solution Implemented:**
+
+- [x] **Cron-style scheduler** - Run agent turns on a schedule
+  - Jobs stored in `~/.hermes/cron/jobs.json`
+  - Each job: `{ id, name, prompt, schedule, repeat, enabled, next_run_at, ... }`
+  - Built-in scheduler daemon or system cron integration
   
-- [ ] **Session modes:**
-  - `isolated` - Fresh session each run (no history, clean context)
-  - `main` - Append to main session (agent remembers previous scheduled runs)
+- [x] **Schedule formats:**
+  - Duration: `30m`, `2h`, `1d` (one-shot delay)
+  - Interval: `every 30m`, `every 2h` (recurring)
+  - Cron expression: `0 9 * * *` (requires `croniter` package)
+  - ISO timestamp: `2026-02-03T14:00:00` (one-shot at specific time)
+
+- [x] **Repeat options:**
+  - `repeat=None` (or omit): One-shot schedules run once; intervals/cron run forever
+  - `repeat=1`: Run once then auto-delete
+  - `repeat=N`: Run exactly N times then auto-delete
   
-- [ ] **Delivery options:**
-  - Write output to file (`~/.hermes/cron/output/{job_id}/{timestamp}.md`)
-  - Send to messaging channel (if integrations enabled)
-  - Both
-  
-- [ ] **CLI interface:**
+- [x] **CLI interface:**
   ```bash
   # List scheduled jobs
-  python cli.py --cron list
+  /cron
+  /cron list
   
-  # Add a job (runs daily at 9am)
-  python cli.py --cron add "Summarize my email inbox" --schedule "0 9 * * *"
+  # Add a one-shot job (runs once in 30 minutes)
+  /cron add 30m "Remind me to check the build status"
   
-  # Quick syntax for simple intervals  
-  python cli.py --cron add "Check server status" --every 30m
+  # Add a recurring job (every 2 hours)
+  /cron add "every 2h" "Check server status at 192.168.1.100"
+  
+  # Add a cron expression (daily at 9am)
+  /cron add "0 9 * * *" "Generate morning briefing"
   
   # Remove a job
-  python cli.py --cron remove <job_id>
+  /cron remove <job_id>
   ```
 
-- [ ] **Agent self-scheduling** - Let the agent create its own cron jobs
-  - New tool: `schedule_task(prompt, schedule, session_mode)`
-  - "Remind me to check the deployment tomorrow at 9am"
-  - Agent can set follow-up tasks for itself
+- [x] **Agent self-scheduling tools** (hermes-cli toolset):
+  - `schedule_cronjob(prompt, schedule, name?, repeat?)` - Create a scheduled task
+  - `list_cronjobs()` - View all scheduled jobs
+  - `remove_cronjob(job_id)` - Cancel a job
+  - Tool descriptions emphasize: **cronjobs run in isolated sessions with NO context**
 
-- [ ] **In-chat command:** `/cronjob {prompt} {frequency}` when using messaging integrations
+- [x] **Daemon modes:**
+  ```bash
+  # Built-in daemon (checks every 60 seconds)
+  python cli.py --cron-daemon
+  
+  # Single tick for system cron integration
+  python cli.py --cron-tick-once
+  ```
 
-**Files to create:** `cron/scheduler.py`, `cron/jobs.py`, `tools/schedule_tool.py`
+- [x] **Output storage:** `~/.hermes/cron/output/{job_id}/{timestamp}.md`
+
+**Files created:** `cron/__init__.py`, `cron/jobs.py`, `cron/scheduler.py`, `tools/cronjob_tools.py`
+
+**Toolset:** `hermes-cli` (default for CLI) includes cronjob tools; not in batch runner toolsets
 
 ---
 

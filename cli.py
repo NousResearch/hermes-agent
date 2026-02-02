@@ -192,6 +192,9 @@ from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_all_tool_names, get_toolset_for_tool, get_available_toolsets
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
+# Cron job system for scheduled tasks
+from cron import create_job, list_jobs, remove_job, get_job, run_daemon as run_cron_daemon, tick as cron_tick
+
 # ============================================================================
 # ASCII Art & Branding
 # ============================================================================
@@ -402,6 +405,7 @@ COMMANDS = {
     "/reset": "Reset conversation only (keep screen)",
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
+    "/cron": "Manage scheduled tasks (list, add, remove)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -878,6 +882,142 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_cron_command(self, cmd: str):
+        """Handle the /cron command to manage scheduled tasks."""
+        parts = cmd.split(maxsplit=2)
+        
+        if len(parts) == 1:
+            # /cron - show help and list
+            print()
+            print("+" + "-" * 60 + "+")
+            print("|" + " " * 18 + "(^_^) Scheduled Tasks" + " " * 19 + "|")
+            print("+" + "-" * 60 + "+")
+            print()
+            print("  Commands:")
+            print("    /cron                     - List scheduled jobs")
+            print("    /cron list                - List scheduled jobs")
+            print('    /cron add <schedule> <prompt>  - Add a new job')
+            print("    /cron remove <job_id>     - Remove a job")
+            print()
+            print("  Schedule formats:")
+            print("    30m, 2h, 1d              - One-shot delay")
+            print('    "every 30m", "every 2h"  - Recurring interval')
+            print('    "0 9 * * *"              - Cron expression')
+            print()
+            
+            # Show current jobs
+            jobs = list_jobs()
+            if jobs:
+                print("  Current Jobs:")
+                print("  " + "-" * 55)
+                for job in jobs:
+                    # Format repeat status
+                    times = job["repeat"].get("times")
+                    completed = job["repeat"].get("completed", 0)
+                    if times is None:
+                        repeat_str = "forever"
+                    else:
+                        repeat_str = f"{completed}/{times}"
+                    
+                    print(f"    {job['id'][:12]:<12} | {job['schedule_display']:<15} | {repeat_str:<8}")
+                    prompt_preview = job['prompt'][:45] + "..." if len(job['prompt']) > 45 else job['prompt']
+                    print(f"      {prompt_preview}")
+                    if job.get("next_run_at"):
+                        from datetime import datetime
+                        next_run = datetime.fromisoformat(job["next_run_at"])
+                        print(f"      Next: {next_run.strftime('%Y-%m-%d %H:%M')}")
+                    print()
+            else:
+                print("  No scheduled jobs. Use '/cron add' to create one.")
+            print()
+            return
+        
+        subcommand = parts[1].lower()
+        
+        if subcommand == "list":
+            # /cron list - just show jobs
+            jobs = list_jobs()
+            if not jobs:
+                print("(._.) No scheduled jobs.")
+                return
+            
+            print()
+            print("Scheduled Jobs:")
+            print("-" * 70)
+            for job in jobs:
+                times = job["repeat"].get("times")
+                completed = job["repeat"].get("completed", 0)
+                repeat_str = "forever" if times is None else f"{completed}/{times}"
+                
+                print(f"  ID: {job['id']}")
+                print(f"  Name: {job['name']}")
+                print(f"  Schedule: {job['schedule_display']} ({repeat_str})")
+                print(f"  Next run: {job.get('next_run_at', 'N/A')}")
+                print(f"  Prompt: {job['prompt'][:80]}{'...' if len(job['prompt']) > 80 else ''}")
+                if job.get("last_run_at"):
+                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                print()
+        
+        elif subcommand == "add":
+            # /cron add <schedule> <prompt>
+            if len(parts) < 3:
+                print("(._.) Usage: /cron add <schedule> <prompt>")
+                print("  Example: /cron add 30m Remind me to take a break")
+                print('  Example: /cron add "every 2h" Check server status at 192.168.1.1')
+                return
+            
+            # Parse schedule and prompt
+            rest = parts[2].strip()
+            
+            # Handle quoted schedule (e.g., "every 30m" or "0 9 * * *")
+            if rest.startswith('"'):
+                # Find closing quote
+                close_quote = rest.find('"', 1)
+                if close_quote == -1:
+                    print("(._.) Unmatched quote in schedule")
+                    return
+                schedule = rest[1:close_quote]
+                prompt = rest[close_quote + 1:].strip()
+            else:
+                # First word is schedule
+                schedule_parts = rest.split(maxsplit=1)
+                schedule = schedule_parts[0]
+                prompt = schedule_parts[1] if len(schedule_parts) > 1 else ""
+            
+            if not prompt:
+                print("(._.) Please provide a prompt for the job")
+                return
+            
+            try:
+                job = create_job(prompt=prompt, schedule=schedule)
+                print(f"(^_^)b Created job: {job['id']}")
+                print(f"  Schedule: {job['schedule_display']}")
+                print(f"  Next run: {job['next_run_at']}")
+            except Exception as e:
+                print(f"(x_x) Failed to create job: {e}")
+        
+        elif subcommand == "remove" or subcommand == "rm" or subcommand == "delete":
+            # /cron remove <job_id>
+            if len(parts) < 3:
+                print("(._.) Usage: /cron remove <job_id>")
+                return
+            
+            job_id = parts[2].strip()
+            job = get_job(job_id)
+            
+            if not job:
+                print(f"(._.) Job not found: {job_id}")
+                return
+            
+            if remove_job(job_id):
+                print(f"(^_^)b Removed job: {job['name']} ({job_id})")
+            else:
+                print(f"(x_x) Failed to remove job: {job_id}")
+        
+        else:
+            print(f"(._.) Unknown cron command: {subcommand}")
+            print("  Available: list, add, remove")
+    
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -933,6 +1073,8 @@ class HermesCLI:
             self._handle_personality_command(cmd)
         elif cmd == "/save":
             self.save_conversation()
+        elif cmd.startswith("/cron"):
+            self._handle_cron_command(command)  # Use original command for proper parsing
         else:
             self.console.print(f"[bold red]Unknown command: {cmd}[/]")
             self.console.print("[dim #B8860B]Type /help for available commands[/]")
@@ -1072,6 +1214,8 @@ def main(
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
+    cron_daemon: bool = False,
+    cron_tick_once: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1088,21 +1232,41 @@ def main(
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
+        cron_daemon: Run as cron daemon (check and execute due jobs continuously)
+        cron_tick_once: Run due cron jobs once and exit (for system cron integration)
     
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
+        python cli.py --cron-daemon              # Run cron scheduler daemon
+        python cli.py --cron-tick-once           # Check and run due jobs once
     """
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
     
+    # Handle cron daemon mode (runs before CLI initialization)
+    if cron_daemon:
+        print("Starting Hermes Cron Daemon...")
+        print("Jobs will be checked every 60 seconds.")
+        print("Press Ctrl+C to stop.\n")
+        run_cron_daemon(check_interval=60, verbose=True)
+        return
+    
+    # Handle cron tick (single run for system cron integration)
+    if cron_tick_once:
+        jobs_run = cron_tick(verbose=True)
+        if jobs_run:
+            print(f"Executed {jobs_run} job(s)")
+        return
+    
     # Handle query shorthand
     query = query or q
     
     # Parse toolsets - handle both string and tuple/list inputs
+    # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
     if toolsets:
         if isinstance(toolsets, str):
@@ -1115,6 +1279,9 @@ def main(
                     toolsets_list.extend([x.strip() for x in t.split(",")])
                 else:
                     toolsets_list.append(str(t))
+    else:
+        # Default: use hermes-cli toolset for full CLI functionality including cronjob tools
+        toolsets_list = ["hermes-cli"]
     
     # Create CLI instance
     cli = HermesCLI(

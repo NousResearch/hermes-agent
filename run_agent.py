@@ -980,6 +980,49 @@ class AIAgent:
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
     
+    def _extract_reasoning(self, assistant_message) -> Optional[str]:
+        """
+        Extract reasoning/thinking content from an assistant message.
+        
+        OpenRouter and various providers can return reasoning in multiple formats:
+        1. message.reasoning - Direct reasoning field (DeepSeek, Qwen, etc.)
+        2. message.reasoning_content - Alternative field (Moonshot AI, Novita, etc.)
+        3. message.reasoning_details - Array of {type, summary, ...} objects (OpenRouter unified)
+        
+        Args:
+            assistant_message: The assistant message object from the API response
+            
+        Returns:
+            Combined reasoning text, or None if no reasoning found
+        """
+        reasoning_parts = []
+        
+        # Check direct reasoning field
+        if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
+            reasoning_parts.append(assistant_message.reasoning)
+        
+        # Check reasoning_content field (alternative name used by some providers)
+        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+            # Don't duplicate if same as reasoning
+            if assistant_message.reasoning_content not in reasoning_parts:
+                reasoning_parts.append(assistant_message.reasoning_content)
+        
+        # Check reasoning_details array (OpenRouter unified format)
+        # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
+        if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+            for detail in assistant_message.reasoning_details:
+                if isinstance(detail, dict):
+                    # Extract summary from reasoning detail object
+                    summary = detail.get('summary') or detail.get('content') or detail.get('text')
+                    if summary and summary not in reasoning_parts:
+                        reasoning_parts.append(summary)
+        
+        # Combine all reasoning parts
+        if reasoning_parts:
+            return "\n\n".join(reasoning_parts)
+        
+        return None
+    
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
         Get messages up to (but not including) the last assistant turn.
@@ -1318,22 +1361,20 @@ class AIAgent:
             for msg in messages:
                 api_msg = msg.copy()
                 
-                # For assistant messages with tool_calls, providers require 'reasoning_content' field
-                # Extract reasoning from our stored 'reasoning' field and add it as 'reasoning_content'
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # For ALL assistant messages, pass reasoning back to the API
+                # This ensures multi-turn reasoning context is preserved
+                if msg.get("role") == "assistant":
                     reasoning_text = msg.get("reasoning")
                     if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, etc.)
+                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
                 
                 # Remove 'reasoning' field - it's for trajectory storage only
-                # The reasoning is already in the content via <think> tags AND
-                # we've added reasoning_content for API compatibility above
+                # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
                     api_msg.pop("reasoning")
-                # Remove 'reasoning_details' if present - we use reasoning_content instead
-                if "reasoning_details" in api_msg:
-                    api_msg.pop("reasoning_details")
+                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
+                # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
             
             if active_system_prompt:
@@ -1694,14 +1735,16 @@ class AIAgent:
                     # Reset retry counter on successful JSON validation
                     self._invalid_json_retries = 0
                     
-                    # Extract reasoning from response if available (for reasoning models like minimax, kimi, etc.)
-                    # Extract reasoning from response for storage
-                    # The reasoning_content field will be added when preparing API messages
-                    reasoning_text = None
-                    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-                        reasoning_text = assistant_message.reasoning
-                    elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-                        reasoning_text = assistant_message.reasoning_content
+                    # Extract reasoning from response if available
+                    # OpenRouter can return reasoning in multiple formats:
+                    # 1. message.reasoning - direct reasoning field
+                    # 2. message.reasoning_content - alternative field (some providers)
+                    # 3. message.reasoning_details - array with {summary: "..."} objects
+                    reasoning_text = self._extract_reasoning(assistant_message)
+                    
+                    if reasoning_text and self.verbose_logging:
+                        preview = reasoning_text[:100] + "..." if len(reasoning_text) > 100 else reasoning_text
+                        logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {preview}")
                     
                     # Build assistant message with tool calls
                     # Content stays as-is; reasoning is stored separately and will be passed
@@ -1722,6 +1765,14 @@ class AIAgent:
                             for tool_call in assistant_message.tool_calls
                         ]
                     }
+                    
+                    # Store reasoning_details for multi-turn reasoning context (OpenRouter)
+                    if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+                        assistant_msg["reasoning_details"] = [
+                            {"type": d.get("type"), "text": d.get("text"), "signature": d.get("signature")}
+                            for d in assistant_message.reasoning_details
+                            if isinstance(d, dict)
+                        ]
                     
                     messages.append(assistant_msg)
                     
@@ -1810,6 +1861,10 @@ class AIAgent:
                             current_tokens=self.context_compressor.last_prompt_tokens
                         )
                     
+                    # Save session log incrementally (so progress is visible even if interrupted)
+                    self._session_messages = messages
+                    self._save_session_log(messages)
+                    
                     # Continue loop for next response
                     continue
                 
@@ -1865,11 +1920,11 @@ class AIAgent:
                         self._empty_content_retries = 0
                     
                     # Extract reasoning from response if available
-                    reasoning_text = None
-                    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-                        reasoning_text = assistant_message.reasoning
-                    elif hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-                        reasoning_text = assistant_message.reasoning_content
+                    reasoning_text = self._extract_reasoning(assistant_message)
+                    
+                    if reasoning_text and self.verbose_logging:
+                        preview = reasoning_text[:100] + "..." if len(reasoning_text) > 100 else reasoning_text
+                        logging.debug(f"Captured final reasoning ({len(reasoning_text)} chars): {preview}")
                     
                     # Build final assistant message
                     # Content stays as-is; reasoning stored separately for trajectory extraction
@@ -1878,6 +1933,14 @@ class AIAgent:
                         "content": final_response,
                         "reasoning": reasoning_text  # Stored for trajectory extraction
                     }
+                    
+                    # Store reasoning_details for multi-turn reasoning context (OpenRouter)
+                    if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+                        final_msg["reasoning_details"] = [
+                            {"type": d.get("type"), "text": d.get("text"), "signature": d.get("signature")}
+                            for d in assistant_message.reasoning_details
+                            if isinstance(d, dict)
+                        ]
                     
                     messages.append(final_msg)
                     

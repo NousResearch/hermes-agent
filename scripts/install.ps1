@@ -15,7 +15,8 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
-    [string]$InstallDir = "$env:USERPROFILE\.hermes-agent"
+    [string]$HermesHome = "$env:USERPROFILE\.hermes",
+    [string]$InstallDir = "$env:USERPROFILE\.hermes\hermes-agent"
 )
 
 $ErrorActionPreference = "Stop"
@@ -248,36 +249,40 @@ function Set-PathVariable {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
-    Push-Location $InstallDir
+    # Create ~/.hermes directory structure (config at top level, code in subdir)
+    New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
     
-    # Create .env from example
-    if (-not (Test-Path ".env")) {
-        if (Test-Path ".env.example") {
-            Copy-Item ".env.example" ".env"
-            Write-Success "Created .env from template"
+    # Create .env at ~/.hermes/.env (top level, easy to find)
+    $envPath = "$HermesHome\.env"
+    if (-not (Test-Path $envPath)) {
+        $examplePath = "$InstallDir\.env.example"
+        if (Test-Path $examplePath) {
+            Copy-Item $examplePath $envPath
+            Write-Success "Created ~/.hermes/.env from template"
+        } else {
+            # Create empty .env if no example exists
+            New-Item -ItemType File -Force -Path $envPath | Out-Null
+            Write-Success "Created ~/.hermes/.env"
         }
     } else {
-        Write-Info ".env already exists, keeping it"
+        Write-Info "~/.hermes/.env already exists, keeping it"
     }
     
-    # Create cli-config.yaml from example
-    if (-not (Test-Path "cli-config.yaml")) {
-        if (Test-Path "cli-config.yaml.example") {
-            Copy-Item "cli-config.yaml.example" "cli-config.yaml"
-            Write-Success "Created cli-config.yaml from template"
+    # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
+    $configPath = "$HermesHome\config.yaml"
+    if (-not (Test-Path $configPath)) {
+        $examplePath = "$InstallDir\cli-config.yaml.example"
+        if (Test-Path $examplePath) {
+            Copy-Item $examplePath $configPath
+            Write-Success "Created ~/.hermes/config.yaml from template"
         }
     } else {
-        Write-Info "cli-config.yaml already exists, keeping it"
+        Write-Info "~/.hermes/config.yaml already exists, keeping it"
     }
     
-    Pop-Location
-    
-    # Create user data directory
-    $hermesDir = "$env:USERPROFILE\.hermes"
-    New-Item -ItemType Directory -Force -Path "$hermesDir\cron" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$hermesDir\sessions" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$hermesDir\logs" | Out-Null
-    Write-Success "Created ~/.hermes data directory"
+    Write-Success "Configuration directory ready: ~/.hermes/"
 }
 
 function Install-NodeDeps {
@@ -330,16 +335,16 @@ function Write-Completion {
     Write-Host ""
     
     # Show file locations
-    Write-Host "📁 Your files:" -ForegroundColor Cyan
+    Write-Host "📁 Your files (all in ~/.hermes/):" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "   Install:   " -NoNewline -ForegroundColor Yellow
-    Write-Host "$InstallDir"
     Write-Host "   Config:    " -NoNewline -ForegroundColor Yellow
-    Write-Host "$env:USERPROFILE\.hermes\config.yaml"
+    Write-Host "$HermesHome\config.yaml"
     Write-Host "   API Keys:  " -NoNewline -ForegroundColor Yellow
-    Write-Host "$env:USERPROFILE\.hermes\.env"
+    Write-Host "$HermesHome\.env"
     Write-Host "   Data:      " -NoNewline -ForegroundColor Yellow
-    Write-Host "$env:USERPROFILE\.hermes\ (cron, sessions, logs)"
+    Write-Host "$HermesHome\cron\, sessions\, logs\"
+    Write-Host "   Code:      " -NoNewline -ForegroundColor Yellow
+    Write-Host "$HermesHome\hermes-agent\"
     Write-Host ""
     
     Write-Host "─────────────────────────────────────────────────────────" -ForegroundColor Cyan

@@ -27,7 +27,8 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
-INSTALL_DIR="${HERMES_INSTALL_DIR:-$HOME/.hermes-agent}"
+HERMES_HOME="$HOME/.hermes"
+INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_MIN_VERSION="3.10"
 
 # Options
@@ -401,31 +402,36 @@ EOF
 copy_config_templates() {
     log_info "Setting up configuration files..."
     
-    # Create .env from example
-    if [ ! -f "$INSTALL_DIR/.env" ]; then
+    # Create ~/.hermes directory structure (config at top level, code in subdir)
+    mkdir -p "$HERMES_HOME/cron"
+    mkdir -p "$HERMES_HOME/sessions"
+    mkdir -p "$HERMES_HOME/logs"
+    
+    # Create .env at ~/.hermes/.env (top level, easy to find)
+    if [ ! -f "$HERMES_HOME/.env" ]; then
         if [ -f "$INSTALL_DIR/.env.example" ]; then
-            cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-            log_success "Created .env from template"
+            cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+            log_success "Created ~/.hermes/.env from template"
+        else
+            # Create empty .env if no example exists
+            touch "$HERMES_HOME/.env"
+            log_success "Created ~/.hermes/.env"
         fi
     else
-        log_info ".env already exists, keeping it"
+        log_info "~/.hermes/.env already exists, keeping it"
     fi
     
-    # Create cli-config.yaml from example
-    if [ ! -f "$INSTALL_DIR/cli-config.yaml" ]; then
+    # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
+    if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
-            cp "$INSTALL_DIR/cli-config.yaml.example" "$INSTALL_DIR/cli-config.yaml"
-            log_success "Created cli-config.yaml from template"
+            cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+            log_success "Created ~/.hermes/config.yaml from template"
         fi
     else
-        log_info "cli-config.yaml already exists, keeping it"
+        log_info "~/.hermes/config.yaml already exists, keeping it"
     fi
     
-    # Create ~/.hermes directory for user data
-    mkdir -p "$HOME/.hermes/cron"
-    mkdir -p "$HOME/.hermes/sessions"
-    mkdir -p "$HOME/.hermes/logs"
-    log_success "Created ~/.hermes data directory"
+    log_success "Configuration directory ready: ~/.hermes/"
 }
 
 install_node_deps() {
@@ -473,12 +479,12 @@ print_success() {
     echo ""
     
     # Show file locations
-    echo -e "${CYAN}${BOLD}📁 Your files:${NC}"
+    echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
     echo ""
-    echo -e "   ${YELLOW}Install:${NC}   $INSTALL_DIR"
     echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
     echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
-    echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/ (cron, sessions, logs)"
+    echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
+    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
     echo ""
     
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"

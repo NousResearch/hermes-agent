@@ -164,7 +164,7 @@ There are **three ways** to configure the gateway (in order of precedence):
 
 ### 1. Environment Variables (`.env` file) - Recommended for Quick Setup
 
-Add to your `.env` file in the project root:
+Add to your `~/.hermes/.env` file:
 
 ```bash
 # =============================================================================
@@ -173,6 +173,7 @@ Add to your `.env` file in the project root:
 
 # Telegram - get from @BotFather on Telegram
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_ALLOWED_USERS=123456789,987654321    # Security: restrict to these user IDs
 
 # Optional: Default channel for cron job delivery
 TELEGRAM_HOME_CHANNEL=-1001234567890
@@ -180,6 +181,7 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 
 # Discord - get from Discord Developer Portal
 DISCORD_BOT_TOKEN=your_discord_bot_token
+DISCORD_ALLOWED_USERS=123456789012345678      # Security: restrict to these user IDs
 
 # Optional: Default channel for cron job delivery
 DISCORD_HOME_CHANNEL=123456789012345678
@@ -187,6 +189,26 @@ DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 
 # WhatsApp - requires Node.js bridge setup
 WHATSAPP_ENABLED=true
+
+# =============================================================================
+# AGENT SETTINGS
+# =============================================================================
+
+# Max tool-calling iterations per conversation (default: 60)
+HERMES_MAX_ITERATIONS=60
+
+# Working directory for terminal commands (default: home ~)
+MESSAGING_CWD=/home/myuser
+
+# =============================================================================
+# TOOL PROGRESS NOTIFICATIONS
+# =============================================================================
+
+# Show progress messages as agent uses tools
+HERMES_TOOL_PROGRESS=true
+
+# Mode: "new" (only when tool changes) or "all" (every tool call)
+HERMES_TOOL_PROGRESS_MODE=new
 
 # =============================================================================
 # SESSION SETTINGS
@@ -247,11 +269,43 @@ Each platform has its own toolset for security:
 | Platform | Toolset | Capabilities |
 |----------|---------|--------------|
 | CLI | `hermes-cli` | Full access (terminal, browser, etc.) |
-| Telegram | `hermes-telegram` | Web, vision, skills, cronjobs |
-| Discord | `hermes-discord` | Web search, vision, skills, cronjobs |
-| WhatsApp | `hermes-whatsapp` | Web, terminal, vision, skills, cronjobs |
+| Telegram | `hermes-telegram` | Full tools including terminal |
+| Discord | `hermes-discord` | Full tools including terminal |
+| WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 
-Discord has a more limited toolset because it often runs in public servers.
+## User Experience Features
+
+### Typing Indicator
+
+The gateway keeps the "typing..." indicator active throughout processing, refreshing every 4 seconds. This lets users know the bot is working even during long tool-calling sequences.
+
+### Tool Progress Notifications
+
+When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+
+```
+💻 `ls -la`...
+🔍 web_search...
+📄 web_extract...
+🎨 image_generate...
+```
+
+Terminal commands show the actual command (truncated to 50 chars). Other tools just show the tool name.
+
+**Modes:**
+- `new`: Only sends message when switching to a different tool (less spam)
+- `all`: Sends message for every single tool call
+
+### Working Directory
+
+- **CLI (`hermes` command)**: Uses current directory where you run the command
+- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+
+This is intentional: CLI users are in a terminal and expect the agent to work in their current directory, while messaging users need a consistent starting location.
+
+### Max Iterations
+
+If the agent hits the max iteration limit while working, instead of a generic error, it asks the model to summarize what it found so far. This gives you a useful response even when the task couldn't be fully completed.
 
 ## Cron Job Delivery
 

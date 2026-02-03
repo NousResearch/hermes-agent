@@ -65,10 +65,12 @@ class AIAgent:
         model: str = "anthropic/claude-sonnet-4",
         api_key: str = None,
         base_url: str = "https://openrouter.ai/api/v1",
-        max_turns: int = 20,
+        max_iterations: int = 60,        # Max tool-calling loops
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
         verbose_logging: bool = False,
+        quiet_mode: bool = False,         # Suppress progress output
+        tool_progress_callback: callable = None,  # Called on each tool use
     ):
         # Initialize OpenAI client, load tools based on toolsets
         ...
@@ -194,7 +196,22 @@ TELEGRAM_ALLOWED_USERS=123456789,987654   # Comma-separated user IDs (from @user
 # Discord  
 DISCORD_BOT_TOKEN=MTIz...                 # From Developer Portal
 DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
+
+# Agent Behavior
+HERMES_MAX_ITERATIONS=60                  # Max tool-calling iterations
+MESSAGING_CWD=/home/myuser                # Terminal working directory for messaging
+
+# Tool Progress (optional)
+HERMES_TOOL_PROGRESS=true                 # Send progress messages
+HERMES_TOOL_PROGRESS_MODE=new             # "new" or "all"
 ```
+
+### Working Directory Behavior
+
+- **CLI (`hermes` command)**: Uses current directory (`.` → `os.getcwd()`)
+- **Messaging (Telegram/Discord)**: Uses `MESSAGING_CWD` (default: home directory)
+
+This is intentional: CLI users are in a terminal and expect the agent to work in their current directory, while messaging users need a consistent starting location.
 
 ### Security (User Allowlists):
 
@@ -207,6 +224,21 @@ The gateway checks `{PLATFORM}_ALLOWED_USERS` environment variables:
 Users can find their IDs:
 - **Telegram**: Message [@userinfobot](https://t.me/userinfobot)
 - **Discord**: Enable Developer Mode, right-click name → Copy ID
+
+### Tool Progress Notifications
+
+When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+- `💻 \`ls -la\`...` (terminal commands show the actual command)
+- `🔍 web_search...`
+- `📄 web_extract...`
+
+Modes:
+- `new`: Only when switching to a different tool (less spam)
+- `all`: Every single tool call
+
+### Typing Indicator
+
+The gateway keeps the "typing..." indicator active throughout processing, refreshing every 4 seconds. This lets users know the bot is working even during long tool-calling sequences.
 
 ### Platform Toolsets:
 
@@ -293,11 +325,17 @@ API keys are loaded from `~/.hermes/.env`:
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
 - `terminal.backend` - Backend: local, docker, singularity, modal, or ssh
-- `terminal.cwd` - Working directory ("." = current directory)
+- `terminal.cwd` - Working directory for CLI ("." = current directory)
 - `terminal.docker_image` - Image for Docker backend
 - `terminal.singularity_image` - Image for Singularity backend
 - `terminal.modal_image` - Image for Modal backend
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
+
+Agent behavior (in `~/.hermes/.env`):
+- `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 60)
+- `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
+- `HERMES_TOOL_PROGRESS` - Enable tool progress messages (`true`/`false`)
+- `HERMES_TOOL_PROGRESS_MODE` - Progress mode: `new` (tool changes) or `all`
 
 ### Dangerous Command Approval
 

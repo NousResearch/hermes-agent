@@ -48,6 +48,8 @@ All your settings are stored in `~/.hermes/` for easy access:
 hermes config              # View current configuration
 hermes config edit         # Open config.yaml in your editor
 hermes config set KEY VAL  # Set a specific value
+hermes config check        # Check for missing options (after updates)
+hermes config migrate      # Interactively add missing options
 
 # Examples:
 hermes config set model anthropic/claude-opus-4
@@ -83,9 +85,11 @@ hermes                    # Interactive chat (default)
 hermes chat -q "Hello"    # Single query mode
 hermes setup              # Configure API keys and settings
 hermes config             # View/edit configuration
+hermes config check       # Check for missing config (useful after updates)
+hermes config migrate     # Interactively add missing options
 hermes status             # Show configuration status
 hermes doctor             # Diagnose issues
-hermes update             # Update to latest version
+hermes update             # Update to latest version (prompts for new config)
 hermes gateway            # Start messaging gateway
 hermes cron list          # View scheduled jobs
 hermes version            # Show version info
@@ -471,6 +475,7 @@ Common issues:
 - **"API key not set"**: Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key`
 - **"hermes: command not found"**: Reload your shell (`source ~/.bashrc`) or check PATH
 - **Gateway won't start**: Check `hermes gateway status` and logs
+- **Missing config after update**: Run `hermes config check` to see what's new, then `hermes config migrate` to add missing options
 
 ---
 

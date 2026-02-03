@@ -5,6 +5,7 @@ All platform adapters (Telegram, Discord, WhatsApp) inherit from this
 and implement the required methods.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime

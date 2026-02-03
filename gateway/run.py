@@ -24,13 +24,22 @@ from typing import Dict, Optional, Any, List
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Load environment variables from ~/.hermes/.env
+# Load environment variables from ~/.hermes/.env first
 from dotenv import load_dotenv
 _env_path = Path.home() / '.hermes' / '.env'
 if _env_path.exists():
     load_dotenv(_env_path)
 # Also try project .env as fallback
 load_dotenv()
+
+# Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
+os.environ["HERMES_QUIET"] = "1"
+
+# Set terminal working directory for messaging platforms
+# Uses MESSAGING_CWD if set, otherwise defaults to home directory
+# This is separate from CLI which uses the directory where `hermes` is run
+messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
+os.environ["TERMINAL_CWD"] = messaging_cwd
 
 from gateway.config import (
     Platform,
@@ -163,18 +172,62 @@ class GatewayRunner:
         
         return None
     
+    def _is_user_authorized(self, source: SessionSource) -> bool:
+        """
+        Check if a user is authorized to use the bot.
+        
+        Authorization is checked via environment variables:
+        - GATEWAY_ALLOWED_USERS: Comma-separated list of user IDs (all platforms)
+        - TELEGRAM_ALLOWED_USERS: Telegram-specific user IDs
+        - DISCORD_ALLOWED_USERS: Discord-specific user IDs
+        
+        If no allowlist is configured, all users are allowed (open access).
+        """
+        user_id = source.user_id
+        if not user_id:
+            return False  # Can't verify unknown users
+        
+        # Check platform-specific allowlist first
+        platform_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+        }
+        
+        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""))
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "")
+        
+        # If no allowlists configured, allow all (backward compatible)
+        if not platform_allowlist and not global_allowlist:
+            return True
+        
+        # Check if user is in any allowlist
+        allowed_ids = set()
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(","))
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(","))
+        
+        return user_id in allowed_ids
+    
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
         
         This is the core message processing pipeline:
-        1. Check for commands (/new, /reset, etc.)
-        2. Get or create session
-        3. Build context for agent
-        4. Run agent conversation
-        5. Return response
+        1. Check user authorization
+        2. Check for commands (/new, /reset, etc.)
+        3. Get or create session
+        4. Build context for agent
+        5. Run agent conversation
+        6. Return response
         """
         source = event.source
+        
+        # Check if user is authorized
+        if not self._is_user_authorized(source):
+            print(f"[gateway] Unauthorized user: {source.user_id} ({source.user_name}) on {source.platform.value}")
+            return None  # Silently ignore unauthorized users
         
         # Check for reset commands
         command = event.get_command()

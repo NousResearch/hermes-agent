@@ -23,9 +23,12 @@ model:
 # OPTION 1: Local execution (default)
 # Commands run directly on your machine in the current directory
 # -----------------------------------------------------------------------------
+# Working directory behavior:
+#   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
+#   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
 terminal:
   env_type: "local"
-  cwd: "."  # Use "." for current directory, or specify absolute path
+  cwd: "."  # CLI working directory - "." means current directory
   timeout: 180
   lifetime_seconds: 300
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!

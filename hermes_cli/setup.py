@@ -591,6 +591,23 @@ def run_setup_wizard(args):
         if is_windows:
             print_info("Note: On Windows, commands run via cmd.exe or PowerShell")
         
+        # Messaging working directory configuration
+        print_info("")
+        print_info("Working Directory for Messaging (Telegram/Discord/etc):")
+        print_info("  The CLI always uses the directory you run 'hermes' from")
+        print_info("  But messaging bots need a static starting directory")
+        
+        current_cwd = get_env_value('MESSAGING_CWD') or str(Path.home())
+        print_info(f"  Current: {current_cwd}")
+        
+        cwd_input = prompt("  Messaging working directory", current_cwd)
+        # Expand ~ to full path
+        if cwd_input.startswith('~'):
+            cwd_expanded = str(Path.home()) + cwd_input[1:]
+        else:
+            cwd_expanded = cwd_input
+        save_env_value("MESSAGING_CWD", cwd_expanded)
+        
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
             sudo_pass = prompt("  Sudo password (leave empty to skip)", password=True)
@@ -720,9 +737,35 @@ def run_setup_wizard(args):
             save_env_value("TELEGRAM_BOT_TOKEN", token)
             print_success("Telegram token saved")
             
+            # Allowed users (security)
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   To find your Telegram user ID:")
+            print_info("   1. Message @userinfobot on Telegram")
+            print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
+            print()
+            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+            if allowed_users:
+                save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Telegram allowlist configured - only listed users can use the bot")
+            else:
+                print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+            
             home_channel = prompt("Home channel ID (optional, for cron delivery)")
             if home_channel:
                 save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+    
+    # Check/update existing Telegram allowlist
+    elif existing_telegram:
+        existing_allowlist = get_env_value('TELEGRAM_ALLOWED_USERS')
+        if not existing_allowlist:
+            print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
+            if prompt_yes_no("Add allowed users now?", True):
+                print_info("   To find your Telegram user ID: message @userinfobot")
+                allowed_users = prompt("Allowed user IDs (comma-separated)")
+                if allowed_users:
+                    save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                    print_success("Telegram allowlist configured")
     
     # Discord
     existing_discord = get_env_value('DISCORD_BOT_TOKEN')
@@ -738,9 +781,35 @@ def run_setup_wizard(args):
             save_env_value("DISCORD_BOT_TOKEN", token)
             print_success("Discord token saved")
             
+            # Allowed users (security)
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   To find your Discord user ID:")
+            print_info("   1. Enable Developer Mode in Discord settings")
+            print_info("   2. Right-click your name → Copy ID")
+            print()
+            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+            if allowed_users:
+                save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Discord allowlist configured")
+            else:
+                print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+            
             home_channel = prompt("Home channel ID (optional, for cron delivery)")
             if home_channel:
                 save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+    
+    # Check/update existing Discord allowlist
+    elif existing_discord:
+        existing_allowlist = get_env_value('DISCORD_ALLOWED_USERS')
+        if not existing_allowlist:
+            print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+            if prompt_yes_no("Add allowed users now?", True):
+                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                allowed_users = prompt("Allowed user IDs (comma-separated)")
+                if allowed_users:
+                    save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                    print_success("Discord allowlist configured")
     
     # =========================================================================
     # Step 7: Additional Tools (Optional)

@@ -180,6 +180,43 @@ The unified `hermes` command provides all functionality:
 
 ---
 
+## Messaging Gateway
+
+The gateway connects Hermes to Telegram, Discord, and WhatsApp.
+
+### Configuration (in `~/.hermes/.env`):
+
+```bash
+# Telegram
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...      # From @BotFather
+TELEGRAM_ALLOWED_USERS=123456789,987654   # Comma-separated user IDs (from @userinfobot)
+
+# Discord  
+DISCORD_BOT_TOKEN=MTIz...                 # From Developer Portal
+DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
+```
+
+### Security (User Allowlists):
+
+**IMPORTANT**: Without an allowlist, anyone who finds your bot can use it!
+
+The gateway checks `{PLATFORM}_ALLOWED_USERS` environment variables:
+- If set: Only listed user IDs can interact with the bot
+- If unset: All users are allowed (dangerous with terminal access!)
+
+Users can find their IDs:
+- **Telegram**: Message [@userinfobot](https://t.me/userinfobot)
+- **Discord**: Enable Developer Mode, right-click name → Copy ID
+
+### Platform Toolsets:
+
+Each platform has a dedicated toolset in `toolsets.py`:
+- `hermes-telegram`: Full tools including terminal (with safety checks)
+- `hermes-discord`: Full tools including terminal
+- `hermes-whatsapp`: Full tools including terminal
+
+---
+
 ## Configuration System
 
 Configuration files are stored in `~/.hermes/` for easy user access:

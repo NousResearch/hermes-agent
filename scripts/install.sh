@@ -25,7 +25,8 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
+REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HOME/.hermes-agent}"
 PYTHON_MIN_VERSION="3.10"
 
@@ -289,7 +290,22 @@ clone_repo() {
             exit 1
         fi
     else
-        git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+        # Try SSH first (for private repo access), fall back to HTTPS
+        log_info "Trying SSH clone..."
+        if git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+            log_success "Cloned via SSH"
+        else
+            log_info "SSH failed, trying HTTPS..."
+            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                log_success "Cloned via HTTPS"
+            else
+                log_error "Failed to clone repository"
+                log_info "For private repo access, ensure your SSH key is added to GitHub:"
+                log_info "  ssh-add ~/.ssh/id_rsa"
+                log_info "  ssh -T git@github.com  # Test connection"
+                exit 1
+            fi
+        fi
     fi
     
     cd "$INSTALL_DIR"

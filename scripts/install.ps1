@@ -148,7 +148,26 @@ function Install-Repository {
             exit 1
         }
     } else {
-        git clone --branch $Branch $RepoUrl $InstallDir
+        # Try SSH first (for private repo access), fall back to HTTPS
+        Write-Info "Trying SSH clone..."
+        $sshResult = git clone --branch $Branch $RepoUrlSsh $InstallDir 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Cloned via SSH"
+        } else {
+            Write-Info "SSH failed, trying HTTPS..."
+            $httpsResult = git clone --branch $Branch $RepoUrlHttps $InstallDir 2>&1
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Cloned via HTTPS"
+            } else {
+                Write-Error "Failed to clone repository"
+                Write-Info "For private repo access, ensure your SSH key is added to GitHub:"
+                Write-Info "  ssh-add ~/.ssh/id_rsa"
+                Write-Info "  ssh -T git@github.com  # Test connection"
+                exit 1
+            }
+        }
     }
     
     Write-Success "Repository ready"

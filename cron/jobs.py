@@ -208,7 +208,9 @@ def create_job(
     prompt: str,
     schedule: str,
     name: Optional[str] = None,
-    repeat: Optional[int] = None
+    repeat: Optional[int] = None,
+    deliver: Optional[str] = None,
+    origin: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -218,6 +220,8 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
+        deliver: Where to deliver output ("origin", "local", "telegram", etc.)
+        origin: Source info where job was created (for "origin" delivery)
     
     Returns:
         The created job dict
@@ -227,6 +231,10 @@ def create_job(
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
+    
+    # Default delivery to origin if available, otherwise local
+    if deliver is None:
+        deliver = "origin" if origin else "local"
     
     job_id = uuid.uuid4().hex[:12]
     now = datetime.now().isoformat()
@@ -246,7 +254,10 @@ def create_job(
         "next_run_at": compute_next_run(parsed_schedule),
         "last_run_at": None,
         "last_status": None,
-        "last_error": None
+        "last_error": None,
+        # Delivery configuration
+        "deliver": deliver,
+        "origin": origin,  # Tracks where job was created for "origin" delivery
     }
     
     jobs = load_jobs()

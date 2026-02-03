@@ -1,149 +1,156 @@
 #!/bin/bash
-
+# ============================================================================
 # Hermes Agent Setup Script
-# Automated setup for all dependencies and configuration
+# ============================================================================
+# Quick setup for developers who cloned the repo manually.
+#
+# Usage:
+#   ./setup-hermes.sh
+#
+# This script:
+# 1. Creates a virtual environment (if not exists)
+# 2. Installs dependencies
+# 3. Creates .env from template (if not exists)
+# 4. Installs the 'hermes' CLI command
+# 5. Runs the setup wizard (optional)
+# ============================================================================
 
 set -e
 
-echo "========================================="
-echo "Hermes Agent Setup"
-echo "========================================="
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo ""
+echo -e "${CYAN}🦋 Hermes Agent Setup${NC}"
 echo ""
 
-# Change to hermes-agent directory
-cd /home/teknium/hermes-agent
+# ============================================================================
+# Python check
+# ============================================================================
 
-# Check Python version
-echo "[1/10] Checking Python version..."
-python_version=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-echo "✓ Python $python_version detected"
-echo ""
+echo -e "${CYAN}→${NC} Checking Python..."
 
-# Install uv
-echo "[2/10] Installing uv (fast Python package installer)..."
-if ! command -v uv &> /dev/null; then
-    echo "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
-    echo "✓ uv installed"
-else
-    echo "✓ uv already installed: $(uv --version)"
+PYTHON_CMD=""
+for cmd in python3.12 python3.11 python3.10 python3 python; do
+    if command -v $cmd &> /dev/null; then
+        if $cmd -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+            PYTHON_CMD=$cmd
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${YELLOW}✗${NC} Python 3.10+ required"
+    exit 1
 fi
-echo ""
 
-# Install Node.js 20 using NodeSource
-echo "[3/10] Installing Node.js 20..."
-if ! command -v node &> /dev/null || [[ $(node --version | cut -d'v' -f2 | cut -d'.' -f1) -lt 20 ]]; then
-    echo "Installing Node.js 20 LTS..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-    echo "✓ Node.js installed"
+PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION found"
+
+# ============================================================================
+# Virtual environment
+# ============================================================================
+
+echo -e "${CYAN}→${NC} Setting up virtual environment..."
+
+if [ ! -d "venv" ]; then
+    $PYTHON_CMD -m venv venv
+    echo -e "${GREEN}✓${NC} Created venv"
 else
-    echo "✓ Node.js 20+ already installed: $(node --version)"
+    echo -e "${GREEN}✓${NC} venv exists"
 fi
-echo ""
 
-# Initialize git submodules
-echo "[4/10] Initializing git submodules..."
-git submodule update --init --recursive
-echo "✓ Submodules initialized"
-echo ""
-
-# Create Python virtual environment with uv
-echo "[5/10] Creating Python virtual environment with uv..."
-if [ -d "venv" ]; then
-    echo "Virtual environment already exists, skipping..."
-else
-    uv venv venv
-    echo "✓ Virtual environment created with uv"
-fi
-echo ""
-
-# Activate virtual environment and install Python packages with uv
-echo "[6/10] Installing Python dependencies with uv..."
 source venv/bin/activate
-uv pip install -r requirements.txt
-echo "✓ Python packages installed"
-echo ""
+pip install --upgrade pip wheel setuptools > /dev/null
 
-# Install mini-swe-agent with uv
-echo "[7/10] Installing mini-swe-agent..."
-uv pip install -e ./mini-swe-agent
-echo "✓ mini-swe-agent installed"
-echo ""
+# ============================================================================
+# Dependencies
+# ============================================================================
 
-# Install Node.js dependencies
-echo "[8/10] Installing Node.js dependencies..."
-npm install
-echo "✓ Node.js packages installed"
-echo ""
+echo -e "${CYAN}→${NC} Installing dependencies..."
 
-# Set up environment file
-echo "[9/10] Setting up environment configuration..."
-if [ -f ".env" ]; then
-    echo ".env file already exists, creating backup..."
-    cp .env .env.backup.$(date +%Y%m%d_%H%M%S)
-fi
-cp .env.example .env
-echo "✓ .env file created from .env.example"
-echo ""
+pip install -e ".[all]" > /dev/null 2>&1 || pip install -e "." > /dev/null
 
-# Set up CLI config
-echo "[10/10] Setting up CLI configuration..."
-if [ ! -f "cli-config.yaml" ]; then
-    cp cli-config.yaml.example cli-config.yaml
-    echo "✓ cli-config.yaml created from example"
+echo -e "${GREEN}✓${NC} Dependencies installed"
+
+# ============================================================================
+# Environment file
+# ============================================================================
+
+if [ ! -f ".env" ]; then
+    if [ -f ".env.example" ]; then
+        cp .env.example .env
+        echo -e "${GREEN}✓${NC} Created .env from template"
+    fi
 else
-    echo "cli-config.yaml already exists, skipping..."
+    echo -e "${GREEN}✓${NC} .env exists"
 fi
+
+# ============================================================================
+# PATH setup
+# ============================================================================
+
+echo -e "${CYAN}→${NC} Setting up hermes command..."
+
+BIN_DIR="$SCRIPT_DIR/venv/bin"
+
+# Add to shell config if not already there
+SHELL_CONFIG=""
+if [ -f "$HOME/.zshrc" ]; then
+    SHELL_CONFIG="$HOME/.zshrc"
+elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_CONFIG="$HOME/.bashrc"
+elif [ -f "$HOME/.bash_profile" ]; then
+    SHELL_CONFIG="$HOME/.bash_profile"
+fi
+
+if [ -n "$SHELL_CONFIG" ]; then
+    if ! grep -q "hermes-agent" "$SHELL_CONFIG" 2>/dev/null; then
+        echo "" >> "$SHELL_CONFIG"
+        echo "# Hermes Agent" >> "$SHELL_CONFIG"
+        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        echo -e "${GREEN}✓${NC} Added to $SHELL_CONFIG"
+    else
+        echo -e "${GREEN}✓${NC} PATH already in $SHELL_CONFIG"
+    fi
+fi
+
+# ============================================================================
+# Done
+# ============================================================================
+
+echo ""
+echo -e "${GREEN}✓ Setup complete!${NC}"
+echo ""
+echo "Next steps:"
+echo ""
+echo "  1. Reload your shell:"
+echo "     source $SHELL_CONFIG"
+echo ""
+echo "  2. Run the setup wizard to configure API keys:"
+echo "     hermes setup"
+echo ""
+echo "  3. Start chatting:"
+echo "     hermes"
+echo ""
+echo "Other commands:"
+echo "  hermes status        # Check configuration"
+echo "  hermes gateway       # Start messaging gateway"
+echo "  hermes cron daemon   # Run cron daemon"
+echo "  hermes doctor        # Diagnose issues"
 echo ""
 
-# Show Node.js and Python versions
-echo "========================================="
-echo "Setup Complete!"
-echo "========================================="
-echo ""
-echo "Installed versions:"
-echo "  Node.js: $(node --version)"
-echo "  npm: $(npm --version)"
-echo "  Python: $(python3 --version)"
-echo "  uv: $(uv --version)"
-echo ""
-
-echo "========================================="
-echo "Next Steps:"
-echo "========================================="
-echo ""
-echo "1. Configure API Keys in .env file:"
-echo "   nano .env"
-echo ""
-echo "   Required API keys:"
-echo "   - OPENROUTER_API_KEY (https://openrouter.ai/keys)"
-echo "   - FIRECRAWL_API_KEY (https://firecrawl.dev/)"
-echo "   - NOUS_API_KEY (https://inference-api.nousresearch.com/)"
-echo "   - FAL_KEY (https://fal.ai/)"
-echo ""
-echo "   Optional API keys:"
-echo "   - BROWSERBASE_API_KEY (https://browserbase.com/)"
-echo "   - BROWSERBASE_PROJECT_ID"
-echo ""
-echo "2. Activate the virtual environment:"
-echo "   source venv/bin/activate"
-echo ""
-echo "3. Run the CLI:"
-echo "   ./hermes"
-echo ""
-echo "4. Or run a single query:"
-echo "   python run_agent.py --query \"your question here\""
-echo ""
-echo "5. List available tools:"
-echo "   python run_agent.py --list_tools"
-echo ""
-echo "========================================="
-echo "Configuration Files:"
-echo "========================================="
-echo "  .env - API keys and environment variables"
-echo "  cli-config.yaml - CLI settings and preferences"
-echo ""
-echo "For more information, see README.md"
-echo ""
+# Ask if they want to run setup wizard now
+read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+    echo ""
+    python -m hermes_cli.main setup
+fi

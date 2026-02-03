@@ -196,7 +196,7 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        # Start continuous typing indicator (refreshes every 4 seconds)
+        # Start continuous typing indicator (refreshes every 2 seconds)
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id))
         
         try:
@@ -205,13 +205,27 @@ class BasePlatformAdapter(ABC):
             
             # Send response if any
             if response:
-                await self.send(
+                result = await self.send(
                     chat_id=event.source.chat_id,
                     content=response,
                     reply_to=event.message_id
                 )
+                
+                # Log send failures (don't raise - user already saw tool progress)
+                if not result.success:
+                    print(f"[{self.name}] Failed to send response: {result.error}")
+                    # Try sending without markdown as fallback
+                    fallback_result = await self.send(
+                        chat_id=event.source.chat_id,
+                        content=f"(Response formatting failed, plain text:)\n\n{response[:3500]}",
+                        reply_to=event.message_id
+                    )
+                    if not fallback_result.success:
+                        print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
         except Exception as e:
             print(f"[{self.name}] Error handling message: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             # Stop typing indicator
             typing_task.cancel()

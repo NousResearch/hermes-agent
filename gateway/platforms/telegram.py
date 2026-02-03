@@ -142,13 +142,27 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             
             for i, chunk in enumerate(chunks):
-                msg = await self._bot.send_message(
-                    chat_id=int(chat_id),
-                    text=chunk,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                    message_thread_id=int(thread_id) if thread_id else None,
-                )
+                # Try Markdown first, fall back to plain text if it fails
+                try:
+                    msg = await self._bot.send_message(
+                        chat_id=int(chat_id),
+                        text=chunk,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                        message_thread_id=int(thread_id) if thread_id else None,
+                    )
+                except Exception as md_error:
+                    # Markdown parsing failed, try plain text
+                    if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                        msg = await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=chunk,
+                            parse_mode=None,  # Plain text
+                            reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                            message_thread_id=int(thread_id) if thread_id else None,
+                        )
+                    else:
+                        raise  # Re-raise if not a parse error
                 message_ids.append(str(msg.message_id))
             
             return SendResult(

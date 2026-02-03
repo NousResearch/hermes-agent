@@ -4,101 +4,6 @@
 
 ---
 
-## 🚨 HIGH PRIORITY - Immediate Fixes
-
-These items need to be addressed ASAP:
-
-### 1. SUDO Breaking Terminal Tool 🔐 ✅ COMPLETE
-- [x] **Problem:** SUDO commands break the terminal tool execution (hangs indefinitely)
-- [x] **Fix:** Created custom environment wrappers in `tools/terminal_tool.py`
-  - `stdin=subprocess.DEVNULL` prevents hanging on interactive prompts
-  - Sudo fails gracefully with clear error if no password configured
-  - Same UX as Claude Code - agent sees error, tells user to run it themselves
-- [x] **All 5 environments now have consistent behavior:**
-  - `_LocalEnvironment` - local execution
-  - `_DockerEnvironment` - Docker containers
-  - `_SingularityEnvironment` - Singularity/Apptainer containers
-  - `_ModalEnvironment` - Modal cloud sandboxes
-  - `_SSHEnvironment` - remote SSH execution
-- [x] **Optional sudo support via `SUDO_PASSWORD` env var:**
-  - Shared `_transform_sudo_command()` helper used by all environments
-  - If set, auto-transforms `sudo cmd` → pipes password via `sudo -S`
-  - Documented in `.env.example`, `cli-config.yaml`, and README
-  - Works for chained commands: `cmd1 && sudo cmd2`
-- [x] **Interactive sudo prompt in CLI mode:**
-  - When sudo detected and no password configured, prompts user
-  - 45-second timeout (auto-skips if no input)
-  - Hidden password input via `getpass` (password not visible)
-  - Password cached for session (don't ask repeatedly)
-  - Spinner pauses during prompt for clean UX
-  - Uses `HERMES_INTERACTIVE` env var to detect CLI mode
-
-### 2. Fix `browser_get_images` Tool 🖼️ ✅ VERIFIED WORKING
-- [x] **Tested:** Tool works correctly on multiple sites
-- [x] **Results:** Successfully extracts image URLs, alt text, dimensions
-- [x] **Note:** Some sites (Pixabay, etc.) have Cloudflare bot protection that blocks headless browsers - this is expected behavior, not a bug
-
-### 3. Better Action Logging for Debugging 📝 ✅ COMPLETE
-- [x] **Problem:** Need better logging of agent actions for debugging
-- [x] **Implementation:**
-  - Save full session trajectories to `logs/` directory as JSON
-  - Each session gets a unique file: `session_YYYYMMDD_HHMMSS_UUID.json`
-  - Logs all messages, tool calls with inputs/outputs, timestamps
-  - Structured JSON format for easy parsing and replay
-  - Automatic on CLI runs (configurable)
-
-### 4. Automatic Context Compression 🗜️ ✅ COMPLETE
-- [x] **Problem:** Long conversations exceed model context limits, causing errors
-- [x] **Solution:** Auto-compress middle turns when approaching limit
-- [x] **Implementation:**
-  - Fetches model context lengths from OpenRouter `/api/v1/models` API (cached 1hr)
-  - Tracks actual token usage from API responses (`usage.prompt_tokens`)
-  - Triggers at 85% of model's context limit (configurable)
-  - Protects first 3 turns (system, initial request, first response)
-  - Protects last 4 turns (recent context most relevant)
-  - Summarizes middle turns using fast model (Gemini Flash)
-  - Inserts summary as user message, conversation continues seamlessly
-  - If context error occurs, attempts compression before failing
-- [x] **Configuration (cli-config.yaml / env vars):**
-  - `CONTEXT_COMPRESSION_ENABLED` (default: true)
-  - `CONTEXT_COMPRESSION_THRESHOLD` (default: 0.85 = 85%)
-  - `CONTEXT_COMPRESSION_MODEL` (default: google/gemini-2.0-flash-001)
-
-### 5. Stream Thinking Summaries in Real-Time 💭 ⏸️ DEFERRED
-- [ ] **Problem:** Thinking/reasoning summaries not shown while streaming
-- [ ] **Complexity:** This is a significant refactor - leaving for later
-
-**OpenRouter Streaming Info:**
-- Uses `stream=True` with OpenAI SDK
-- Reasoning comes in `choices[].delta.reasoning_details` chunks
-- Types: `reasoning.summary`, `reasoning.text`, `reasoning.encrypted`
-- Tool call arguments stream as partial JSON (need accumulation)
-- Items paradigm: same ID emitted multiple times with updated content
-
-**Key Challenges:**
-- Tool call JSON accumulation (partial `{"query": "wea` → `{"query": "weather"}`)
-- Multiple concurrent outputs (thinking + tool calls + text simultaneously)
-- State management for partial responses
-- Error handling if connection drops mid-stream
-- Deciding when tool calls are "complete" enough to execute
-
-**UX Questions to Resolve:**
-- Show raw thinking text or summarized?
-- Live expanding text vs. spinner replacement?
-- Markdown rendering while streaming?
-- How to handle thinking + tool call display simultaneously?
-
-**Implementation Options:**
-- New `run_conversation_streaming()` method (keep non-streaming as fallback)
-- Wrapper that handles streaming internally
-- Big refactor of existing `run_conversation()`
-
-**References:**
-- https://openrouter.ai/docs/api/reference/streaming
-- https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#streaming-response
-
----
-
 ## 1. Subagent Architecture (Context Isolation) 🎯
 
 **Problem:** Long-running tools (terminal commands, browser automation, complex file operations) consume massive context. A single `ls -la` can add hundreds of lines. Browser snapshots, debugging sessions, and iterative terminal work quickly bloat the main conversation, leaving less room for actual reasoning.
@@ -218,38 +123,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 3. Tool Composition & Learning 🔧
-
-**Problem:** Tools are atomic. Complex tasks require repeated manual orchestration of the same tool sequences.
-
-**Ideas:**
-- [ ] **Macro tools / Tool chains** - Define reusable tool sequences:
-  ```yaml
-  research_topic:
-    description: "Deep research on a topic"
-    steps:
-      - web_search: {query: "$topic"}
-      - web_extract: {urls: "$search_results.urls[:3]"}
-      - summarize: {content: "$extracted"}
-  ```
-  - Could be defined in skills or a new `macros/` directory
-  - Agent can invoke macro as single tool call
-  
-- [ ] **Tool failure patterns** - Learn from failures:
-  - Track: tool, input pattern, error type, what worked instead
-  - Before calling a tool, check: "Has this pattern failed before?"
-  - Persistent across sessions (stored in skills or separate DB)
-  
-- [ ] **Parallel tool execution** - When tools are independent, run concurrently:
-  - Detect independence (no data dependencies between calls)
-  - Use `asyncio.gather()` for parallel execution
-  - Already have async support in some tools, just need orchestration
-
-**Files to modify:** `model_tools.py`, `toolsets.py`, new `tool_macros.py`
-
----
-
-## 4. Dynamic Skills Expansion 📚
+## 3. Dynamic Skills Expansion 📚
 
 **Problem:** Skills system is elegant but static. Skills must be manually created and added.
 
@@ -278,7 +152,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 5. Interactive Clarifying Questions Tool ❓
+## 4. Interactive Clarifying Questions Tool ❓
 
 **Problem:** Agent sometimes makes assumptions or guesses when it should ask the user. Currently can only ask via text, which gets lost in long outputs.
 
@@ -314,7 +188,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Collaborative Problem Solving 🤝
+## 5. Collaborative Problem Solving 🤝
 
 **Problem:** Interaction is command/response. Complex problems benefit from dialogue.
 
@@ -333,7 +207,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 7. Project-Local Context 💾
+## 6. Project-Local Context 💾
 
 **Problem:** Valuable context lost between sessions.
 
@@ -351,30 +225,7 @@ These items need to be addressed ASAP:
 
 **Files to modify:** New `project_context.py`, auto-load in `run_agent.py`
 
----
-
-## 8. Graceful Degradation & Robustness 🛡️
-
-**Problem:** When things go wrong, recovery is limited. Should fail gracefully.
-
-**Ideas:**
-- [ ] **Fallback chains** - When primary approach fails, have backups:
-  - `web_extract` fails → try `browser_navigate` → try `web_search` for cached version
-  - Define fallback order per tool type
-  
-- [ ] **Partial progress preservation** - Don't lose work on failure:
-  - Long task fails midway → save what we've got
-  - "I completed 3/5 steps before the error. Here's what I have..."
-  
-- [ ] **Self-healing** - Detect and recover from bad states:
-  - Browser stuck → close and retry
-  - Terminal hung → timeout and reset
-
-**Files to modify:** `model_tools.py`, tool implementations, new `fallback_manager.py`
-
----
-
-## 9. Tools & Skills Wishlist 🧰
+## 6. Tools & Skills Wishlist 🧰
 
 *Things that would need new tool implementations (can't do well with current tools):*
 
@@ -441,7 +292,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 10. Messaging Platform Integrations 💬 ✅ COMPLETE
+## 7. Messaging Platform Integrations 💬 ✅ COMPLETE
 
 **Problem:** Agent currently only works via `cli.py` which requires direct terminal access. Users may want to interact via messaging apps from their phone or other devices.
 
@@ -496,71 +347,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 11. Scheduled Tasks / Cron Jobs ⏰ ✅ COMPLETE
-
-**Problem:** Agent only runs on-demand. Some tasks benefit from scheduled execution (daily summaries, monitoring, reminders).
-
-**Solution Implemented:**
-
-- [x] **Cron-style scheduler** - Run agent turns on a schedule
-  - Jobs stored in `~/.hermes/cron/jobs.json`
-  - Each job: `{ id, name, prompt, schedule, repeat, enabled, next_run_at, ... }`
-  - Built-in scheduler daemon or system cron integration
-  
-- [x] **Schedule formats:**
-  - Duration: `30m`, `2h`, `1d` (one-shot delay)
-  - Interval: `every 30m`, `every 2h` (recurring)
-  - Cron expression: `0 9 * * *` (requires `croniter` package)
-  - ISO timestamp: `2026-02-03T14:00:00` (one-shot at specific time)
-
-- [x] **Repeat options:**
-  - `repeat=None` (or omit): One-shot schedules run once; intervals/cron run forever
-  - `repeat=1`: Run once then auto-delete
-  - `repeat=N`: Run exactly N times then auto-delete
-  
-- [x] **CLI interface:**
-  ```bash
-  # List scheduled jobs
-  /cron
-  /cron list
-  
-  # Add a one-shot job (runs once in 30 minutes)
-  /cron add 30m "Remind me to check the build status"
-  
-  # Add a recurring job (every 2 hours)
-  /cron add "every 2h" "Check server status at 192.168.1.100"
-  
-  # Add a cron expression (daily at 9am)
-  /cron add "0 9 * * *" "Generate morning briefing"
-  
-  # Remove a job
-  /cron remove <job_id>
-  ```
-
-- [x] **Agent self-scheduling tools** (hermes-cli toolset):
-  - `schedule_cronjob(prompt, schedule, name?, repeat?)` - Create a scheduled task
-  - `list_cronjobs()` - View all scheduled jobs
-  - `remove_cronjob(job_id)` - Cancel a job
-  - Tool descriptions emphasize: **cronjobs run in isolated sessions with NO context**
-
-- [x] **Daemon modes:**
-  ```bash
-  # Built-in daemon (checks every 60 seconds)
-  python cli.py --cron-daemon
-  
-  # Single tick for system cron integration
-  python cli.py --cron-tick-once
-  ```
-
-- [x] **Output storage:** `~/.hermes/cron/output/{job_id}/{timestamp}.md`
-
-**Files created:** `cron/__init__.py`, `cron/jobs.py`, `cron/scheduler.py`, `tools/cronjob_tools.py`
-
-**Toolset:** `hermes-cli` (default for CLI) includes cronjob tools; not in batch runner toolsets
-
----
-
-## 12. Text-to-Speech (TTS) 🔊
+## 8. Text-to-Speech (TTS) 🔊
 
 **Problem:** Agent can only respond with text. Some users prefer audio responses (accessibility, hands-free use, podcasts).
 
@@ -619,103 +406,6 @@ These items need to be addressed ASAP:
   ```
 
 **Files to create:** `tools/transcribe_tool.py`, integrate with messaging monitors
-
----
-
-## Priority Order (Suggested)
-
-1. **🎯 Subagent Architecture** - Critical for context management, enables everything else
-2. **Memory & Context Management** - Complements subagents for remaining context
-3. **Self-Reflection** - Improves reliability and reduces wasted tool calls  
-4. **Project-Local Context** - Practical win, keeps useful info across sessions
-5. **Messaging Integrations** - Unlocks mobile access, new interaction patterns
-6. **Scheduled Tasks / Cron Jobs** - Enables automation, reminders, monitoring
-7. **Tool Composition** - Quality of life, builds on other improvements
-8. **Dynamic Skills** - Force multiplier for repeated tasks
-9. **Interactive Clarifying Questions** - Better UX for ambiguous tasks
-10. **TTS / Audio Transcription** - Accessibility, hands-free use
-
----
-
-## Removed Items (Unrealistic)
-
-The following were removed because they're architecturally impossible:
-
-- ~~Proactive suggestions / Prefetching~~ - Agent only runs on user request, can't interject
-- ~~Clipboard integration~~ - No access to user's local system clipboard
-
-The following **moved to active TODO** (now possible with new architecture):
-
-- ~~Session save/restore~~ → See **Messaging Integrations** (session persistence)
-- ~~Voice/TTS playback~~ → See **TTS** (can generate audio files, send via messaging)
-- ~~Set reminders~~ → See **Scheduled Tasks / Cron Jobs**
-
-The following were removed because they're **already possible**:
-
-- ~~HTTP/API Client~~ → Use `curl` or Python `requests` in terminal
-- ~~Structured Data Manipulation~~ → Use `pandas` in terminal
-- ~~Git-Native Operations~~ → Use `git` CLI in terminal
-- ~~Symbolic Math~~ → Use `SymPy` in terminal
-- ~~Code Quality Tools~~ → Run linters (`eslint`, `black`, `mypy`) in terminal
-- ~~Testing Framework~~ → Run `pytest`, `jest`, etc. in terminal
-- ~~Translation~~ → LLM handles this fine, or use translation APIs
-
----
-
----
-
-## 🧪 Brainstorm Ideas (Not Yet Fleshed Out)
-
-*These are early-stage ideas that need more thinking before implementation. Captured here so they don't get lost.*
-
-### Remote/Distributed Execution 🌐
-
-**Concept:** Run agent on a powerful remote server while interacting from a thin client.
-
-**Why interesting:**
-- Run on beefy GPU server for local LLM inference
-- Agent has access to remote machine's resources (files, tools, internet)
-- User interacts via lightweight client (phone, low-power laptop)
-
-**Open questions:**
-- How does this differ from just SSH + running cli.py on remote?
-- Would need secure communication channel (WebSocket? gRPC?)
-- How to handle tool outputs that reference remote paths?
-- Credential management for remote execution
-- Latency considerations for interactive use
-
-**Possible architecture:**
-```
-┌─────────────┐         ┌─────────────────────────┐
-│ Thin Client │ ◄─────► │ Remote Hermes Server    │
-│ (phone/web) │  WS/API │ - Full agent + tools    │
-└─────────────┘         │ - GPU for local LLM     │
-                        │ - Access to server files│
-                        └─────────────────────────┘
-```
-
-**Related to:** Messaging integrations (could be the "server" that monitors receive from)
-
----
-
-### Multi-Agent Parallel Execution 🤖🤖
-
-**Concept:** Extension of Subagent Architecture (Section 1) - run multiple subagents in parallel.
-
-**Why interesting:**
-- Independent subtasks don't need to wait for each other
-- "Research X while setting up Y" - both run simultaneously
-- Faster completion for complex multi-part tasks
-
-**Open questions:**
-- How to detect which tasks are truly independent?
-- Resource management (API rate limits, concurrent connections)
-- How to merge results when parallel tasks have conflicts?
-- Cost implications of multiple parallel LLM calls
-
-*Note: Basic subagent delegation (Section 1) should be implemented first, parallel execution is an optimization on top.*
-
----
 
 ### Plugin/Extension System 🔌
 

@@ -51,6 +51,13 @@ class AgentEnvConfig(BaseEnvConfig):
     max_containers: int = Field(default=10, description="Nomad mode: maximum containers")
     privileged: bool = Field(default=False, description="Nomad mode: run container privileged")
     acquire_timeout_s: float = Field(default=30.0, description="Slot acquisition timeout (seconds)")
+    purge_job_on_start: bool = Field(
+        default=False,
+        description=(
+            "Nomad mode: stop/purge the sandbox job on startup. This is helpful in local dev and training runs "
+            "to recover from previous crashes that leave the job in a restart backoff state."
+        ),
+    )
     purge_job_on_shutdown: bool = Field(default=True, description="Nomad mode: stop/purge job on shutdown")
 
     # basic agent defaults
@@ -229,6 +236,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
                 max_containers=self.config.max_containers,
                 privileged=self.config.privileged,
                 acquire_timeout=self.config.acquire_timeout_s,
+                purge_job_on_start=bool(self.config.purge_job_on_start),
             )
         )
         await pool.start()

@@ -33,7 +33,7 @@ class ToolServerSmokeEnvConfig(AgentEnvConfig):
         default="http://127.0.0.1:8080",
         description="Base URL for an OpenAI-compatible chat server (without /v1).",
     )
-    server_model: str = Field(default="glm-4.7-flash", description="Model name")
+    server_model: str = Field(default="hermes-4-36b", description="Model name")
 
 
 class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
@@ -58,7 +58,7 @@ class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
             or os.getenv("LLM_BASE_URL")
             or "http://127.0.0.1:8080"
         )
-        model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "glm-4.7-flash"
+        model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "hermes-4-36b"
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
         env_config = ToolServerSmokeEnvConfig(
@@ -76,6 +76,7 @@ class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
             # Self-contained ToolServer for local smoke.
             tool_server_url="inprocess",
             sandbox_image=os.getenv("ATROPOS_SANDBOX_IMAGE") or "atropos-sandbox:local",
+            purge_job_on_start=True,
             purge_job_on_shutdown=True,
         )
 

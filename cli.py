@@ -472,14 +472,33 @@ class HermesCLI:
         self.console = Console()
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
+
+        self.backend = (backend or os.getenv("HERMES_BACKEND") or "openai").strip().lower()
+        if self.backend not in {"openai", "atropos"}:
+            self.console.print(
+                f"[bold yellow]Warning:[/] unknown backend '{self.backend}', falling back to 'openai'"
+            )
+            self.backend = "openai"
         
         # Configuration - priority: CLI args > env vars > config file
-        self.model = (
-            model
-            or os.getenv("LLM_MODEL")
-            or os.getenv("ATROPOS_SERVER_MODEL")
-            or CLI_CONFIG["model"]["default"]
-        )
+        #
+        # Note: For the Atropos backend we intentionally prefer `ATROPOS_SERVER_MODEL`
+        # over `LLM_MODEL`, because `LLM_MODEL` is commonly an OpenRouter-style ID
+        # (e.g. "anthropic/claude-sonnet-4") and will not exist on local servers.
+        if model:
+            self.model = model
+        elif self.backend == "atropos":
+            self.model = (
+                os.getenv("ATROPOS_SERVER_MODEL")
+                or os.getenv("LLM_MODEL")
+                or CLI_CONFIG["model"]["default"]
+            )
+        else:
+            self.model = (
+                os.getenv("LLM_MODEL")
+                or os.getenv("ATROPOS_SERVER_MODEL")
+                or CLI_CONFIG["model"]["default"]
+            )
 
         env_openai_base_url = os.getenv("OPENAI_BASE_URL")
         if env_openai_base_url:
@@ -507,13 +526,6 @@ class HermesCLI:
             or os.getenv("OPENROUTER_API_KEY")
         )
         self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
-
-        self.backend = (backend or os.getenv("HERMES_BACKEND") or "openai").strip().lower()
-        if self.backend not in {"openai", "atropos"}:
-            self.console.print(
-                f"[bold yellow]Warning:[/] unknown backend '{self.backend}', falling back to 'openai'"
-            )
-            self.backend = "openai"
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets

@@ -50,6 +50,9 @@ class SlotPoolConfig:
     health_check_interval: float = 30.0  # Seconds between health checks
     scale_cooldown: float = 60.0  # Seconds between scale operations
 
+    # Job lifecycle
+    purge_job_on_start: bool = False  # Purge any pre-existing job before starting (local dev/training friendly)
+
 
 class SlotPool:
     """
@@ -144,7 +147,11 @@ class SlotPool:
             if not await self.nomad.is_healthy():
                 raise RuntimeError(f"Nomad is not reachable at {self.config.nomad_address}")
 
-            # Check if job exists
+            if self.config.purge_job_on_start:
+                logger.info(f"Purging any existing Nomad job: {self.config.job_id}")
+                await self.nomad.stop_job(self.config.job_id, purge=True)
+
+            # Check if job exists (after optional purge)
             job = await self.nomad.get_job(self.config.job_id)
 
             if job is None:
@@ -397,11 +404,30 @@ class SlotPool:
                 for task_name, st in task_states.items():
                     events = (st or {}).get("Events") or []
                     if isinstance(events, list) and events:
-                        last = events[-1]
-                        desc = last.get("DisplayMessage") or last.get("Message") or last.get("Type") or ""
-                        if desc:
-                            parts.append(f"{task_name}: {desc}")
+                        # Include a few recent events; the latest can be a generic restart message
+                        # while the true root cause is slightly earlier (e.g. image pull failure).
+                        recent = events[-3:]
+                        msgs: List[str] = []
+                        for ev in recent:
+                            desc = ev.get("DisplayMessage") or ev.get("Message") or ev.get("Type") or ""
+                            if desc:
+                                msgs.append(desc)
+                        if msgs:
+                            parts.append(f"{task_name}: " + " | ".join(msgs))
             return "; ".join(parts)
+
+        def _alloc_events_lower(detail: Dict[str, Any]) -> str:
+            task_states = detail.get("TaskStates") or {}
+            texts: List[str] = []
+            if isinstance(task_states, dict):
+                for _task_name, st in task_states.items():
+                    events = (st or {}).get("Events") or []
+                    if isinstance(events, list):
+                        for ev in events[-10:]:
+                            desc = ev.get("DisplayMessage") or ev.get("Message") or ev.get("Type") or ""
+                            if desc:
+                                texts.append(desc)
+            return " ".join(texts).lower()
         
         while time.time() - start < timeout:
             allocs = await self.nomad.get_job_allocations(self.config.job_id)
@@ -417,13 +443,23 @@ class SlotPool:
                     detail = await self.nomad.get_allocation(alloc.id)
                     if isinstance(detail, dict):
                         summary = _summarize_alloc_detail(detail)
-                        lowered = summary.lower()
+                        lowered = _alloc_events_lower(detail) or summary.lower()
                         if "failed to pull" in lowered or "pull access denied" in lowered:
                             raise RuntimeError(
                                 "Nomad allocation failed to start due to a Docker image pull error. "
                                 f"Allocation {alloc.id[:8]}: {summary}\n"
                                 "If you're using a local image tag (e.g. `atropos-sandbox:local`) on macOS, "
-                                "make sure the image is loaded into Docker (build with `docker buildx build --load ...`)."
+                                "make sure the image is loaded into Docker, e.g.:\n"
+                                "  docker buildx build --load -t atropos-sandbox:local -f Hermes-Agent/atropos/Dockerfile Hermes-Agent/atropos"
+                            )
+                        if "exceeded allowed attempts" in lowered:
+                            raise RuntimeError(
+                                "Nomad allocation is crash-looping and has entered restart backoff. "
+                                f"Allocation {alloc.id[:8]}: {summary}\n"
+                                "Inspect logs with:\n"
+                                f"  nomad alloc logs -stderr -task sandbox-server {alloc.id}\n"
+                                "Common causes include: missing local Docker image tag, container entrypoint error, "
+                                "or sandbox-server startup failure."
                             )
             
             if healthy_count >= min_count:

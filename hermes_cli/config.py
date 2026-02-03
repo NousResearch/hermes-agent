@@ -201,6 +201,13 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
     },
+    # Agent configuration
+    "HERMES_MAX_ITERATIONS": {
+        "description": "Maximum tool-calling iterations per conversation (default: 25 for messaging, 10 for CLI)",
+        "prompt": "Max iterations",
+        "url": None,
+        "password": False,
+    },
 }
 
 

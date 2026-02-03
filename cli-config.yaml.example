@@ -146,8 +146,10 @@ compression:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum conversation turns before stopping
-  max_turns: 20
+  # Maximum tool-calling iterations per conversation
+  # Higher = more room for complex tasks, but costs more tokens
+  # Recommended: 20-30 for focused tasks, 50-100 for open exploration
+  max_turns: 60
   
   # Enable verbose logging
   verbose: false

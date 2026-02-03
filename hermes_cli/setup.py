@@ -693,7 +693,28 @@ def run_setup_wizard(args):
     # else: Keep current (selected_backend is None)
     
     # =========================================================================
-    # Step 5: Context Compression
+    # Step 5: Agent Settings
+    # =========================================================================
+    print_header("Agent Settings")
+    
+    # Max iterations
+    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '60'
+    print_info("Maximum tool-calling iterations per conversation.")
+    print_info("Higher = more complex tasks, but costs more tokens.")
+    print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
+    
+    max_iter_str = prompt("Max iterations", current_max)
+    try:
+        max_iter = int(max_iter_str)
+        if max_iter > 0:
+            save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
+            config['max_turns'] = max_iter
+            print_success(f"Max iterations set to {max_iter}")
+    except ValueError:
+        print_warning("Invalid number, keeping current value")
+    
+    # =========================================================================
+    # Step 6: Context Compression
     # =========================================================================
     print_header("Context Compression")
     print_info("Automatically summarize old messages when context gets too long.")
@@ -718,7 +739,7 @@ def run_setup_wizard(args):
         config.setdefault('compression', {})['enabled'] = False
     
     # =========================================================================
-    # Step 6: Messaging Platforms (Optional)
+    # Step 7: Messaging Platforms (Optional)
     # =========================================================================
     print_header("Messaging Platforms (Optional)")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
@@ -812,7 +833,7 @@ def run_setup_wizard(args):
                     print_success("Discord allowlist configured")
     
     # =========================================================================
-    # Step 7: Additional Tools (Optional)
+    # Step 8: Additional Tools (Optional)
     # =========================================================================
     print_header("Additional Tools (Optional)")
     print_info("These tools extend the agent's capabilities.")

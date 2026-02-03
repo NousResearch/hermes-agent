@@ -274,6 +274,11 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "integer",
                             "description": "Command timeout in seconds (optional)",
                             "minimum": 1
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Skip dangerous command safety check. Only use after user explicitly confirms they want to run a blocked command.",
+                            "default": False
                         }
                     },
                     "required": ["command"]
@@ -776,8 +781,9 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         command = function_args.get("command")
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
+        force = function_args.get("force", False)  # Skip dangerous command check if user confirmed
 
-        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
+        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id, force=force)
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)

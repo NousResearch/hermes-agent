@@ -22,6 +22,7 @@ hermes-agent/
 │   ├── status.py         # Status display
 │   ├── doctor.py         # Diagnostics
 │   ├── gateway.py        # Gateway management
+│   ├── uninstall.py      # Uninstaller
 │   └── cron.py           # Cron job management
 ├── tools/                # Tool implementations
 ├── gateway/              # Messaging platform adapters
@@ -172,6 +173,7 @@ The unified `hermes` command provides all functionality:
 | `hermes status` | Show configuration status |
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest (checks for new config) |
+| `hermes uninstall` | Uninstall (can keep configs for reinstall) |
 | `hermes gateway` | Start messaging gateway |
 | `hermes cron list` | View scheduled jobs |
 | `hermes version` | Show version info |

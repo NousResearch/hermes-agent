@@ -262,6 +262,35 @@ Terminal tool configuration (in `~/.hermes/config.yaml`):
 - `terminal.modal_image` - Image for Modal backend
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
 
+### Dangerous Command Approval
+
+The terminal tool includes safety checks for potentially destructive commands (e.g., `rm -rf`, `DROP TABLE`, `chmod 777`, etc.):
+
+**Behavior by Backend:**
+- **Docker/Singularity/Modal**: Commands run unrestricted (isolated containers)
+- **Local/SSH**: Dangerous commands trigger approval flow
+
+**Approval Flow (CLI):**
+```
+⚠️  Potentially dangerous command detected: recursive delete
+    rm -rf /tmp/test
+
+    [o]nce  |  [s]ession  |  [a]lways  |  [d]eny
+    Choice [o/s/a/D]: 
+```
+
+**Approval Flow (Messaging):**
+- Command is blocked with explanation
+- Agent explains and asks user to confirm
+- If user says "yes/approve/do it", agent retries with `force=True`
+
+**Configuration:**
+- `command_allowlist` in `~/.hermes/config.yaml` stores permanently allowed patterns
+- Add patterns via "always" approval or edit directly
+
+**Sudo Handling (Messaging):**
+- If sudo fails over messaging, output includes tip to add `SUDO_PASSWORD` to `~/.hermes/.env`
+
 ---
 
 ## Adding New Tools

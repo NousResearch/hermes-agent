@@ -406,10 +406,15 @@ def get_skills_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "skills_categories",
-                "description": "List available skill categories. Call first if you want to discover categories, then use skills_list(category) to filter, or call skills_list if unsure.",
+                "description": "List available skill categories. Call this first to discover what skill categories exist, then use skills_list(category) to see skills in a category.",
                 "parameters": {
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "verbose": {
+                            "type": "boolean",
+                            "description": "If true, include skill counts per category. Default: false."
+                        }
+                    },
                     "required": []
                 }
             }
@@ -907,7 +912,8 @@ def handle_skills_function_call(function_name: str, function_args: Dict[str, Any
         str: Function result as JSON string
     """
     if function_name == "skills_categories":
-        return skills_categories()
+        verbose = function_args.get("verbose", False)
+        return skills_categories(verbose=verbose)
     
     elif function_name == "skills_list":
         category = function_args.get("category")

@@ -257,6 +257,37 @@ def run_doctor(args):
             check_warn("Anthropic API", f"({e})")
     
     # =========================================================================
+    # Check: Tool Availability
+    # =========================================================================
+    print()
+    print(color("◆ Tool Availability", Colors.CYAN, Colors.BOLD))
+    
+    try:
+        # Add project root to path for imports
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+        
+        available, unavailable = check_tool_availability()
+        
+        for tid in available:
+            info = TOOLSET_REQUIREMENTS.get(tid, {})
+            check_ok(info.get("name", tid))
+        
+        for item in unavailable:
+            if item["missing_vars"]:
+                vars_str = ", ".join(item["missing_vars"])
+                check_warn(item["name"], f"(missing {vars_str})")
+            else:
+                check_warn(item["name"], "(system dependency not met)")
+        
+        # Count disabled tools with API key requirements
+        api_disabled = [u for u in unavailable if u["missing_vars"]]
+        if api_disabled:
+            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+    except Exception as e:
+        check_warn("Could not check tool availability", f"({e})")
+    
+    # =========================================================================
     # Summary
     # =========================================================================
     print()

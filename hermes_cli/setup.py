@@ -510,47 +510,147 @@ def run_setup_wizard(args):
     # Step 7: Additional Tools (Optional)
     # =========================================================================
     print_header("Additional Tools (Optional)")
+    print_info("These tools extend the agent's capabilities.")
+    print_info("Without their API keys, the corresponding features will be disabled.")
+    print()
     
-    # Firecrawl
-    if not get_env_value('FIRECRAWL_API_KEY'):
-        if prompt_yes_no("Set up web scraping (Firecrawl)?", False):
-            print_info("Get your API key at: https://firecrawl.dev/")
-            api_key = prompt("Firecrawl API key", password=True)
+    # Firecrawl - Web scraping
+    print_info("─" * 50)
+    print(color("  Web Search & Scraping (Firecrawl)", Colors.CYAN))
+    print_info("  Enables: web_search, web_extract tools")
+    print_info("  Use case: Search the web, read webpage content")
+    if get_env_value('FIRECRAWL_API_KEY'):
+        print_success("  Status: Configured ✓")
+        if prompt_yes_no("  Update Firecrawl API key?", False):
+            api_key = prompt("    API key", password=True)
             if api_key:
                 save_env_value("FIRECRAWL_API_KEY", api_key)
-                print_success("Firecrawl API key saved")
+                print_success("    Updated")
     else:
-        print_info("Firecrawl: already configured")
+        print_warning("  Status: Not configured (tools will be disabled)")
+        if prompt_yes_no("  Set up Firecrawl?", False):
+            print_info("    Get your API key at: https://firecrawl.dev/")
+            api_key = prompt("    API key", password=True)
+            if api_key:
+                save_env_value("FIRECRAWL_API_KEY", api_key)
+                print_success("    Configured ✓")
+    print()
     
-    # Browserbase
-    if not get_env_value('BROWSERBASE_API_KEY'):
-        if prompt_yes_no("Set up browser automation (Browserbase)?", False):
-            print_info("Get your API key at: https://browserbase.com/")
-            api_key = prompt("Browserbase API key", password=True)
-            project_id = prompt("Browserbase project ID")
+    # Browserbase - Browser automation
+    print_info("─" * 50)
+    print(color("  Browser Automation (Browserbase)", Colors.CYAN))
+    print_info("  Enables: browser_navigate, browser_click, etc.")
+    print_info("  Use case: Interact with web pages, fill forms, screenshots")
+    if get_env_value('BROWSERBASE_API_KEY'):
+        print_success("  Status: Configured ✓")
+        if prompt_yes_no("  Update Browserbase credentials?", False):
+            api_key = prompt("    API key", password=True)
+            project_id = prompt("    Project ID")
             if api_key:
                 save_env_value("BROWSERBASE_API_KEY", api_key)
             if project_id:
                 save_env_value("BROWSERBASE_PROJECT_ID", project_id)
-            print_success("Browserbase configured")
+            print_success("    Updated")
     else:
-        print_info("Browserbase: already configured")
+        print_warning("  Status: Not configured (tools will be disabled)")
+        if prompt_yes_no("  Set up Browserbase?", False):
+            print_info("    Get credentials at: https://browserbase.com/")
+            api_key = prompt("    API key", password=True)
+            project_id = prompt("    Project ID")
+            if api_key:
+                save_env_value("BROWSERBASE_API_KEY", api_key)
+            if project_id:
+                save_env_value("BROWSERBASE_PROJECT_ID", project_id)
+            print_success("    Configured ✓")
+    print()
     
-    # FAL
-    if not get_env_value('FAL_KEY'):
-        if prompt_yes_no("Set up image generation (FAL)?", False):
-            print_info("Get your API key at: https://fal.ai/")
-            api_key = prompt("FAL API key", password=True)
+    # FAL - Image generation
+    print_info("─" * 50)
+    print(color("  Image Generation (FAL)", Colors.CYAN))
+    print_info("  Enables: image_generate tool")
+    print_info("  Use case: Generate images from text prompts (FLUX)")
+    if get_env_value('FAL_KEY'):
+        print_success("  Status: Configured ✓")
+        if prompt_yes_no("  Update FAL API key?", False):
+            api_key = prompt("    API key", password=True)
             if api_key:
                 save_env_value("FAL_KEY", api_key)
-                print_success("FAL API key saved")
+                print_success("    Updated")
     else:
-        print_info("FAL: already configured")
+        print_warning("  Status: Not configured (tool will be disabled)")
+        if prompt_yes_no("  Set up FAL?", False):
+            print_info("    Get your API key at: https://fal.ai/")
+            api_key = prompt("    API key", password=True)
+            if api_key:
+                save_env_value("FAL_KEY", api_key)
+                print_success("    Configured ✓")
     
     # =========================================================================
     # Save config
     # =========================================================================
     save_config(config)
+    
+    # =========================================================================
+    # Tool Availability Summary
+    # =========================================================================
+    print()
+    print_header("Tool Availability Summary")
+    
+    # Check which tools are available
+    tool_status = []
+    
+    # OpenRouter (required for vision, moa)
+    if get_env_value('OPENROUTER_API_KEY'):
+        tool_status.append(("Vision (image analysis)", True, None))
+        tool_status.append(("Mixture of Agents", True, None))
+    else:
+        tool_status.append(("Vision (image analysis)", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+    
+    # Firecrawl (web tools)
+    if get_env_value('FIRECRAWL_API_KEY'):
+        tool_status.append(("Web Search & Extract", True, None))
+    else:
+        tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
+    
+    # Browserbase (browser tools)
+    if get_env_value('BROWSERBASE_API_KEY'):
+        tool_status.append(("Browser Automation", True, None))
+    else:
+        tool_status.append(("Browser Automation", False, "BROWSERBASE_API_KEY"))
+    
+    # FAL (image generation)
+    if get_env_value('FAL_KEY'):
+        tool_status.append(("Image Generation", True, None))
+    else:
+        tool_status.append(("Image Generation", False, "FAL_KEY"))
+    
+    # Terminal (always available if system deps met)
+    tool_status.append(("Terminal/Commands", True, None))
+    
+    # Skills (always available if skills dir exists)
+    tool_status.append(("Skills Knowledge Base", True, None))
+    
+    # Print status
+    available_count = sum(1 for _, avail, _ in tool_status if avail)
+    total_count = len(tool_status)
+    
+    print_info(f"{available_count}/{total_count} tool categories available:")
+    print()
+    
+    for name, available, missing_var in tool_status:
+        if available:
+            print(f"   {color('✓', Colors.GREEN)} {name}")
+        else:
+            print(f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}")
+    
+    print()
+    
+    disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
+    if disabled_tools:
+        print_warning("Some tools are disabled. Run 'hermes setup' again to configure them,")
+        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
+        print()
     
     # =========================================================================
     # Done!
@@ -568,7 +668,7 @@ def run_setup_wizard(args):
     print(f"              Model, terminal backend, compression, etc.")
     print()
     print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
-    print(f"              OpenRouter, Anthropic, Firecrawl, etc.")
+    print(f"              OpenRouter, Custom Endpoint, tool API keys")
     print()
     print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/")
     print(f"              Cron jobs, sessions, logs")

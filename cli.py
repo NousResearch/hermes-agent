@@ -596,7 +596,7 @@ class HermesCLI:
             self._show_status()
         else:
             # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
             
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -611,7 +611,32 @@ class HermesCLI:
                 session_id=self.session_id,
             )
         
+        # Show tool availability warnings if any tools are disabled
+        self._show_tool_availability_warnings()
+        
         self.console.print()
+    
+    def _show_tool_availability_warnings(self):
+        """Show warnings about disabled tools due to missing API keys."""
+        try:
+            from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+            
+            available, unavailable = check_tool_availability()
+            
+            # Filter to only those missing API keys (not system deps)
+            api_key_missing = [u for u in unavailable if u["missing_vars"]]
+            
+            if api_key_missing:
+                self.console.print()
+                self.console.print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
+                for item in api_key_missing:
+                    tools_str = ", ".join(item["tools"][:2])  # Show first 2 tools
+                    if len(item["tools"]) > 2:
+                        tools_str += f", +{len(item['tools'])-2} more"
+                    self.console.print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
+                self.console.print("[dim]   Run 'hermes setup' to configure[/]")
+        except Exception:
+            pass  # Don't crash on import errors
     
     def _show_status(self):
         """Show current status bar."""

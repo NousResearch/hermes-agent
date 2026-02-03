@@ -152,12 +152,130 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
+def _print_setup_summary(config: dict, hermes_home):
+    """Print the setup completion summary."""
+    # Tool availability summary
+    print()
+    print_header("Tool Availability Summary")
+    
+    tool_status = []
+    
+    # OpenRouter (required for vision, moa)
+    if get_env_value('OPENROUTER_API_KEY'):
+        tool_status.append(("Vision (image analysis)", True, None))
+        tool_status.append(("Mixture of Agents", True, None))
+    else:
+        tool_status.append(("Vision (image analysis)", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+    
+    # Firecrawl (web tools)
+    if get_env_value('FIRECRAWL_API_KEY'):
+        tool_status.append(("Web Search & Extract", True, None))
+    else:
+        tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
+    
+    # Browserbase (browser tools)
+    if get_env_value('BROWSERBASE_API_KEY'):
+        tool_status.append(("Browser Automation", True, None))
+    else:
+        tool_status.append(("Browser Automation", False, "BROWSERBASE_API_KEY"))
+    
+    # FAL (image generation)
+    if get_env_value('FAL_KEY'):
+        tool_status.append(("Image Generation", True, None))
+    else:
+        tool_status.append(("Image Generation", False, "FAL_KEY"))
+    
+    # Terminal (always available if system deps met)
+    tool_status.append(("Terminal/Commands", True, None))
+    
+    # Skills (always available if skills dir exists)
+    tool_status.append(("Skills Knowledge Base", True, None))
+    
+    # Print status
+    available_count = sum(1 for _, avail, _ in tool_status if avail)
+    total_count = len(tool_status)
+    
+    print_info(f"{available_count}/{total_count} tool categories available:")
+    print()
+    
+    for name, available, missing_var in tool_status:
+        if available:
+            print(f"   {color('✓', Colors.GREEN)} {name}")
+        else:
+            print(f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}")
+    
+    print()
+    
+    disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
+    if disabled_tools:
+        print_warning("Some tools are disabled. Run 'hermes setup' again to configure them,")
+        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
+        print()
+    
+    # Done banner
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN))
+    print(color("│              ✓ Setup Complete!                          │", Colors.GREEN))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN))
+    print()
+    
+    # Show file locations prominently
+    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
+    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
+    print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/")
+    print()
+    
+    print(color("─" * 60, Colors.DIM))
+    print()
+    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('hermes config', Colors.GREEN)}        View current settings")
+    print(f"   {color('hermes config edit', Colors.GREEN)}   Open config in your editor")
+    print(f"   {color('hermes config set KEY VALUE', Colors.GREEN)}")
+    print(f"                         Set a specific value")
+    print()
+    print(f"   Or edit the files directly:")
+    print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
+    print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
+    print()
+    
+    print(color("─" * 60, Colors.DIM))
+    print()
+    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
+    print()
+    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
+    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
+    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
+    print()
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard."""
     ensure_hermes_home()
     
     config = load_config()
     hermes_home = get_hermes_home()
+    
+    # Check if this is an existing installation with config
+    is_existing = get_env_value("OPENROUTER_API_KEY") is not None or get_config_path().exists()
+    
+    # Import migration helpers
+    from hermes_cli.config import (
+        get_missing_env_vars, get_missing_config_fields,
+        check_config_version, migrate_config,
+        REQUIRED_ENV_VARS, OPTIONAL_ENV_VARS
+    )
+    
+    # Check what's missing
+    missing_required = [v for v in get_missing_env_vars(required_only=False) if v.get("is_required")]
+    missing_optional = [v for v in get_missing_env_vars(required_only=False) if not v.get("is_required")]
+    missing_config = get_missing_config_fields()
+    current_ver, latest_ver = check_config_version()
+    
+    has_missing = missing_required or missing_optional or missing_config or current_ver < latest_ver
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
@@ -167,8 +285,126 @@ def run_setup_wizard(args):
     print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
     
+    # If existing installation, show what's missing and offer quick mode
+    quick_mode = False
+    if is_existing and has_missing:
+        print()
+        print_header("Existing Installation Detected")
+        print_success("You already have Hermes configured!")
+        print()
+        
+        if missing_required:
+            print_warning(f"  {len(missing_required)} required setting(s) missing:")
+            for var in missing_required:
+                print(f"     • {var['name']}")
+        
+        if missing_optional:
+            print_info(f"  {len(missing_optional)} optional tool(s) not configured:")
+            for var in missing_optional[:3]:  # Show first 3
+                tools = var.get("tools", [])
+                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
+                print(f"     • {var['name']}{tools_str}")
+            if len(missing_optional) > 3:
+                print(f"     • ...and {len(missing_optional) - 3} more")
+        
+        if missing_config:
+            print_info(f"  {len(missing_config)} new config option(s) available")
+        
+        print()
+        
+        setup_choices = [
+            "Quick setup - just configure missing items",
+            "Full setup - reconfigure everything",
+            "Skip - exit setup"
+        ]
+        
+        choice = prompt_choice("What would you like to do?", setup_choices, 0)
+        
+        if choice == 0:
+            quick_mode = True
+        elif choice == 2:
+            print()
+            print_info("Exiting. Run 'hermes setup' again when ready.")
+            return
+        # choice == 1 continues with full setup
+        
+    elif is_existing and not has_missing:
+        print()
+        print_header("Configuration Status")
+        print_success("Your configuration is complete!")
+        print()
+        
+        if not prompt_yes_no("Would you like to reconfigure anyway?", False):
+            print()
+            print_info("Exiting. Your configuration is already set up.")
+            print_info(f"Config: {get_config_path()}")
+            print_info(f"Secrets: {get_env_path()}")
+            return
+    
+    # Quick mode: only configure missing items
+    if quick_mode:
+        print()
+        print_header("Quick Setup - Missing Items Only")
+        
+        # Handle missing required env vars
+        if missing_required:
+            for var in missing_required:
+                print()
+                print(color(f"  {var['name']}", Colors.CYAN))
+                print_info(f"  {var.get('description', '')}")
+                if var.get("url"):
+                    print_info(f"  Get key at: {var['url']}")
+                
+                if var.get("password"):
+                    value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
+                else:
+                    value = prompt(f"  {var.get('prompt', var['name'])}")
+                
+                if value:
+                    save_env_value(var["name"], value)
+                    print_success(f"  Saved {var['name']}")
+                else:
+                    print_warning(f"  Skipped {var['name']}")
+        
+        # Handle missing optional env vars
+        if missing_optional:
+            print()
+            print_header("Optional Tools (Quick Setup)")
+            
+            for var in missing_optional:
+                tools = var.get("tools", [])
+                tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
+                
+                if prompt_yes_no(f"Configure {var['name']}{tools_str}?", False):
+                    if var.get("url"):
+                        print_info(f"  Get key at: {var['url']}")
+                    
+                    if var.get("password"):
+                        value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
+                    else:
+                        value = prompt(f"  {var.get('prompt', var['name'])}")
+                    
+                    if value:
+                        save_env_value(var["name"], value)
+                        print_success(f"  Saved")
+        
+        # Handle missing config fields
+        if missing_config:
+            print()
+            print_info(f"Adding {len(missing_config)} new config option(s) with defaults...")
+            for field in missing_config:
+                print_success(f"  Added {field['key']} = {field['default']}")
+            
+            # Update config version
+            config["_config_version"] = latest_ver
+            save_config(config)
+        
+        # Jump to summary
+        _print_setup_summary(config, hermes_home)
+        return
+    
     # =========================================================================
-    # Step 0: Show paths
+    # Step 0: Show paths (full setup)
     # =========================================================================
     print_header("Configuration Location")
     print_info(f"Config file:  {get_config_path()}")
@@ -586,108 +822,7 @@ def run_setup_wizard(args):
                 print_success("    Configured ✓")
     
     # =========================================================================
-    # Save config
+    # Save config and show summary
     # =========================================================================
     save_config(config)
-    
-    # =========================================================================
-    # Tool Availability Summary
-    # =========================================================================
-    print()
-    print_header("Tool Availability Summary")
-    
-    # Check which tools are available
-    tool_status = []
-    
-    # OpenRouter (required for vision, moa)
-    if get_env_value('OPENROUTER_API_KEY'):
-        tool_status.append(("Vision (image analysis)", True, None))
-        tool_status.append(("Mixture of Agents", True, None))
-    else:
-        tool_status.append(("Vision (image analysis)", False, "OPENROUTER_API_KEY"))
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
-    
-    # Firecrawl (web tools)
-    if get_env_value('FIRECRAWL_API_KEY'):
-        tool_status.append(("Web Search & Extract", True, None))
-    else:
-        tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
-    
-    # Browserbase (browser tools)
-    if get_env_value('BROWSERBASE_API_KEY'):
-        tool_status.append(("Browser Automation", True, None))
-    else:
-        tool_status.append(("Browser Automation", False, "BROWSERBASE_API_KEY"))
-    
-    # FAL (image generation)
-    if get_env_value('FAL_KEY'):
-        tool_status.append(("Image Generation", True, None))
-    else:
-        tool_status.append(("Image Generation", False, "FAL_KEY"))
-    
-    # Terminal (always available if system deps met)
-    tool_status.append(("Terminal/Commands", True, None))
-    
-    # Skills (always available if skills dir exists)
-    tool_status.append(("Skills Knowledge Base", True, None))
-    
-    # Print status
-    available_count = sum(1 for _, avail, _ in tool_status if avail)
-    total_count = len(tool_status)
-    
-    print_info(f"{available_count}/{total_count} tool categories available:")
-    print()
-    
-    for name, available, missing_var in tool_status:
-        if available:
-            print(f"   {color('✓', Colors.GREEN)} {name}")
-        else:
-            print(f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}")
-    
-    print()
-    
-    disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
-    if disabled_tools:
-        print_warning("Some tools are disabled. Run 'hermes setup' again to configure them,")
-        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
-        print()
-    
-    # =========================================================================
-    # Done!
-    # =========================================================================
-    print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN))
-    print(color("│              ✓ Setup Complete!                          │", Colors.GREEN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN))
-    print()
-    
-    # Show file locations prominently
-    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
-    print()
-    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
-    print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/")
-    print()
-    
-    print(color("─" * 60, Colors.DIM))
-    print()
-    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
-    print()
-    print(f"   {color('hermes config', Colors.GREEN)}        View current settings")
-    print(f"   {color('hermes config edit', Colors.GREEN)}   Open config in your editor")
-    print(f"   {color('hermes config set KEY VALUE', Colors.GREEN)}")
-    print(f"                         Set a specific value")
-    print()
-    print(f"   Or edit the files directly:")
-    print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
-    print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
-    print()
-    
-    print(color("─" * 60, Colors.DIM))
-    print()
-    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
-    print()
-    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
-    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
-    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
-    print()
+    _print_setup_summary(config, hermes_home)

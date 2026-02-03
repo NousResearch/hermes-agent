@@ -171,6 +171,47 @@ def cmd_update(args):
                 subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
         
         print()
+        print("✓ Code updated!")
+        
+        # Check for config migrations
+        print()
+        print("→ Checking configuration for new options...")
+        
+        from hermes_cli.config import (
+            get_missing_env_vars, get_missing_config_fields, 
+            check_config_version, migrate_config
+        )
+        
+        missing_env = get_missing_env_vars(required_only=True)
+        missing_config = get_missing_config_fields()
+        current_ver, latest_ver = check_config_version()
+        
+        needs_migration = missing_env or missing_config or current_ver < latest_ver
+        
+        if needs_migration:
+            print()
+            if missing_env:
+                print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
+            if missing_config:
+                print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+            
+            print()
+            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            
+            if response in ('', 'y', 'yes'):
+                print()
+                results = migrate_config(interactive=True, quiet=False)
+                
+                if results["env_added"] or results["config_added"]:
+                    print()
+                    print("✓ Configuration updated!")
+            else:
+                print()
+                print("Skipped. Run 'hermes config migrate' later to configure.")
+        else:
+            print("  ✓ Configuration is up to date")
+        
+        print()
         print("✓ Update complete!")
         print()
         print("Note: If you have the gateway service running, restart it:")
@@ -379,6 +420,12 @@ For more help on a command:
     
     # config env-path
     config_env = config_subparsers.add_parser("env-path", help="Print .env file path")
+    
+    # config check
+    config_check = config_subparsers.add_parser("check", help="Check for missing/outdated config")
+    
+    # config migrate
+    config_migrate = config_subparsers.add_parser("migrate", help="Update config with new options")
     
     config_parser.set_defaults(func=cmd_config)
     

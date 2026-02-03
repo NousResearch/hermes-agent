@@ -241,6 +241,33 @@ DISCORD_ALLOWED_USERS=123456789012345678
 | `/new` or `/reset` | Start fresh conversation |
 | `/status` | Show session info |
 
+#### Working Directory
+
+- **CLI (`hermes`)**: Uses current directory where you run the command
+- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+
+```bash
+# Set custom messaging working directory in ~/.hermes/.env
+MESSAGING_CWD=/home/myuser/projects
+```
+
+#### Tool Progress Notifications
+
+Get real-time updates as the agent works:
+
+```bash
+# Enable in ~/.hermes/.env
+HERMES_TOOL_PROGRESS=true
+HERMES_TOOL_PROGRESS_MODE=new    # or "all" for every tool call
+```
+
+When enabled, you'll see messages like:
+```
+💻 `ls -la`...
+🔍 web_search...
+📄 web_extract...
+```
+
 See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 ### ⏰ Scheduled Tasks (Cron)
@@ -473,9 +500,19 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (@BotFather) |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
 | `TELEGRAM_HOME_CHANNEL` | Default channel for cron delivery |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
 | `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
+| `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
+
+**Agent Behavior:**
+| Variable | Description |
+|----------|-------------|
+| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
+| `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
+| `HERMES_TOOL_PROGRESS_MODE` | `new` (only when tool changes) or `all` (every call) |
 
 **Context Compression:**
 | Variable | Description |

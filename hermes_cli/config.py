@@ -71,7 +71,7 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-sonnet-4",
+    "model": "anthropic/claude-sonnet-4.5",
     "toolsets": ["hermes-cli"],
     "max_turns": 100,
     
@@ -79,7 +79,9 @@ DEFAULT_CONFIG = {
         "backend": "local",
         "cwd": ".",  # Use current directory
         "timeout": 180,
-        "docker_image": "python:3.11-slim",
+        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
+        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
     },
     
     "browser": {
@@ -248,6 +250,12 @@ def show_config():
     
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'python:3.11-slim')}")
+    elif terminal.get('backend') == 'singularity':
+        print(f"  Image:        {terminal.get('singularity_image', 'docker://python:3.11')}")
+    elif terminal.get('backend') == 'modal':
+        print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
+        modal_token = get_env_value('MODAL_TOKEN_ID')
+        print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')

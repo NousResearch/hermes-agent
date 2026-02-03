@@ -804,11 +804,13 @@ _cleanup_running = False
 # Configuration from environment variables
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
+    # Default image with Python and Node.js for maximum compatibility
+    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     return {
         "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, singularity, modal, or ssh
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11"),
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", "docker://python:3.11"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11"),
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "cwd": os.getenv("TERMINAL_CWD", "/tmp"),
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
@@ -1290,9 +1292,11 @@ if __name__ == "__main__":
     print("  result = terminal_tool(command='python server.py', background=True)")
 
     print("\nEnvironment Variables:")
-    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/modal)")
-    print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', 'python:3.11-slim')}")
-    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', 'python:3.11-slim')}")
+    default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/ssh)")
+    print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
+    print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
+    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', '/tmp')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")

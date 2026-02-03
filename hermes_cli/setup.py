@@ -85,30 +85,56 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
-    """Prompt for a choice from a list."""
+    """Prompt for a choice from a list with arrow key navigation."""
     print(color(question, Colors.YELLOW))
     
-    for i, choice in enumerate(choices):
-        marker = "●" if i == default else "○"
-        if i == default:
-            print(color(f"  {marker} {choice}", Colors.GREEN))
-        else:
-            print(f"  {marker} {choice}")
-    
-    while True:
-        try:
-            value = input(color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM))
-            if not value:
-                return default
-            idx = int(value) - 1
-            if 0 <= idx < len(choices):
-                return idx
-            print_error(f"Please enter a number between 1 and {len(choices)}")
-        except ValueError:
-            print_error("Please enter a number")
-        except (KeyboardInterrupt, EOFError):
+    # Try to use interactive menu if available
+    try:
+        from simple_term_menu import TerminalMenu
+        
+        # Add visual indicators
+        menu_choices = [f"  {choice}" for choice in choices]
+        
+        terminal_menu = TerminalMenu(
+            menu_choices,
+            cursor_index=default,
+            menu_cursor="→ ",
+            menu_cursor_style=("fg_green", "bold"),
+            menu_highlight_style=("fg_green",),
+            cycle_cursor=True,
+            clear_screen=False,
+        )
+        
+        idx = terminal_menu.show()
+        if idx is None:  # User pressed Escape or Ctrl+C
             print()
             sys.exit(1)
+        print()  # Add newline after selection
+        return idx
+        
+    except ImportError:
+        # Fallback to number-based selection
+        for i, choice in enumerate(choices):
+            marker = "●" if i == default else "○"
+            if i == default:
+                print(color(f"  {marker} {choice}", Colors.GREEN))
+            else:
+                print(f"  {marker} {choice}")
+        
+        while True:
+            try:
+                value = input(color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM))
+                if not value:
+                    return default
+                idx = int(value) - 1
+                if 0 <= idx < len(choices):
+                    return idx
+                print_error(f"Please enter a number between 1 and {len(choices)}")
+            except ValueError:
+                print_error("Please enter a number")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                sys.exit(1)
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
     """Prompt for yes/no."""
@@ -159,25 +185,27 @@ def run_setup_wizard(args):
     
     # Check if already configured
     existing_or = get_env_value("OPENROUTER_API_KEY")
-    existing_ant = get_env_value("ANTHROPIC_API_KEY")
+    existing_custom = get_env_value("OPENAI_BASE_URL")
     
-    if existing_or or existing_ant:
-        configured = "OpenRouter" if existing_or else "Anthropic"
-        print_info(f"Currently configured: {configured}")
+    skip_provider_setup = False
+    if existing_or or existing_custom:
+        if existing_or:
+            print_info("Currently configured: OpenRouter")
+        else:
+            print_info(f"Currently configured: Custom endpoint ({existing_custom})")
+        
         if not prompt_yes_no("Reconfigure API provider?", False):
             print_info("Keeping existing configuration")
-        else:
-            existing_or = None  # Force reconfigure
+            skip_provider_setup = True
     
-    if not existing_or and not existing_ant:
+    if not skip_provider_setup:
         provider_choices = [
             "OpenRouter (recommended - access to all models)",
-            "Anthropic API (direct Claude access)",
-            "OpenAI API",
+            "Custom OpenAI-compatible endpoint",
             "Skip for now"
         ]
         
-        provider_idx = prompt_choice("Select your primary model provider:", provider_choices, 0)
+        provider_idx = prompt_choice("Select your API provider:", provider_choices, 0)
         
         if provider_idx == 0:  # OpenRouter
             print_info("Get your API key at: https://openrouter.ai/keys")
@@ -186,19 +214,31 @@ def run_setup_wizard(args):
                 save_env_value("OPENROUTER_API_KEY", api_key)
                 print_success("OpenRouter API key saved")
         
-        elif provider_idx == 1:  # Anthropic
-            print_info("Get your API key at: https://console.anthropic.com/")
-            api_key = prompt("Anthropic API key", password=True)
-            if api_key:
-                save_env_value("ANTHROPIC_API_KEY", api_key)
-                print_success("Anthropic API key saved")
-        
-        elif provider_idx == 2:  # OpenAI
-            print_info("Get your API key at: https://platform.openai.com/api-keys")
-            api_key = prompt("OpenAI API key", password=True)
+        elif provider_idx == 1:  # Custom endpoint
+            print_info("Custom OpenAI-Compatible Endpoint Configuration:")
+            print_info("Works with any API that follows OpenAI's chat completions spec")
+            
+            # Show current values if set
+            current_url = get_env_value("OPENAI_BASE_URL") or ""
+            current_key = get_env_value("OPENAI_API_KEY")
+            current_model = config.get('model', '')
+            
+            if current_url:
+                print_info(f"  Current URL: {current_url}")
+            if current_key:
+                print_info(f"  Current key: {current_key[:8]}... (configured)")
+            
+            base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
+            api_key = prompt("  API key", password=True)
+            model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
+            
+            if base_url:
+                save_env_value("OPENAI_BASE_URL", base_url)
             if api_key:
                 save_env_value("OPENAI_API_KEY", api_key)
-                print_success("OpenAI API key saved")
+            if model_name:
+                config['model'] = model_name
+            print_success("Custom endpoint configured")
     
     # =========================================================================
     # Step 2: Model Selection
@@ -209,28 +249,40 @@ def run_setup_wizard(args):
     print_info(f"Current: {current_model}")
     
     model_choices = [
-        "anthropic/claude-sonnet-4 (recommended)",
-        "anthropic/claude-opus-4",
-        "openai/gpt-4o",
-        "google/gemini-2.0-flash",
-        "Enter custom model",
-        "Keep current"
+        "anthropic/claude-sonnet-4.5 (recommended)",
+        "anthropic/claude-opus-4.5",
+        "openai/gpt-5.2",
+        "openai/gpt-5.2-codex",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+        "z-ai/glm-4.7",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.1",
+        "Custom model",
+        f"Keep current ({current_model})"
     ]
     
-    model_idx = prompt_choice("Select default model:", model_choices, 5)  # Default: keep current
+    model_idx = prompt_choice("Select default model:", model_choices, 10)  # Default: keep current
     
-    if model_idx == 0:
-        config['model'] = "anthropic/claude-sonnet-4"
-    elif model_idx == 1:
-        config['model'] = "anthropic/claude-opus-4"
-    elif model_idx == 2:
-        config['model'] = "openai/gpt-4o"
-    elif model_idx == 3:
-        config['model'] = "google/gemini-2.0-flash"
-    elif model_idx == 4:
-        custom = prompt("Enter model name (e.g., anthropic/claude-sonnet-4)")
+    model_map = {
+        0: "anthropic/claude-sonnet-4.5",
+        1: "anthropic/claude-opus-4.5",
+        2: "openai/gpt-5.2",
+        3: "openai/gpt-5.2-codex",
+        4: "google/gemini-3-pro-preview",
+        5: "google/gemini-3-flash-preview",
+        6: "z-ai/glm-4.7",
+        7: "moonshotai/kimi-k2.5",
+        8: "minimax/minimax-m2.1",
+    }
+    
+    if model_idx in model_map:
+        config['model'] = model_map[model_idx]
+    elif model_idx == 9:  # Custom
+        custom = prompt("Enter model name (e.g., anthropic/claude-sonnet-4.5)")
         if custom:
             config['model'] = custom
+    # else: Keep current (model_idx == 10)
     
     # =========================================================================
     # Step 3: Terminal Backend
@@ -244,46 +296,96 @@ def run_setup_wizard(args):
     terminal_choices = [
         "Local (run commands on this machine - no isolation)",
         "Docker (isolated containers - recommended for security)",
+        "Singularity/Apptainer (HPC clusters, shared compute)",
+        "Modal (cloud execution, GPU access, serverless)",
         "SSH (run commands on a remote server)",
-        "Keep current"
+        f"Keep current ({current_backend})"
     ]
     
     # Default based on current
-    default_terminal = {'local': 0, 'docker': 1, 'ssh': 2}.get(current_backend, 0)
+    default_terminal = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}.get(current_backend, 0)
     
-    terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, 3)  # Default: keep
+    terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, 5)  # Default: keep
     
     if terminal_idx == 0:  # Local
         config.setdefault('terminal', {})['backend'] = 'local'
-        print_success("Terminal set to local")
+        print_info("Local Execution Configuration:")
+        print_info("Commands run directly on this machine (no isolation)")
         
-        if prompt_yes_no("Enable sudo support? (allows agent to run sudo commands)", False):
-            print_warning("SECURITY WARNING: Sudo password will be stored in plaintext")
-            sudo_pass = prompt("Sudo password (leave empty to skip)", password=True)
+        if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
+            print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
+            sudo_pass = prompt("  Sudo password (leave empty to skip)", password=True)
             if sudo_pass:
                 save_env_value("SUDO_PASSWORD", sudo_pass)
-                print_success("Sudo password saved")
+                print_success("  Sudo password saved")
+        
+        print_success("Terminal set to local")
     
     elif terminal_idx == 1:  # Docker
         config.setdefault('terminal', {})['backend'] = 'docker'
-        docker_image = prompt("Docker image", config.get('terminal', {}).get('docker_image', 'python:3.11-slim'))
+        default_docker = config.get('terminal', {}).get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
+        print_info("Docker Configuration:")
+        docker_image = prompt("  Docker image", default_docker)
         config['terminal']['docker_image'] = docker_image
         print_success("Terminal set to Docker")
     
-    elif terminal_idx == 2:  # SSH
+    elif terminal_idx == 2:  # Singularity
+        config.setdefault('terminal', {})['backend'] = 'singularity'
+        default_singularity = config.get('terminal', {}).get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')
+        print_info("Singularity/Apptainer Configuration:")
+        print_info("Requires apptainer or singularity to be installed")
+        singularity_image = prompt("  Image (docker:// prefix for Docker Hub)", default_singularity)
+        config['terminal']['singularity_image'] = singularity_image
+        print_success("Terminal set to Singularity/Apptainer")
+    
+    elif terminal_idx == 3:  # Modal
+        config.setdefault('terminal', {})['backend'] = 'modal'
+        default_modal = config.get('terminal', {}).get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
+        print_info("Modal Cloud Configuration:")
+        print_info("Get credentials at: https://modal.com/settings")
+        
+        # Always show current status and allow reconfiguration
+        current_token = get_env_value('MODAL_TOKEN_ID')
+        if current_token:
+            print_info(f"  Token ID: {current_token[:8]}... (configured)")
+        
+        modal_image = prompt("  Container image", default_modal)
+        config['terminal']['modal_image'] = modal_image
+        
+        token_id = prompt("  Modal token ID", current_token or "")
+        token_secret = prompt("  Modal token secret", password=True)
+        
+        if token_id:
+            save_env_value("MODAL_TOKEN_ID", token_id)
+        if token_secret:
+            save_env_value("MODAL_TOKEN_SECRET", token_secret)
+        
+        print_success("Terminal set to Modal")
+    
+    elif terminal_idx == 4:  # SSH
         config.setdefault('terminal', {})['backend'] = 'ssh'
+        print_info("SSH Remote Execution Configuration:")
+        print_info("Commands will run on a remote server over SSH")
         
         current_host = get_env_value('TERMINAL_SSH_HOST') or ''
         current_user = get_env_value('TERMINAL_SSH_USER') or os.getenv("USER", "")
+        current_port = get_env_value('TERMINAL_SSH_PORT') or '22'
+        current_key = get_env_value('TERMINAL_SSH_KEY') or '~/.ssh/id_rsa'
         
-        ssh_host = prompt("SSH host", current_host)
-        ssh_user = prompt("SSH user", current_user)
-        ssh_key = prompt("SSH key path", "~/.ssh/id_rsa")
+        if current_host:
+            print_info(f"  Current host: {current_user}@{current_host}:{current_port}")
+        
+        ssh_host = prompt("  SSH host", current_host)
+        ssh_user = prompt("  SSH user", current_user)
+        ssh_port = prompt("  SSH port", current_port)
+        ssh_key = prompt("  SSH key path (or leave empty for ssh-agent)", current_key)
         
         if ssh_host:
             save_env_value("TERMINAL_SSH_HOST", ssh_host)
         if ssh_user:
             save_env_value("TERMINAL_SSH_USER", ssh_user)
+        if ssh_port and ssh_port != '22':
+            save_env_value("TERMINAL_SSH_PORT", ssh_port)
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
         

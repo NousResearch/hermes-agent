@@ -55,7 +55,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   docker_image: "python:3.11"
+#   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -67,7 +67,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   singularity_image: "docker://python:3.11"
+#   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # OPTION 5: Modal cloud execution
@@ -79,7 +79,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   modal_image: "python:3.11"
+#   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)

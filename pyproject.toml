@@ -36,7 +36,8 @@ modal = ["modal", "boto3"]
 dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0"]
 cron = ["croniter"]
-all = ["croniter", "python-telegram-bot>=20.0", "discord.py>=2.0"]
+cli = ["simple-term-menu"]
+all = ["croniter", "python-telegram-bot>=20.0", "discord.py>=2.0", "simple-term-menu"]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"

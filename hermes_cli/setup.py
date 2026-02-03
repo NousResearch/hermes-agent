@@ -662,16 +662,11 @@ def run_setup_wizard(args):
     print()
     
     # Show file locations prominently
-    print(color("📁 Your configuration files:", Colors.CYAN, Colors.BOLD))
+    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"              Model, terminal backend, compression, etc.")
-    print()
     print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
-    print(f"              OpenRouter, Custom Endpoint, tool API keys")
-    print()
-    print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/")
-    print(f"              Cron jobs, sessions, logs")
+    print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/")
     print()
     
     print(color("─" * 60, Colors.DIM))

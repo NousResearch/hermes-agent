@@ -90,6 +90,7 @@ hermes config migrate     # Interactively add missing options
 hermes status             # Show configuration status
 hermes doctor             # Diagnose issues
 hermes update             # Update to latest version (prompts for new config)
+hermes uninstall          # Uninstall (can keep configs for later reinstall)
 hermes gateway            # Start messaging gateway
 hermes cron list          # View scheduled jobs
 hermes version            # Show version info

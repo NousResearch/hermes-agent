@@ -179,69 +179,81 @@ def run_setup_wizard(args):
     print_info("You can edit these files directly or use 'hermes config edit'")
     
     # =========================================================================
-    # Step 1: API Keys
+    # Step 1: OpenRouter API Key (Required for tools)
     # =========================================================================
-    print_header("Model/Auth Provider")
+    print_header("OpenRouter API Key (Required)")
+    print_info("OpenRouter is used for vision, web scraping, and tool operations")
+    print_info("even if you use a custom endpoint for your main agent.")
+    print_info("Get your API key at: https://openrouter.ai/keys")
     
-    # Check if already configured
     existing_or = get_env_value("OPENROUTER_API_KEY")
-    existing_custom = get_env_value("OPENAI_BASE_URL")
-    
-    skip_provider_setup = False
-    if existing_or or existing_custom:
-        if existing_or:
-            print_info("Currently configured: OpenRouter")
-        else:
-            print_info(f"Currently configured: Custom endpoint ({existing_custom})")
-        
-        if not prompt_yes_no("Reconfigure API provider?", False):
-            print_info("Keeping existing configuration")
-            skip_provider_setup = True
-    
-    if not skip_provider_setup:
-        provider_choices = [
-            "OpenRouter (recommended - access to all models)",
-            "Custom OpenAI-compatible endpoint",
-            "Skip for now"
-        ]
-        
-        provider_idx = prompt_choice("Select your API provider:", provider_choices, 0)
-        
-        if provider_idx == 0:  # OpenRouter
-            print_info("Get your API key at: https://openrouter.ai/keys")
-            api_key = prompt("OpenRouter API key", password=True)
+    if existing_or:
+        print_info(f"Current: {existing_or[:8]}... (configured)")
+        if prompt_yes_no("Update OpenRouter API key?", False):
+            api_key = prompt("  OpenRouter API key", password=True)
             if api_key:
                 save_env_value("OPENROUTER_API_KEY", api_key)
-                print_success("OpenRouter API key saved")
-        
-        elif provider_idx == 1:  # Custom endpoint
-            print_info("Custom OpenAI-Compatible Endpoint Configuration:")
-            print_info("Works with any API that follows OpenAI's chat completions spec")
-            
-            # Show current values if set
-            current_url = get_env_value("OPENAI_BASE_URL") or ""
-            current_key = get_env_value("OPENAI_API_KEY")
-            current_model = config.get('model', '')
-            
-            if current_url:
-                print_info(f"  Current URL: {current_url}")
-            if current_key:
-                print_info(f"  Current key: {current_key[:8]}... (configured)")
-            
-            base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
-            api_key = prompt("  API key", password=True)
-            model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
-            
-            if base_url:
-                save_env_value("OPENAI_BASE_URL", base_url)
-            if api_key:
-                save_env_value("OPENAI_API_KEY", api_key)
-            if model_name:
-                config['model'] = model_name
-            print_success("Custom endpoint configured")
+                print_success("OpenRouter API key updated")
+    else:
+        api_key = prompt("  OpenRouter API key", password=True)
+        if api_key:
+            save_env_value("OPENROUTER_API_KEY", api_key)
+            print_success("OpenRouter API key saved")
+        else:
+            print_warning("Skipped - some tools (vision, web scraping) won't work without this")
     
     # =========================================================================
-    # Step 2: Model Selection
+    # Step 2: Main Agent Provider
+    # =========================================================================
+    print_header("Main Agent Provider")
+    print_info("Choose how to connect to your main chat model.")
+    
+    existing_custom = get_env_value("OPENAI_BASE_URL")
+    
+    provider_choices = [
+        "OpenRouter (use same key for agent - recommended)",
+        "Custom OpenAI-compatible endpoint (separate from OpenRouter)",
+        f"Keep current" + (f" ({existing_custom})" if existing_custom else " (OpenRouter)")
+    ]
+    
+    provider_idx = prompt_choice("Select your main agent provider:", provider_choices, 2)
+    
+    if provider_idx == 0:  # OpenRouter for agent too
+        # Clear any custom endpoint - will use OpenRouter
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print_success("Agent will use OpenRouter")
+    
+    elif provider_idx == 1:  # Custom endpoint
+        print_info("Custom OpenAI-Compatible Endpoint Configuration:")
+        print_info("Works with any API that follows OpenAI's chat completions spec")
+        
+        # Show current values if set
+        current_url = get_env_value("OPENAI_BASE_URL") or ""
+        current_key = get_env_value("OPENAI_API_KEY")
+        current_model = config.get('model', '')
+        
+        if current_url:
+            print_info(f"  Current URL: {current_url}")
+        if current_key:
+            print_info(f"  Current key: {current_key[:8]}... (configured)")
+        
+        base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
+        api_key = prompt("  API key", password=True)
+        model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
+        
+        if base_url:
+            save_env_value("OPENAI_BASE_URL", base_url)
+        if api_key:
+            save_env_value("OPENAI_API_KEY", api_key)
+        if model_name:
+            config['model'] = model_name
+        print_success("Custom endpoint configured")
+    # else: Keep current (provider_idx == 2)
+    
+    # =========================================================================
+    # Step 3: Model Selection
     # =========================================================================
     print_header("Default Model")
     
@@ -285,7 +297,7 @@ def run_setup_wizard(args):
     # else: Keep current (model_idx == 10)
     
     # =========================================================================
-    # Step 3: Terminal Backend
+    # Step 4: Terminal Backend
     # =========================================================================
     print_header("Terminal Backend")
     print_info("The terminal tool allows the agent to run commands.")
@@ -428,7 +440,7 @@ def run_setup_wizard(args):
     # else: Keep current (selected_backend is None)
     
     # =========================================================================
-    # Step 4: Context Compression
+    # Step 5: Context Compression
     # =========================================================================
     print_header("Context Compression")
     print_info("Automatically summarize old messages when context gets too long.")
@@ -453,7 +465,7 @@ def run_setup_wizard(args):
         config.setdefault('compression', {})['enabled'] = False
     
     # =========================================================================
-    # Step 5: Messaging Platforms (Optional)
+    # Step 6: Messaging Platforms (Optional)
     # =========================================================================
     print_header("Messaging Platforms (Optional)")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
@@ -495,7 +507,7 @@ def run_setup_wizard(args):
                 save_env_value("DISCORD_HOME_CHANNEL", home_channel)
     
     # =========================================================================
-    # Step 6: Additional Tools (Optional)
+    # Step 7: Additional Tools (Optional)
     # =========================================================================
     print_header("Additional Tools (Optional)")
     

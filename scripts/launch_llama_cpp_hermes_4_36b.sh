@@ -17,6 +17,7 @@ set -euo pipefail
 #   LLAMA_CPP_HF_REPO=NousResearch/Hermes-4.3-36B-GGUF \
 #   LLAMA_CPP_HF_FILE=hermes-4_3_36b-Q4_K_M.gguf \
 #   LLAMA_CPP_ALIAS=hermes-4-36b \
+#   LLAMA_CPP_PARALLEL=4 LLAMA_CPP_THREADS_HTTP=4 \
 #   Hermes-Agent/scripts/launch_llama_cpp_hermes_4_36b.sh
 
 HOST="${LLAMA_CPP_HOST:-127.0.0.1}"
@@ -24,6 +25,8 @@ PORT="${LLAMA_CPP_PORT:-8080}"
 HF_REPO="${LLAMA_CPP_HF_REPO:-NousResearch/Hermes-4.3-36B-GGUF}"
 HF_FILE="${LLAMA_CPP_HF_FILE:-hermes-4_3_36b-Q4_K_M.gguf}"
 ALIAS="${LLAMA_CPP_ALIAS:-hermes-4-36b}"
+PARALLEL="${LLAMA_CPP_PARALLEL:-4}"
+THREADS_HTTP="${LLAMA_CPP_THREADS_HTTP:-4}"
 
 if ! command -v llama-server >/dev/null 2>&1; then
   echo "Error: llama-server not found in PATH."
@@ -37,10 +40,12 @@ echo "  port:  $PORT"
 echo "  repo:  $HF_REPO"
 echo "  file:  $HF_FILE"
 echo "  alias: $ALIAS"
+echo "  slots: $PARALLEL"
 echo
 echo "Suggested env vars for Hermes/Atropos integration:"
 echo "  export ATROPOS_SERVER_BASE_URL=http://${HOST}:${PORT}"
 echo "  export ATROPOS_SERVER_MODEL=${ALIAS}"
+echo "  export ATROPOS_TOKENIZER_NAME=NousResearch/Hermes-4.3-36B"
 echo "  export ATROPOS_SERVER_API_KEY=local"
 echo
 
@@ -59,5 +64,7 @@ exec llama-server \
   --hf-repo "$HF_REPO" \
   --hf-file "$HF_FILE" \
   --alias "$ALIAS" \
+  --parallel "$PARALLEL" \
+  --threads-http "$THREADS_HTTP" \
   -c 32768 \
   -n -1

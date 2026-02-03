@@ -91,6 +91,11 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
             max_token_length=8192,
             inference_weight=1.0,
             wandb_name="swe_smith_oracle",
+            enabled_toolsets=["terminal"],
+            disabled_toolsets=[],
+            sandbox_image=os.getenv("ATROPOS_SANDBOX_IMAGE") or "atropos-sandbox:local",
+            purge_job_on_start=True,
+            purge_job_on_shutdown=True,
         )
 
         server_configs = [
@@ -198,22 +203,37 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         _ = trajectory_id
         repo = item.get("repo")
         base_commit = item.get("base_commit")
+        instance_id = item.get("instance_id") or item.get("id") or item.get("problem_id")
         if not isinstance(repo, str) or not isinstance(base_commit, str):
             raise RuntimeError("Invalid dataset row: missing repo/base_commit")
 
         repo_dir = self._repo_name(item)
         clone_url = f"{self.config.repo_base_url.rstrip('/')}/{repo}.git"
 
-        # Clone and checkout the base commit.
-        clone_cmd = f"rm -rf {repo_dir} && git clone {clone_url} {repo_dir}"
-        res = await exec_tool(ToolCall(name="terminal", arguments={"command": clone_cmd, "timeout": self.config.install_timeout_s}))
+        # Fetch only the requested base commit (much lighter than a full clone and robust
+        # even if the commit is not on the default branch ref we cloned).
+        #
+        # This also avoids some failure modes where `git clone` fetches only default-branch
+        # refs and then `git checkout <sha>` fails because the commit isn't present locally.
+        clone_and_checkout_cmd = (
+            f"rm -rf {repo_dir} && "
+            f"git init {repo_dir} && "
+            f"cd {repo_dir} && "
+            f"git remote add origin {clone_url} && "
+            f"git fetch --depth 1 origin {base_commit} && "
+            "git -c advice.detachedHead=false checkout -q FETCH_HEAD"
+        )
+        res = await exec_tool(
+            ToolCall(
+                name="terminal",
+                arguments={"command": clone_and_checkout_cmd, "timeout": self.config.install_timeout_s},
+            )
+        )
         if not res.success:
-            raise RuntimeError(f"git clone failed: {res.error}\n{res.output}")
-
-        checkout_cmd = f"cd {repo_dir} && git checkout {base_commit}"
-        res = await exec_tool(ToolCall(name="terminal", arguments={"command": checkout_cmd, "timeout": self.config.install_timeout_s}))
-        if not res.success:
-            raise RuntimeError(f"git checkout failed: {res.error}\n{res.output}")
+            raise RuntimeError(
+                "git fetch/checkout failed "
+                f"(repo={repo}, base_commit={base_commit}, instance_id={instance_id}): {res.error}\n{res.output}"
+            )
 
         # Best-effort baseline python env.
         setup_cmd = (

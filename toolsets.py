@@ -139,9 +139,11 @@ TOOLSETS = {
     # ==========================================================================
     
     "hermes-telegram": {
-        "description": "Telegram bot toolset - web research, skills, cronjobs (no terminal/browser for security)",
+        "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": [
-            # Web tools - safe for messaging
+            # Terminal - enabled with dangerous command approval system
+            "terminal",
+            # Web tools
             "web_search", "web_extract",
             # Vision - analyze images sent by users
             "vision_analyze",

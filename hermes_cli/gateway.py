@@ -6,11 +6,76 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall]
 
 import asyncio
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+
+# =============================================================================
+# Process Management (for manual gateway runs)
+# =============================================================================
+
+def find_gateway_pids() -> list:
+    """Find PIDs of running gateway processes."""
+    pids = []
+    try:
+        # Look for gateway processes with multiple patterns
+        patterns = [
+            "hermes_cli.main gateway",
+            "hermes gateway",
+            "gateway/run.py",
+        ]
+        
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True
+        )
+        
+        for line in result.stdout.split('\n'):
+            # Skip grep and current process
+            if 'grep' in line or str(os.getpid()) in line:
+                continue
+            
+            for pattern in patterns:
+                if pattern in line:
+                    parts = line.split()
+                    if len(parts) > 1:
+                        try:
+                            pid = int(parts[1])
+                            if pid not in pids:
+                                pids.append(pid)
+                        except ValueError:
+                            continue
+                    break
+    except Exception:
+        pass
+    
+    return pids
+
+
+def kill_gateway_processes(force: bool = False) -> int:
+    """Kill any running gateway processes. Returns count killed."""
+    pids = find_gateway_pids()
+    killed = 0
+    
+    for pid in pids:
+        try:
+            if force:
+                os.kill(pid, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except ProcessLookupError:
+            # Process already gone
+            pass
+        except PermissionError:
+            print(f"⚠ Permission denied to kill PID {pid}")
+    
+    return killed
 
 
 def is_linux() -> bool:
@@ -343,29 +408,80 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "stop":
-        if is_linux():
-            systemd_stop()
-        elif is_macos():
-            launchd_stop()
-        else:
-            print("Not supported on this platform.")
-            sys.exit(1)
+        # Try service first, fall back to killing processes directly
+        service_available = False
+        
+        if is_linux() and get_systemd_unit_path().exists():
+            try:
+                systemd_stop()
+                service_available = True
+            except subprocess.CalledProcessError:
+                pass  # Fall through to process kill
+        elif is_macos() and get_launchd_plist_path().exists():
+            try:
+                launchd_stop()
+                service_available = True
+            except subprocess.CalledProcessError:
+                pass
+        
+        if not service_available:
+            # Kill gateway processes directly
+            killed = kill_gateway_processes()
+            if killed:
+                print(f"✓ Stopped {killed} gateway process(es)")
+            else:
+                print("✗ No gateway processes found")
     
     elif subcmd == "restart":
-        if is_linux():
-            systemd_restart()
-        elif is_macos():
-            launchd_restart()
-        else:
-            print("Not supported on this platform.")
-            sys.exit(1)
+        # Try service first, fall back to killing and restarting
+        service_available = False
+        
+        if is_linux() and get_systemd_unit_path().exists():
+            try:
+                systemd_restart()
+                service_available = True
+            except subprocess.CalledProcessError:
+                pass
+        elif is_macos() and get_launchd_plist_path().exists():
+            try:
+                launchd_restart()
+                service_available = True
+            except subprocess.CalledProcessError:
+                pass
+        
+        if not service_available:
+            # Manual restart: kill existing processes
+            killed = kill_gateway_processes()
+            if killed:
+                print(f"✓ Stopped {killed} gateway process(es)")
+            
+            import time
+            time.sleep(2)
+            
+            # Start fresh
+            print("Starting gateway...")
+            run_gateway(verbose=False)
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
-        if is_linux():
+        
+        # Check for service first
+        if is_linux() and get_systemd_unit_path().exists():
             systemd_status(deep)
-        elif is_macos():
+        elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
         else:
-            print("Not supported on this platform.")
-            sys.exit(1)
+            # Check for manually running processes
+            pids = find_gateway_pids()
+            if pids:
+                print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
+                print("  (Running manually, not as a system service)")
+                print()
+                print("To install as a service:")
+                print("  hermes gateway install")
+            else:
+                print("✗ Gateway is not running")
+                print()
+                print("To start:")
+                print("  hermes gateway          # Run in foreground")
+                print("  hermes gateway install  # Install as service")

@@ -187,21 +187,61 @@ hermes config set terminal.backend modal
 
 ### 📱 Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, or WhatsApp:
+Chat with Hermes from Telegram, Discord, or WhatsApp.
+
+#### Telegram Setup
+
+1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
+2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) - it replies with your numeric ID
+3. **Configure:**
 
 ```bash
-# Configure your bot token
-hermes config set TELEGRAM_BOT_TOKEN "your_token"
-
-# Start the gateway
-hermes gateway
-
-# Or install as a service
-hermes gateway install
-hermes gateway start
+# Add to ~/.hermes/.env:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
 ```
 
-See [docs/messaging.md](docs/messaging.md) for full setup.
+4. **Start the gateway:**
+
+```bash
+hermes gateway              # Run in foreground
+hermes gateway install      # Install as systemd service (Linux)
+hermes gateway start        # Start the service
+```
+
+#### Discord Setup
+
+1. **Create a bot:** Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
+3. **Configure:**
+
+```bash
+# Add to ~/.hermes/.env:
+DISCORD_BOT_TOKEN=MTIz...
+DISCORD_ALLOWED_USERS=YOUR_USER_ID
+```
+
+#### Security (Important!)
+
+**Without an allowlist, anyone who finds your bot can use it!**
+
+```bash
+# Restrict to specific users (recommended):
+TELEGRAM_ALLOWED_USERS=123456789,987654321
+DISCORD_ALLOWED_USERS=123456789012345678
+
+# Or allow all users in a specific platform:
+# (Leave the variable unset - NOT recommended for bots with terminal access)
+```
+
+#### Gateway Commands
+
+| Command | Description |
+|---------|-------------|
+| `/new` or `/reset` | Start fresh conversation |
+| `/status` | Show session info |
+
+See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 ### ⏰ Scheduled Tasks (Cron)
 

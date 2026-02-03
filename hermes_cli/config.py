@@ -163,6 +163,44 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
     },
+    # Messaging platform tokens
+    "TELEGRAM_BOT_TOKEN": {
+        "description": "Telegram bot token from @BotFather",
+        "prompt": "Telegram bot token",
+        "url": "https://t.me/BotFather",
+        "password": True,
+    },
+    "TELEGRAM_ALLOWED_USERS": {
+        "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
+        "prompt": "Allowed Telegram user IDs (comma-separated)",
+        "url": "https://t.me/userinfobot",
+        "password": False,
+    },
+    "DISCORD_BOT_TOKEN": {
+        "description": "Discord bot token from Developer Portal",
+        "prompt": "Discord bot token",
+        "url": "https://discord.com/developers/applications",
+        "password": True,
+    },
+    "DISCORD_ALLOWED_USERS": {
+        "description": "Comma-separated Discord user IDs allowed to use the bot",
+        "prompt": "Allowed Discord user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+    },
+    # Terminal configuration
+    "MESSAGING_CWD": {
+        "description": "Working directory for terminal commands via messaging (Telegram/Discord/etc). CLI always uses current directory.",
+        "prompt": "Messaging working directory (default: home)",
+        "url": None,
+        "password": False,
+    },
+    "SUDO_PASSWORD": {
+        "description": "Sudo password for terminal commands requiring root access",
+        "prompt": "Sudo password",
+        "url": None,
+        "password": True,
+    },
 }
 
 

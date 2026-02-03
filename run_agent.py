@@ -1272,9 +1272,16 @@ class AIAgent:
             return
         
         try:
-            # Convert to trajectory format (reuse existing method)
-            # Use empty string as user_query since it's embedded in messages
-            trajectory = self._convert_to_trajectory_format(messages, "", True)
+            # Extract the first user message for the trajectory format
+            # The first message should be the user's initial query
+            first_user_query = ""
+            for msg in messages:
+                if msg.get("role") == "user":
+                    first_user_query = msg.get("content", "")
+                    break
+            
+            # Convert to trajectory format
+            trajectory = self._convert_to_trajectory_format(messages, first_user_query, True)
             
             # Build the session log entry
             entry = {

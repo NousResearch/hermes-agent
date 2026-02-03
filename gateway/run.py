@@ -446,11 +446,16 @@ class GatewayRunner:
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
             )
             
-            # If we have history, we need to restore it
-            # For now, we pass the message directly
-            # TODO: Implement proper history restoration
+            # Convert transcript history to agent format
+            # Transcript has timestamps; agent expects {"role": ..., "content": ...}
+            agent_history = []
+            for msg in history:
+                role = msg.get("role")
+                content = msg.get("content")
+                if role and content:
+                    agent_history.append({"role": role, "content": content})
             
-            result = agent.run_conversation(message)
+            result = agent.run_conversation(message, conversation_history=agent_history)
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")

@@ -293,24 +293,55 @@ def run_setup_wizard(args):
     current_backend = config.get('terminal', {}).get('backend', 'local')
     print_info(f"Current: {current_backend}")
     
+    # Detect platform for backend availability
+    import platform
+    is_linux = platform.system() == "Linux"
+    is_macos = platform.system() == "Darwin"
+    is_windows = platform.system() == "Windows"
+    
+    # Build choices based on platform
     terminal_choices = [
         "Local (run commands on this machine - no isolation)",
         "Docker (isolated containers - recommended for security)",
-        "Singularity/Apptainer (HPC clusters, shared compute)",
+    ]
+    
+    # Singularity/Apptainer is Linux-only (HPC)
+    if is_linux:
+        terminal_choices.append("Singularity/Apptainer (HPC clusters, shared compute)")
+    
+    terminal_choices.extend([
         "Modal (cloud execution, GPU access, serverless)",
         "SSH (run commands on a remote server)",
         f"Keep current ({current_backend})"
-    ]
+    ])
+    
+    # Build index map based on available choices
+    if is_linux:
+        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'ssh'}
+        keep_current_idx = 5
+    else:
+        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'ssh': 3}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'ssh'}
+        keep_current_idx = 4
+        if current_backend == 'singularity':
+            print_warning("Singularity is only available on Linux - please select a different backend")
     
     # Default based on current
-    default_terminal = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}.get(current_backend, 0)
+    default_terminal = backend_to_idx.get(current_backend, 0)
     
-    terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, 5)  # Default: keep
+    terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, keep_current_idx)
     
-    if terminal_idx == 0:  # Local
+    # Map index to backend name (handles platform differences)
+    selected_backend = idx_to_backend.get(terminal_idx)
+    
+    if selected_backend == 'local':
         config.setdefault('terminal', {})['backend'] = 'local'
         print_info("Local Execution Configuration:")
         print_info("Commands run directly on this machine (no isolation)")
+        
+        if is_windows:
+            print_info("Note: On Windows, commands run via cmd.exe or PowerShell")
         
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
@@ -321,15 +352,19 @@ def run_setup_wizard(args):
         
         print_success("Terminal set to local")
     
-    elif terminal_idx == 1:  # Docker
+    elif selected_backend == 'docker':
         config.setdefault('terminal', {})['backend'] = 'docker'
         default_docker = config.get('terminal', {}).get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
         print_info("Docker Configuration:")
+        if is_macos:
+            print_info("Requires Docker Desktop for Mac")
+        elif is_windows:
+            print_info("Requires Docker Desktop for Windows")
         docker_image = prompt("  Docker image", default_docker)
         config['terminal']['docker_image'] = docker_image
         print_success("Terminal set to Docker")
     
-    elif terminal_idx == 2:  # Singularity
+    elif selected_backend == 'singularity':
         config.setdefault('terminal', {})['backend'] = 'singularity'
         default_singularity = config.get('terminal', {}).get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')
         print_info("Singularity/Apptainer Configuration:")
@@ -338,7 +373,7 @@ def run_setup_wizard(args):
         config['terminal']['singularity_image'] = singularity_image
         print_success("Terminal set to Singularity/Apptainer")
     
-    elif terminal_idx == 3:  # Modal
+    elif selected_backend == 'modal':
         config.setdefault('terminal', {})['backend'] = 'modal'
         default_modal = config.get('terminal', {}).get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
         print_info("Modal Cloud Configuration:")
@@ -362,7 +397,7 @@ def run_setup_wizard(args):
         
         print_success("Terminal set to Modal")
     
-    elif terminal_idx == 4:  # SSH
+    elif selected_backend == 'ssh':
         config.setdefault('terminal', {})['backend'] = 'ssh'
         print_info("SSH Remote Execution Configuration:")
         print_info("Commands will run on a remote server over SSH")
@@ -390,6 +425,7 @@ def run_setup_wizard(args):
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
         
         print_success("Terminal set to SSH")
+    # else: Keep current (selected_backend is None)
     
     # =========================================================================
     # Step 4: Context Compression

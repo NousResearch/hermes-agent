@@ -414,7 +414,9 @@ class GatewayRunner:
                     # Non-blocking check with small timeout
                     msg = progress_queue.get_nowait()
                     await adapter.send(chat_id=source.chat_id, content=msg)
-                    await asyncio.sleep(0.5)  # Small delay between messages
+                    # Restore typing indicator after sending progress message
+                    await asyncio.sleep(0.3)
+                    await adapter.send_typing(source.chat_id)
                 except queue.Empty:
                     await asyncio.sleep(0.3)  # Check again soon
                 except asyncio.CancelledError:

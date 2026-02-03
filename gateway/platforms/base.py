@@ -172,11 +172,12 @@ class BasePlatformAdapter(ABC):
         """
         pass
     
-    async def _keep_typing(self, chat_id: str, interval: float = 4.0) -> None:
+    async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
         """
         Continuously send typing indicator until cancelled.
         
-        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 4.
+        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
+        to recover quickly after progress messages interrupt it.
         """
         try:
             while True:

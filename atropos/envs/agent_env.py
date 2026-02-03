@@ -23,6 +23,7 @@ from ..slots import SlotPool, SlotPoolConfig
 from ..tools import ToolRegistry, build_tool_registry
 from ..tools.tool_executor import ToolExecutor, ToolExecutorConfig
 
+# Main BaseEnv child classes. Child class THESE to get agent+tooling functionality easily.
 
 class AgentEnvConfig(BaseEnvConfig):
     tool_pool_mode: str = Field(default="nomad", description="Tool execution backend (only 'nomad' is supported)")

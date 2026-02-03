@@ -10,7 +10,10 @@ The SlotPool is the core abstraction for slot-based multiplexing:
 
 import asyncio
 import logging
+import os
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..nomad.client import (
@@ -52,6 +55,11 @@ class SlotPoolConfig:
 
     # Job lifecycle
     purge_job_on_start: bool = False  # Purge any pre-existing job before starting (local dev/training friendly)
+
+    # Local Docker image convenience (macOS/Nomad dev mode)
+    auto_build_local_image: bool = True  # If image endswith :local and is missing, build it from the bundled Dockerfile.
+    dockerfile_path: Optional[str] = None  # Override Dockerfile path (default: Hermes-Agent/atropos/Dockerfile).
+    docker_build_context: Optional[str] = None  # Override build context (default: Hermes-Agent/atropos).
 
 
 class SlotPool:
@@ -108,7 +116,77 @@ class SlotPool:
         self._health_task: Optional[asyncio.Task] = None
         self._scale_task: Optional[asyncio.Task] = None
         self._last_scale_time = 0.0
-    
+
+    def _default_dockerfile_path(self) -> Path:
+        # Hermes-Agent/atropos/Dockerfile lives next to this module in source checkouts.
+        return Path(__file__).resolve().parents[1] / "Dockerfile"
+
+    def _default_build_context(self) -> Path:
+        return Path(__file__).resolve().parents[1]
+
+    def _docker_image_exists(self, image: str) -> bool:
+        try:
+            proc = subprocess.run(
+                ["docker", "image", "inspect", image],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                env={**os.environ, "DOCKER_CLI_HINTS": "false"},
+            )
+            return proc.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    def _try_build_local_image(self, image: str) -> None:
+        dockerfile = Path(self.config.dockerfile_path) if self.config.dockerfile_path else self._default_dockerfile_path()
+        context = Path(self.config.docker_build_context) if self.config.docker_build_context else self._default_build_context()
+
+        if not dockerfile.exists():
+            raise RuntimeError(
+                f"Sandbox Dockerfile not found at {dockerfile}. "
+                "Build the sandbox image manually or set --env.purge_job_on_start false and provide a non-local image."
+            )
+        if not context.exists():
+            raise RuntimeError(f"Docker build context not found at {context}")
+
+        # Prefer buildx+--load to ensure the image ends up in the local daemon (required by Nomad's docker driver).
+        buildx_cmd = [
+            "docker",
+            "buildx",
+            "build",
+            "--load",
+            "-t",
+            image,
+            "-f",
+            str(dockerfile),
+            str(context),
+        ]
+        proc = subprocess.run(buildx_cmd, check=False, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
+        if proc.returncode == 0:
+            return
+
+        # Fallback to classic docker build if buildx isn't available.
+        build_cmd = ["docker", "build", "-t", image, "-f", str(dockerfile), str(context)]
+        proc2 = subprocess.run(build_cmd, check=False, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
+        if proc2.returncode != 0:
+            raise RuntimeError(
+                f"Failed to build local sandbox image {image}. "
+                f"Tried: {' '.join(buildx_cmd)} and {' '.join(build_cmd)}"
+            )
+
+    def _ensure_local_image(self) -> None:
+        image = (self.config.image or "").strip()
+        if not image.endswith(":local"):
+            return
+        if not self.config.auto_build_local_image:
+            return
+
+        if self._docker_image_exists(image):
+            return
+
+        logger.info(f"Local sandbox image {image} not found; building it now...")
+        self._try_build_local_image(image)
+
     def _slot_key(self, alloc_id: str, slot_id: str) -> str:
         """Generate unique key for a slot."""
         return f"{alloc_id}:{slot_id}"
@@ -143,6 +221,10 @@ class SlotPool:
         logger.info(f"Starting SlotPool (job_id={self.config.job_id})")
 
         try:
+            # Make sure local sandbox images exist before Nomad tries to pull them.
+            # This is a common footgun in macOS dev mode with :local tags.
+            self._ensure_local_image()
+
             # Check Nomad health
             if not await self.nomad.is_healthy():
                 raise RuntimeError(f"Nomad is not reachable at {self.config.nomad_address}")

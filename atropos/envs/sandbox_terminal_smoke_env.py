@@ -56,6 +56,7 @@ class SandboxTerminalSmokeEnvConfig(AgentEnvConfig):
         description="Base URL for an OpenAI-compatible chat server (without /v1).",
     )
     server_model: str = Field(default="hermes-4-36b", description="Model name")
+    tokenizer_name: str = Field(default="NousResearch/Hermes-4.3-36B", description="Tokenizer name for RL tokenization")
 
 
 class SandboxTerminalSmokeEnv(AgentEnv[SandboxTerminalSmokeEnvConfig]):
@@ -84,7 +85,7 @@ class SandboxTerminalSmokeEnv(AgentEnv[SandboxTerminalSmokeEnvConfig]):
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
         env_config = SandboxTerminalSmokeEnvConfig(
-            tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",  # tokenization only
+            tokenizer_name=os.getenv("ATROPOS_TOKENIZER_NAME") or "NousResearch/Hermes-4.3-36B",
             group_size=1,
             use_wandb=False,
             include_messages=True,

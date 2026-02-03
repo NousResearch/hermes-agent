@@ -41,6 +41,9 @@ class SweSmithOracleEnvConfig(AgentEnvConfig):
     install_timeout_s: float = Field(default=600.0)
     test_timeout_s: float = Field(default=600.0)
 
+    # Tokenization: should match the model used for training.
+    tokenizer_name: str = Field(default="NousResearch/Hermes-4.3-36B", description="Tokenizer name for RL tokenization")
+
 
 class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
     """
@@ -78,7 +81,7 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
         env_config = SweSmithOracleEnvConfig(
-            tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",  # tokenization only
+            tokenizer_name=os.getenv("ATROPOS_TOKENIZER_NAME") or "NousResearch/Hermes-4.3-36B",
             group_size=1,
             use_wandb=False,
             rollout_server_url="http://localhost:8000",

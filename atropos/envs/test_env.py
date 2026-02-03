@@ -68,6 +68,7 @@ class SimpleTestEnvConfig(AgentEnvConfig):
         default="hermes-4-36b",
         description="Model name",
     )
+    tokenizer_name: str = Field(default="NousResearch/Hermes-4.3-36B", description="Tokenizer name for RL tokenization")
 
 
 class SimpleTestEnv(AgentEnv[SimpleTestEnvConfig]):
@@ -108,7 +109,7 @@ class SimpleTestEnv(AgentEnv[SimpleTestEnvConfig]):
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
         env_config = SimpleTestEnvConfig(
-            tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",  # For tokenization only
+            tokenizer_name=os.getenv("ATROPOS_TOKENIZER_NAME") or "NousResearch/Hermes-4.3-36B",
             group_size=4,
             use_wandb=False,  # Disable wandb for simple testing
             rollout_server_url="http://localhost:8000",

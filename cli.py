@@ -126,8 +126,20 @@ def load_cli_config() -> Dict[str, Any]:
         try:
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f) or {}
-            # Deep merge with defaults
+            
+            # Handle model config - can be string (new format) or dict (old format)
+            if "model" in file_config:
+                if isinstance(file_config["model"], str):
+                    # New format: model is just a string, convert to dict structure
+                    defaults["model"]["default"] = file_config["model"]
+                elif isinstance(file_config["model"], dict):
+                    # Old format: model is a dict with default/base_url
+                    defaults["model"].update(file_config["model"])
+            
+            # Deep merge other keys with defaults
             for key in defaults:
+                if key == "model":
+                    continue  # Already handled above
                 if key in file_config:
                     if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
                         defaults[key].update(file_config[key])
@@ -306,8 +318,16 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         enabled_toolsets: List of enabled toolset names
         session_id: Unique session identifier for logging
     """
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
+    
+    # Get unavailable tools info for coloring
+    _, unavailable_toolsets = check_tool_availability(quiet=True)
+    disabled_tools = set()
+    for item in unavailable_toolsets:
+        disabled_tools.update(item.get("tools", []))
     
     # Build the side-by-side content using a table for precise control
     layout_table = Table.grid(padding=(0, 2))
@@ -334,14 +354,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     right_lines = []
     right_lines.append("[bold #FFBF00]Available Tools[/]")
     
-    # Group tools by toolset
+    # Group tools by toolset (include all possible tools, both enabled and disabled)
     toolsets_dict = {}
+    
+    # First, add all enabled tools
     for tool in tools:
         tool_name = tool["function"]["name"]
         toolset = get_toolset_for_tool(tool_name) or "other"
         if toolset not in toolsets_dict:
             toolsets_dict[toolset] = []
         toolsets_dict[toolset].append(tool_name)
+    
+    # Also add disabled toolsets so they show in the banner
+    for item in unavailable_toolsets:
+        # Map the internal toolset ID to display name
+        toolset_id = item["id"]
+        display_name = f"{toolset_id}_tools" if not toolset_id.endswith("_tools") else toolset_id
+        if display_name not in toolsets_dict:
+            toolsets_dict[display_name] = []
+        for tool_name in item.get("tools", []):
+            if tool_name not in toolsets_dict[display_name]:
+                toolsets_dict[display_name].append(tool_name)
     
     # Display tools grouped by toolset (compact format, max 8 groups)
     sorted_toolsets = sorted(toolsets_dict.keys())
@@ -350,11 +383,38 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     
     for toolset in display_toolsets:
         tool_names = toolsets_dict[toolset]
-        # Join tool names with commas, wrap if too long
-        tools_str = ", ".join(sorted(tool_names))
-        if len(tools_str) > 45:
-            tools_str = tools_str[:42] + "..."
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] [#FFF8DC]{tools_str}[/]")
+        # Color each tool name - red if disabled, normal if enabled
+        colored_names = []
+        for name in sorted(tool_names):
+            if name in disabled_tools:
+                colored_names.append(f"[red]{name}[/]")
+            else:
+                colored_names.append(f"[#FFF8DC]{name}[/]")
+        
+        tools_str = ", ".join(colored_names)
+        # Truncate if too long (accounting for markup)
+        if len(", ".join(sorted(tool_names))) > 45:
+            # Rebuild with truncation
+            short_names = []
+            length = 0
+            for name in sorted(tool_names):
+                if length + len(name) + 2 > 42:
+                    short_names.append("...")
+                    break
+                short_names.append(name)
+                length += len(name) + 2
+            # Re-color the truncated list
+            colored_names = []
+            for name in short_names:
+                if name == "...":
+                    colored_names.append("[dim]...[/]")
+                elif name in disabled_tools:
+                    colored_names.append(f"[red]{name}[/]")
+                else:
+                    colored_names.append(f"[#FFF8DC]{name}[/]")
+            tools_str = ", ".join(colored_names)
+        
+        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
     
     if remaining_toolsets > 0:
         right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
@@ -509,9 +569,14 @@ class HermesCLI:
         self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
         
         # Configuration - priority: CLI args > env vars > config file
-        self.model = model or os.getenv("LLM_MODEL", CLI_CONFIG["model"]["default"])
-        self.base_url = base_url or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
+        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        
+        # Base URL: custom endpoint (OPENAI_BASE_URL) takes precedence over OpenRouter
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
+        
+        # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
         
         # Parse and validate toolsets
@@ -641,7 +706,7 @@ class HermesCLI:
     def _show_status(self):
         """Show current status bar."""
         # Get tool count
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         tool_count = len(tools) if tools else 0
         
         # Format model name (shorten if needed)
@@ -684,7 +749,7 @@ class HermesCLI:
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         
         if not tools:
             print("(;_;) No tools available")

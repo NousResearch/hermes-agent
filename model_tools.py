@@ -274,11 +274,6 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "integer",
                             "description": "Command timeout in seconds (optional)",
                             "minimum": 1
-                        },
-                        "force": {
-                            "type": "boolean",
-                            "description": "Skip dangerous command safety check. Only use after user explicitly confirms they want to run a blocked command.",
-                            "default": False
                         }
                     },
                     "required": ["command"]
@@ -644,7 +639,8 @@ def get_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved_tools = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved_tools)
-                print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
+                if not quiet_mode:
+                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
                 if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
@@ -666,9 +662,11 @@ def get_tool_definitions(
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.update(legacy_tools)
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    if not quiet_mode:
+                        print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
                 else:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    if not quiet_mode:
+                        print(f"⚠️  Unknown toolset: {toolset_name}")
     elif disabled_toolsets:
         # Start with all tools from all toolsets, then remove disabled ones
         # Note: Only tools that are part of toolsets are accessible
@@ -687,7 +685,8 @@ def get_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved_tools = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved_tools)
-                print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
+                if not quiet_mode:
+                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
                 if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
@@ -708,9 +707,11 @@ def get_tool_definitions(
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.difference_update(legacy_tools)
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    if not quiet_mode:
+                        print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
                 else:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    if not quiet_mode:
+                        print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # No filtering - include all tools from all defined toolsets
         from toolsets import get_all_toolsets
@@ -781,9 +782,10 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         command = function_args.get("command")
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
-        force = function_args.get("force", False)  # Skip dangerous command check if user confirmed
+        # Note: force parameter exists internally but is NOT exposed to the model
+        # Dangerous command approval is handled via user prompts only
 
-        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id, force=force)
+        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)

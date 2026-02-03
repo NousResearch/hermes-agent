@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+Hermes Gateway - Standalone messaging platform integration.
+
+This is the proper entry point for running the gateway as a service.
+NOT tied to the CLI - runs independently.
+
+Usage:
+    # Run in foreground (for testing)
+    ./scripts/hermes-gateway
+    
+    # Install as systemd service
+    ./scripts/hermes-gateway install
+    
+    # Manage the service
+    ./scripts/hermes-gateway start
+    ./scripts/hermes-gateway stop
+    ./scripts/hermes-gateway restart
+    ./scripts/hermes-gateway status
+    
+    # Uninstall
+    ./scripts/hermes-gateway uninstall
+"""
+
+import argparse
+import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROJECT_DIR = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_DIR))
+
+# Load .env file
+from dotenv import load_dotenv
+env_path = PROJECT_DIR / '.env'
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+
+
+# =============================================================================
+# Service Configuration
+# =============================================================================
+
+SERVICE_NAME = "hermes-gateway"
+SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+
+def get_systemd_unit_path() -> Path:
+    """Get the path for the systemd user service file."""
+    return Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
+
+def get_launchd_plist_path() -> Path:
+    """Get the path for the launchd plist file (macOS)."""
+    return Path.home() / "Library" / "LaunchAgents" / f"ai.hermes.gateway.plist"
+
+def get_python_path() -> str:
+    """Get the path to the Python interpreter."""
+    # Prefer the venv if it exists
+    venv_python = PROJECT_DIR / "venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+def get_gateway_script_path() -> str:
+    """Get the path to this script."""
+    return str(Path(__file__).resolve())
+
+
+# =============================================================================
+# Systemd Service (Linux)
+# =============================================================================
+
+def generate_systemd_unit() -> str:
+    """Generate the systemd unit file content."""
+    python_path = get_python_path()
+    script_path = get_gateway_script_path()
+    working_dir = str(PROJECT_DIR)
+    
+    return f"""[Unit]
+Description={SERVICE_DESCRIPTION}
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={python_path} {script_path} run
+WorkingDirectory={working_dir}
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment (optional - can also use .env file)
+# Environment="TELEGRAM_BOT_TOKEN=your_token"
+# Environment="DISCORD_BOT_TOKEN=your_token"
+
+[Install]
+WantedBy=default.target
+"""
+
+def install_systemd():
+    """Install the systemd user service."""
+    unit_path = get_systemd_unit_path()
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Installing systemd service to: {unit_path}")
+    unit_path.write_text(generate_systemd_unit())
+    
+    # Reload systemd
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    
+    # Enable the service (start on boot)
+    subprocess.run(["systemctl", "--user", "enable", SERVICE_NAME], check=True)
+    
+    print(f"✓ Service installed and enabled")
+    print(f"")
+    print(f"To start the service:")
+    print(f"  systemctl --user start {SERVICE_NAME}")
+    print(f"")
+    print(f"To view logs:")
+    print(f"  journalctl --user -u {SERVICE_NAME} -f")
+    print(f"")
+    print(f"To enable lingering (keeps service running after logout):")
+    print(f"  sudo loginctl enable-linger $USER")
+
+def uninstall_systemd():
+    """Uninstall the systemd user service."""
+    unit_path = get_systemd_unit_path()
+    
+    # Stop and disable first
+    subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)
+    subprocess.run(["systemctl", "--user", "disable", SERVICE_NAME], check=False)
+    
+    # Remove the unit file
+    if unit_path.exists():
+        unit_path.unlink()
+        print(f"✓ Removed {unit_path}")
+    
+    # Reload systemd
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    print(f"✓ Service uninstalled")
+
+def systemd_status():
+    """Show systemd service status."""
+    subprocess.run(["systemctl", "--user", "status", SERVICE_NAME])
+
+def systemd_start():
+    """Start the systemd service."""
+    subprocess.run(["systemctl", "--user", "start", SERVICE_NAME], check=True)
+    print(f"✓ Service started")
+
+def systemd_stop():
+    """Stop the systemd service."""
+    subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=True)
+    print(f"✓ Service stopped")
+
+def systemd_restart():
+    """Restart the systemd service."""
+    subprocess.run(["systemctl", "--user", "restart", SERVICE_NAME], check=True)
+    print(f"✓ Service restarted")
+
+
+# =============================================================================
+# Launchd Service (macOS)
+# =============================================================================
+
+def generate_launchd_plist() -> str:
+    """Generate the launchd plist file content."""
+    python_path = get_python_path()
+    script_path = get_gateway_script_path()
+    working_dir = str(PROJECT_DIR)
+    log_dir = Path.home() / ".hermes" / "logs"
+    
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.hermes.gateway</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_path}</string>
+        <string>{script_path}</string>
+        <string>run</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>{working_dir}</string>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>{log_dir}/gateway.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/gateway.error.log</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+"""
+
+def install_launchd():
+    """Install the launchd service (macOS)."""
+    plist_path = get_launchd_plist_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Ensure log directory exists
+    log_dir = Path.home() / ".hermes" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Installing launchd service to: {plist_path}")
+    plist_path.write_text(generate_launchd_plist())
+    
+    # Load the service
+    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    
+    print(f"✓ Service installed and loaded")
+    print(f"")
+    print(f"To view logs:")
+    print(f"  tail -f ~/.hermes/logs/gateway.log")
+    print(f"")
+    print(f"To manage the service:")
+    print(f"  launchctl start ai.hermes.gateway")
+    print(f"  launchctl stop ai.hermes.gateway")
+
+def uninstall_launchd():
+    """Uninstall the launchd service (macOS)."""
+    plist_path = get_launchd_plist_path()
+    
+    # Unload first
+    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    
+    # Remove the plist file
+    if plist_path.exists():
+        plist_path.unlink()
+        print(f"✓ Removed {plist_path}")
+    
+    print(f"✓ Service uninstalled")
+
+def launchd_status():
+    """Show launchd service status."""
+    subprocess.run(["launchctl", "list", "ai.hermes.gateway"])
+
+def launchd_start():
+    """Start the launchd service."""
+    subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+    print(f"✓ Service started")
+
+def launchd_stop():
+    """Stop the launchd service."""
+    subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
+    print(f"✓ Service stopped")
+
+def launchd_restart():
+    """Restart the launchd service."""
+    launchd_stop()
+    launchd_start()
+
+
+# =============================================================================
+# Platform Detection
+# =============================================================================
+
+def is_linux() -> bool:
+    return sys.platform.startswith('linux')
+
+def is_macos() -> bool:
+    return sys.platform == 'darwin'
+
+def is_windows() -> bool:
+    return sys.platform == 'win32'
+
+
+# =============================================================================
+# Gateway Runner
+# =============================================================================
+
+def run_gateway():
+    """Run the gateway in foreground."""
+    from gateway.run import start_gateway
+    print("Starting Hermes Gateway...")
+    print("Press Ctrl+C to stop.")
+    print()
+    asyncio.run(start_gateway())
+
+
+# =============================================================================
+# Main CLI
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Hermes Gateway - Messaging Platform Integration",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Run in foreground (for testing)
+    ./scripts/hermes-gateway run
+    
+    # Install as system service
+    ./scripts/hermes-gateway install
+    
+    # Manage the service
+    ./scripts/hermes-gateway start
+    ./scripts/hermes-gateway stop
+    ./scripts/hermes-gateway restart
+    ./scripts/hermes-gateway status
+    
+    # Uninstall
+    ./scripts/hermes-gateway uninstall
+
+Configuration:
+    Set environment variables in .env file or system environment:
+    - TELEGRAM_BOT_TOKEN
+    - DISCORD_BOT_TOKEN
+    - WHATSAPP_ENABLED
+    
+    Or create ~/.hermes/gateway.json for advanced configuration.
+"""
+    )
+    
+    parser.add_argument(
+        "command",
+        choices=["run", "install", "uninstall", "start", "stop", "restart", "status"],
+        nargs="?",
+        default="run",
+        help="Command to execute (default: run)"
+    )
+    
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Verbose output"
+    )
+    
+    args = parser.parse_args()
+    
+    # Detect platform and dispatch command
+    if args.command == "run":
+        run_gateway()
+    
+    elif args.command == "install":
+        if is_linux():
+            install_systemd()
+        elif is_macos():
+            install_launchd()
+        else:
+            print("Service installation not supported on this platform.")
+            print("Please run manually: ./scripts/hermes-gateway run")
+            sys.exit(1)
+    
+    elif args.command == "uninstall":
+        if is_linux():
+            uninstall_systemd()
+        elif is_macos():
+            uninstall_launchd()
+        else:
+            print("Service uninstallation not supported on this platform.")
+            sys.exit(1)
+    
+    elif args.command == "start":
+        if is_linux():
+            systemd_start()
+        elif is_macos():
+            launchd_start()
+        else:
+            print("Not supported on this platform.")
+            sys.exit(1)
+    
+    elif args.command == "stop":
+        if is_linux():
+            systemd_stop()
+        elif is_macos():
+            launchd_stop()
+        else:
+            print("Not supported on this platform.")
+            sys.exit(1)
+    
+    elif args.command == "restart":
+        if is_linux():
+            systemd_restart()
+        elif is_macos():
+            launchd_restart()
+        else:
+            print("Not supported on this platform.")
+            sys.exit(1)
+    
+    elif args.command == "status":
+        if is_linux():
+            systemd_status()
+        elif is_macos():
+            launchd_status()
+        else:
+            print("Not supported on this platform.")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

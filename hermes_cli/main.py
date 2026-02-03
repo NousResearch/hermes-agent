@@ -18,6 +18,8 @@ Usage:
     hermes cron daemon         # Run cron daemon
     hermes doctor              # Check configuration and dependencies
     hermes version             # Show version
+    hermes update              # Update to latest version
+    hermes uninstall           # Uninstall Hermes Agent
 """
 
 import argparse
@@ -106,6 +108,12 @@ def cmd_version(args):
         print(f"OpenAI SDK: {openai.__version__}")
     except ImportError:
         print("OpenAI SDK: Not installed")
+
+
+def cmd_uninstall(args):
+    """Uninstall Hermes Agent."""
+    from hermes_cli.uninstall import run_uninstall
+    run_uninstall(args)
 
 
 def cmd_update(args):
@@ -447,6 +455,26 @@ For more help on a command:
         description="Pull the latest changes from git and reinstall dependencies"
     )
     update_parser.set_defaults(func=cmd_update)
+    
+    # =========================================================================
+    # uninstall command
+    # =========================================================================
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Uninstall Hermes Agent",
+        description="Remove Hermes Agent from your system. Can keep configs/data for reinstall."
+    )
+    uninstall_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Full uninstall - remove everything including configs and data"
+    )
+    uninstall_parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+    uninstall_parser.set_defaults(func=cmd_uninstall)
     
     # =========================================================================
     # Parse and execute

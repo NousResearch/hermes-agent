@@ -34,12 +34,16 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["modal", "boto3"]
 dev = ["pytest", "pytest-asyncio"]
+messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0"]
+cron = ["croniter"]
+all = ["croniter", "python-telegram-bot>=20.0", "discord.py>=2.0"]
 
 [project.scripts]
+hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli"]
 
 [tool.setuptools.packages.find]
-include = ["tools"]
+include = ["tools", "hermes_cli", "gateway", "cron"]

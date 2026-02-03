@@ -132,6 +132,63 @@ TOOLSETS = {
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
         "includes": []
+    },
+    
+    # ==========================================================================
+    # Messaging Platform-Specific Toolsets
+    # ==========================================================================
+    
+    "hermes-telegram": {
+        "description": "Telegram bot toolset - web research, skills, cronjobs (no terminal/browser for security)",
+        "tools": [
+            # Web tools - safe for messaging
+            "web_search", "web_extract",
+            # Vision - analyze images sent by users
+            "vision_analyze",
+            # Skills - access knowledge base
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob management - let users schedule tasks
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-discord": {
+        "description": "Discord bot toolset - limited for public server safety (no terminal, no file access)",
+        "tools": [
+            # Web tools - safe for messaging
+            "web_search",
+            # Vision - analyze images
+            "vision_analyze",
+            # Skills - access knowledge base
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob - let users schedule reminders
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-whatsapp": {
+        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
+        "tools": [
+            # Web tools
+            "web_search", "web_extract",
+            # Terminal - only for trusted personal accounts
+            "terminal",
+            # Vision
+            "vision_analyze",
+            # Skills
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob management
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-gateway": {
+        "description": "Gateway toolset - union of all messaging platform tools",
+        "tools": [],
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp"]
     }
 }
 

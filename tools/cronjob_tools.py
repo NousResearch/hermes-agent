@@ -29,6 +29,7 @@ def schedule_cronjob(
     schedule: str,
     name: Optional[str] = None,
     repeat: Optional[int] = None,
+    deliver: Optional[str] = None,
     task_id: str = None
 ) -> str:
     """
@@ -60,16 +61,35 @@ def schedule_cronjob(
                 - One-shot schedules default to repeat=1 (run once)
                 - Intervals/cron default to forever
                 - Set repeat=5 to run 5 times then auto-delete
+        deliver: Where to send the output. Options:
+                 - "origin": Back to where this job was created (default)
+                 - "local": Save to local files only (~/.hermes/cron/output/)
+                 - "telegram": Send to Telegram home channel
+                 - "discord": Send to Discord home channel
+                 - "telegram:123456": Send to specific chat ID
     
     Returns:
         JSON with job_id, next_run time, and confirmation
     """
+    # Get origin info from environment if available
+    origin = None
+    origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
+    origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
+    if origin_platform and origin_chat_id:
+        origin = {
+            "platform": origin_platform,
+            "chat_id": origin_chat_id,
+            "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
+        }
+    
     try:
         job = create_job(
             prompt=prompt,
             schedule=schedule,
             name=name,
-            repeat=repeat
+            repeat=repeat,
+            deliver=deliver,
+            origin=origin
         )
         
         # Format repeat info for display
@@ -87,8 +107,9 @@ def schedule_cronjob(
             "name": job["name"],
             "schedule": job["schedule_display"],
             "repeat": repeat_display,
+            "deliver": job.get("deliver", "local"),
             "next_run_at": job["next_run_at"],
-            "message": f"Cronjob '{job['name']}' created. It will run {repeat_display}, next at {job['next_run_at']}."
+            "message": f"Cronjob '{job['name']}' created. It will run {repeat_display}, deliver to {job.get('deliver', 'local')}, next at {job['next_run_at']}."
         }, indent=2)
         
     except Exception as e:
@@ -122,6 +143,13 @@ REPEAT BEHAVIOR:
 - Intervals/cron: run forever by default
 - Set repeat=N to run exactly N times then auto-delete
 
+DELIVERY OPTIONS (where output goes):
+- "origin": Back to current chat (default if in messaging platform)
+- "local": Save to local files only (default if in CLI)
+- "telegram": Send to Telegram home channel
+- "discord": Send to Discord home channel
+- "telegram:123456": Send to specific chat (if user provides ID)
+
 Use for: reminders, periodic checks, scheduled reports, automated maintenance.""",
     "parameters": {
         "type": "object",
@@ -141,6 +169,10 @@ Use for: reminders, periodic checks, scheduled reports, automated maintenance.""
             "repeat": {
                 "type": "integer",
                 "description": "How many times to run. Omit for default (once for one-shot, forever for recurring). Set to N for exactly N runs."
+            },
+            "deliver": {
+                "type": "string",
+                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', or 'platform:chat_id'"
             }
         },
         "required": ["prompt", "schedule"]
@@ -189,6 +221,7 @@ def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
                 "prompt_preview": job["prompt"][:100] + "..." if len(job["prompt"]) > 100 else job["prompt"],
                 "schedule": job["schedule_display"],
                 "repeat": repeat_status,
+                "deliver": job.get("deliver", "local"),
                 "next_run_at": job.get("next_run_at"),
                 "last_run_at": job.get("last_run_at"),
                 "last_status": job.get("last_status"),

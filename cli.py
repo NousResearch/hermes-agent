@@ -46,12 +46,30 @@ if env_path.exists():
 
 def load_cli_config() -> Dict[str, Any]:
     """
-    Load CLI configuration from cli-config.yaml.
+    Load CLI configuration from config files.
+    
+    Config lookup order:
+    1. ~/.hermes/config.yaml (user config - preferred)
+    2. ./cli-config.yaml (project config - fallback)
     
     Environment variables take precedence over config file values.
-    Returns default values if config file doesn't exist.
+    Returns default values if no config file exists.
     """
-    config_path = Path(__file__).parent / 'cli-config.yaml'
+    # Check user config first (~/.hermes/config.yaml)
+    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    
+    # Use user config if it exists, otherwise project config
+    if user_config_path.exists():
+        config_path = user_config_path
+    else:
+        config_path = project_config_path
+    
+    # Also load .env from ~/.hermes/.env if it exists
+    user_env_path = Path.home() / '.hermes' / '.env'
+    if user_env_path.exists():
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=user_env_path, override=True)
     
     # Default configuration
     defaults = {
@@ -406,6 +424,7 @@ COMMANDS = {
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
     "/cron": "Manage scheduled tasks (list, add, remove)",
+    "/platforms": "Show gateway/messaging platform status",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1018,6 +1037,63 @@ class HermesCLI:
             print(f"(._.) Unknown cron command: {subcommand}")
             print("  Available: list, add, remove")
     
+    def _show_gateway_status(self):
+        """Show status of the gateway and connected messaging platforms."""
+        from gateway.config import load_gateway_config, Platform
+        
+        print()
+        print("+" + "-" * 60 + "+")
+        print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
+        print("+" + "-" * 60 + "+")
+        print()
+        
+        try:
+            config = load_gateway_config()
+            connected = config.get_connected_platforms()
+            
+            print("  Messaging Platform Configuration:")
+            print("  " + "-" * 55)
+            
+            platform_status = {
+                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
+                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
+                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
+            }
+            
+            for platform, (name, env_var) in platform_status.items():
+                pconfig = config.platforms.get(platform)
+                if pconfig and pconfig.enabled:
+                    home = config.get_home_channel(platform)
+                    home_str = f" → {home.name}" if home else ""
+                    print(f"    ✓ {name:<12} Enabled{home_str}")
+                else:
+                    print(f"    ○ {name:<12} Not configured ({env_var})")
+            
+            print()
+            print("  Session Reset Policy:")
+            print("  " + "-" * 55)
+            policy = config.default_reset_policy
+            print(f"    Mode: {policy.mode}")
+            print(f"    Daily reset at: {policy.at_hour}:00")
+            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            
+            print()
+            print("  To start the gateway:")
+            print("    python cli.py --gateway")
+            print()
+            print("  Configuration file: ~/.hermes/gateway.json")
+            print()
+            
+        except Exception as e:
+            print(f"  Error loading gateway config: {e}")
+            print()
+            print("  To configure the gateway:")
+            print("    1. Set environment variables:")
+            print("       TELEGRAM_BOT_TOKEN=your_token")
+            print("       DISCORD_BOT_TOKEN=your_token")
+            print("    2. Or create ~/.hermes/gateway.json")
+            print()
+    
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -1075,6 +1151,8 @@ class HermesCLI:
             self.save_conversation()
         elif cmd.startswith("/cron"):
             self._handle_cron_command(command)  # Use original command for proper parsing
+        elif cmd == "/platforms" or cmd == "/gateway":
+            self._show_gateway_status()
         else:
             self.console.print(f"[bold red]Unknown command: {cmd}[/]")
             self.console.print("[dim #B8860B]Type /help for available commands[/]")
@@ -1216,6 +1294,7 @@ def main(
     list_toolsets: bool = False,
     cron_daemon: bool = False,
     cron_tick_once: bool = False,
+    gateway: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1260,6 +1339,14 @@ def main(
         jobs_run = cron_tick(verbose=True)
         if jobs_run:
             print(f"Executed {jobs_run} job(s)")
+        return
+    
+    # Handle gateway mode (messaging platforms)
+    if gateway:
+        import asyncio
+        from gateway.run import start_gateway
+        print("Starting Hermes Gateway (messaging platforms)...")
+        asyncio.run(start_gateway())
         return
     
     # Handle query shorthand

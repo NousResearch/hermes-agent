@@ -441,7 +441,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 10. Messaging Platform Integrations 💬
+## 10. Messaging Platform Integrations 💬 ✅ COMPLETE
 
 **Problem:** Agent currently only works via `cli.py` which requires direct terminal access. Users may want to interact via messaging apps from their phone or other devices.
 
@@ -462,26 +462,37 @@ These items need to be addressed ASAP:
 ```
 
 **Platform support (each user sets up their own credentials):**
-- [ ] **Telegram** - via `python-telegram-bot` or `grammy` equivalent
+- [x] **Telegram** - via `python-telegram-bot`
   - Bot token from @BotFather
   - Easiest to set up, good for personal use
-- [ ] **Discord** - via `discord.py`
+- [x] **Discord** - via `discord.py`
   - Bot token from Discord Developer Portal
   - Can work in servers (group sessions) or DMs
-- [ ] **WhatsApp** - via `baileys` (WhatsApp Web protocol)
-  - QR code scan to authenticate
+- [x] **WhatsApp** - via Node.js bridge (whatsapp-web.js/baileys)
+  - Requires Node.js bridge setup
   - More complex, but reaches most people
 
 **Session management:**
-- [ ] **Session store** - JSONL persistence per session key
-  - `~/.hermes/sessions/{session_key}.jsonl`
-  - Session keys: `telegram:dm:{user_id}`, `discord:channel:{id}`, etc.
-- [ ] **Session expiry** - Configurable reset policies
-  - Daily reset (default 4am) OR idle timeout (e.g., 2 hours)
+- [x] **Session store** - JSONL persistence per session key
+  - `~/.hermes/sessions/{session_id}.jsonl`
+  - Session keys: `agent:main:telegram:dm`, `agent:main:discord:group:123`, etc.
+- [x] **Session expiry** - Configurable reset policies
+  - Daily reset (default 4am) OR idle timeout (default 2 hours)
   - Manual reset via `/reset` or `/new` command in chat
-- [ ] **Session continuity** - Conversations persist across messages until reset
+  - Per-platform and per-type overrides
+- [x] **Session continuity** - Conversations persist across messages until reset
 
-**Files to create:** `monitors/telegram_monitor.py`, `monitors/discord_monitor.py`, `monitors/session_store.py`
+**Files created:** `gateway/`, `gateway/platforms/`, `gateway/config.py`, `gateway/session.py`, `gateway/delivery.py`, `gateway/run.py`
+
+**Configuration:**
+- Environment variables: `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, etc.
+- Config file: `~/.hermes/gateway.json`
+- CLI commands: `/platforms` to check status, `--gateway` to start
+
+**Dynamic context injection:**
+- Agent knows its source platform and chat
+- Agent knows connected platforms and home channels
+- Agent can deliver cron outputs to specific platforms
 
 ---
 

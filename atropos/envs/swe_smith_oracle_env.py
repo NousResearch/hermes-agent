@@ -72,7 +72,7 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
             os.getenv("ATROPOS_SERVER_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
             or os.getenv("LLM_BASE_URL")
-            or "http://localhost:11434"
+            or "http://127.0.0.1:8080"
         )
         model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "glm-4.7-flash"
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
@@ -252,6 +252,7 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         *,
         trajectory_id: str,
         exec_tool,
+        agent_result=None,  # noqa: ARG002
     ) -> tuple[float, Dict[str, Any]]:
         _ = trajectory_id
         repo_dir = self._repo_name(item)

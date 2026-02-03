@@ -15,6 +15,7 @@ The agent uses Hermes-style XML tags for tool calls:
 
 import asyncio
 import os
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Union
@@ -27,33 +28,66 @@ from atroposlib.envs.server_handling.managed_server import ManagedServer
 load_dotenv()
 
 
-# Default system prompt with tool calling instructions
-AGENT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools. You can use tools to accomplish tasks.
+# Default system prompt with tool calling instructions.
+#
+# IMPORTANT: In training-mode environments we want "raw text in -> raw text out" and we
+# parse tool calls from completion text. Do not rely on server-specific `tool_calls` fields.
+AGENT_SYSTEM_PROMPT = """You are a function-calling AI model.
 
-## Available Tools
+You are provided with function signatures within <tools></tools> XML tags.
+You may call one or more functions to assist with the user query. If available tools are not relevant,
+respond in natural language.
+
+After calling & executing a function, you will be provided with function results within
+<tool_response></tool_response> XML tags.
+
+Here are the available tools:
 <tools>
-{tool_descriptions}
+{tools_json}
 </tools>
 
-## How to Use Tools
-To use a tool, output a tool call in the following format:
-<tool_call>{{"name": "tool_name", "arguments": {{"arg1": "value1", "arg2": "value2"}}}}</tool_call>
+## REQUIRED TOOL FORMAT
 
-You may reason about what to do before calling a tool:
-<think>I need to check what files are in the current directory...</think>
-<tool_call>{{"name": "bash", "arguments": {{"command": "ls -la"}}}}</tool_call>
+When you decide to call a tool, your assistant message MUST be:
+1) exactly one <think>...</think> block, followed by
+2) one or more <tool_call>...</tool_call> blocks,
+and NOTHING else in that message.
 
-After a tool is executed, you will receive the result:
-<tool_response>{{"success": true, "output": "..."}}</tool_response>
+For each tool call, output a JSON object with this schema:
+{"name": "function_name", "arguments": { ... }}
 
-Continue using tools as needed until you have completed the task.
-When you have finished, provide your final response without any tool calls.
+Each tool call MUST be enclosed within <tool_call></tool_call> XML tags.
+The JSON inside <tool_call> MUST be valid JSON with double quotes.
 
-## Important Guidelines
-- Think step by step about what you need to do
-- Use tools to gather information and perform actions
-- If a tool call fails, analyze the error and try a different approach
-- Provide clear, concise responses when the task is complete
+Do NOT output <tool_response> in an assistant message.
+
+After you receive tool results, you may either call more tools (same required format) or provide the final answer.
+When providing the final answer, do NOT include any <tool_call> blocks.
+
+## ICL (examples)
+
+User: Show the current directory.
+Assistant:
+<think>I should use the terminal tool to print the current directory.</think>
+<tool_call>{"name": "terminal", "arguments": {"command": "pwd"}}</tool_call>
+User: <tool_response>{"success": true, "output": "/tmp\\n"}</tool_response>
+Assistant: /tmp
+
+User: List files, then count them.
+Assistant:
+<think>I should list files and count lines.</think>
+<tool_call>{"name": "terminal", "arguments": {"command": "ls -1 | wc -l"}}</tool_call>
+User: <tool_response>{"success": true, "output": "3\\n"}</tool_response>
+Assistant: 3
+
+User: Run pwd, then print ok.
+Assistant:
+<think>I should run pwd, then run a command that prints ok.</think>
+<tool_call>{"name": "terminal", "arguments": {"command": "pwd"}}</tool_call>
+<tool_call>{"name": "terminal", "arguments": {"command": "echo ok"}}</tool_call>
+User: <tool_response>{"success": true, "output": "/tmp\\n"}</tool_response>
+User: <tool_response>{"success": true, "output": "ok\\n"}</tool_response>
+Assistant: ok
 """
 
 
@@ -62,8 +96,9 @@ class AgentConfig:
     """Configuration for the AtroposAgent."""
     
     # Generation parameters
-    temperature: float = 0.7
-    max_tokens: int = 4096
+    temperature: Optional[float] = 0.7
+    # Default to "let the backend decide" (important for tool-tag completions that may be longer).
+    max_tokens: Optional[int] = None
     
     # Agent behavior
     max_steps: int = 50
@@ -222,13 +257,53 @@ class AtroposAgent:
         """Build the system prompt with tool descriptions."""
         if self.config.system_prompt:
             return self.config.system_prompt
-        
-        tool_descriptions = self.tools.get_prompt_description()
-        if not tool_descriptions:
-            tool_descriptions = "(No tools available)"
-        
-        return AGENT_SYSTEM_PROMPT.format(tool_descriptions=tool_descriptions)
-    
+
+        tools_json = self.tools.get_prompt_tool_definitions_json()
+        # Avoid `str.format()` here because the prompt contains many literal `{}` braces
+        # in JSON examples; we only want to substitute the single `{tools_json}` token.
+        return AGENT_SYSTEM_PROMPT.replace("{tools_json}", tools_json)
+
+    def _debug_dump_request(self, *, step_num: int, chat_kwargs: Dict[str, Any]) -> None:
+        if os.getenv("ATROPOS_DEBUG_AGENT_REQUEST") != "1":
+            return
+        try:
+            # Avoid dumping megabytes by default; messages can be huge.
+            meta = {
+                "step": step_num,
+                "chat_kwargs_keys": sorted(list(chat_kwargs.keys())),
+                "n": chat_kwargs.get("n"),
+                "max_tokens": chat_kwargs.get("max_tokens"),
+                "temperature": chat_kwargs.get("temperature"),
+                "num_messages": len(chat_kwargs.get("messages") or []),
+            }
+            print("\n=== ATROPOS_DEBUG_AGENT_REQUEST ===", flush=True)
+            print(meta, flush=True)
+
+            if os.getenv("ATROPOS_DEBUG_AGENT_REQUEST_FULL") == "1":
+                payload = dict(chat_kwargs)
+                # Make the payload more legible and less huge.
+                try:
+                    dumped = json.dumps(payload, ensure_ascii=False, indent=2)
+                except Exception:
+                    dumped = repr(payload)
+                print("\n=== ATROPOS_DEBUG_AGENT_REQUEST_FULL ===", flush=True)
+                print(dumped[:200_000], flush=True)
+        except Exception:
+            return
+
+    def _debug_dump_response(self, *, step_num: int, response: Any) -> None:
+        if os.getenv("ATROPOS_DEBUG_AGENT_RESPONSE") != "1":
+            return
+        print("\n=== ATROPOS_DEBUG_AGENT_RESPONSE ===", flush=True)
+        print({"step": step_num, "type": type(response).__name__}, flush=True)
+        try:
+            dumped = response.model_dump()  # openai pydantic model
+        except Exception:
+            dumped = getattr(response, "__dict__", {"repr": repr(response)})
+        # Keep the dump bounded; we only need enough to see the assistant message content.
+        text = str(dumped)
+        print(text[:200_000], flush=True)
+
     async def run(
         self,
         task: str,
@@ -265,12 +340,15 @@ class AtroposAgent:
                     # Keep a copy of the prompt messages used for this completion.
                     # Useful for reconstructing tokens/masks when state tracking is unavailable.
                     prompt_messages = list(messages)
-                    response = await managed.chat_completion(
-                        messages=messages,
-                        n=1,
-                        max_tokens=self.config.max_tokens,
-                        temperature=self.config.temperature,
-                    )
+                    chat_kwargs: Dict[str, Any] = {"messages": messages, "n": 1}
+                    if self.config.max_tokens is not None:
+                        chat_kwargs["max_tokens"] = self.config.max_tokens
+                    if self.config.temperature is not None:
+                        chat_kwargs["temperature"] = self.config.temperature
+
+                    self._debug_dump_request(step_num=step_num + 1, chat_kwargs=chat_kwargs)
+                    response = await managed.chat_completion(**chat_kwargs)
+                    self._debug_dump_response(step_num=step_num + 1, response=response)
                     
                     current_node = None
                     if hasattr(managed, "get_state"):
@@ -286,7 +364,9 @@ class AtroposAgent:
                         error=f"Generation error: {str(e)}",
                     )
                 
-                response_text = response.choices[0].message.content or ""
+                msg = response.choices[0].message
+                # Some OpenAI-compatible servers populate `message.reasoning` and leave `content=""`.
+                response_text = (msg.content or "") or (getattr(msg, "reasoning", None) or "")
                 tool_calls = ToolCall.parse_from_text(response_text)
                 
                 step = AgentStep(
@@ -380,12 +460,15 @@ class AtroposAgent:
             Tuple of (response_text, tool_results, sequence_data)
         """
         async with self._managed() as managed:
-            response = await managed.chat_completion(
-                messages=messages,
-                n=1,
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
-            )
+            chat_kwargs: Dict[str, Any] = {"messages": messages, "n": 1}
+            if self.config.max_tokens is not None:
+                chat_kwargs["max_tokens"] = self.config.max_tokens
+            if self.config.temperature is not None:
+                chat_kwargs["temperature"] = self.config.temperature
+
+            self._debug_dump_request(step_num=1, chat_kwargs=chat_kwargs)
+            response = await managed.chat_completion(**chat_kwargs)
+            self._debug_dump_response(step_num=1, response=response)
             
             current_node = None
             if hasattr(managed, "get_state"):
@@ -393,7 +476,8 @@ class AtroposAgent:
                 nodes = state.get("nodes", [])
                 current_node = nodes[-1] if nodes else None
         
-        response_text = response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        response_text = (msg.content or "") or (getattr(msg, "reasoning", None) or "")
         tool_results = []
         
         if execute_tools:

@@ -1,14 +1,15 @@
 """
-Hermes-Agent + Atropos (Nomad sandbox) compatibility smoke environment.
+ToolServer routing smoke environment.
 
-This environment is intended to validate, end-to-end:
-  BaseEnv.process -> AgentEnv -> ToolExecutor (batched) -> Nomad SlotPool -> sandbox_server
+Validates that:
+  - sandbox tools run through Nomad SlotPool (terminal -> bash in sandbox)
+  - external tools run through ToolServer (skills_list)
 
-It forces the model to use a sandbox tool by asking it to run a command that
-generates a high-entropy token inside the sandbox, then repeat it exactly.
+This env uses ToolServer in-process by default (`tool_server_url="inprocess"`),
+so it is self-contained for local testing.
 
-Run (process mode):
-  uv run python -m atropos.envs.hermes_compat_test_env process --env.use_wandb false --env.total_steps 2 --env.group_size 1
+Run:
+  uv run python -m atropos.envs.toolserver_smoke_env process --env.use_wandb false --env.total_steps 1 --env.group_size 1
 """
 
 from __future__ import annotations
@@ -22,34 +23,12 @@ from pydantic import Field
 from atroposlib.envs.base import APIServerConfig, Item
 
 from ..agent import AgentConfig, AgentResult
-from ..tools import ToolCall
 from .agent_env import AgentEnv, AgentEnvConfig
 
 load_dotenv()
 
 
-def _forced_tool_item() -> Item:
-    # Use double quotes in the shell command and show JSON escaping explicitly.
-    # This avoids invalid JSON escapes like `\\'` (not valid JSON) that some models produce.
-    cmd = 'python -c "import secrets; print(secrets.token_hex(16))"'
-    return {
-        "command": cmd,
-        "prompt": (
-            "You are acting as an agent inside a sandboxed environment.\n"
-            "You MUST use the terminal tool to execute commands.\n"
-            "Run this exact command:\n"
-            f"{cmd}\n"
-            "When you call the tool, use valid JSON inside <tool_call>. Example:\n"
-            '<tool_call>{"name": "terminal", "arguments": {"command": '
-            '"python -c \\\\"import secrets; print(secrets.token_hex(16))\\\\""}}'
-            "</tool_call>\n"
-            "Then respond with EXACTLY what it printed (the hex token) and nothing else.\n"
-            "Do not guess. Do not explain."
-        ),
-    }
-
-
-class HermesCompatTestEnvConfig(AgentEnvConfig):
+class ToolServerSmokeEnvConfig(AgentEnvConfig):
     server_base_url: str = Field(
         default="http://127.0.0.1:8080",
         description="Base URL for an OpenAI-compatible chat server (without /v1).",
@@ -57,13 +36,13 @@ class HermesCompatTestEnvConfig(AgentEnvConfig):
     server_model: str = Field(default="glm-4.7-flash", description="Model name")
 
 
-class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
-    name = "hermes_compat_test_env"
-    env_config_cls = HermesCompatTestEnvConfig
+class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
+    name = "toolserver_smoke_env"
+    env_config_cls = ToolServerSmokeEnvConfig
 
     def __init__(
         self,
-        config: HermesCompatTestEnvConfig,
+        config: ToolServerSmokeEnvConfig,
         server_configs: List[APIServerConfig],
         slurm: bool = False,
         testing: bool = False,
@@ -72,7 +51,7 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
         self._iter = 0
 
     @classmethod
-    def config_init(cls) -> Tuple[HermesCompatTestEnvConfig, List[APIServerConfig]]:
+    def config_init(cls) -> Tuple[ToolServerSmokeEnvConfig, List[APIServerConfig]]:
         base_url = (
             os.getenv("ATROPOS_SERVER_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
@@ -82,20 +61,20 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
         model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "glm-4.7-flash"
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
-        env_config = HermesCompatTestEnvConfig(
+        env_config = ToolServerSmokeEnvConfig(
             tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",  # tokenization only
             group_size=1,
             use_wandb=False,
             include_messages=True,
             ensure_scores_are_not_same=False,
-            total_steps=2,
+            total_steps=1,
             batch_size=1,
             server_base_url=base_url,
             server_model=model,
-            # Tooling: sandbox-only terminal.
-            enabled_toolsets=["terminal"],
+            enabled_toolsets=["terminal", "skills"],
             disabled_toolsets=[],
-            # Default to Nomad sandboxing; users can override via --env.* args.
+            # Self-contained ToolServer for local smoke.
+            tool_server_url="inprocess",
             sandbox_image=os.getenv("ATROPOS_SANDBOX_IMAGE") or "atropos-sandbox:local",
             purge_job_on_shutdown=True,
         )
@@ -117,21 +96,36 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
 
     async def get_next_item(self) -> Item:
         self._iter += 1
-        return _forced_tool_item()
+        return {
+            "prompt": (
+                "You MUST call exactly one tool per assistant message.\n"
+                "\n"
+                "Step 1) Call the skills_list tool (no arguments), then stop.\n"
+                "Step 2) After you receive the tool response, call the terminal tool to run:\n"
+                "python -c \"print('ok')\"\n"
+                "Step 3) After you receive the terminal tool response, answer with just: ok\n"
+                "\n"
+                "Tool call format requirements:\n"
+                "- Every tool call MUST be a complete XML block with a closing tag.\n"
+                "- Do NOT emit a second <tool_call> in the same assistant message.\n"
+                "\n"
+                "Example:\n"
+                "<tool_call>{\"name\": \"skills_list\", \"arguments\": {}}</tool_call>\n"
+                "Do not include anything else in your final answer."
+            )
+        }
 
     def build_task(self, item: Item) -> str:
         return str(item.get("prompt") or "")
 
     def build_agent_config(self, item: Item) -> AgentConfig:  # noqa: ARG002
-        # Avoid imposing max_tokens by default; tool-tag responses can be long for some models.
         return AgentConfig(
-            max_steps=min(8, int(self.config.agent_max_steps)),
+            max_steps=min(10, int(self.config.agent_max_steps)),
             temperature=0.2,
             max_tokens=None,
         )
 
     async def score_trajectory(self, item: Item, final_response: str) -> float:
-        # Scoring happens in verify_and_score_trajectory so we can inspect tool results.
         _ = (item, final_response)
         return 0.0
 
@@ -147,21 +141,22 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
         if agent_result is None:
             return 0.0, {"error": "Missing agent_result"}
 
-        observed: str = ""
-        tool_ok = False
-        for step in agent_result.steps:
-            for res in step.tool_results:
-                if not res.success:
-                    return 0.0, {"error": res.error, "output": res.output}
-                out = (res.output or "").strip()
-                if out:
-                    observed = out.splitlines()[-1].strip()
-                    tool_ok = True
+        called = {c.name for s in agent_result.steps for c in s.tool_calls}
+        need = {"skills_list", "terminal"}
+        if not need.issubset(called):
+            return 0.0, {"error": f"Missing tool calls: {sorted(need - called)}", "called": sorted(called)}
 
-        final = (final_response or "").strip()
-        score = 1.0 if tool_ok and agent_result.total_tool_calls > 0 and observed and final == observed else 0.0
-        return score, {"observed": observed, "tool_calls": agent_result.total_tool_calls, "command": item.get("command")}
+        terminal_ok = False
+        for step in agent_result.steps:
+            for call, res in zip(step.tool_calls, step.tool_results):
+                if call.name != "terminal":
+                    continue
+                if res.success and (res.output or "").strip().splitlines()[-1].strip() == "ok":
+                    terminal_ok = True
+
+        score = 1.0 if terminal_ok and (final_response or "").strip() == "ok" else 0.0
+        return score, {"called": sorted(called), "final": (final_response or "").strip()}
 
 
 if __name__ == "__main__":
-    HermesCompatTestEnv.cli()
+    ToolServerSmokeEnv.cli()

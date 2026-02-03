@@ -1,2 +1,4 @@
 [console_scripts]
 hermes-agent = run_agent:main
+hermes-atropos-sandbox-smoke = atropos.envs.sandbox_terminal_smoke_env:SandboxTerminalSmokeEnv.cli
+hermes-atropos-toolserver-smoke = atropos.envs.toolserver_smoke_env:ToolServerSmokeEnv.cli

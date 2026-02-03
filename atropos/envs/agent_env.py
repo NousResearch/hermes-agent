@@ -18,7 +18,7 @@ from pydantic import Field
 
 from atroposlib.envs.base import APIServerConfig, BaseEnv, BaseEnvConfig, Item, ScoredDataGroup, ScoredDataItem
 
-from ..agent import AgentConfig, AtroposAgent
+from ..agent import AgentConfig, AgentResult, AtroposAgent
 from ..slots import SlotPool, SlotPoolConfig
 from ..tools import ToolRegistry, build_tool_registry
 from ..tools.tool_executor import ToolExecutor, ToolExecutorConfig
@@ -56,7 +56,10 @@ class AgentEnvConfig(BaseEnvConfig):
     # basic agent defaults
     agent_max_steps: int = Field(default=50, description="Max ReACT steps per trajectory")
     agent_temperature: float = Field(default=0.7, description="Sampling temperature")
-    agent_max_tokens: int = Field(default=4096, description="Max tokens per model response")
+    agent_max_tokens: Optional[int] = Field(
+        default=None,
+        description="Max tokens per model response (default: let backend decide)",
+    )
     agent_tool_delay_s: float = Field(default=0.0, description="Delay between tool calls (seconds)")
 
     # tool selection
@@ -143,6 +146,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         *,
         trajectory_id: str,
         exec_tool: Callable[["ToolCall"], Awaitable["ToolResult"]],
+        agent_result: Optional[AgentResult] = None,
     ) -> tuple[float, Dict[str, Any]]:
         """
         Optional hook: run in-sandbox verification before scoring.
@@ -152,7 +156,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
 
         Default: calls `score_trajectory()` and returns empty metadata.
         """
-        _ = (trajectory_id, exec_tool)  # default ignores in-workspace verification
+        _ = (trajectory_id, exec_tool, agent_result)  # default ignores in-workspace verification
         score = await self.score_trajectory(item, final_response)
         return score, {}
 
@@ -299,6 +303,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
                 result.final_response,
                 trajectory_id=trajectory_id,
                 exec_tool=_exec,
+                agent_result=result,
             )
 
             messages = [{"role": "system", "content": agent._build_system_prompt()}]  # noqa: SLF001

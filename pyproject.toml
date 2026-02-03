@@ -37,7 +37,7 @@ modal = ["modal", "boto3"]
 dev = ["pytest", "pytest-asyncio"]
 # Install Atropos from source (PyPI is often stale for this internal dependency).
 atropos = [
-  "atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git",
+  "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   # Atropos integration runtime deps (kept optional for Hermes-only users)
   "aiohttp",
   "fastapi",
@@ -47,6 +47,8 @@ atropos = [
 
 [project.scripts]
 hermes-agent = "run_agent:main"
+hermes-atropos-sandbox-smoke = "atropos.envs.sandbox_terminal_smoke_env:SandboxTerminalSmokeEnv.cli"
+hermes-atropos-toolserver-smoke = "atropos.envs.toolserver_smoke_env:ToolServerSmokeEnv.cli"
 
 [tool.setuptools]
 py-modules = [

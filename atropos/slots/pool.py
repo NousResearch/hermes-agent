@@ -138,42 +138,47 @@ class SlotPool:
             return
         
         logger.info(f"Starting SlotPool (job_id={self.config.job_id})")
-        
-        # Check Nomad health
-        if not await self.nomad.is_healthy():
-            raise RuntimeError(f"Nomad is not reachable at {self.config.nomad_address}")
-        
-        # Check if job exists
-        job = await self.nomad.get_job(self.config.job_id)
-        
-        if job is None:
-            # Deploy new job
-            logger.info(f"Deploying sandbox job: {self.config.job_id}")
-            job_spec = create_sandbox_job(
-                job_id=self.config.job_id,
-                image=self.config.image,
-                count=self.config.min_containers,
-                slots_per_container=self.config.slots_per_container,
-                privileged=self.config.privileged,
-                cpu=self.config.cpu,
-                memory=self.config.memory,
-                datacenter=self.config.datacenter,
-            )
-            result = await self.nomad.submit_job(job_spec)
-            if "error" in result:
-                raise RuntimeError(f"Failed to submit job: {result}")
-            
-            # Wait for allocations to be running
+
+        try:
+            # Check Nomad health
+            if not await self.nomad.is_healthy():
+                raise RuntimeError(f"Nomad is not reachable at {self.config.nomad_address}")
+
+            # Check if job exists
+            job = await self.nomad.get_job(self.config.job_id)
+
+            if job is None:
+                # Deploy new job
+                logger.info(f"Deploying sandbox job: {self.config.job_id}")
+                job_spec = create_sandbox_job(
+                    job_id=self.config.job_id,
+                    image=self.config.image,
+                    count=self.config.min_containers,
+                    slots_per_container=self.config.slots_per_container,
+                    privileged=self.config.privileged,
+                    cpu=self.config.cpu,
+                    memory=self.config.memory,
+                    datacenter=self.config.datacenter,
+                )
+                result = await self.nomad.submit_job(job_spec)
+                if "error" in result:
+                    raise RuntimeError(f"Failed to submit job: {result}")
+
+            # Wait for allocations to be running (even if the job already existed).
             await self._wait_for_healthy_allocations(self.config.min_containers)
-        
-        # Discover existing allocations and slots
-        await self._refresh_slots()
-        
-        # Start health check task
-        self._health_task = asyncio.create_task(self._health_check_loop())
-        
-        self._started = True
-        logger.info(f"SlotPool started: {self.total_slots} slots available")
+
+            # Discover existing allocations and slots
+            await self._refresh_slots()
+
+            # Start health check task
+            self._health_task = asyncio.create_task(self._health_check_loop())
+
+            self._started = True
+            logger.info(f"SlotPool started: {self.total_slots} slots available")
+        except Exception:
+            # Ensure aiohttp sessions are not leaked if we fail to start.
+            await self.stop(purge_job=False)
+            raise
     
     async def stop(self, purge_job: bool = False) -> None:
         """
@@ -384,6 +389,19 @@ class SlotPool:
         """Wait for allocations to become healthy."""
         import time
         start = time.time()
+
+        def _summarize_alloc_detail(detail: Dict[str, Any]) -> str:
+            task_states = detail.get("TaskStates") or {}
+            parts: List[str] = []
+            if isinstance(task_states, dict):
+                for task_name, st in task_states.items():
+                    events = (st or {}).get("Events") or []
+                    if isinstance(events, list) and events:
+                        last = events[-1]
+                        desc = last.get("DisplayMessage") or last.get("Message") or last.get("Type") or ""
+                        if desc:
+                            parts.append(f"{task_name}: {desc}")
+            return "; ".join(parts)
         
         while time.time() - start < timeout:
             allocs = await self.nomad.get_job_allocations(self.config.job_id)
@@ -393,13 +411,45 @@ class SlotPool:
                 if alloc.status == AllocationStatus.RUNNING and alloc.http_address:
                     if await self.executor.health_check(alloc.http_address):
                         healthy_count += 1
+
+                # Fast-fail on obvious driver/image errors to avoid waiting out the full timeout.
+                if alloc.id:
+                    detail = await self.nomad.get_allocation(alloc.id)
+                    if isinstance(detail, dict):
+                        summary = _summarize_alloc_detail(detail)
+                        lowered = summary.lower()
+                        if "failed to pull" in lowered or "pull access denied" in lowered:
+                            raise RuntimeError(
+                                "Nomad allocation failed to start due to a Docker image pull error. "
+                                f"Allocation {alloc.id[:8]}: {summary}\n"
+                                "If you're using a local image tag (e.g. `atropos-sandbox:local`) on macOS, "
+                                "make sure the image is loaded into Docker (build with `docker buildx build --load ...`)."
+                            )
             
             if healthy_count >= min_count:
                 return
             
             await asyncio.sleep(2.0)
-        
-        raise RuntimeError(f"Timed out waiting for {min_count} healthy allocations")
+
+        # Timed out: include allocation status detail to help debugging.
+        allocs = await self.nomad.get_job_allocations(self.config.job_id)
+        alloc_lines: List[str] = []
+        for alloc in allocs[:10]:
+            addr = alloc.http_address or "-"
+            line = f"{alloc.id[:8]} status={alloc.status.value} http={addr}"
+            detail = await self.nomad.get_allocation(alloc.id)
+            if isinstance(detail, dict):
+                summary = _summarize_alloc_detail(detail)
+                if summary:
+                    line += f" detail={summary}"
+            alloc_lines.append(line)
+
+        hint = (
+            "Timed out waiting for healthy sandbox allocations.\n"
+            f"Job: {self.config.job_id}, desired_healthy: {min_count}\n"
+            "Allocations:\n  - " + "\n  - ".join(alloc_lines)
+        )
+        raise RuntimeError(hint)
     
     async def _try_scale_up(self) -> bool:
         """Attempt to scale up the job."""

@@ -218,7 +218,7 @@ wheels = [
 [[package]]
 name = "atroposlib"
 version = "0.3.0"
-source = { git = "ssh://git@github.com/NousResearch/atropos.git#462abbebf75f44e811116c3730ce9874c4358a80" }
+source = { git = "https://github.com/NousResearch/atropos.git#462abbebf75f44e811116c3730ce9874c4358a80" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -913,7 +913,7 @@ modal = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'atropos'" },
-    { name = "atroposlib", marker = "extra == 'atropos'", git = "ssh://git@github.com/NousResearch/atropos.git" },
+    { name = "atroposlib", marker = "extra == 'atropos'", git = "https://github.com/NousResearch/atropos.git" },
     { name = "boto3", marker = "extra == 'modal'" },
     { name = "fal-client" },
     { name = "fastapi", marker = "extra == 'atropos'" },

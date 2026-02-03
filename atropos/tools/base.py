@@ -72,26 +72,65 @@ class ToolCall:
         """
         Extract tool calls from text using Hermes-style XML tags.
         
-        Format: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+        Supported formats (STRICT: requires well-formed closing tags):
+        - Hermes JSON wrapper:
+          <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+        - GLM/llama.cpp style:
+          <tool_call>terminal{"command":"ls -la"}</tool_call>
         """
-        calls = []
+        calls: List["ToolCall"] = []
+
+        if not text:
+            return calls
+
+        def _append_from_payload(*, name: str, arguments: Dict[str, Any], raw: str, uniq_id: Optional[str] = None) -> None:
+            if not isinstance(name, str) or not name:
+                return
+            if not isinstance(arguments, dict):
+                return
+            calls.append(
+                cls(
+                    name=name,
+                    arguments=arguments,
+                    raw_text=raw,
+                    uniq_id=uniq_id or str(uuid.uuid4()),
+                )
+            )
+
+        # STRICT parsing: only accept well-formed <tool_call>...</tool_call> blocks.
         pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
-        matches = re.findall(pattern, text, re.DOTALL)
-        
-        for match in matches:
-            try:
-                data = json.loads(match)
-                uniq_id = data.get("uniq_id") or data.get("id") or str(uuid.uuid4())
-                calls.append(cls(
+        for inner in re.findall(pattern, text, re.DOTALL):
+            cleaned = (inner or "").strip()
+            if not cleaned:
+                continue
+
+            # Hermes JSON wrapper.
+            if cleaned.startswith("{"):
+                try:
+                    data = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    continue
+                uniq_id = data.get("uniq_id") or data.get("id") or None
+                _append_from_payload(
                     name=data.get("name", ""),
                     arguments=data.get("arguments", {}),
-                    raw_text=match,
+                    raw=inner,
                     uniq_id=uniq_id,
-                ))
-            except json.JSONDecodeError:
-                # Skip malformed tool calls
+                )
                 continue
-        
+
+            # GLM/llama.cpp style: terminal{...}
+            m = re.match(r"^\s*([A-Za-z0-9_.:\\-]+)\s*(\{.*\})\s*$", cleaned, re.DOTALL)
+            if not m:
+                continue
+            name = m.group(1)
+            args_text = m.group(2)
+            try:
+                args = json.loads(args_text)
+            except json.JSONDecodeError:
+                continue
+            _append_from_payload(name=name, arguments=args, raw=inner)
+
         return calls
     
     @classmethod
@@ -208,6 +247,27 @@ class ToolRegistry:
         """Generate tool descriptions for system prompt."""
         descriptions = [tool.schema.to_prompt_description() for tool in self._tools.values()]
         return "\n\n".join(descriptions)
+
+    def get_prompt_tool_definitions_json(self) -> str:
+        """
+        Return a Hermes-style JSON list of tool definitions for use inside a `<tools>...</tools>` block.
+
+        Hermes trajectories historically use a simplified schema list:
+          [{"name": ..., "description": ..., "parameters": {...}, "required": null}, ...]
+        """
+        formatted: List[Dict[str, Any]] = []
+        for tool in self._tools.values():
+            fn = tool.schema.to_dict().get("function", {})
+            formatted.append(
+                {
+                    "name": fn.get("name", tool.name),
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters", {}),
+                    # Keep parity with Hermes saved trajectories (required is typically null there).
+                    "required": None,
+                }
+            )
+        return json.dumps(formatted, ensure_ascii=False)
     
     async def execute(self, call: ToolCall) -> ToolResult:
         """Execute a tool call."""

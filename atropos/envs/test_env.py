@@ -61,7 +61,7 @@ class SimpleTestEnvConfig(AgentEnvConfig):
     """Configuration for the simple test environment."""
 
     server_base_url: str = Field(
-        default="http://localhost:11434",
+        default="http://127.0.0.1:8080",
         description="Base URL for an OpenAI-compatible server (without /v1)",
     )
     server_model: str = Field(
@@ -102,7 +102,7 @@ class SimpleTestEnv(AgentEnv[SimpleTestEnvConfig]):
             os.getenv("ATROPOS_SERVER_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
             or os.getenv("LLM_BASE_URL")
-            or "http://localhost:11434"
+            or "http://127.0.0.1:8080"
         )
         model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "glm-4.7-flash"
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"

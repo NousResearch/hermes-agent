@@ -1,14 +1,14 @@
 """
-Hermes-Agent + Atropos (Nomad sandbox) compatibility smoke environment.
+Nomad sandbox terminal smoke environment (training-oriented).
 
-This environment is intended to validate, end-to-end:
+Validates, end-to-end:
   BaseEnv.process -> AgentEnv -> ToolExecutor (batched) -> Nomad SlotPool -> sandbox_server
 
 It forces the model to use a sandbox tool by asking it to run a command that
 generates a high-entropy token inside the sandbox, then repeat it exactly.
 
 Run (process mode):
-  uv run python -m atropos.envs.hermes_compat_test_env process --env.use_wandb false --env.total_steps 2 --env.group_size 1
+  uv run python -m atropos.envs.sandbox_terminal_smoke_env process --env.use_wandb false --env.total_steps 2 --env.group_size 1
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ from .agent_env import AgentEnv, AgentEnvConfig
 
 load_dotenv()
 
+STRICT_TOOLCALL_SYSTEM_PROMPT = None
+
 
 def _forced_tool_item() -> Item:
     # Use double quotes in the shell command and show JSON escaping explicitly.
@@ -35,8 +37,7 @@ def _forced_tool_item() -> Item:
     return {
         "command": cmd,
         "prompt": (
-            "You are acting as an agent inside a sandboxed environment.\n"
-            "You MUST use the terminal tool to execute commands.\n"
+            "You MUST use the terminal tool.\n"
             "Run this exact command:\n"
             f"{cmd}\n"
             "When you call the tool, use valid JSON inside <tool_call>. Example:\n"
@@ -49,7 +50,7 @@ def _forced_tool_item() -> Item:
     }
 
 
-class HermesCompatTestEnvConfig(AgentEnvConfig):
+class SandboxTerminalSmokeEnvConfig(AgentEnvConfig):
     server_base_url: str = Field(
         default="http://127.0.0.1:8080",
         description="Base URL for an OpenAI-compatible chat server (without /v1).",
@@ -57,13 +58,13 @@ class HermesCompatTestEnvConfig(AgentEnvConfig):
     server_model: str = Field(default="glm-4.7-flash", description="Model name")
 
 
-class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
-    name = "hermes_compat_test_env"
-    env_config_cls = HermesCompatTestEnvConfig
+class SandboxTerminalSmokeEnv(AgentEnv[SandboxTerminalSmokeEnvConfig]):
+    name = "sandbox_terminal_smoke_env"
+    env_config_cls = SandboxTerminalSmokeEnvConfig
 
     def __init__(
         self,
-        config: HermesCompatTestEnvConfig,
+        config: SandboxTerminalSmokeEnvConfig,
         server_configs: List[APIServerConfig],
         slurm: bool = False,
         testing: bool = False,
@@ -72,7 +73,7 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
         self._iter = 0
 
     @classmethod
-    def config_init(cls) -> Tuple[HermesCompatTestEnvConfig, List[APIServerConfig]]:
+    def config_init(cls) -> Tuple[SandboxTerminalSmokeEnvConfig, List[APIServerConfig]]:
         base_url = (
             os.getenv("ATROPOS_SERVER_BASE_URL")
             or os.getenv("OPENAI_BASE_URL")
@@ -82,7 +83,7 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
         model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "glm-4.7-flash"
         api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
-        env_config = HermesCompatTestEnvConfig(
+        env_config = SandboxTerminalSmokeEnvConfig(
             tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",  # tokenization only
             group_size=1,
             use_wandb=False,
@@ -128,6 +129,7 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
             max_steps=min(8, int(self.config.agent_max_steps)),
             temperature=0.2,
             max_tokens=None,
+            system_prompt=STRICT_TOOLCALL_SYSTEM_PROMPT,
         )
 
     async def score_trajectory(self, item: Item, final_response: str) -> float:
@@ -164,4 +166,4 @@ class HermesCompatTestEnv(AgentEnv[HermesCompatTestEnvConfig]):
 
 
 if __name__ == "__main__":
-    HermesCompatTestEnv.cli()
+    SandboxTerminalSmokeEnv.cli()

@@ -16,7 +16,7 @@ typer
 platformdirs
 
 [atropos]
-atroposlib @ git+ssh://git@github.com/NousResearch/atropos.git
+atroposlib @ git+https://github.com/NousResearch/atropos.git
 aiohttp
 fastapi
 uvicorn

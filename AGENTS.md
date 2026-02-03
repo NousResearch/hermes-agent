@@ -281,8 +281,8 @@ The terminal tool includes safety checks for potentially destructive commands (e
 
 **Approval Flow (Messaging):**
 - Command is blocked with explanation
-- Agent explains and asks user to confirm
-- If user says "yes/approve/do it", agent retries with `force=True`
+- Agent explains the command was blocked for safety
+- User must add the pattern to their allowlist via `hermes config edit` or run the command directly on their machine
 
 **Configuration:**
 - `command_allowlist` in `~/.hermes/config.yaml` stores permanently allowed patterns

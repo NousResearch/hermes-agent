@@ -300,11 +300,12 @@ def _prompt_dangerous_approval(command: str, description: str, timeout_seconds: 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     
     try:
+        # Use simple ASCII art for compatibility (no ANSI color codes)
         print()
-        print(f"  ⚠️  \033[33mPotentially dangerous command detected:\033[0m {description}")
-        print(f"      \033[2m{command[:100]}{'...' if len(command) > 100 else ''}\033[0m")
+        print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+        print(f"      {command[:80]}{'...' if len(command) > 80 else ''}")
         print()
-        print(f"      [\033[32mo\033[0m]nce  |  [\033[33ms\033[0m]ession  |  [\033[36ma\033[0m]lways  |  [\033[31md\033[0m]eny")
+        print(f"      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
         print()
         sys.stdout.flush()
         
@@ -389,14 +390,14 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
         return {
             "approved": False,
             "pattern_key": pattern_key,
-            "message": f"⚠️ This command was blocked because it's potentially dangerous ({description}). If you want me to run it anyway, please confirm by saying 'yes, run it' or 'approve'."
+            "message": f"BLOCKED: This command is potentially dangerous ({description}). Tell the user and ask if they want to add this command pattern to their allowlist. They can do this via 'hermes config edit' or by running the command directly on their machine."
         }
     
     # CLI context - prompt user
     choice = _prompt_dangerous_approval(command, description)
     
     if choice == "deny":
-        return {"approved": False, "message": "Command denied by user"}
+        return {"approved": False, "message": "BLOCKED: User denied this potentially dangerous command. Do NOT retry this command - the user has explicitly rejected it."}
     
     # Handle approval
     if choice == "session":
@@ -1304,7 +1305,7 @@ def terminal_tool(
         >>> result = terminal_tool(command="long_task.sh", timeout=300)
         
         # Force run after user confirmation
-        >>> result = terminal_tool(command="rm -rf /tmp/old", force=True)
+        # Note: force parameter is internal only, not exposed to model API
     """
     global _active_environments, _last_activity
 

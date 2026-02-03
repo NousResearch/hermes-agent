@@ -585,7 +585,7 @@ class AIAgent:
         base_url: str = None,
         api_key: str = None,
         model: str = "anthropic/claude-sonnet-4-20250514",  # OpenRouter format
-        max_iterations: int = 10,
+        max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -1966,11 +1966,47 @@ class AIAgent:
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                     break
         
-        # Handle max iterations reached
-        if api_call_count >= self.max_iterations:
-            print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Stopping to prevent infinite loop.")
-            if final_response is None:
-                final_response = "I've reached the maximum number of iterations. Here's what I found so far."
+        # Handle max iterations reached - ask model to summarize what it found
+        if api_call_count >= self.max_iterations and final_response is None:
+            print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
+            
+            # Inject a user message asking for a summary
+            summary_request = (
+                "You've reached the maximum number of tool-calling iterations allowed. "
+                "Please provide a final response summarizing what you've found and accomplished so far, "
+                "without calling any more tools."
+            )
+            messages.append({"role": "user", "content": summary_request})
+            
+            # Make one final API call WITHOUT tools to force a text response
+            try:
+                api_messages = messages.copy()
+                if self.ephemeral_system_prompt:
+                    api_messages = [{"role": "system", "content": self.ephemeral_system_prompt}] + api_messages
+                
+                summary_response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=api_messages,
+                    # No tools parameter - forces text response
+                    extra_headers=self.extra_headers,
+                    extra_body=self.extra_body,
+                )
+                
+                if summary_response.choices and summary_response.choices[0].message.content:
+                    final_response = summary_response.choices[0].message.content
+                    # Strip think blocks from final response
+                    if "<think>" in final_response:
+                        import re
+                        final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    
+                    # Add to messages for session continuity
+                    messages.append({"role": "assistant", "content": final_response})
+                else:
+                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    
+            except Exception as e:
+                logging.warning(f"Failed to get summary response: {e}")
+                final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations

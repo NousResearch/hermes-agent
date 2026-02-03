@@ -441,4 +441,149 @@
 
 ---
 
+## 14. Learning Machine / Dynamic Memory System 🧠
+
+*Inspired by [Dash](~/agent-codebases/dash) - a self-learning data agent.*
+
+**Problem:** Agent starts fresh every session. Valuable learnings from debugging, error patterns, successful approaches, and user preferences are lost.
+
+**Dash's Key Insight:** Separate **Knowledge** (static, curated) from **Learnings** (dynamic, discovered):
+
+| System | What It Stores | How It Evolves |
+|--------|---------------|----------------|
+| **Knowledge** (Skills) | Validated approaches, templates, best practices | Curated by user |
+| **Learnings** | Error patterns, gotchas, discovered fixes | Managed automatically |
+
+**Tools to implement:**
+- [ ] `save_learning(topic, learning, context?)` - Record a discovered pattern
+  ```python
+  save_learning(
+    topic="python-ssl",
+    learning="On Ubuntu 22.04, SSL certificate errors often fixed by: apt install ca-certificates",
+    context="Debugging requests SSL failure"
+  )
+  ```
+- [ ] `search_learnings(query)` - Find relevant past learnings
+  ```python
+  search_learnings("SSL certificate error Python")
+  # Returns: "On Ubuntu 22.04, SSL certificate errors often fixed by..."
+  ```
+
+**User Profile & Memory:**
+- [ ] `user_profile` - Structured facts about user preferences
+  ```yaml
+  # ~/.hermes/user_profile.yaml
+  coding_style:
+    python_formatter: black
+    type_hints: always
+    test_framework: pytest
+  preferences:
+    verbosity: detailed
+    confirm_destructive: true
+  environment:
+    os: linux
+    shell: bash
+    default_python: 3.11
+  ```
+- [ ] `user_memory` - Unstructured observations the agent learns
+  ```yaml
+  # ~/.hermes/user_memory.yaml
+  - "User prefers tabs over spaces despite black's defaults"
+  - "User's main project is ~/work/myapp - a Django app"
+  - "User often works late - don't ask about timezone"
+  ```
+
+**When to learn:**
+- After fixing an error that took multiple attempts
+- When user corrects the agent's approach
+- When a workaround is discovered for a tool limitation
+- When user expresses a preference
+
+**Storage:** Vector database (ChromaDB) or simple YAML with embedding search.
+
+**Files to create:** `tools/learning_tools.py`, `learning/store.py`, `~/.hermes/learnings/`
+
+---
+
+## 15. Layered Context Architecture 📊
+
+*Inspired by Dash's "Six Layers of Context" - grounding responses in multiple sources.*
+
+**Problem:** Context sources are ad-hoc. No clear hierarchy or strategy for what context to include when.
+
+**Proposed Layers for Hermes:**
+
+| Layer | Source | When Loaded | Example |
+|-------|--------|-------------|---------|
+| 1. **Project Context** | `.hermes/context.md` | Auto on cwd | "This is a FastAPI project using PostgreSQL" |
+| 2. **Skills** | `skills/*.md` | On request | "How to set up React project" |
+| 3. **User Profile** | `~/.hermes/user_profile.yaml` | Always | "User prefers pytest, uses black" |
+| 4. **Learnings** | `~/.hermes/learnings/` | Semantic search | "SSL fix for Ubuntu" |
+| 5. **External Knowledge** | Web search, docs | On demand | Current API docs, Stack Overflow |
+| 6. **Runtime Introspection** | Tool calls | Real-time | File contents, terminal output |
+
+**Benefits:**
+- Clear mental model for what context is available
+- Prioritization: local > learned > external
+- Debugging: "Why did agent do X?" → check which layers contributed
+
+**Files to modify:** `run_agent.py` (context loading), new `context/layers.py`
+
+---
+
+## 16. Evaluation System with LLM Grading 📏
+
+*Inspired by Dash's evaluation framework.*
+
+**Problem:** `batch_runner.py` runs test cases but lacks quality assessment.
+
+**Dash's Approach:**
+- **String matching** (default) - Check if expected strings appear
+- **LLM grader** (-g flag) - GPT evaluates response quality
+- **Result comparison** (-r flag) - Compare against golden output
+
+**Implementation for Hermes:**
+
+- [ ] **Test case format:**
+  ```python
+  TestCase(
+    name="create_python_project",
+    prompt="Create a new Python project with FastAPI and tests",
+    expected_strings=["requirements.txt", "main.py", "test_"],  # Basic check
+    golden_actions=["write:main.py", "write:requirements.txt", "terminal:pip install"],
+    grader_criteria="Should create complete project structure with working code"
+  )
+  ```
+
+- [ ] **LLM grader mode:**
+  ```python
+  def grade_response(response: str, criteria: str) -> Grade:
+      """Use GPT to evaluate response quality."""
+      prompt = f"""
+      Evaluate this agent response against the criteria.
+      Criteria: {criteria}
+      Response: {response}
+      
+      Score (1-5) and explain why.
+      """
+      # Returns: Grade(score=4, explanation="Created all files but tests are minimal")
+  ```
+
+- [ ] **Action comparison mode:**
+  - Record tool calls made during test
+  - Compare against expected actions
+  - "Expected terminal call to pip install, got npm install"
+
+- [ ] **CLI flags:**
+  ```bash
+  python batch_runner.py eval test_cases.yaml       # String matching
+  python batch_runner.py eval test_cases.yaml -g    # + LLM grading
+  python batch_runner.py eval test_cases.yaml -r    # + Result comparison
+  python batch_runner.py eval test_cases.yaml -v    # Verbose (show responses)
+  ```
+
+**Files to modify:** `batch_runner.py`, new `evals/test_cases.py`, new `evals/grader.py`
+
+---
+
 *Last updated: $(date +%Y-%m-%d)* 🤖

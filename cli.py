@@ -95,7 +95,7 @@ def load_cli_config() -> Dict[str, Any]:
             "summary_model": "google/gemini-2.0-flash-001",  # Fast/cheap model for summaries
         },
         "agent": {
-            "max_turns": 20,
+            "max_turns": 60,  # Default max tool-calling iterations
             "verbose": False,
             "system_prompt": "",
             "personalities": {
@@ -145,6 +145,10 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
+            
+            # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
+            if "max_turns" in file_config and "agent" not in file_config:
+                defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             print(f"[Warning] Failed to load cli-config.yaml: {e}")
     
@@ -547,7 +551,7 @@ class HermesCLI:
         toolsets: List[str] = None,
         api_key: str = None,
         base_url: str = None,
-        max_turns: int = 20,
+        max_turns: int = 60,
         verbose: bool = False,
         compact: bool = False,
     ):
@@ -559,7 +563,7 @@ class HermesCLI:
             toolsets: List of toolsets to enable (default: all)
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            max_turns: Maximum conversation turns
+            max_turns: Maximum tool-calling iterations (default: 60)
             verbose: Enable verbose logging
             compact: Use compact display mode
         """
@@ -577,7 +581,17 @@ class HermesCLI:
         
         # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-        self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
+        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
+        if max_turns != 60:  # CLI arg was explicitly set
+            self.max_turns = max_turns
+        elif os.getenv("HERMES_MAX_ITERATIONS"):
+            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
+        elif CLI_CONFIG["agent"].get("max_turns"):
+            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
+        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+            self.max_turns = CLI_CONFIG["max_turns"]
+        else:
+            self.max_turns = 60
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -1377,7 +1391,7 @@ def main(
     model: str = None,
     api_key: str = None,
     base_url: str = None,
-    max_turns: int = 20,
+    max_turns: int = 60,
     verbose: bool = False,
     compact: bool = False,
     list_tools: bool = False,
@@ -1396,7 +1410,7 @@ def main(
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum conversation turns (default: 20)
+        max_turns: Maximum tool-calling iterations (default: 60)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

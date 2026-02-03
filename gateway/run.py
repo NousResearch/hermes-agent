@@ -360,8 +360,12 @@ class GatewayRunner:
         toolset = toolset_map.get(source.platform, "hermes-telegram")
         
         def run_sync():
+            # Read from env var or use default (same as CLI)
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "60"))
+            
             agent = AIAgent(
                 model=os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4"),
+                max_iterations=max_iterations,
                 quiet_mode=True,
                 enabled_toolsets=[toolset],
                 ephemeral_system_prompt=context_prompt,

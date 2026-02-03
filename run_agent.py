@@ -360,6 +360,10 @@ class AIAgent:
         "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
     ]
     
+    def _format_status(self, emoji: str, message: str, time_str: str, face: str) -> str:
+        """Format status with fixed alignment: ● │ emoji message time face"""
+        return f"● │ {emoji} {message} {time_str} {face}"
+    
     def _get_cute_tool_message(self, tool_name: str, args: dict, duration: float) -> str:
         """
         Generate a kawaii ASCII/unicode art message for tool execution in CLI mode.
@@ -377,10 +381,10 @@ class AIAgent:
         # Web tools - show what we're searching/reading
         if tool_name == "web_search":
             query = args.get("query", "the web")
-            if len(query) > 40:
-                query = query[:37] + "..."
+            if len(query) > 35:
+                query = query[:32] + "..."
             face = random.choice(self.KAWAII_SEARCH)
-            return f"{face} 🔍 Searching for '{query}'... {time_str}"
+            return self._format_status("🔍", f"searched '{query}'", time_str, face)
         
         elif tool_name == "web_extract":
             urls = args.get("urls", [])
@@ -388,67 +392,67 @@ class AIAgent:
             if urls:
                 url = urls[0] if isinstance(urls, list) else str(urls)
                 domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-                if len(domain) > 25:
-                    domain = domain[:22] + "..."
+                if len(domain) > 20:
+                    domain = domain[:17] + "..."
                 if len(urls) > 1:
-                    return f"{face} 📖 Reading {domain} +{len(urls)-1} more... {time_str}"
-                return f"{face} 📖 Reading {domain}... {time_str}"
-            return f"{face} 📖 Reading pages... {time_str}"
+                    return self._format_status("📖", f"read {domain} +{len(urls)-1} more", time_str, face)
+                return self._format_status("📖", f"read {domain}", time_str, face)
+            return self._format_status("📖", "read pages", time_str, face)
         
         elif tool_name == "web_crawl":
             url = args.get("url", "website")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            if len(domain) > 25:
-                domain = domain[:22] + "..."
+            if len(domain) > 20:
+                domain = domain[:17] + "..."
             face = random.choice(self.KAWAII_READ)
-            return f"{face} 🕸️ Crawling {domain}... {time_str}"
+            return self._format_status("🕸️", f"crawled {domain}", time_str, face)
         
         # Terminal tool
         elif tool_name == "terminal":
             command = args.get("command", "")
-            if len(command) > 30:
-                command = command[:27] + "..."
+            if len(command) > 35:
+                command = command[:32] + "..."
             face = random.choice(self.KAWAII_TERMINAL)
-            return f"{face} 💻 $ {command} {time_str}"
+            return self._format_status("💻", f"$ {command}", time_str, face)
         
         # Browser tools
         elif tool_name == "browser_navigate":
             url = args.get("url", "page")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            if len(domain) > 25:
-                domain = domain[:22] + "..."
+            if len(domain) > 20:
+                domain = domain[:17] + "..."
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 🌐 → {domain} {time_str}"
+            return self._format_status("🌐", f"→ {domain}", time_str, face)
         
         elif tool_name == "browser_snapshot":
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 📸 *snap* {time_str}"
+            return self._format_status("📸", "*snap*", time_str, face)
         
         elif tool_name == "browser_click":
             element = args.get("ref", "element")
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👆 *click* {element} {time_str}"
+            return self._format_status("👆", f"clicked {element}", time_str, face)
         
         elif tool_name == "browser_type":
             text = args.get("text", "")
             if len(text) > 15:
                 text = text[:12] + "..."
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} ⌨️ typing '{text}' {time_str}"
+            return self._format_status("⌨️", f"typed '{text}'", time_str, face)
         
         elif tool_name == "browser_scroll":
             direction = args.get("direction", "down")
             arrow = "↓" if direction == "down" else "↑"
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} {arrow} scrolling {direction}... {time_str}"
+            return self._format_status(arrow, f"scrolled {direction}", time_str, face)
         
         elif tool_name == "browser_back":
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} ← going back... {time_str}"
+            return self._format_status("←", "went back", time_str, face)
         
         elif tool_name == "browser_vision":
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👁️ analyzing visually... {time_str}"
+            return self._format_status("👁️", "analyzed visually", time_str, face)
         
         # Image generation
         elif tool_name == "image_generate":
@@ -456,37 +460,37 @@ class AIAgent:
             if len(prompt) > 20:
                 prompt = prompt[:17] + "..."
             face = random.choice(self.KAWAII_CREATE)
-            return f"{face} 🎨 creating '{prompt}'... {time_str}"
+            return self._format_status("🎨", f"created '{prompt}'", time_str, face)
         
         # Skills - use large pool for variety
         elif tool_name == "skills_categories":
             face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📚 listing categories... {time_str}"
+            return self._format_status("📚", "listed categories", time_str, face)
         
         elif tool_name == "skills_list":
-            category = args.get("category", "skills")
+            category = args.get("category", "all")
             face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📋 listing {category} skills... {time_str}"
+            return self._format_status("📋", f"listed {category} skills", time_str, face)
         
         elif tool_name == "skill_view":
             name = args.get("name", "skill")
             face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📖 loading {name}... {time_str}"
+            return self._format_status("📖", f"loaded {name}", time_str, face)
         
         # Vision tools
         elif tool_name == "vision_analyze":
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👁️✨ analyzing image... {time_str}"
+            return self._format_status("👁️", "analyzed image", time_str, face)
         
         # Mixture of agents
         elif tool_name == "mixture_of_agents":
             face = random.choice(self.KAWAII_THINK)
-            return f"{face} 🧠💭 thinking REALLY hard... {time_str}"
+            return self._format_status("🧠", "deep reasoning done", time_str, face)
         
         # Default fallback - random generic kawaii
         else:
             face = random.choice(self.KAWAII_GENERIC)
-            return f"{face} ⚡ {tool_name}... {time_str}"
+            return self._format_status("⚡", f"{tool_name} done", time_str, face)
     
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -839,7 +843,7 @@ class AIAgent:
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                thinking_spinner = KawaiiSpinner(f"○ │ 🧠 {verb}... {face}", spinner_type=spinner_type)
                 thinking_spinner.start()
             
             # Log request details if verbose
@@ -897,7 +901,7 @@ class AIAgent:
                     # Stop thinking spinner with cute completion message
                     if thinking_spinner:
                         face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
-                        thinking_spinner.stop(f"{face} got it! ({api_duration:.1f}s)")
+                        thinking_spinner.stop(f"● │ ✨ got it! ⏱ {api_duration:.1f}s {face}")
                         thinking_spinner = None
                     
                     if not self.quiet_mode:
@@ -912,7 +916,7 @@ class AIAgent:
                     if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
-                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            thinking_spinner.stop(f"● │ ⚠️ oops, retrying... (´;ω;`)")
                             thinking_spinner = None
                         
                         # This is often rate limiting or provider returning malformed response
@@ -1021,7 +1025,7 @@ class AIAgent:
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
-                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        thinking_spinner.stop(f"● │ ❌ error, retrying... (╥_╥)")
                         thinking_spinner = None
                     
                     retry_count += 1
@@ -1234,7 +1238,40 @@ class AIAgent:
                             spinner_type, tool_emojis = tool_spinners.get(function_name, ('dots', ['⚙️', '🔧', '⚡', '✨']))
                             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                             tool_emoji = random.choice(tool_emojis)
-                            spinner = KawaiiSpinner(f"{face} {tool_emoji} {function_name}...", spinner_type=spinner_type)
+                            
+                            # Build descriptive spinner message based on tool type
+                            # Format: ○ │ emoji action details... face
+                            if function_name == 'terminal':
+                                cmd = function_args.get('command', '')
+                                cmd_preview = cmd[:40] + '...' if len(cmd) > 40 else cmd
+                                action = f"{tool_emoji} $ {cmd_preview}"
+                            elif function_name == 'web_search':
+                                query = function_args.get('query', '')[:35]
+                                action = f"{tool_emoji} searching: {query}"
+                            elif function_name == 'web_extract':
+                                url = function_args.get('url', '')
+                                domain = url.split('//')[-1].split('/')[0][:25] if '//' in url else url[:25]
+                                action = f"{tool_emoji} reading: {domain}"
+                            elif function_name == 'skill_view':
+                                skill = function_args.get('name', 'skill')
+                                action = f"{tool_emoji} loading: {skill}"
+                            elif function_name == 'skills_list':
+                                cat = function_args.get('category', 'all')
+                                action = f"{tool_emoji} listing: {cat} skills"
+                            elif function_name == 'browser_navigate':
+                                url = function_args.get('url', '')
+                                domain = url.split('//')[-1].split('/')[0][:25] if '//' in url else url[:25]
+                                action = f"{tool_emoji} navigating: {domain}"
+                            elif function_name == 'image_generate':
+                                prompt = function_args.get('prompt', '')[:30]
+                                action = f"{tool_emoji} creating: {prompt}..."
+                            else:
+                                action = f"{tool_emoji} {function_name}..."
+                            
+                            # Aligned format with fixed prefix
+                            spinner_msg = f"○ │ {action} {face}"
+                            
+                            spinner = KawaiiSpinner(spinner_msg, spinner_type=spinner_type)
                             spinner.start()
                             try:
                                 function_result = handle_function_call(function_name, function_args, effective_task_id)

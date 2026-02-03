@@ -99,6 +99,9 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
     },
     
+    # Permanently allowed dangerous command patterns (added via "always" approval)
+    "command_allowlist": [],
+    
     # Config schema version - bump this when adding new required fields
     "_config_version": 1,
 }

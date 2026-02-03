@@ -423,4 +423,22 @@
 
 ---
 
+## Recently Completed ✅
+
+### Dangerous Command Approval System
+**Implemented:** Dangerous command detection and approval for terminal tool.
+
+**Features:**
+- Pattern-based detection of dangerous commands (rm -rf, DROP TABLE, chmod 777, etc.)
+- CLI prompt with options: `[o]nce | [s]ession | [a]lways | [d]eny`
+- Session caching (approved patterns don't re-prompt)
+- Permanent allowlist in `~/.hermes/config.yaml`
+- Force flag for agent to bypass after user confirmation
+- Skip check for isolated backends (Docker, Singularity, Modal)
+- Helpful sudo failure messages for messaging platforms
+
+**Files:** `tools/terminal_tool.py`, `model_tools.py`, `hermes_cli/config.py`
+
+---
+
 *Last updated: $(date +%Y-%m-%d)* 🤖

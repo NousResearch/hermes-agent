@@ -24,6 +24,14 @@ from typing import Dict, Optional, Any, List
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Load environment variables from ~/.hermes/.env
+from dotenv import load_dotenv
+_env_path = Path.home() / '.hermes' / '.env'
+if _env_path.exists():
+    load_dotenv(_env_path)
+# Also try project .env as fallback
+load_dotenv()
+
 from gateway.config import (
     Platform,
     GatewayConfig,

@@ -35,10 +35,10 @@ croniter
 
 # Optional: For messaging platform integrations (gateway)
 # Telegram: pip install python-telegram-bot
-# python-telegram-bot>=20.0
+python-telegram-bot>=20.0
 
 # Discord: pip install discord.py
-# discord.py>=2.0
+discord.py>=2.0
 
 # WhatsApp: Requires Node.js bridge (see docs/messaging.md)
 # aiohttp  # For WhatsApp bridge communication

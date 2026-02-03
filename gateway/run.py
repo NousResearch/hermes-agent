@@ -349,6 +349,7 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         """
         from run_agent import AIAgent
+        import queue
         
         # Determine toolset based on platform
         toolset_map = {
@@ -358,6 +359,76 @@ class GatewayRunner:
             Platform.WHATSAPP: "hermes-whatsapp",
         }
         toolset = toolset_map.get(source.platform, "hermes-telegram")
+        
+        # Check if tool progress notifications are enabled
+        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "").lower() in ("1", "true", "yes")
+        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "new")  # "all" or "new" (only new tools)
+        
+        # Queue for progress messages (thread-safe)
+        progress_queue = queue.Queue() if tool_progress_enabled else None
+        last_tool = [None]  # Mutable container for tracking in closure
+        
+        def progress_callback(tool_name: str, preview: str = None):
+            """Callback invoked by agent when a tool is called."""
+            if not progress_queue:
+                return
+            
+            # "new" mode: only report when tool changes
+            if progress_mode == "new" and tool_name == last_tool[0]:
+                return
+            last_tool[0] = tool_name
+            
+            # Build progress message
+            tool_emojis = {
+                "terminal": "💻",
+                "web_search": "🔍",
+                "web_extract": "📄",
+                "read_file": "📖",
+                "write_file": "✍️",
+                "list_directory": "📂",
+                "image_generate": "🎨",
+                "browser_navigate": "🌐",
+                "browser_click": "👆",
+                "moa_query": "🧠",
+            }
+            emoji = tool_emojis.get(tool_name, "⚙️")
+            
+            if tool_name == "terminal" and preview:
+                msg = f"{emoji} `{preview}`..."
+            else:
+                msg = f"{emoji} {tool_name}..."
+            
+            progress_queue.put(msg)
+        
+        # Background task to send progress messages
+        async def send_progress_messages():
+            if not progress_queue:
+                return
+            
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                return
+            
+            while True:
+                try:
+                    # Non-blocking check with small timeout
+                    msg = progress_queue.get_nowait()
+                    await adapter.send(chat_id=source.chat_id, content=msg)
+                    await asyncio.sleep(0.5)  # Small delay between messages
+                except queue.Empty:
+                    await asyncio.sleep(0.3)  # Check again soon
+                except asyncio.CancelledError:
+                    # Drain remaining messages
+                    while not progress_queue.empty():
+                        try:
+                            msg = progress_queue.get_nowait()
+                            await adapter.send(chat_id=source.chat_id, content=msg)
+                        except:
+                            break
+                    return
+                except Exception as e:
+                    print(f"[Gateway] Progress message error: {e}")
+                    await asyncio.sleep(1)
         
         def run_sync():
             # Read from env var or use default (same as CLI)
@@ -370,6 +441,7 @@ class GatewayRunner:
                 enabled_toolsets=[toolset],
                 ephemeral_system_prompt=context_prompt,
                 session_id=session_id,
+                tool_progress_callback=progress_callback if tool_progress_enabled else None,
             )
             
             # If we have history, we need to restore it
@@ -379,9 +451,23 @@ class GatewayRunner:
             result = agent.run_conversation(message)
             return result.get("final_response", "(No response)")
         
-        # Run in thread pool to not block
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, run_sync)
+        # Start progress message sender if enabled
+        progress_task = None
+        if tool_progress_enabled:
+            progress_task = asyncio.create_task(send_progress_messages())
+        
+        try:
+            # Run in thread pool to not block
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, run_sync)
+        finally:
+            # Stop progress sender
+            if progress_task:
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
         
         return response
 

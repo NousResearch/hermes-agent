@@ -713,6 +713,28 @@ def run_setup_wizard(args):
     except ValueError:
         print_warning("Invalid number, keeping current value")
     
+    # Tool progress notifications (for messaging)
+    print_info("")
+    print_info("Tool Progress Notifications (Messaging only)")
+    print_info("Send status messages when the agent uses tools.")
+    print_info("Example: '💻 ls -la...' or '🔍 web_search...'")
+    
+    current_progress = get_env_value('HERMES_TOOL_PROGRESS') or 'false'
+    if prompt_yes_no("Enable tool progress messages?", current_progress.lower() in ('1', 'true', 'yes')):
+        save_env_value("HERMES_TOOL_PROGRESS", "true")
+        
+        # Progress mode
+        current_mode = get_env_value('HERMES_TOOL_PROGRESS_MODE') or 'new'
+        print_info("  Mode options:")
+        print_info("    'new' - Only when switching tools (less spam)")
+        print_info("    'all' - Every tool call")
+        mode = prompt("  Progress mode", current_mode)
+        if mode.lower() in ('all', 'new'):
+            save_env_value("HERMES_TOOL_PROGRESS_MODE", mode.lower())
+        print_success("Tool progress enabled")
+    else:
+        save_env_value("HERMES_TOOL_PROGRESS", "false")
+    
     # =========================================================================
     # Step 6: Context Compression
     # =========================================================================

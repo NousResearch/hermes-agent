@@ -600,6 +600,7 @@ class AIAgent:
         providers_order: List[str] = None,
         provider_sort: str = None,
         session_id: str = None,
+        tool_progress_callback: callable = None,
     ):
         """
         Initialize the AI Agent.
@@ -623,6 +624,7 @@ class AIAgent:
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
+            tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -634,6 +636,8 @@ class AIAgent:
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         self.base_url = base_url or ""  # Store for OpenRouter detection
+        self.tool_progress_callback = tool_progress_callback
+        self._last_reported_tool = None  # Track for "new tool" mode
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -1793,6 +1797,19 @@ class AIAgent:
                             args_str = json.dumps(function_args, ensure_ascii=False)
                             args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                             print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                        
+                        # Fire progress callback if registered (for messaging platforms)
+                        if self.tool_progress_callback:
+                            try:
+                                # Build preview for terminal commands
+                                if function_name == "terminal":
+                                    cmd = function_args.get("command", "")
+                                    preview = cmd[:50] + "..." if len(cmd) > 50 else cmd
+                                else:
+                                    preview = None
+                                self.tool_progress_callback(function_name, preview)
+                            except Exception as cb_err:
+                                logging.debug(f"Tool progress callback error: {cb_err}")
 
                         tool_start_time = time.time()
 

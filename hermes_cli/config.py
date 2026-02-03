@@ -203,8 +203,20 @@ OPTIONAL_ENV_VARS = {
     },
     # Agent configuration
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 25 for messaging, 10 for CLI)",
+        "description": "Maximum tool-calling iterations per conversation (default: 60)",
         "prompt": "Max iterations",
+        "url": None,
+        "password": False,
+    },
+    "HERMES_TOOL_PROGRESS": {
+        "description": "Send tool progress messages in messaging channels (true/false)",
+        "prompt": "Enable tool progress messages",
+        "url": None,
+        "password": False,
+    },
+    "HERMES_TOOL_PROGRESS_MODE": {
+        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
+        "prompt": "Progress mode (all/new)",
         "url": None,
         "password": False,
     },

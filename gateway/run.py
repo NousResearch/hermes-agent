@@ -451,7 +451,16 @@ class GatewayRunner:
             # TODO: Implement proper history restoration
             
             result = agent.run_conversation(message)
-            return result.get("final_response", "(No response)")
+            
+            # Return final response, or a message if something went wrong
+            final_response = result.get("final_response")
+            if final_response:
+                return final_response
+            elif result.get("error"):
+                # Agent couldn't recover - show the error
+                return f"⚠️ {result['error']}"
+            else:
+                return "(No response generated)"
         
         # Start progress message sender if enabled
         progress_task = None

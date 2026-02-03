@@ -1725,16 +1725,20 @@ class AIAgent:
                             # Don't add anything to messages, just retry the API call
                             continue
                         else:
-                            print(f"{self.log_prefix}❌ Max retries (3) for invalid JSON arguments exceeded. Stopping as partial.")
-                            self._invalid_json_retries = 0  # Reset for next conversation
-                            return {
-                                "final_response": None,
-                                "messages": messages,  # Messages up to last valid point
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "partial": True,
-                                "error": f"Model generated invalid JSON arguments for tool '{tool_name}': {error_msg}"
-                            }
+                            # Instead of returning partial, inject a helpful message and let model recover
+                            print(f"{self.log_prefix}⚠️  Injecting recovery message for invalid JSON...")
+                            self._invalid_json_retries = 0  # Reset for next attempt
+                            
+                            # Add a user message explaining the issue
+                            recovery_msg = (
+                                f"Your tool call to '{tool_name}' had invalid JSON arguments. "
+                                f"Error: {error_msg}. "
+                                f"For tools with no required parameters, use an empty object: {{}}. "
+                                f"Please either retry the tool call with valid JSON, or respond without using that tool."
+                            )
+                            messages.append({"role": "user", "content": recovery_msg})
+                            # Continue the loop - model will see this message and can recover
+                            continue
                     
                     # Reset retry counter on successful JSON validation
                     self._invalid_json_retries = 0

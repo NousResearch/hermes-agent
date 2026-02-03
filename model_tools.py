@@ -28,7 +28,8 @@ Usage:
 
 import json
 import asyncio
-from typing import Dict, Any, List, Optional
+import os
+from typing import Dict, Any, List, Optional, Tuple
 
 from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
 from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION, cleanup_vm
@@ -70,6 +71,131 @@ from toolsets import (
     get_all_toolsets, get_toolset_names, validate_toolset,
     get_toolset_info, print_toolset_tree
 )
+
+
+# =============================================================================
+# Tool Availability Checking
+# =============================================================================
+
+# Maps toolsets to their required API keys/environment variables
+TOOLSET_REQUIREMENTS = {
+    "web": {
+        "name": "Web Search & Extract",
+        "env_vars": ["FIRECRAWL_API_KEY"],
+        "check_fn": check_firecrawl_api_key,
+        "setup_url": "https://firecrawl.dev/",
+        "tools": ["web_search", "web_extract"],
+    },
+    "vision": {
+        "name": "Vision (Image Analysis)",
+        "env_vars": ["OPENROUTER_API_KEY"],
+        "check_fn": check_vision_requirements,
+        "setup_url": "https://openrouter.ai/keys",
+        "tools": ["vision_analyze"],
+    },
+    "moa": {
+        "name": "Mixture of Agents",
+        "env_vars": ["OPENROUTER_API_KEY"],
+        "check_fn": check_moa_requirements,
+        "setup_url": "https://openrouter.ai/keys",
+        "tools": ["mixture_of_agents"],
+    },
+    "image_gen": {
+        "name": "Image Generation",
+        "env_vars": ["FAL_KEY"],
+        "check_fn": check_image_generation_requirements,
+        "setup_url": "https://fal.ai/",
+        "tools": ["image_generate"],
+    },
+    "browser": {
+        "name": "Browser Automation",
+        "env_vars": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+        "check_fn": check_browser_requirements,
+        "setup_url": "https://browserbase.com/",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type"],
+    },
+    "terminal": {
+        "name": "Terminal/Command Execution",
+        "env_vars": [],  # No API key required, just system dependencies
+        "check_fn": check_terminal_requirements,
+        "setup_url": None,
+        "tools": ["terminal"],
+    },
+    "skills": {
+        "name": "Skills Knowledge Base",
+        "env_vars": [],  # Just needs skills directory
+        "check_fn": check_skills_requirements,
+        "setup_url": None,
+        "tools": ["skills_categories", "skills_list", "skill_view"],
+    },
+}
+
+
+def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """
+    Check which tool categories are available based on API keys and requirements.
+    
+    Returns:
+        Tuple containing:
+        - List of available toolset names
+        - List of dicts with info about unavailable toolsets and what's missing
+    """
+    available = []
+    unavailable = []
+    
+    for toolset_id, info in TOOLSET_REQUIREMENTS.items():
+        if info["check_fn"]():
+            available.append(toolset_id)
+        else:
+            # Figure out what's missing
+            missing_vars = [var for var in info["env_vars"] if not os.getenv(var)]
+            unavailable.append({
+                "id": toolset_id,
+                "name": info["name"],
+                "missing_vars": missing_vars,
+                "setup_url": info["setup_url"],
+                "tools": info["tools"],
+            })
+    
+    return available, unavailable
+
+
+def print_tool_availability_warnings(unavailable: List[Dict[str, Any]], prefix: str = ""):
+    """Print warnings about unavailable tools."""
+    if not unavailable:
+        return
+    
+    # Filter to only those missing API keys (not system dependencies)
+    api_key_missing = [u for u in unavailable if u["missing_vars"]]
+    
+    if api_key_missing:
+        print(f"{prefix}⚠️  Some tools are disabled due to missing API keys:")
+        for item in api_key_missing:
+            vars_str = ", ".join(item["missing_vars"])
+            print(f"{prefix}   • {item['name']}: missing {vars_str}")
+            if item["setup_url"]:
+                print(f"{prefix}     Get key at: {item['setup_url']}")
+        print(f"{prefix}   Run 'hermes setup' to configure API keys")
+        print()
+
+
+def get_tool_availability_summary() -> Dict[str, Any]:
+    """
+    Get a summary of tool availability for display in status/doctor commands.
+    
+    Returns:
+        Dict with 'available' and 'unavailable' lists of tool info
+    """
+    available, unavailable = check_tool_availability()
+    
+    return {
+        "available": [
+            {"id": tid, "name": TOOLSET_REQUIREMENTS[tid]["name"], "tools": TOOLSET_REQUIREMENTS[tid]["tools"]}
+            for tid in available
+        ],
+        "unavailable": unavailable,
+    }
+
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """

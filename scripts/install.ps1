@@ -150,14 +150,15 @@ function Install-Repository {
         }
     } else {
         # Try SSH first (for private repo access), fall back to HTTPS
+        # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
         Write-Info "Trying SSH clone..."
-        $sshResult = git clone --branch $Branch $RepoUrlSsh $InstallDir 2>&1
+        $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
         
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Cloned via SSH"
         } else {
             Write-Info "SSH failed, trying HTTPS..."
-            $httpsResult = git clone --branch $Branch $RepoUrlHttps $InstallDir 2>&1
+            $httpsResult = git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir 2>&1
             
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "Cloned via HTTPS"
@@ -170,6 +171,13 @@ function Install-Repository {
             }
         }
     }
+    
+    # Ensure submodules are initialized and updated (for existing installs or if --recurse failed)
+    Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
+    Push-Location $InstallDir
+    git submodule update --init --recursive
+    Pop-Location
+    Write-Success "Submodules ready"
     
     Write-Success "Repository ready"
 }
@@ -208,15 +216,43 @@ function Install-Dependencies {
         & .\venv\Scripts\Activate.ps1
     }
     
+    # Install main package
     try {
         pip install -e ".[all]" 2>&1 | Out-Null
     } catch {
         pip install -e "." | Out-Null
     }
     
+    Write-Success "Main package installed"
+    
+    # Install submodules
+    Write-Info "Installing mini-swe-agent (terminal tool backend)..."
+    if (Test-Path "mini-swe-agent\pyproject.toml") {
+        try {
+            pip install -e ".\mini-swe-agent" 2>&1 | Out-Null
+            Write-Success "mini-swe-agent installed"
+        } catch {
+            Write-Warning "mini-swe-agent install failed (terminal tools may not work)"
+        }
+    } else {
+        Write-Warning "mini-swe-agent not found (run: git submodule update --init)"
+    }
+    
+    Write-Info "Installing tinker-atropos (RL training backend)..."
+    if (Test-Path "tinker-atropos\pyproject.toml") {
+        try {
+            pip install -e ".\tinker-atropos" 2>&1 | Out-Null
+            Write-Success "tinker-atropos installed"
+        } catch {
+            Write-Warning "tinker-atropos install failed (RL tools may not work)"
+        }
+    } else {
+        Write-Warning "tinker-atropos not found (run: git submodule update --init)"
+    }
+    
     Pop-Location
     
-    Write-Success "Dependencies installed"
+    Write-Success "All dependencies installed"
 }
 
 function Set-PathVariable {

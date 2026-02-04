@@ -110,7 +110,7 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
                 api_key=api_key,
                 num_max_requests_at_once=1,
                 num_requests_for_eval=1,
-                timeout=300,
+                timeout=int(os.getenv("ATROPOS_SERVER_TIMEOUT_S") or "300"),
             ),
         ]
 

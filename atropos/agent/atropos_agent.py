@@ -333,6 +333,61 @@ class AtroposAgent:
         text = str(dumped)
         print(text[:200_000], flush=True)
 
+    async def _chat_completion_with_debug(
+        self, *, managed: Any, step_num: int, chat_kwargs: Dict[str, Any]
+    ) -> Any:
+        """
+        Call `managed.chat_completion()` with optional timeout + richer failure logging.
+
+        Debug env vars:
+        - `ATROPOS_AGENT_CHAT_TIMEOUT_S`: if set, wraps the await in `asyncio.wait_for`.
+        - `ATROPOS_DEBUG_AGENT_WAIT_EVERY_S`: if set, prints a heartbeat while waiting.
+        """
+        timeout_s_raw = os.getenv("ATROPOS_AGENT_CHAT_TIMEOUT_S")
+        timeout_s = float(timeout_s_raw) if timeout_s_raw else None
+
+        wait_every_raw = os.getenv("ATROPOS_DEBUG_AGENT_WAIT_EVERY_S")
+        wait_every_s = float(wait_every_raw) if wait_every_raw else None
+
+        async def _await_call() -> Any:
+            if not wait_every_s or wait_every_s <= 0:
+                return await managed.chat_completion(**chat_kwargs)
+
+            task = asyncio.create_task(managed.chat_completion(**chat_kwargs))
+            t0 = time.perf_counter()
+            while True:
+                try:
+                    return await asyncio.wait_for(task, timeout=wait_every_s)
+                except TimeoutError:
+                    waited = time.perf_counter() - t0
+                    print(
+                        f"[AtroposAgent] step={step_num} still waiting for chat_completion... ({waited:.1f}s)",
+                        flush=True,
+                    )
+
+        try:
+            if timeout_s and timeout_s > 0:
+                return await asyncio.wait_for(_await_call(), timeout=timeout_s)
+            return await _await_call()
+        except Exception as e:
+            detail: Dict[str, Any] = {
+                "step": step_num,
+                "exc_type": type(e).__name__,
+                "exc_str": str(e),
+            }
+            if isinstance(e, httpx.HTTPStatusError):
+                try:
+                    detail["status_code"] = e.response.status_code
+                    detail["response_text"] = e.response.text[:20_000]
+                except Exception:
+                    pass
+            elif isinstance(e, httpx.RequestError):
+                detail["request"] = repr(getattr(e, "request", None))
+
+            print("\n=== ATROPOS_DEBUG_AGENT_CHAT_FAILURE ===", flush=True)
+            print(detail, flush=True)
+            raise
+
     async def run(
         self,
         task: str,
@@ -386,7 +441,9 @@ class AtroposAgent:
                         flush=True,
                     )
                     self._debug_dump_request(step_num=step_num + 1, chat_kwargs=chat_kwargs)
-                    response = await managed.chat_completion(**chat_kwargs)
+                    response = await self._chat_completion_with_debug(
+                        managed=managed, step_num=step_num + 1, chat_kwargs=chat_kwargs
+                    )
                     self._debug_dump_response(step_num=step_num + 1, response=response)
                     print(
                         f"[AtroposAgent] step={step_num+1} chat_completion done in {time.perf_counter() - t_req:.2f}s",
@@ -541,7 +598,7 @@ class AtroposAgent:
                 chat_kwargs["temperature"] = self.config.temperature
 
             self._debug_dump_request(step_num=1, chat_kwargs=chat_kwargs)
-            response = await managed.chat_completion(**chat_kwargs)
+            response = await self._chat_completion_with_debug(managed=managed, step_num=1, chat_kwargs=chat_kwargs)
             self._debug_dump_response(step_num=1, response=response)
             
             current_node = None

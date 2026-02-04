@@ -6,7 +6,7 @@ providing helpers for running agent trajectories with queued/batched tool calls.
 """
 
 from __future__ import annotations
-
+import os
 import asyncio
 import time
 import uuid
@@ -320,7 +320,13 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         print(f"[AgentEnv] collect_trajectory(): tid={trajectory_id} start", flush=True)
         task = self.build_task(item)
         agent_config = self.build_agent_config(item)
-        print(f"Starting trajectory {trajectory_id} with task: {task}")
+        if os.getenv("ATROPOS_DEBUG_PRINT_TASK") == "1":
+            print(f"Starting trajectory {trajectory_id} with task: {task}", flush=True)
+        else:
+            # Avoid printing the full task prompt by default (can be huge/noisy).
+            one_line = " ".join(str(task).splitlines()).strip()
+            preview = one_line[:240] + ("…" if len(one_line) > 240 else "")
+            print(f"Starting trajectory {trajectory_id} (task preview): {preview}", flush=True)
 
         async def _exec(call):
             return await self._tool_executor.execute(trajectory_id, call)

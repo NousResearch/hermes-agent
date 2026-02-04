@@ -531,6 +531,27 @@ class GatewayRunner:
         
         tracking_task = asyncio.create_task(track_agent())
         
+        # Monitor for interrupts from the adapter (new messages arriving)
+        async def monitor_for_interrupt():
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                return
+            
+            chat_id = source.chat_id
+            while True:
+                await asyncio.sleep(0.2)  # Check every 200ms
+                # Check if adapter has a pending interrupt for this session
+                if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(chat_id):
+                    agent = agent_holder[0]
+                    if agent:
+                        pending_event = adapter.get_pending_message(chat_id)
+                        pending_text = pending_event.text if pending_event else None
+                        print(f"[gateway] ⚡ Interrupt detected from adapter, signaling agent...")
+                        agent.interrupt(pending_text)
+                        break
+        
+        interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
+        
         try:
             # Run in thread pool to not block
             loop = asyncio.get_event_loop()
@@ -538,42 +559,55 @@ class GatewayRunner:
             
             # Check if we were interrupted and have a pending message
             result = result_holder[0]
-            if result and result.get("interrupted") and session_key:
-                pending = self._pending_messages.pop(session_key, None)
-                if pending:
-                    print(f"[gateway] 📨 Processing interrupted message: '{pending[:40]}...'")
-                    # Add an indicator to the response
-                    if response:
-                        response = response + "\n\n---\n_[Interrupted - processing your new message]_"
-                    
-                    # Send the interrupted response first
-                    adapter = self.adapters.get(source.platform)
-                    if adapter and response:
-                        await adapter.send(chat_id=source.chat_id, content=response)
-                    
-                    # Now process the pending message with updated history
-                    updated_history = result.get("messages", history)
-                    return await self._run_agent(
-                        message=pending,
-                        context_prompt=context_prompt,
-                        history=updated_history,
-                        source=source,
-                        session_id=session_id,
-                        session_key=session_key
-                    )
+            adapter = self.adapters.get(source.platform)
+            
+            # Get pending message from adapter if interrupted
+            pending = None
+            if result and result.get("interrupted") and adapter:
+                pending_event = adapter.get_pending_message(source.chat_id)
+                if pending_event:
+                    pending = pending_event.text
+                elif result.get("interrupt_message"):
+                    pending = result.get("interrupt_message")
+            
+            if pending:
+                print(f"[gateway] 📨 Processing interrupted message: '{pending[:40]}...'")
+                # Add an indicator to the response
+                if response:
+                    response = response + "\n\n---\n_[Interrupted - processing your new message]_"
+                
+                # Send the interrupted response first
+                if adapter and response:
+                    await adapter.send(chat_id=source.chat_id, content=response)
+                
+                # Now process the pending message with updated history
+                updated_history = result.get("messages", history)
+                return await self._run_agent(
+                    message=pending,
+                    context_prompt=context_prompt,
+                    history=updated_history,
+                    source=source,
+                    session_id=session_id,
+                    session_key=session_key
+                )
         finally:
-            # Stop progress sender
+            # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()
+            interrupt_monitor.cancel()
             
             # Clean up tracking
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
-                try:
-                    await progress_task
-                except asyncio.CancelledError:
-                    pass
+            
+            # Wait for cancelled tasks
+            for task in [progress_task, interrupt_monitor, tracking_task]:
+                if task:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
         
         return response
 

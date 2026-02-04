@@ -90,6 +90,18 @@ TOOLSETS = {
         "includes": []
     },
     
+    "rl": {
+        "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
+        "tools": [
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_test_inference", "rl_list_runs"
+        ],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {

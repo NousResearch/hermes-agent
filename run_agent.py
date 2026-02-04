@@ -639,6 +639,10 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
+        # Interrupt mechanism for breaking out of tool loops
+        self._interrupt_requested = False
+        self._interrupt_message = None  # Optional message that triggered interrupt
+        
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
         self.providers_ignored = providers_ignored
@@ -1302,6 +1306,42 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
     
+    def interrupt(self, message: str = None) -> None:
+        """
+        Request the agent to interrupt its current tool-calling loop.
+        
+        Call this from another thread (e.g., input handler, message receiver)
+        to gracefully stop the agent and process a new message.
+        
+        Args:
+            message: Optional new message that triggered the interrupt.
+                     If provided, the agent will include this in its response context.
+        
+        Example (CLI):
+            # In a separate input thread:
+            if user_typed_something:
+                agent.interrupt(user_input)
+        
+        Example (Messaging):
+            # When new message arrives for active session:
+            if session_has_running_agent:
+                running_agent.interrupt(new_message.text)
+        """
+        self._interrupt_requested = True
+        self._interrupt_message = message
+        if not self.quiet_mode:
+            print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+    
+    def clear_interrupt(self) -> None:
+        """Clear any pending interrupt request."""
+        self._interrupt_requested = False
+        self._interrupt_message = None
+    
+    @property
+    def is_interrupted(self) -> bool:
+        """Check if an interrupt has been requested."""
+        return self._interrupt_requested
+    
     def run_conversation(
         self,
         user_message: str,
@@ -1359,8 +1399,19 @@ class AIAgent:
         # Main conversation loop
         api_call_count = 0
         final_response = None
+        interrupted = False
+        
+        # Clear any stale interrupt state at start
+        self.clear_interrupt()
         
         while api_call_count < self.max_iterations:
+            # Check for interrupt request (e.g., user sent new message)
+            if self._interrupt_requested:
+                interrupted = True
+                if not self.quiet_mode:
+                    print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                break
+            
             api_call_count += 1
             
             # Prepare messages for API call
@@ -2059,13 +2110,24 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         
-        return {
+        # Build result with interrupt info if applicable
+        result = {
             "final_response": final_response,
             "messages": messages,
             "api_calls": api_call_count,
             "completed": completed,
-            "partial": False  # True only when stopped due to invalid tool calls
+            "partial": False,  # True only when stopped due to invalid tool calls
+            "interrupted": interrupted,
         }
+        
+        # Include interrupt message if one triggered the interrupt
+        if interrupted and self._interrupt_message:
+            result["interrupt_message"] = self._interrupt_message
+        
+        # Clear interrupt state after handling
+        self.clear_interrupt()
+        
+        return result
     
     def chat(self, message: str) -> str:
         """

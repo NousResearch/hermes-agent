@@ -108,6 +108,11 @@ class BasePlatformAdapter(ABC):
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
+        
+        # Track active message handlers per session for interrupt support
+        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        self._active_sessions: Dict[str, asyncio.Event] = {}
+        self._pending_messages: Dict[str, MessageEvent] = {}
     
     @property
     def name(self) -> str:
@@ -190,11 +195,32 @@ class BasePlatformAdapter(ABC):
         """
         Process an incoming message.
         
-        Calls the registered message handler and sends the response.
-        Keeps typing indicator active throughout processing.
+        This method returns quickly by spawning background tasks.
+        This allows new messages to be processed even while an agent is running,
+        enabling interruption support.
         """
         if not self._message_handler:
             return
+        
+        session_key = event.source.chat_id
+        
+        # Check if there's already an active handler for this session
+        if session_key in self._active_sessions:
+            # Store this as a pending message - it will interrupt the running agent
+            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
+            self._pending_messages[session_key] = event
+            # Signal the interrupt (the processing task checks this)
+            self._active_sessions[session_key].set()
+            return  # Don't process now - will be handled after current task finishes
+        
+        # Spawn background task to process this message
+        asyncio.create_task(self._process_message_background(event, session_key))
+    
+    async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
+        """Background task that actually processes the message."""
+        # Create interrupt event for this session
+        interrupt_event = asyncio.Event()
+        self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id))
@@ -222,6 +248,23 @@ class BasePlatformAdapter(ABC):
                     )
                     if not fallback_result.success:
                         print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+            
+            # Check if there's a pending message that was queued during our processing
+            if session_key in self._pending_messages:
+                pending_event = self._pending_messages.pop(session_key)
+                print(f"[{self.name}] 📨 Processing queued message from interrupt")
+                # Clean up current session before processing pending
+                if session_key in self._active_sessions:
+                    del self._active_sessions[session_key]
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
+                # Process pending message in new background task
+                await self._process_message_background(pending_event, session_key)
+                return  # Already cleaned up
+                
         except Exception as e:
             print(f"[{self.name}] Error handling message: {e}")
             import traceback
@@ -233,6 +276,17 @@ class BasePlatformAdapter(ABC):
                 await typing_task
             except asyncio.CancelledError:
                 pass
+            # Clean up session tracking
+            if session_key in self._active_sessions:
+                del self._active_sessions[session_key]
+    
+    def has_pending_interrupt(self, session_key: str) -> bool:
+        """Check if there's a pending interrupt for a session."""
+        return session_key in self._active_sessions and self._active_sessions[session_key].is_set()
+    
+    def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
+        """Get and clear any pending message for a session."""
+        return self._pending_messages.get(session_key)
     
     def build_source(
         self,

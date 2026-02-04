@@ -33,6 +33,15 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
+from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.key_binding import KeyBindings
+import asyncio
+import threading
+import queue
 
 # Load environment variables first
 from dotenv import load_dotenv
@@ -1284,17 +1293,52 @@ class HermesCLI:
         print("─" * 60, flush=True)
         
         try:
-            # Run the conversation
-            result = self.agent.run_conversation(
-                user_message=message,
-                conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-            )
+            # Run the conversation with interrupt monitoring
+            result = None
+            
+            def run_agent():
+                nonlocal result
+                result = self.agent.run_conversation(
+                    user_message=message,
+                    conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                )
+            
+            # Start agent in background thread
+            agent_thread = threading.Thread(target=run_agent)
+            agent_thread.start()
+            
+            # Monitor for new input in the pending queue while agent runs
+            interrupt_msg = None
+            while agent_thread.is_alive():
+                # Check if there's new input in the queue (from the persistent input area)
+                if hasattr(self, '_pending_input'):
+                    try:
+                        interrupt_msg = self._pending_input.get(timeout=0.1)
+                        if interrupt_msg:
+                            print(f"\n⚡ New message detected, interrupting...")
+                            self.agent.interrupt(interrupt_msg)
+                            break
+                    except:
+                        pass  # Queue empty or timeout, continue waiting
+                else:
+                    # Fallback if no queue (shouldn't happen)
+                    agent_thread.join(0.1)
+            
+            agent_thread.join()  # Ensure agent thread completes
             
             # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history)
+            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
             
             # Get the final response
-            response = result.get("final_response", "")
+            response = result.get("final_response", "") if result else ""
+            
+            # Handle interrupt - check if we were interrupted
+            pending_message = None
+            if result and result.get("interrupted"):
+                pending_message = result.get("interrupt_message") or interrupt_msg
+                # Add indicator that we were interrupted
+                if response and pending_message:
+                    response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
                 # Use simple print for compatibility with prompt_toolkit's patch_stdout
@@ -1306,6 +1350,11 @@ class HermesCLI:
                 print(response)
                 print()
                 print("─" * 60)
+            
+            # If we have a pending message from interrupt, process it immediately
+            if pending_message:
+                print(f"\n📨 Processing: '{pending_message[:50]}{'...' if len(pending_message) > 50 else ''}'")
+                return self.chat(pending_message)  # Recursive call to handle the new message
             
             return response
             
@@ -1345,22 +1394,101 @@ class HermesCLI:
             return None
     
     def run(self):
-        """Run the interactive CLI loop with fixed input at bottom."""
+        """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
-        
-        # These Rich prints work fine BEFORE patch_stdout
         self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
         self.console.print()
         
-        # Use patch_stdout to ensure all output appears above the input prompt
-        with patch_stdout():
-            while True:
+        # State for async operation
+        self._agent_running = False
+        self._pending_input = queue.Queue()
+        self._should_exit = False
+        
+        # Create a persistent input area using prompt_toolkit Application
+        input_buffer = Buffer()
+        
+        # Key bindings for the input area
+        kb = KeyBindings()
+        
+        @kb.add('enter')
+        def handle_enter(event):
+            """Handle Enter key - submit input."""
+            text = event.app.current_buffer.text.strip()
+            if text:
+                # Store the input
+                self._pending_input.put(text)
+                # Clear the buffer
+                event.app.current_buffer.reset()
+        
+        @kb.add('c-c')
+        def handle_ctrl_c(event):
+            """Handle Ctrl+C - interrupt or exit."""
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+            else:
+                self._should_exit = True
+                event.app.exit()
+        
+        @kb.add('c-d')
+        def handle_ctrl_d(event):
+            """Handle Ctrl+D - exit."""
+            self._should_exit = True
+            event.app.exit()
+        
+        # Create the input area widget
+        input_area = TextArea(
+            height=1,
+            prompt='❯ ',
+            style='class:input-area',
+            multiline=False,
+            wrap_lines=False,
+        )
+        
+        # Create a status line that shows when agent is working
+        def get_status_text():
+            if self._agent_running:
+                return [('class:status', ' 🔄 Agent working... (type to interrupt) ')]
+            return [('class:status', '')]
+        
+        status_window = Window(
+            content=FormattedTextControl(get_status_text),
+            height=1,
+        )
+        
+        # Layout with status and input at bottom
+        layout = Layout(
+            HSplit([
+                Window(height=0),  # Spacer that expands
+                status_window,
+                input_area,
+            ])
+        )
+        
+        # Style for the application
+        style = PTStyle.from_dict({
+            'input-area': '#FFF8DC',
+            'status': 'bg:#333333 #FFD700',
+        })
+        
+        # Create the application
+        app = Application(
+            layout=layout,
+            key_bindings=kb,
+            style=style,
+            full_screen=False,
+            mouse_support=False,
+        )
+        
+        # Background thread to process inputs and run agent
+        def process_loop():
+            while not self._should_exit:
                 try:
-                    user_input = self.get_input()
-                    
-                    if user_input is None:
-                        print("\nGoodbye! ⚕")
-                        break
+                    # Check for pending input with timeout
+                    try:
+                        user_input = self._pending_input.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
                     
                     if not user_input:
                         continue
@@ -1368,16 +1496,38 @@ class HermesCLI:
                     # Check for commands
                     if user_input.startswith("/"):
                         if not self.process_command(user_input):
-                            print("\nGoodbye! ⚕")
-                            break
+                            self._should_exit = True
+                            # Schedule app exit
+                            if app.is_running:
+                                app.exit()
                         continue
                     
-                    # Regular chat message
-                    self.chat(user_input)
+                    # Regular chat - run agent
+                    self._agent_running = True
+                    app.invalidate()  # Refresh status line
                     
-                except KeyboardInterrupt:
-                    print("\nInterrupted. Type /quit to exit.")
-                    continue
+                    try:
+                        self.chat(user_input)
+                    finally:
+                        self._agent_running = False
+                        app.invalidate()  # Refresh status line
+                    
+                except Exception as e:
+                    print(f"Error: {e}")
+        
+        # Start processing thread
+        process_thread = threading.Thread(target=process_loop, daemon=True)
+        process_thread.start()
+        
+        # Run the application with patch_stdout for proper output handling
+        try:
+            with patch_stdout():
+                app.run()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        finally:
+            self._should_exit = True
+            print("\nGoodbye! ⚕")
 
 
 # ============================================================================

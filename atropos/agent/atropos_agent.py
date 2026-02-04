@@ -16,11 +16,13 @@ The agent uses Hermes-style XML tags for tool calls:
 import asyncio
 import os
 import json
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
+import httpx
 
 from ..tools import ToolCall, ToolRegistry, ToolResult
 from atroposlib.envs.server_handling.managed_server import ManagedServer
@@ -243,6 +245,9 @@ class AtroposAgent:
         - If `self.server` is a ServerManager, use its `managed_server()` context manager.
         - If `self.server` is a single APIServer, wrap it in `ManagedServer` directly.
         """
+        if os.getenv("ATROPOS_BYPASS_MANAGED_SERVER") == "1":
+            yield _DirectChatCompletionClient(server=self.server)
+            return
         if hasattr(self.server, "managed_server"):
             async with self.server.managed_server(tokenizer=self.tokenizer) as managed:
                 yield managed
@@ -336,6 +341,7 @@ class AtroposAgent:
         # Use ManagedServer for automatic token tracking
         async with self._managed() as managed:
             for step_num in range(self.config.max_steps):
+                # ReACT loop iteration here, just call -> tools -> observe until done (no tools called)
                 try:
                     # Keep a copy of the prompt messages used for this completion.
                     # Useful for reconstructing tokens/masks when state tracking is unavailable.
@@ -346,9 +352,19 @@ class AtroposAgent:
                     if self.config.temperature is not None:
                         chat_kwargs["temperature"] = self.config.temperature
 
+                    t_req = time.perf_counter()
+                    print(
+                        f"[AtroposAgent] step={step_num+1} chat_completion start "
+                        f"(messages={len(messages)}, max_tokens={self.config.max_tokens}, temp={self.config.temperature})",
+                        flush=True,
+                    )
                     self._debug_dump_request(step_num=step_num + 1, chat_kwargs=chat_kwargs)
                     response = await managed.chat_completion(**chat_kwargs)
                     self._debug_dump_response(step_num=step_num + 1, response=response)
+                    print(
+                        f"[AtroposAgent] step={step_num+1} chat_completion done in {time.perf_counter() - t_req:.2f}s",
+                        flush=True,
+                    )
                     
                     current_node = None
                     if hasattr(managed, "get_state"):
@@ -489,3 +505,82 @@ class AtroposAgent:
         sequence_data = SequenceData.from_sequence_node(current_node) if current_node else None
         
         return response_text, tool_results, sequence_data
+
+
+class _DirectChatCompletionClient:
+    """
+    Minimal stand-in for ManagedServer that calls the OpenAI-compatible endpoint directly.
+
+    This is for isolating issues where `ManagedServer.chat_completion()` hangs or misbehaves.
+    It intentionally does NOT do token/logprob tracking.
+    """
+
+    def __init__(self, server: Any):
+        self._server = server
+
+    def _server_config(self) -> tuple[str, str, str]:
+        # ServerManager case: first configured server.
+        servers = getattr(self._server, "servers", None)
+        if isinstance(servers, list) and servers:
+            s0 = servers[0]
+            cfg = getattr(s0, "config", None)
+            base_url = getattr(cfg, "base_url", None) or getattr(s0, "base_url", None)
+            api_key = getattr(cfg, "api_key", None) or getattr(s0, "api_key", None)
+            model = getattr(cfg, "model_name", None) or getattr(s0, "model_name", None)
+            if isinstance(base_url, str) and isinstance(api_key, str) and isinstance(model, str):
+                return base_url.rstrip("/"), api_key, model
+
+        # APIServer-like fallback.
+        base_url = getattr(self._server, "base_url", None)
+        api_key = getattr(self._server, "api_key", None)
+        model = getattr(self._server, "model_name", None) or getattr(self._server, "model", None)
+        if isinstance(base_url, str) and isinstance(api_key, str) and isinstance(model, str):
+            return base_url.rstrip("/"), api_key, model
+
+        raise RuntimeError("Unable to resolve server base_url/api_key/model for direct chat completion")
+
+    async def chat_completion(self, *, messages: List[Dict[str, str]], n: int = 1, **kwargs: Any) -> Any:
+        base_url, api_key, model = self._server_config()
+        url = f"{base_url}/chat/completions"
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "n": n,
+        }
+        # Pass through common generation kwargs.
+        for k in ("max_tokens", "temperature", "top_p", "presence_penalty", "frequency_penalty", "stop"):
+            if k in kwargs and kwargs[k] is not None:
+                payload[k] = kwargs[k]
+
+        timeout_s = float(os.getenv("ATROPOS_DIRECT_REQUEST_TIMEOUT_S") or "120")
+        print(f"[AtroposAgent] DIRECT chat_completion POST {url} (timeout={timeout_s}s)", flush=True)
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Return a very small object compatible with the code paths that read
+        # `response.choices[0].message.content`.
+        class _Msg:
+            def __init__(self, d: Dict[str, Any]):
+                self.content = d.get("content")
+                self.reasoning = d.get("reasoning")
+
+        class _Choice:
+            def __init__(self, d: Dict[str, Any]):
+                self.message = _Msg(d.get("message") or {})
+
+        class _Resp:
+            def __init__(self, d: Dict[str, Any]):
+                self._d = d
+                self.choices = [_Choice(c) for c in (d.get("choices") or [])]
+
+            def model_dump(self) -> Dict[str, Any]:
+                return self._d
+
+        return _Resp(data)

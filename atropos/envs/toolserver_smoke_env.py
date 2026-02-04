@@ -60,7 +60,7 @@ class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
             or "http://127.0.0.1:8080"
         )
         model = os.getenv("ATROPOS_SERVER_MODEL") or os.getenv("LLM_MODEL") or "hermes-4-36b"
-        api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
+        api_key = os.getenv("ATROPOS_SERVER_API_KEY") or os.getenv("NOUS_API_KEY") or os.getenv("OPENAI_API_KEY") or "local"
 
         env_config = ToolServerSmokeEnvConfig(
             tokenizer_name=os.getenv("ATROPOS_TOKENIZER_NAME") or "NousResearch/Hermes-4.3-36B",
@@ -139,6 +139,7 @@ class ToolServerSmokeEnv(AgentEnv[ToolServerSmokeEnvConfig]):
         trajectory_id: str,  # noqa: ARG002
         exec_tool,  # noqa: ARG002
         agent_result: AgentResult | None = None,
+        workspace_meta: Dict[str, Any] | None = None,  # noqa: ARG002
     ) -> tuple[float, Dict[str, Any]]:
         if agent_result is None:
             return 0.0, {"error": "Missing agent_result"}

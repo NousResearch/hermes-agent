@@ -3,13 +3,12 @@ AgentEnv - Atropos BaseEnv extension for agent/tool-call workloads.
 
 AgentEnv is responsible for starting the sandbox tool execution backend and
 providing helpers for running agent trajectories with queued/batched tool calls.
-
-For Phase 4 we support a Nomad-backed `SlotPool` for true container sandboxing.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Tuple, TypeVar
@@ -17,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, Tupl
 from pydantic import Field
 
 from atroposlib.envs.base import APIServerConfig, BaseEnv, BaseEnvConfig, Item, ScoredDataGroup, ScoredDataItem
+from atroposlib.envs.server_handling.server_baseline import AsyncSemWithAdaptiveWeight
 
 from ..agent import AgentConfig, AgentResult, AtroposAgent
 from ..slots import SlotPool, SlotPoolConfig
@@ -43,7 +43,7 @@ class AgentEnvConfig(BaseEnvConfig):
     tool_batch_window_ms: int = Field(default=20, description="ToolExecutor batching window (ms)")
     tool_max_batch_size: int = Field(default=200, description="ToolExecutor maximum batch size")
 
-    # nomad mode settings
+    # nomad mode settings. TODO: Add Modal support, split this into own config
     nomad_address: str = Field(default="http://localhost:4646", description="Nomad API address")
     sandbox_job_id: str = Field(default="atropos-sandbox-agent-env", description="Nomad job id for sandbox containers")
     sandbox_image: str = Field(default="atropos-sandbox:local", description="Docker image for sandbox containers")
@@ -111,8 +111,12 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         self._pool: Optional[Any] = None
         self._tool_executor: Optional[ToolExecutor] = None
         self._tool_server_inprocess: bool = False
+        self._trajectory_workspace_meta: Dict[str, Dict[str, Any]] = {}
 
     def build_tools(self) -> ToolRegistry:
+        """Wraps original Hermes-Agent ToolRegistry for atropos AgentEnv use.
+        See Hermes-Agent docs for toolsets and available tools etc.
+        """
         return build_tool_registry(
             enabled_toolsets=self.config.enabled_toolsets or ["default"],
             disabled_toolsets=self.config.disabled_toolsets or None,
@@ -155,6 +159,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         trajectory_id: str,
         exec_tool: Callable[["ToolCall"], Awaitable["ToolResult"]],
         agent_result: Optional[AgentResult] = None,
+        workspace_meta: Optional[Dict[str, Any]] = None,
     ) -> tuple[float, Dict[str, Any]]:
         """
         Optional hook: run in-sandbox verification before scoring.
@@ -164,7 +169,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
 
         Default: calls `score_trajectory()` and returns empty metadata.
         """
-        _ = (trajectory_id, exec_tool, agent_result)  # default ignores in-workspace verification
+        _ = (trajectory_id, exec_tool, agent_result, workspace_meta)  # default ignores in-workspace verification
         score = await self.score_trajectory(item, final_response)
         return score, {}
 
@@ -177,8 +182,42 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         )
 
     async def setup(self) -> None:
+        print(f"[AgentEnv] setup(): starting tool backend ({self.config.tool_pool_mode})", flush=True)
         await self._start_tool_backend()
+        print("[AgentEnv] setup(): configuring server concurrency", flush=True)
+        self._configure_server_concurrency()
+        print("[AgentEnv] setup(): running env-specific setup_agent_env()", flush=True)
         await self.setup_agent_env()
+        print("[AgentEnv] setup(): done", flush=True)
+
+    def _configure_server_concurrency(self) -> None:
+        """
+        Ensure the LLM server concurrency isn't accidentally capped below `group_size`.
+
+        In `BaseEnv process` mode, groups are collected concurrently and if the underlying
+        ServerManager/OpenAIServer semaphore is left at 1, we serialize inference even
+        when `--env.group_size` is > 1.
+        """
+        desired = int(getattr(self.config, "group_size", 1) or 1)
+        if desired <= 1:
+            return
+
+        servers = getattr(self.server, "servers", None)
+        if not isinstance(servers, list) or not servers:
+            return
+
+        for s in servers:
+            sem = getattr(s, "sem", None)
+            eval_sem = getattr(s, "eval_sem", None)
+            # Only increase; never shrink.
+            if sem is not None and getattr(sem, "max_val", 0) < desired:
+                s.sem = AsyncSemWithAdaptiveWeight(desired)
+                if hasattr(s, "config") and hasattr(s.config, "num_max_requests_at_once"):
+                    s.config.num_max_requests_at_once = desired
+            if eval_sem is not None and getattr(eval_sem, "max_val", 0) < desired:
+                s.eval_sem = AsyncSemWithAdaptiveWeight(desired)
+                if hasattr(s, "config") and hasattr(s.config, "num_requests_for_eval"):
+                    s.config.num_requests_for_eval = desired
 
     @abstractmethod
     async def setup_agent_env(self) -> None:
@@ -225,6 +264,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
             self._tool_server_inprocess = True
 
         if self.config.tool_pool_mode != "nomad":
+            # TODO Add Modal here, maybe in-process, but not safe to have that tbh
             raise RuntimeError("tool_pool_mode must be 'nomad' (local/in-process pools are not supported)")
 
         pool = SlotPool(
@@ -286,8 +326,11 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
             raise RuntimeError("Tool backend not started")
 
         trajectory_id = str(uuid.uuid4())
+        t0 = time.perf_counter()
+        print(f"[AgentEnv] collect_trajectory(): tid={trajectory_id} start", flush=True)
         task = self.build_task(item)
         agent_config = self.build_agent_config(item)
+        print(f"Starting trajectory {trajectory_id} with task: {task}")
 
         async def _exec(call):
             return await self._tool_executor.execute(trajectory_id, call)
@@ -301,18 +344,39 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         )
 
         try:
-            await self.setup_trajectory_workspace(item, trajectory_id=trajectory_id, exec_tool=_exec)
+            print(f"[AgentEnv] tid={trajectory_id} setup_trajectory_workspace() start", flush=True)
+            workspace_meta = await self.setup_trajectory_workspace(item, trajectory_id=trajectory_id, exec_tool=_exec)
+            if not isinstance(workspace_meta, dict):
+                workspace_meta = {}
+            self._trajectory_workspace_meta[trajectory_id] = workspace_meta
+            print(
+                f"[AgentEnv] tid={trajectory_id} setup_trajectory_workspace() done in {time.perf_counter() - t0:.2f}s",
+                flush=True,
+            )
 
+            print(f"[AgentEnv] tid={trajectory_id} agent.run() start", flush=True)
             result = await agent.run(task)
+            print(
+                f"[AgentEnv] tid={trajectory_id} agent.run() done in {time.perf_counter() - t0:.2f}s "
+                f"success={result.success} tool_calls={result.total_tool_calls}",
+                flush=True,
+            )
             if not result.success or result.trajectory_data is None:
                 return None, []
 
+            print(f"[AgentEnv] tid={trajectory_id} verify_and_score_trajectory() start", flush=True)
             score, _score_metadata = await self.verify_and_score_trajectory(
                 item,
                 result.final_response,
                 trajectory_id=trajectory_id,
                 exec_tool=_exec,
                 agent_result=result,
+                workspace_meta=workspace_meta,
+            )
+            print(
+                f"[AgentEnv] tid={trajectory_id} verify_and_score_trajectory() done in {time.perf_counter() - t0:.2f}s "
+                f"score={score}",
+                flush=True,
             )
 
             messages = [{"role": "system", "content": agent._build_system_prompt()}]  # noqa: SLF001
@@ -333,7 +397,10 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
 
             return scored, []
         finally:
+            self._trajectory_workspace_meta.pop(trajectory_id, None)
+            print(f"[AgentEnv] tid={trajectory_id} release_trajectory(reset_workspace=True)", flush=True)
             await self._tool_executor.release_trajectory(trajectory_id, reset_workspace=True)
+            print(f"[AgentEnv] collect_trajectory(): tid={trajectory_id} done in {time.perf_counter() - t0:.2f}s", flush=True)
 
     async def collect_trajectories(
         self, item: Item

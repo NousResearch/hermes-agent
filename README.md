@@ -15,7 +15,7 @@ irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/ins
 ```
 
 The installer will:
-- Clone to `~/.hermes-agent`
+- Clone to `~/.hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
 - Create a virtual environment
 - Install all dependencies
 - Run the interactive setup wizard
@@ -281,18 +281,10 @@ Train language models with reinforcement learning using the Tinker API and Atrop
 ```bash
 TINKER_API_KEY=your-tinker-key      # Get from https://tinker-console.thinkingmachines.ai/keys
 WANDB_API_KEY=your-wandb-key        # Get from https://wandb.ai/authorize
+OPENROUTER_API_KEY=your-key         # Optional: for rl_test_inference
 ```
 
-2. **Install tinker-atropos:** (in a separate directory)
-```bash
-cd ~/tinker-atropos
-pip install -e .
-```
-
-3. **Start the RL API server:**
-```bash
-rl-server    # Runs on port 8080 by default
-```
+2. **That's it!** tinker-atropos is included as a submodule - no separate installation needed.
 
 #### Using RL Tools
 
@@ -313,10 +305,12 @@ Agent: I'll set up an RL training run on the GSM8k environment...
 | `rl_select_environment` | Select an environment for training |
 | `rl_get_current_config` | View all configurable options |
 | `rl_edit_config` | Change a configuration value |
+| `rl_test_inference` | Test environment with OpenRouter (pre-training validation) |
 | `rl_start_training` | Start a training run |
 | `rl_check_status` | Check training progress |
 | `rl_stop_training` | Stop a running training |
 | `rl_get_results` | Fetch WandB metrics |
+| `rl_list_runs` | List active training runs |
 
 #### Dedicated RL CLI
 
@@ -434,7 +428,7 @@ skills/
 If you prefer not to use the installer:
 
 ```bash
-# Clone the repository
+# Clone the repository (with submodules)
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
@@ -445,6 +439,11 @@ cd hermes-agent
 python3 -m venv venv
 source venv/bin/activate
 pip install -e ".[all]"
+
+# Install submodules (required for terminal and RL tools)
+pip install -e "./mini-swe-agent"    # Terminal tool backend
+pip install -e "./tinker-atropos"    # RL training backend
+
 hermes setup
 ```
 

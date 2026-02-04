@@ -25,19 +25,83 @@ import sys
 from pathlib import Path
 
 import fire
+import yaml
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
 
-env_path = Path(__file__).parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-    print(f"✅ Loaded environment variables from {env_path}")
+# Load from ~/.hermes/.env first, then local .env
+hermes_env_path = Path.home() / '.hermes' / '.env'
+local_env_path = Path(__file__).parent / '.env'
+
+if hermes_env_path.exists():
+    load_dotenv(dotenv_path=hermes_env_path)
+    print(f"✅ Loaded environment variables from {hermes_env_path}")
+elif local_env_path.exists():
+    load_dotenv(dotenv_path=local_env_path)
+    print(f"✅ Loaded environment variables from {local_env_path}")
+
+# Set terminal working directory to tinker-atropos submodule
+# This ensures terminal commands run in the right context for RL work
+tinker_atropos_dir = Path(__file__).parent / 'tinker-atropos'
+if tinker_atropos_dir.exists():
+    os.environ['TERMINAL_CWD'] = str(tinker_atropos_dir)
+    os.environ['HERMES_QUIET'] = '1'  # Disable temp subdirectory creation
+    print(f"📂 Terminal working directory: {tinker_atropos_dir}")
+else:
+    # Fall back to hermes-agent directory if submodule not found
+    os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
+    os.environ['HERMES_QUIET'] = '1'
+    print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
 # Import agent and tools
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, check_toolset_requirements
 from tools.rl_training_tool import check_rl_api_keys, get_missing_keys
+
+
+# ============================================================================
+# Config Loading
+# ============================================================================
+
+DEFAULT_MODEL = "anthropic/claude-opus-4.5"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def load_hermes_config() -> dict:
+    """
+    Load configuration from ~/.hermes/config.yaml.
+    
+    Returns:
+        dict: Configuration with model, base_url, etc.
+    """
+    config_path = Path.home() / '.hermes' / 'config.yaml'
+    
+    config = {
+        "model": DEFAULT_MODEL,
+        "base_url": DEFAULT_BASE_URL,
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                file_config = yaml.safe_load(f) or {}
+            
+            # Get model from config
+            if "model" in file_config:
+                if isinstance(file_config["model"], str):
+                    config["model"] = file_config["model"]
+                elif isinstance(file_config["model"], dict):
+                    config["model"] = file_config["model"].get("default", DEFAULT_MODEL)
+            
+            # Get base_url if specified
+            if "base_url" in file_config:
+                config["base_url"] = file_config["base_url"]
+                
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to load config.yaml: {e}")
+    
+    return config
 
 
 # ============================================================================
@@ -108,7 +172,7 @@ When asked to train a model, follow this workflow:
 """
 
 # Toolsets to enable for RL workflows
-RL_TOOLSETS = ["base", "terminal", "web", "rl"]
+RL_TOOLSETS = ["terminal", "web", "rl"]
 
 
 # ============================================================================
@@ -172,9 +236,9 @@ def list_environments_sync():
 
 def main(
     task: str = None,
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str = None,
     api_key: str = None,
-    base_url: str = "https://openrouter.ai/api/v1",
+    base_url: str = None,
     max_iterations: int = RL_MAX_ITERATIONS,
     interactive: bool = False,
     list_environments: bool = False,
@@ -187,9 +251,9 @@ def main(
     
     Args:
         task: The training task/goal (e.g., "Train a model on GSM8k for math")
-        model: Model to use for the agent (default: claude-sonnet-4)
+        model: Model to use for the agent (reads from ~/.hermes/config.yaml if not provided)
         api_key: OpenRouter API key (uses OPENROUTER_API_KEY env var if not provided)
-        base_url: API base URL (default: OpenRouter)
+        base_url: API base URL (reads from config or defaults to OpenRouter)
         max_iterations: Maximum agent iterations (default: 200 for long workflows)
         interactive: Run in interactive mode (multiple conversations)
         list_environments: Just list available RL environments and exit
@@ -210,6 +274,15 @@ def main(
         # Check server status
         python rl_cli.py --check-server
     """
+    # Load config from ~/.hermes/config.yaml
+    config = load_hermes_config()
+    
+    # Use config values if not explicitly provided
+    if model is None:
+        model = config["model"]
+    if base_url is None:
+        base_url = config["base_url"]
+    
     print("🎯 RL Training Agent")
     print("=" * 60)
     

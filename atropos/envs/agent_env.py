@@ -19,14 +19,14 @@ from atroposlib.envs.base import APIServerConfig, BaseEnv, BaseEnvConfig, Item, 
 from atroposlib.envs.server_handling.server_baseline import AsyncSemWithAdaptiveWeight
 
 from ..agent import AgentConfig, AgentResult, AtroposAgent
-from ..slots import SlotPool, SlotPoolConfig
+from ..backends import ToolBackend, create_tool_backend
 from ..tools import ToolRegistry, build_tool_registry
 from ..tools.tool_executor import ToolExecutor, ToolExecutorConfig
 
 # Main BaseEnv child classes. Child class THESE to get agent+tooling functionality easily.
 
 class AgentEnvConfig(BaseEnvConfig):
-    tool_pool_mode: str = Field(default="nomad", description="Tool execution backend (only 'nomad' is supported)")
+    tool_pool_mode: str = Field(default="nomad", description="Tool execution backend ('nomad' or 'modal')")
 
     allow_network: bool = Field(
         default=True,
@@ -60,6 +60,12 @@ class AgentEnvConfig(BaseEnvConfig):
         ),
     )
     purge_job_on_shutdown: bool = Field(default=True, description="Nomad mode: stop/purge job on shutdown")
+
+    # modal mode settings (stub; implementation pending)
+    modal_app_name: str = Field(default="atropos-sandbox", description="Modal app name (stub)")
+    modal_function_name: str = Field(default="sandbox_server", description="Modal function/actor name (stub)")
+    modal_volume_name: Optional[str] = Field(default=None, description="Modal Volume name for persistent storage (stub)")
+    modal_volume_mount_path: str = Field(default="/data", description="Modal Volume mount path (stub)")
 
     # basic agent defaults
     agent_max_steps: int = Field(default=50, description="Max ReACT steps per trajectory")
@@ -108,7 +114,7 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
 
         self.tools: ToolRegistry = self.build_tools()
 
-        self._pool: Optional[Any] = None
+        self._backend: Optional[ToolBackend] = None
         self._tool_executor: Optional[ToolExecutor] = None
         self._tool_server_inprocess: bool = False
         self._trajectory_workspace_meta: Dict[str, Dict[str, Any]] = {}
@@ -263,27 +269,11 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
             tool_server_url = "http://toolserver"
             self._tool_server_inprocess = True
 
-        if self.config.tool_pool_mode != "nomad":
-            # TODO Add Modal here, maybe in-process, but not safe to have that tbh
-            raise RuntimeError("tool_pool_mode must be 'nomad' (local/in-process pools are not supported)")
-
-        pool = SlotPool(
-            SlotPoolConfig(
-                nomad_address=self.config.nomad_address,
-                job_id=self.config.sandbox_job_id,
-                image=self.config.sandbox_image,
-                slots_per_container=self.config.slots_per_container,
-                min_containers=self.config.min_containers,
-                max_containers=self.config.max_containers,
-                privileged=self.config.privileged,
-                acquire_timeout=self.config.acquire_timeout_s,
-                purge_job_on_start=bool(self.config.purge_job_on_start),
-            )
-        )
-        await pool.start()
+        backend = create_tool_backend(self.config)
+        await backend.start()
 
         executor = ToolExecutor(
-            pool=pool,
+            backend=backend,
             tools=self.tools,
             config=ToolExecutorConfig(
                 batch_window_ms=self.config.tool_batch_window_ms,
@@ -299,21 +289,21 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
         if tool_server_client is not None:
             executor._tool_server_client = tool_server_client  # type: ignore[attr-defined]
 
-        self._pool = pool
+        self._backend = backend
         self._tool_executor = executor
 
     async def shutdown_tool_backend(self) -> None:
         executor = self._tool_executor
-        pool = self._pool
+        backend = self._backend
         inprocess_tool_server = self._tool_server_inprocess
         self._tool_executor = None
-        self._pool = None
+        self._backend = None
         self._tool_server_inprocess = False
 
         if executor is not None:
             await executor.close()
-        if pool is not None:
-            await pool.stop(purge_job=bool(self.config.purge_job_on_shutdown))
+        if backend is not None:
+            await backend.stop(purge=bool(self.config.purge_job_on_shutdown))
         if inprocess_tool_server:
             from ..api.tool_server import app as tool_server_app
 

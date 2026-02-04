@@ -1,7 +1,7 @@
 """
 Tool Executor API (Phase 4)
 
-This service provides a queued, batched execution layer on top of SlotPool.
+This service provides a queued, batched execution layer on top of a ToolBackend.
 It mirrors the stateful FastAPI + app.state pattern used in:
   atropos/atroposlib/api/server.py
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ..slots import SlotPool, SlotPoolConfig
+from ..backends.nomad_backend import NomadBackendConfig, NomadToolBackend
 from ..tools import ToolRegistry, build_tool_registry
 from ..tools.base import (
     ArtifactArchiveRequestPayload,
@@ -123,22 +123,23 @@ async def _startup() -> None:
         tool_server_url=cfg.tool_server_url,
     )
 
-    pool = SlotPool(
-        SlotPoolConfig(
+    backend = NomadToolBackend(
+        NomadBackendConfig(
             nomad_address=cfg.nomad_address,
-            job_id=cfg.job_id,
-            image=cfg.image,
+            sandbox_job_id=cfg.job_id,
+            sandbox_image=cfg.image,
             slots_per_container=cfg.slots_per_container,
             min_containers=cfg.min_containers,
             max_containers=cfg.max_containers,
             privileged=cfg.privileged,
-            acquire_timeout=cfg.acquire_timeout_s,
+            acquire_timeout_s=cfg.acquire_timeout_s,
+            purge_job_on_start=False,
         )
     )
-    await pool.start()
+    await backend.start()
 
     executor = ToolExecutor(
-        pool=pool,
+        backend=backend,
         tools=tools,
         config=ToolExecutorConfig(
             batch_window_ms=cfg.batch_window_ms,
@@ -151,21 +152,21 @@ async def _startup() -> None:
     await executor.start()
 
     app.state.cfg = cfg
-    app.state.pool = pool
+    app.state.backend = backend
     app.state.executor = executor
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     executor: Optional[ToolExecutor] = getattr(app.state, "executor", None)
-    pool: Optional[SlotPool] = getattr(app.state, "pool", None)
+    backend: Optional[NomadToolBackend] = getattr(app.state, "backend", None)
     cfg: Optional[ToolExecutorServerConfig] = getattr(app.state, "cfg", None)
 
     if executor is not None:
         await executor.close()
 
-    if pool is not None:
-        await pool.stop(purge_job=bool(cfg.purge_job_on_shutdown) if cfg else False)
+    if backend is not None:
+        await backend.stop(purge=bool(cfg.purge_job_on_shutdown) if cfg else False)
 
 
 @app.get("/health")
@@ -176,13 +177,13 @@ async def health() -> Dict[str, Any]:
 @app.get("/status")
 async def status_endpoint() -> Dict[str, Any]:
     executor: ToolExecutor = app.state.executor
-    pool: SlotPool = app.state.pool
+    backend: NomadToolBackend = app.state.backend
 
     return {
         "queue_size": executor.queue_size(),
         "total_requests": executor.total_requests,
         "total_errors": executor.total_errors,
-        "pool": pool.get_stats(),
+        "pool": backend.get_stats(),
     }
 
 

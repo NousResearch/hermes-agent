@@ -234,6 +234,8 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
             "Constraints:\n"
             "- Use a workspace-local virtualenv (e.g. inside the repo at ./.venv) to avoid cross-run contamination.\n"
             "- Use non-interactive commands only.\n\n"
+            "- Terminal commands run under POSIX /bin/sh and each tool call runs in a fresh shell (no persisted env vars).\n"
+            "  Avoid bash-only `source`; prefer `. .venv/bin/activate` or `.venv/bin/python ...`.\n\n"
             f"{verify_note}\n"
             f"{trunc_note}\n"
             "Problem statement:\n"
@@ -365,13 +367,20 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         *,
         trajectory_id: str,
         exec_tool,
-        agent_result=None,  # noqa: ARG002
+        agent_result=None,
         workspace_meta: Optional[Dict[str, Any]] = None,
     ) -> tuple[float, Dict[str, Any]]:
         _ = trajectory_id
         repo_dir = self._repo_name(item)
 
         if self.config.verification_mode == "install":
+            # Training correctness: do not reward trajectories that never actually used tools.
+            if agent_result is not None and getattr(agent_result, "total_tool_calls", 0) <= 0:
+                return 0.0, {
+                    "verification_mode": "install",
+                    "error": "No tool calls were made by the agent",
+                }
+
             print(f"[SweSmithOracleEnv] tid={trajectory_id} verify (install): running pip install -e .", flush=True)
             t0 = time.perf_counter()
             install_cmd = (
@@ -394,6 +403,14 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
                 "verification_mode": "install",
                 "install_success": ok,
                 "error": res.error,
+                "verification_messages": [{"role": "user", "content": res.to_xml()}],
+            }
+
+        # Training correctness: do not reward trajectories that never actually used tools.
+        if agent_result is not None and getattr(agent_result, "total_tool_calls", 0) <= 0:
+            return 0.0, {
+                "verification_mode": "pytest",
+                "error": "No tool calls were made by the agent",
             }
 
         nodeids = self._tests_for_item(item)
@@ -412,12 +429,14 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         setup_res = await exec_tool(
             ToolCall(name="terminal", arguments={"command": setup_cmd, "timeout": self.config.install_timeout_s})
         )
+        verification_messages = [{"role": "user", "content": setup_res.to_xml()}]
         if not setup_res.success:
             return 0.0, {
                 "verification_mode": "pytest",
                 "phase": "install",
                 "error": setup_res.error,
                 "output": setup_res.output,
+                "verification_messages": verification_messages,
             }
 
         chunks = self._chunk_nodeids(nodeids, max_per_chunk=50)
@@ -430,10 +449,18 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
                     arguments={"command": cmd, "timeout": self.config.test_timeout_s},
                 )
             )
+            verification_messages.append({"role": "user", "content": res.to_xml()})
             if not res.success:
-                return 0.0, {"failed_chunk": chunk_idx, "error": res.error, "output": res.output}
+                return 0.0, {
+                    "verification_mode": "pytest",
+                    "phase": "pytest",
+                    "failed_chunk": chunk_idx,
+                    "error": res.error,
+                    "output": res.output,
+                    "verification_messages": verification_messages,
+                }
 
-        return 1.0, {"verification_mode": "pytest", "passed": True}
+        return 1.0, {"verification_mode": "pytest", "passed": True, "verification_messages": verification_messages}
 
     async def score_trajectory(self, item: Item, final_response: str) -> float:
         # Not used; scoring happens in verify_and_score_trajectory.

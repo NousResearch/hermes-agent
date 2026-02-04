@@ -362,10 +362,37 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
                 flush=True,
             )
             if not result.success or result.trajectory_data is None:
-                return None, []
+                # Do not trigger BaseEnv retries for agent failures.
+                # Record the trajectory with score 0.0 so training/eval can see the failure mode.
+                messages = [{"role": "system", "content": agent._build_system_prompt()}]  # noqa: SLF001
+                messages.append({"role": "user", "content": task})
+                for step in result.steps:
+                    messages.append({"role": "assistant", "content": step.assistant_message})
+                    if step.tool_results:
+                        tool_text = "\n".join(r.to_xml() for r in step.tool_results)
+                        messages.append({"role": "user", "content": tool_text})
+
+                scored: ScoredDataItem = {
+                    "tokens": (result.trajectory_data.tokens if result.trajectory_data else []),
+                    "masks": (result.trajectory_data.masked_tokens if result.trajectory_data else []),
+                    "scores": 0.0,
+                }
+                if self.config.include_messages:
+                    # Record a final failure marker as a user-side tool_response-like block so it survives templates.
+                    import json
+
+                    err = result.error or "agent_failed"
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"<tool_response>{json.dumps({'success': False, 'error': err})}</tool_response>",
+                        }
+                    )
+                    scored["messages"] = messages
+                return scored, []
 
             print(f"[AgentEnv] tid={trajectory_id} verify_and_score_trajectory() start", flush=True)
-            score, _score_metadata = await self.verify_and_score_trajectory(
+            score, score_metadata = await self.verify_and_score_trajectory(
                 item,
                 result.final_response,
                 trajectory_id=trajectory_id,
@@ -386,6 +413,14 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
                 if step.tool_results:
                     tool_text = "\n".join(r.to_xml() for r in step.tool_results)
                     messages.append({"role": "user", "content": tool_text})
+
+            # Optional: allow env verification to attach additional messages (e.g. install logs).
+            if self.config.include_messages and isinstance(score_metadata, dict):
+                extra = score_metadata.get("verification_messages")
+                if isinstance(extra, list):
+                    for m in extra:
+                        if isinstance(m, dict) and isinstance(m.get("role"), str) and isinstance(m.get("content"), str):
+                            messages.append({"role": m["role"], "content": m["content"]})
 
             scored: ScoredDataItem = {
                 "tokens": result.trajectory_data.tokens,

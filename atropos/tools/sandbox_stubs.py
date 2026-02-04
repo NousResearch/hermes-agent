@@ -23,7 +23,9 @@ class TerminalTool(Tool):
             description=(
                 "Execute a command inside the sandbox slot workspace and return stdout/stderr. "
                 "Filesystem persists within a trajectory slot. Background processes are not supported "
-                "in stateless mode."
+                "in stateless mode. Commands run under POSIX /bin/sh and each tool call runs in a fresh "
+                "shell (no persisted env vars). Avoid bash-only syntax like `source`; prefer `. .venv/bin/activate` "
+                "or invoke `.venv/bin/python ...` directly."
             ),
             parameters={
                 "command": {"type": "string", "description": "The command to execute"},
@@ -95,4 +97,3 @@ class WriteFileTool(Tool):
 
     async def execute(self, **_kwargs) -> ToolResult:
         return ToolResult(success=False, error="write_file must be executed via ToolExecutor inside the sandbox")
-

@@ -34,19 +34,22 @@ load_dotenv()
 #
 # IMPORTANT: In training-mode environments we want "raw text in -> raw text out" and we
 # parse tool calls from completion text. Do not rely on server-specific `tool_calls` fields.
-AGENT_SYSTEM_PROMPT = """You are a function-calling AI model.
+AGENT_SYSTEM_PROMPT = """You are a deep thinking AI. You MUST enclose your internal reasoning inside <think>...</think> tags.
+
+You are a function calling AI model.
 
 You are provided with function signatures within <tools></tools> XML tags.
-You may call one or more functions to assist with the user query. If available tools are not relevant,
-respond in natural language.
+You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.
 
-After calling & executing a function, you will be provided with function results within
-<tool_response></tool_response> XML tags.
+After calling & executing a function, you will be provided with function results within <tool_response></tool_response> XML tags.
 
 Here are the available tools:
 <tools>
 {tools_json}
 </tools>
+
+Use the following JSON schema for each tool call you will make:
+{"title": "FunctionCall", "type": "object", "properties": {"name": {"title": "Name", "type": "string"}, "arguments": {"title": "Arguments", "type": "object"}}, "required": ["name", "arguments"]}
 
 ## REQUIRED TOOL FORMAT
 
@@ -55,10 +58,14 @@ When you decide to call a tool, your assistant message MUST be:
 2) one or more <tool_call>...</tool_call> blocks,
 and NOTHING else in that message.
 
-For each tool call, output a JSON object with this schema:
-{"name": "function_name", "arguments": { ... }}
+If you need to explain anything, put it inside <think>. Do NOT write natural language outside <think> or <tool_call>.
 
-Each tool call MUST be enclosed within <tool_call></tool_call> XML tags.
+For each function call return a JSON object with function name and arguments within <tool_call></tool_call> XML tags as follows:
+<tool_call>
+{"name": "<function-name>", "arguments": {"arg1": "value1"}}
+</tool_call>
+
+Each <tool_call> must be on its own and contain ONLY the JSON object (no extra text).
 The JSON inside <tool_call> MUST be valid JSON with double quotes.
 
 Do NOT output <tool_response> in an assistant message.
@@ -66,27 +73,44 @@ Do NOT output <tool_response> in an assistant message.
 After you receive tool results, you may either call more tools (same required format) or provide the final answer.
 When providing the final answer, do NOT include any <tool_call> blocks.
 
+## TERMINAL TOOL NOTES
+
+- Commands execute under POSIX `/bin/sh` (not bash).
+- Each tool call runs in a fresh shell: environment changes (like `cd` or venv activation) do not persist across tool calls.
+- Avoid bash-only features like `source`, `[[ ... ]]`, or process substitution.
+- Prefer explicit venv usage:
+  - `python -m venv .venv && . .venv/bin/activate && python -m pip install -e .` (POSIX `.` activation), or
+  - `.venv/bin/python -m pip install -e .` (no activation required).
+
 ## ICL (examples)
 
 User: Show the current directory.
 Assistant:
-<think>I should use the terminal tool to print the current directory.</think>
-<tool_call>{"name": "terminal", "arguments": {"command": "pwd"}}</tool_call>
+<think>I should run pwd.</think>
+<tool_call>
+{"name": "terminal", "arguments": {"command": "pwd"}}
+</tool_call>
 User: <tool_response>{"success": true, "output": "/tmp\\n"}</tool_response>
 Assistant: /tmp
 
 User: List files, then count them.
 Assistant:
-<think>I should list files and count lines.</think>
-<tool_call>{"name": "terminal", "arguments": {"command": "ls -1 | wc -l"}}</tool_call>
+<think>I should count files.</think>
+<tool_call>
+{"name": "terminal", "arguments": {"command": "ls -1 | wc -l"}}
+</tool_call>
 User: <tool_response>{"success": true, "output": "3\\n"}</tool_response>
 Assistant: 3
 
-User: Run pwd, then print ok.
+User: Run pwd, then print ok (two tool calls).
 Assistant:
-<think>I should run pwd, then run a command that prints ok.</think>
-<tool_call>{"name": "terminal", "arguments": {"command": "pwd"}}</tool_call>
-<tool_call>{"name": "terminal", "arguments": {"command": "echo ok"}}</tool_call>
+<think>I should run two commands.</think>
+<tool_call>
+{"name": "terminal", "arguments": {"command": "pwd"}}
+</tool_call>
+<tool_call>
+{"name": "terminal", "arguments": {"command": "echo ok"}}
+</tool_call>
 User: <tool_response>{"success": true, "output": "/tmp\\n"}</tool_response>
 User: <tool_response>{"success": true, "output": "ok\\n"}</tool_response>
 Assistant: ok
@@ -337,6 +361,9 @@ class AtroposAgent:
         final_response = ""
         final_node = None
         final_prompt_messages: Optional[List[Dict[str, str]]] = None
+        last_node = None
+        last_prompt_messages: Optional[List[Dict[str, str]]] = None
+        last_response_text: str = ""
         
         # Use ManagedServer for automatic token tracking
         async with self._managed() as managed:
@@ -384,6 +411,9 @@ class AtroposAgent:
                 # Some OpenAI-compatible servers populate `message.reasoning` and leave `content=""`.
                 response_text = (msg.content or "") or (getattr(msg, "reasoning", None) or "")
                 tool_calls = ToolCall.parse_from_text(response_text)
+                last_node = current_node
+                last_prompt_messages = prompt_messages
+                last_response_text = response_text
                 
                 step = AgentStep(
                     step_number=step_num + 1,
@@ -419,11 +449,39 @@ class AtroposAgent:
             
             else:
                 # Reached max steps without completing
+                # Return a failure result but include the last observed completion so callers can
+                # record the trajectory (score=0) without triggering retries.
+                final_response = last_response_text or final_response
+                final_node = last_node
+                final_prompt_messages = last_prompt_messages
+                trajectory_data = None
+                if final_node:
+                    trajectory_data = SequenceData.from_sequence_node(final_node)
+                elif final_prompt_messages is not None and self.tokenizer is not None:
+                    if hasattr(self.tokenizer, "apply_chat_template"):
+                        prompt_text = self.tokenizer.apply_chat_template(
+                            final_prompt_messages, tokenize=False, add_generation_prompt=True
+                        )
+                        prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+                    else:
+                        prompt_text = "\n".join([f"{m['role']}: {m['content']}" for m in final_prompt_messages])
+                        prompt_tokens = self.tokenizer.encode(prompt_text, add_special_tokens=True)
+                    output_tokens = self.tokenizer.encode(final_response, add_special_tokens=False)
+                    tokens = prompt_tokens + output_tokens
+                    masked_tokens = ([-100] * len(prompt_tokens)) + output_tokens
+                    logprobs = ([1.0] * len(prompt_tokens)) + ([0.0] * len(output_tokens))
+                    trajectory_data = SequenceData(
+                        full_text=f"{prompt_text}{final_response}",
+                        tokens=tokens,
+                        masked_tokens=masked_tokens,
+                        logprobs=logprobs,
+                    )
                 return AgentResult(
                     success=False,
                     final_response=final_response,
                     steps=steps,
                     error=f"Reached maximum steps ({self.config.max_steps})",
+                    trajectory_data=trajectory_data,
                 )
         
         # Build result with trajectory data

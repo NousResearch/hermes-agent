@@ -74,6 +74,7 @@ You need at least one LLM provider:
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
+| RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
 
 ---
@@ -269,6 +270,61 @@ When enabled, you'll see messages like:
 ```
 
 See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
+
+### 🤖 RL Training (Tinker + Atropos)
+
+Train language models with reinforcement learning using the Tinker API and Atropos framework.
+
+#### Requirements
+
+1. **API Keys:** Add to `~/.hermes/.env`:
+```bash
+TINKER_API_KEY=your-tinker-key      # Get from https://tinker-console.thinkingmachines.ai/keys
+WANDB_API_KEY=your-wandb-key        # Get from https://wandb.ai/authorize
+```
+
+2. **Install tinker-atropos:** (in a separate directory)
+```bash
+cd ~/tinker-atropos
+pip install -e .
+```
+
+3. **Start the RL API server:**
+```bash
+rl-server    # Runs on port 8080 by default
+```
+
+#### Using RL Tools
+
+The agent can now use RL training tools:
+
+```
+You: Start training on GSM8k with group_size=16
+
+Agent: I'll set up an RL training run on the GSM8k environment...
+[Uses rl_list_environments, rl_select_environment, rl_edit_config, rl_start_training]
+```
+
+#### Available RL Tools
+
+| Tool | Description |
+|------|-------------|
+| `rl_list_environments` | List available RL environments |
+| `rl_select_environment` | Select an environment for training |
+| `rl_get_current_config` | View all configurable options |
+| `rl_edit_config` | Change a configuration value |
+| `rl_start_training` | Start a training run |
+| `rl_check_status` | Check training progress |
+| `rl_stop_training` | Stop a running training |
+| `rl_get_results` | Fetch WandB metrics |
+
+#### Dedicated RL CLI
+
+For extended RL workflows with longer timeouts:
+
+```bash
+python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
+```
 
 ### ⏰ Scheduled Tasks (Cron)
 

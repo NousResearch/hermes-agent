@@ -186,6 +186,14 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
     
+    # Tinker + WandB (RL training)
+    if get_env_value('TINKER_API_KEY') and get_env_value('WANDB_API_KEY'):
+        tool_status.append(("RL Training (Tinker)", True, None))
+    elif get_env_value('TINKER_API_KEY'):
+        tool_status.append(("RL Training (Tinker)", False, "WANDB_API_KEY"))
+    else:
+        tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
+    
     # Terminal (always available if system deps met)
     tool_status.append(("Terminal/Commands", True, None))
     
@@ -932,6 +940,47 @@ def run_setup_wizard(args):
             if api_key:
                 save_env_value("FAL_KEY", api_key)
                 print_success("    Configured ✓")
+    print()
+    
+    # Tinker + WandB - RL Training
+    print_info("─" * 50)
+    print(color("  RL Training (Tinker + WandB)", Colors.CYAN))
+    print_info("  Enables: rl_start_training, rl_check_status, rl_get_results tools")
+    print_info("  Use case: Run reinforcement learning training via Tinker API")
+    tinker_configured = get_env_value('TINKER_API_KEY')
+    wandb_configured = get_env_value('WANDB_API_KEY')
+    
+    if tinker_configured and wandb_configured:
+        print_success("  Status: Configured ✓")
+        if prompt_yes_no("  Update RL training credentials?", False):
+            api_key = prompt("    Tinker API key", password=True)
+            if api_key:
+                save_env_value("TINKER_API_KEY", api_key)
+            wandb_key = prompt("    WandB API key", password=True)
+            if wandb_key:
+                save_env_value("WANDB_API_KEY", wandb_key)
+            print_success("    Updated")
+    else:
+        if tinker_configured:
+            print_warning("  Status: Tinker configured, WandB missing")
+        elif wandb_configured:
+            print_warning("  Status: WandB configured, Tinker missing")
+        else:
+            print_warning("  Status: Not configured (tools will be disabled)")
+        
+        if prompt_yes_no("  Set up RL Training?", False):
+            print_info("    Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
+            print_info("    Get WandB key at: https://wandb.ai/authorize")
+            api_key = prompt("    Tinker API key", password=True)
+            if api_key:
+                save_env_value("TINKER_API_KEY", api_key)
+            wandb_key = prompt("    WandB API key", password=True)
+            if wandb_key:
+                save_env_value("WANDB_API_KEY", wandb_key)
+            if api_key and wandb_key:
+                print_success("    Configured ✓")
+            else:
+                print_warning("    Partially configured (both keys required)")
     
     # =========================================================================
     # Save config and show summary

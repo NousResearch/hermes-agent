@@ -554,13 +554,13 @@ def get_rl_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "rl_edit_config",
-                "description": "Update a configuration field. Valid fields: group_size (int), max_token_length (int), total_steps (int), steps_per_eval (int), use_wandb (bool), wandb_name (str), max_num_workers (int).",
+                "description": "Update a configuration field. Use rl_get_current_config() first to see all available fields for the selected environment. Each environment has different configurable options. Infrastructure settings (tokenizer, URLs, lora_rank, learning_rate) are locked.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "field": {
                             "type": "string",
-                            "description": "Name of the field to update"
+                            "description": "Name of the field to update (get available fields from rl_get_current_config)"
                         },
                         "value": {
                             "description": "New value for the field"
@@ -574,26 +574,10 @@ def get_rl_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "rl_start_training",
-                "description": "Start a new RL training run. WARNING: Training can take hours. Use rl_check_status() to monitor (30-minute intervals recommended). Test with rl_test_inference() first!",
+                "description": "Start a new RL training run with the current environment and config. Most training parameters (lora_rank, learning_rate, etc.) are fixed. Use rl_edit_config() to set group_size, batch_size, wandb_project before starting. WARNING: Training takes hours. Test with rl_test_inference() first!",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "wandb_project": {
-                            "type": "string",
-                            "description": "WandB project name for logging",
-                            "default": "rl-training"
-                        },
-                        "lora_rank": {
-                            "type": "integer",
-                            "description": "LoRA rank for training",
-                            "default": 32
-                        },
-                        "learning_rate": {
-                            "type": "number",
-                            "description": "Learning rate",
-                            "default": 4e-5
-                        }
-                    },
+                    "properties": {},
                     "required": []
                 }
             }
@@ -1324,13 +1308,7 @@ def handle_rl_function_call(
         )
     
     elif function_name == "rl_start_training":
-        return loop.run_until_complete(
-            rl_start_training(
-                wandb_project=function_args.get("wandb_project", "rl-training"),
-                lora_rank=function_args.get("lora_rank", 32),
-                learning_rate=function_args.get("learning_rate", 4e-5)
-            )
-        )
+        return loop.run_until_complete(rl_start_training())
     
     elif function_name == "rl_check_status":
         return loop.run_until_complete(

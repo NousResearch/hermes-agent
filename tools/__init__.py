@@ -105,9 +105,8 @@ from .rl_training_tool import (
     rl_check_status,
     rl_stop_training,
     rl_get_results,
-    rl_test_inference,
     rl_list_runs,
-    rl_health_check,
+    rl_test_inference,
     check_rl_api_keys,
     get_missing_keys,
 )
@@ -178,9 +177,8 @@ __all__ = [
     'rl_check_status',
     'rl_stop_training',
     'rl_get_results',
-    'rl_test_inference',
     'rl_list_runs',
-    'rl_health_check',
+    'rl_test_inference',
     'check_rl_api_keys',
     'get_missing_keys',
 ]

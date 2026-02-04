@@ -16,7 +16,6 @@ Usage:
 Environment Variables:
     TINKER_API_KEY: API key for Tinker service (required)
     WANDB_API_KEY: API key for WandB metrics (required)
-    RL_API_URL: URL of RL API server (default: http://localhost:8080)
     OPENROUTER_API_KEY: API key for OpenRouter (required for agent)
 """
 
@@ -38,7 +37,7 @@ if env_path.exists():
 # Import agent and tools
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, check_toolset_requirements
-from tools.rl_training_tool import check_rl_api_keys, get_missing_keys, rl_health_check
+from tools.rl_training_tool import check_rl_api_keys, get_missing_keys
 
 
 # ============================================================================
@@ -138,17 +137,21 @@ def check_requirements():
     return True
 
 
-async def check_rl_server():
-    """Check if the RL API server is running."""
-    try:
-        result = await rl_health_check()
-        import json
-        data = json.loads(result)
-        if "error" in data:
-            return False, data["error"]
-        return True, data
-    except Exception as e:
-        return False, str(e)
+def check_tinker_atropos():
+    """Check if tinker-atropos submodule is properly set up."""
+    tinker_path = Path(__file__).parent / "tinker-atropos"
+    
+    if not tinker_path.exists():
+        return False, "tinker-atropos submodule not found. Run: git submodule update --init"
+    
+    envs_path = tinker_path / "tinker_atropos" / "environments"
+    if not envs_path.exists():
+        return False, f"environments directory not found at {envs_path}"
+    
+    env_files = list(envs_path.glob("*.py"))
+    env_files = [f for f in env_files if not f.name.startswith("_")]
+    
+    return True, {"path": str(tinker_path), "environments_count": len(env_files)}
 
 
 def list_environments_sync():
@@ -210,19 +213,27 @@ def main(
     print("🎯 RL Training Agent")
     print("=" * 60)
     
-    # Handle server check
+    # Handle setup check
     if check_server:
-        print("\n🔍 Checking RL API server...")
-        ok, result = asyncio.run(check_rl_server())
+        print("\n🔍 Checking tinker-atropos setup...")
+        ok, result = check_tinker_atropos()
         if ok:
-            print("✅ RL API server is running")
-            print(f"   Environments discovered: {result.get('environments_discovered', 'unknown')}")
-            print(f"   Current environment: {result.get('current_environment', 'none')}")
-            print(f"   Active runs: {result.get('active_runs', 0)}")
+            print("✅ tinker-atropos submodule found")
+            print(f"   Path: {result.get('path')}")
+            print(f"   Environments found: {result.get('environments_count', 0)}")
+            
+            # Also check API keys
+            missing = get_missing_keys()
+            if missing:
+                print(f"\n⚠️  Missing API keys: {', '.join(missing)}")
+                print("   Add them to ~/.hermes/.env")
+            else:
+                print("✅ API keys configured")
         else:
-            print(f"❌ RL API server not accessible: {result}")
-            print("\nTo start the server:")
-            print("  cd tinker-atropos && uvicorn rl_api_server:app --port 8080")
+            print(f"❌ tinker-atropos not set up: {result}")
+            print("\nTo set up:")
+            print("  git submodule update --init")
+            print("  pip install -e ./tinker-atropos")
         return
     
     # Handle environment listing
@@ -238,8 +249,8 @@ def main(
             envs = data.get("environments", [])
             if not envs:
                 print("No environments found.")
-                print("\nMake sure the RL API server is running:")
-                print("  cd tinker-atropos && uvicorn rl_api_server:app --port 8080")
+                print("\nMake sure tinker-atropos is set up:")
+                print("  git submodule update --init")
                 return
             
             for env in envs:
@@ -254,8 +265,9 @@ def main(
             print("\nUse `rl_select_environment(name)` to select an environment for training.")
         except Exception as e:
             print(f"❌ Error listing environments: {e}")
-            print("\nMake sure the RL API server is running:")
-            print("  cd tinker-atropos && uvicorn rl_api_server:app --port 8080")
+            print("\nMake sure tinker-atropos is set up:")
+            print("  git submodule update --init")
+            print("  pip install -e ./tinker-atropos")
         return
     
     # Check requirements

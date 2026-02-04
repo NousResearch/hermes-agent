@@ -97,7 +97,7 @@ TOOLSETS = {
             "rl_get_current_config", "rl_edit_config",
             "rl_start_training", "rl_check_status",
             "rl_stop_training", "rl_get_results",
-            "rl_test_inference", "rl_list_runs"
+            "rl_list_runs", "rl_test_inference"
         ],
         "includes": []
     },

@@ -292,12 +292,13 @@ clone_repo() {
         fi
     else
         # Try SSH first (for private repo access), fall back to HTTPS
+        # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
         log_info "Trying SSH clone..."
-        if git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+        if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -310,6 +311,12 @@ clone_repo() {
     fi
     
     cd "$INSTALL_DIR"
+    
+    # Ensure submodules are initialized and updated (for existing installs or if --recurse failed)
+    log_info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
+    git submodule update --init --recursive
+    log_success "Submodules ready"
+    
     log_success "Repository ready"
 }
 
@@ -343,10 +350,29 @@ install_deps() {
         source venv/bin/activate
     fi
     
-    # Install the package in editable mode with all extras
+    # Install the main package in editable mode with all extras
     pip install -e ".[all]" > /dev/null 2>&1 || pip install -e "." > /dev/null
     
-    log_success "Dependencies installed"
+    log_success "Main package installed"
+    
+    # Install submodules
+    log_info "Installing mini-swe-agent (terminal tool backend)..."
+    if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
+        pip install -e "./mini-swe-agent" > /dev/null 2>&1 || log_warn "mini-swe-agent install failed (terminal tools may not work)"
+        log_success "mini-swe-agent installed"
+    else
+        log_warn "mini-swe-agent not found (run: git submodule update --init)"
+    fi
+    
+    log_info "Installing tinker-atropos (RL training backend)..."
+    if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
+        pip install -e "./tinker-atropos" > /dev/null 2>&1 || log_warn "tinker-atropos install failed (RL tools may not work)"
+        log_success "tinker-atropos installed"
+    else
+        log_warn "tinker-atropos not found (run: git submodule update --init)"
+    fi
+    
+    log_success "All dependencies installed"
 }
 
 setup_path() {

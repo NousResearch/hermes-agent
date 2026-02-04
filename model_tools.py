@@ -665,7 +665,7 @@ def get_rl_tool_definitions() -> List[Dict[str, Any]]:
                         "models": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional list of OpenRouter model IDs. Default: qwen/qwen3-8b, zhipu-ai/glm-4-flash, minimax/minimax-m1"
+                            "description": "Optional list of OpenRouter model IDs. Default: qwen/qwen3-8b, z-ai/glm-4.7-flash, minimax/minimax-m2.1"
                         }
                     },
                     "required": []
@@ -730,7 +730,7 @@ def get_all_tool_names() -> List[str]:
             "rl_get_current_config", "rl_edit_config",
             "rl_start_training", "rl_check_status",
             "rl_stop_training", "rl_get_results",
-            "rl_list_runs"
+            "rl_list_runs", "rl_test_inference"
         ])
     
     return tool_names
@@ -898,7 +898,7 @@ def get_tool_definitions(
                             "rl_get_current_config", "rl_edit_config",
                             "rl_start_training", "rl_check_status",
                             "rl_stop_training", "rl_get_results",
-                            "rl_list_runs"
+                            "rl_list_runs", "rl_test_inference"
                         ]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
@@ -950,7 +950,7 @@ def get_tool_definitions(
                             "rl_get_current_config", "rl_edit_config",
                             "rl_start_training", "rl_check_status",
                             "rl_stop_training", "rl_get_results",
-                            "rl_list_runs"
+                            "rl_list_runs", "rl_test_inference"
                         ]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
@@ -1407,7 +1407,7 @@ def handle_function_call(
             "rl_get_current_config", "rl_edit_config",
             "rl_start_training", "rl_check_status",
             "rl_stop_training", "rl_get_results",
-            "rl_list_runs"
+            "rl_list_runs", "rl_test_inference"
         ]:
             return handle_rl_function_call(function_name, function_args)
 

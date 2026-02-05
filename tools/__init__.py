@@ -111,6 +111,22 @@ from .rl_training_tool import (
     get_missing_keys,
 )
 
+# File manipulation tools (read, write, patch, search)
+from .file_tools import (
+    read_file_tool,
+    write_file_tool,
+    patch_tool,
+    search_tool,
+    get_file_tools,
+    clear_file_ops_cache,
+)
+
+# File tools have no external requirements - they use the terminal backend
+def check_file_requirements():
+    """File tools only require terminal backend to be available."""
+    from .terminal_tool import check_terminal_requirements
+    return check_terminal_requirements()
+
 __all__ = [
     # Web tools
     'web_search_tool',
@@ -181,5 +197,13 @@ __all__ = [
     'rl_test_inference',
     'check_rl_api_keys',
     'get_missing_keys',
+    # File manipulation tools
+    'read_file_tool',
+    'write_file_tool',
+    'patch_tool',
+    'search_tool',
+    'get_file_tools',
+    'clear_file_ops_cache',
+    'check_file_requirements',
 ]
 

@@ -271,6 +271,120 @@ check_node() {
     # Don't exit - Node is optional
 }
 
+check_ripgrep() {
+    log_info "Checking ripgrep (optional, for faster file search)..."
+    
+    if command -v rg &> /dev/null; then
+        RG_VERSION=$(rg --version | head -1)
+        log_success "$RG_VERSION found"
+        HAS_RIPGREP=true
+        return 0
+    fi
+    
+    log_warn "ripgrep not found (file search will use grep fallback)"
+    
+    # Offer to install
+    echo ""
+    read -p "Would you like to install ripgrep? (faster search, recommended) [Y/n] " -n 1 -r
+    echo
+    
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        log_info "Installing ripgrep..."
+        
+        # Check if we can use sudo
+        CAN_SUDO=false
+        if command -v sudo &> /dev/null; then
+            # Check if user has sudo access (without actually running sudo)
+            if sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
+                CAN_SUDO=true
+            fi
+        fi
+        
+        case "$OS" in
+            linux)
+                if [ "$CAN_SUDO" = true ]; then
+                    case "$DISTRO" in
+                        ubuntu|debian)
+                            if sudo apt install -y ripgrep 2>/dev/null; then
+                                log_success "ripgrep installed"
+                                HAS_RIPGREP=true
+                                return 0
+                            fi
+                            ;;
+                        fedora)
+                            if sudo dnf install -y ripgrep 2>/dev/null; then
+                                log_success "ripgrep installed"
+                                HAS_RIPGREP=true
+                                return 0
+                            fi
+                            ;;
+                        arch)
+                            if sudo pacman -S --noconfirm ripgrep 2>/dev/null; then
+                                log_success "ripgrep installed"
+                                HAS_RIPGREP=true
+                                return 0
+                            fi
+                            ;;
+                    esac
+                else
+                    log_warn "sudo not available - cannot auto-install system packages"
+                    # Try cargo as fallback if available
+                    if command -v cargo &> /dev/null; then
+                        log_info "Trying cargo install (no sudo required)..."
+                        if cargo install ripgrep 2>/dev/null; then
+                            log_success "ripgrep installed via cargo"
+                            HAS_RIPGREP=true
+                            return 0
+                        fi
+                    fi
+                fi
+                ;;
+            macos)
+                if command -v brew &> /dev/null; then
+                    if brew install ripgrep 2>/dev/null; then
+                        log_success "ripgrep installed"
+                        HAS_RIPGREP=true
+                        return 0
+                    fi
+                fi
+                ;;
+        esac
+        log_warn "Auto-install failed. You can install manually later:"
+    else
+        log_info "Skipping ripgrep installation. To install manually:"
+    fi
+    
+    # Show manual install instructions
+    case "$OS" in
+        linux)
+            case "$DISTRO" in
+                ubuntu|debian)
+                    log_info "  sudo apt install ripgrep"
+                    ;;
+                fedora)
+                    log_info "  sudo dnf install ripgrep"
+                    ;;
+                arch)
+                    log_info "  sudo pacman -S ripgrep"
+                    ;;
+                *)
+                    log_info "  https://github.com/BurntSushi/ripgrep#installation"
+                    ;;
+            esac
+            # Show cargo alternative for users without sudo
+            if command -v cargo &> /dev/null; then
+                log_info "  Or without sudo: cargo install ripgrep"
+            fi
+            ;;
+        macos)
+            log_info "  brew install ripgrep"
+            ;;
+    esac
+    
+    HAS_RIPGREP=false
+    # Don't exit - ripgrep is optional (grep fallback exists)
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -540,6 +654,15 @@ print_success() {
         echo "if you need full browser support."
         echo -e "${NC}"
     fi
+    
+    # Show ripgrep note if not installed
+    if [ "$HAS_RIPGREP" = false ]; then
+        echo -e "${YELLOW}"
+        echo "Note: ripgrep (rg) was not found. File search will use"
+        echo "grep as a fallback. For faster search in large codebases,"
+        echo "install ripgrep: sudo apt install ripgrep (or brew install ripgrep)"
+        echo -e "${NC}"
+    fi
 }
 
 # ============================================================================
@@ -553,6 +676,7 @@ main() {
     check_python
     check_git
     check_node
+    check_ripgrep
     
     clone_repo
     setup_venv

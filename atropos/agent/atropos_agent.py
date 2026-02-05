@@ -32,16 +32,13 @@ load_dotenv()
 
 
 # Default system prompt with tool calling instructions.
-#
-# IMPORTANT: In training-mode environments we want "raw text in -> raw text out" and we
-# parse tool calls from completion text. Do not rely on server-specific `tool_calls` fields.
 AGENT_SYSTEM_PROMPT = """You are a deep thinking AI. You MUST enclose your internal reasoning inside <think>...</think> tags.
 
 You are a function calling AI model.
 
 You are provided with function signatures within <tools></tools> XML tags.
-You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.
-
+You must call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions.
+You can ONLY respond without a tool call if you are totally certain you have the final answer to the user's question or task
 After calling & executing a function, you will be provided with function results within <tool_response></tool_response> XML tags.
 
 Here are the available tools:
@@ -314,6 +311,24 @@ class AtroposAgent:
             return model
         return None
 
+    def _infer_server_base_url_for_debug(self) -> Optional[str]:
+        """
+        Best-effort inference of the configured base_url for debug logging.
+
+        This is helpful when diagnosing hangs / retries at the transport layer.
+        """
+        servers = getattr(self.server, "servers", None)
+        if isinstance(servers, list) and servers:
+            s0 = servers[0]
+            cfg = getattr(s0, "config", None)
+            base_url = getattr(cfg, "base_url", None) or getattr(s0, "base_url", None)
+            if isinstance(base_url, str) and base_url:
+                return base_url
+        base_url = getattr(self.server, "base_url", None)
+        if isinstance(base_url, str) and base_url:
+            return base_url
+        return None
+
     def _extract_response_metadata(self, response: Any) -> Dict[str, Any]:
         """
         Extract lightweight, JSON-serializable metadata from an OpenAI-style response.
@@ -359,6 +374,8 @@ class AtroposAgent:
             # Avoid dumping megabytes by default; messages can be huge.
             meta = {
                 "step": step_num,
+                "base_url": self._infer_server_base_url_for_debug(),
+                "model": chat_kwargs.get("model") or self._infer_server_model_for_debug(),
                 "chat_kwargs_keys": sorted(list(chat_kwargs.keys())),
                 "n": chat_kwargs.get("n"),
                 "max_tokens": chat_kwargs.get("max_tokens"),
@@ -421,8 +438,12 @@ class AtroposAgent:
         - `ATROPOS_AGENT_CHAT_TIMEOUT_S`: if set, wraps the await in `asyncio.wait_for`.
         - `ATROPOS_DEBUG_AGENT_WAIT_EVERY_S`: if set, prints a heartbeat while waiting.
         """
+        # Hard guardrail: never allow a single chat completion to block for more than 2 minutes.
+        # This is essential for RL data-gen stability; long hangs should be treated as failures (score=0).
         timeout_s_raw = os.getenv("ATROPOS_AGENT_CHAT_TIMEOUT_S")
-        timeout_s = float(timeout_s_raw) if timeout_s_raw else None
+        timeout_s_default = 120.0
+        timeout_s = float(timeout_s_raw) if timeout_s_raw else timeout_s_default
+        timeout_s = min(timeout_s, 120.0)
 
         wait_every_raw = os.getenv("ATROPOS_DEBUG_AGENT_WAIT_EVERY_S")
         wait_every_s = float(wait_every_raw) if wait_every_raw else None
@@ -452,9 +473,15 @@ class AtroposAgent:
                 raise
 
         try:
-            if timeout_s and timeout_s > 0:
-                return await asyncio.wait_for(_await_call(), timeout=timeout_s)
-            return await _await_call()
+            return await asyncio.wait_for(_await_call(), timeout=timeout_s)
+        except asyncio.TimeoutError as e:
+            print("\n=== ATROPOS_DEBUG_AGENT_CHAT_TIMEOUT ===", flush=True)
+            print({"step": step_num, "timeout_s": timeout_s}, flush=True)
+            raise RuntimeError(f"chat_completion timed out after {timeout_s:.1f}s") from e
+        except asyncio.CancelledError:
+            # Treat cancellation as a hard failure rather than crashing the whole env run.
+            # (Atropos/BaseEnv may cancel tasks during shutdown or retries.)
+            raise RuntimeError("chat_completion cancelled") from None
         except Exception as e:
             detail: Dict[str, Any] = {
                 "step": step_num,

@@ -438,12 +438,12 @@ class AtroposAgent:
         - `ATROPOS_AGENT_CHAT_TIMEOUT_S`: if set, wraps the await in `asyncio.wait_for`.
         - `ATROPOS_DEBUG_AGENT_WAIT_EVERY_S`: if set, prints a heartbeat while waiting.
         """
-        # Hard guardrail: never allow a single chat completion to block for more than 2 minutes.
+        # Hard guardrail: never allow a single chat completion to block for too long.
         # This is essential for RL data-gen stability; long hangs should be treated as failures (score=0).
         timeout_s_raw = os.getenv("ATROPOS_AGENT_CHAT_TIMEOUT_S")
-        timeout_s_default = 120.0
+        timeout_s_default = 240.0
         timeout_s = float(timeout_s_raw) if timeout_s_raw else timeout_s_default
-        timeout_s = min(timeout_s, 120.0)
+        timeout_s = min(timeout_s, 240.0)
 
         wait_every_raw = os.getenv("ATROPOS_DEBUG_AGENT_WAIT_EVERY_S")
         wait_every_s = float(wait_every_raw) if wait_every_raw else None

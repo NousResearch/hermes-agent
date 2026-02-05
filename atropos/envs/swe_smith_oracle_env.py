@@ -37,8 +37,11 @@ class SweSmithOracleEnvConfig(AgentEnvConfig):
 
     python_only: bool = Field(default=True, description="Filter to Python-evaluable rows")
     score_include_fail_to_pass: bool = Field(
-        default=False,
-        description="If true, score tests on PASS_TO_PASS ∪ FAIL_TO_PASS; else PASS_TO_PASS only.",
+        default=True,
+        description=(
+            "If true (default), score tests on PASS_TO_PASS ∪ FAIL_TO_PASS. "
+            "Disable to only run PASS_TO_PASS (faster but weaker signal)."
+        ),
     )
 
     prompt_mode: str = Field(
@@ -347,6 +350,10 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
 
         # Training correctness: do not reward trajectories that never actually used tools.
         if agent_result is not None and getattr(agent_result, "total_tool_calls", 0) <= 0:
+            print(
+                f"[SweSmithOracleEnv] tid={trajectory_id} verify (dataset_tests): no tool calls; score=0.0",
+                flush=True,
+            )
             return 0.0, {
                 "verification_mode": "dataset_tests",
                 "error": "No tool calls were made by the agent",

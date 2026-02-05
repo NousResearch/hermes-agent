@@ -35,6 +35,7 @@ DISTRIBUTIONS = {
             "vision": 100,
             "image_gen": 100,
             "terminal": 100,
+            "file": 100,
             "moa": 100,
             "browser": 100
         }
@@ -66,10 +67,11 @@ DISTRIBUTIONS = {
 
     # Scientific problem solving focused distribution
     "science": {
-        "description": "Scientific research with web, terminal, and browser capabilities",
+        "description": "Scientific research with web, terminal, file, and browser capabilities",
         "toolsets": {
             "web": 94,       # 94% chance of web tools
             "terminal": 94,  # 94% chance of terminal tools
+            "file": 94,      # 94% chance of file tools
             "vision": 65,    # 65% chance of vision tools
             "browser": 50,   # 50% chance of browser for accessing papers/databases
             "image_gen": 15, # 15% chance of image generation tools
@@ -79,9 +81,10 @@ DISTRIBUTIONS = {
 
     # Development-focused distribution
     "development": {
-        "description": "Terminal and reasoning with occasional web lookup",
+        "description": "Terminal, file tools, and reasoning with occasional web lookup",
         "toolsets": {
             "terminal": 80,  # 80% chance of terminal tools
+            "file": 80,      # 80% chance of file tools (read, write, patch, search)
             "moa": 60,       # 60% chance of reasoning tools
             "web": 30,       # 30% chance of web tools
             "vision": 10     # 10% chance of vision tools
@@ -108,6 +111,7 @@ DISTRIBUTIONS = {
             "vision": 50,
             "image_gen": 50,
             "terminal": 50,
+            "file": 50,
             "moa": 50,
             "browser": 50
         }
@@ -123,17 +127,19 @@ DISTRIBUTIONS = {
     
     # Terminal only
     "terminal_only": {
-        "description": "Only terminal tool for code execution tasks",
+        "description": "Terminal and file tools for code execution tasks",
         "toolsets": {
-            "terminal": 100
+            "terminal": 100,
+            "file": 100
         }
     },
     
     # Terminal + web (common for coding tasks that need docs)
     "terminal_web": {
-        "description": "Terminal with web search for documentation lookup",
+        "description": "Terminal and file tools with web search for documentation lookup",
         "toolsets": {
             "terminal": 100,
+            "file": 100,
             "web": 100
         }
     },
@@ -188,9 +194,10 @@ DISTRIBUTIONS = {
     
     # Terminal-focused tasks distribution (for nous-terminal-tasks.jsonl)
     "terminal_tasks": {
-        "description": "Terminal-focused distribution with high terminal availability, occasional other tools",
+        "description": "Terminal-focused distribution with high terminal/file availability, occasional other tools",
         "toolsets": {
             "terminal": 97,   # 97% - terminal almost always available
+            "file": 97,       # 97% - file tools almost always available
             "web": 15,        # 15% - web search/scrape for documentation
             "browser": 10,    # 10% - browser occasionally for web interaction
             "vision": 8,      # 8% - vision analysis rarely
@@ -200,10 +207,11 @@ DISTRIBUTIONS = {
     
     # Mixed browser+terminal tasks distribution (for mixed-browser-terminal-tasks.jsonl)
     "mixed_tasks": {
-        "description": "Mixed distribution with high browser and terminal availability for complex tasks",
+        "description": "Mixed distribution with high browser, terminal, and file availability for complex tasks",
         "toolsets": {
             "browser": 92,    # 92% - browser tools highly available
-            "terminal": 92,   # 92% - terminal highly available  
+            "terminal": 92,   # 92% - terminal highly available
+            "file": 92,       # 92% - file tools highly available
             "web": 35,        # 35% - web search/scrape fairly common
             "vision": 15,     # 15% - vision analysis occasionally
             "image_gen": 15   # 15% - image generation occasionally

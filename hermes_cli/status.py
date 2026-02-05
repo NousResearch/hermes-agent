@@ -74,6 +74,8 @@ def show_status(args):
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",
         "FAL": "FAL_KEY",
+        "Tinker": "TINKER_API_KEY",
+        "WandB": "WANDB_API_KEY",
     }
     
     for name, env_var in keys.items():

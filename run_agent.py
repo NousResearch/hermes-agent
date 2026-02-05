@@ -1764,10 +1764,16 @@ class AIAgent:
                         self._invalid_tool_retries = 0
                     
                     # Validate tool call arguments are valid JSON
+                    # Handle empty strings as empty objects (common model quirk)
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
+                        args = tc.function.arguments
+                        # Treat empty/whitespace strings as empty object
+                        if not args or not args.strip():
+                            tc.function.arguments = "{}"
+                            continue
                         try:
-                            json.loads(tc.function.arguments)
+                            json.loads(args)
                         except json.JSONDecodeError as e:
                             invalid_json_args.append((tc.function.name, str(e)))
                     

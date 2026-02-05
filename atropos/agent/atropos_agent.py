@@ -19,6 +19,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from uuid import uuid4
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
@@ -292,6 +293,25 @@ class AtroposAgent:
         # in JSON examples; we only want to substitute the single `{tools_json}` token.
         return AGENT_SYSTEM_PROMPT.replace("{tools_json}", tools_json)
 
+    def _infer_server_model_for_debug(self) -> Optional[str]:
+        """
+        Best-effort inference of the configured model name for debug payload saving.
+
+        ManagedServer/server_manager typically injects `model` internally, so `chat_kwargs`
+        may not contain it. For replaying saved payloads via curl, it's useful to persist it.
+        """
+        servers = getattr(self.server, "servers", None)
+        if isinstance(servers, list) and servers:
+            s0 = servers[0]
+            cfg = getattr(s0, "config", None)
+            model = getattr(cfg, "model_name", None) or getattr(s0, "model_name", None)
+            if isinstance(model, str) and model:
+                return model
+        model = getattr(self.server, "model_name", None) or getattr(self.server, "model", None)
+        if isinstance(model, str) and model:
+            return model
+        return None
+
     def _debug_dump_request(self, *, step_num: int, chat_kwargs: Dict[str, Any]) -> None:
         if os.getenv("ATROPOS_DEBUG_AGENT_REQUEST") != "1":
             return
@@ -317,6 +337,24 @@ class AtroposAgent:
                     dumped = repr(payload)
                 print("\n=== ATROPOS_DEBUG_AGENT_REQUEST_FULL ===", flush=True)
                 print(dumped[:200_000], flush=True)
+
+            # Optional: save the FULL request payload to disk (no truncation).
+            save_dir = os.getenv("ATROPOS_DEBUG_AGENT_REQUEST_SAVE_DIR")
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+                payload: Dict[str, Any] = dict(chat_kwargs)
+                if "model" not in payload:
+                    model = self._infer_server_model_for_debug()
+                    if model:
+                        payload["model"] = model
+                # Use a unique filename so parallel trajectories don't clobber each other.
+                fname = os.path.join(
+                    save_dir,
+                    f"atropos_agent_request_step{step_num}_{int(time.time()*1000)}_{os.getpid()}_{uuid4().hex}.json",
+                )
+                with open(fname, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                print(f"[AtroposAgent] saved request payload: {fname}", flush=True)
         except Exception:
             return
 

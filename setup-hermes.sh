@@ -81,6 +81,53 @@ pip install -e ".[all]" > /dev/null 2>&1 || pip install -e "." > /dev/null
 echo -e "${GREEN}✓${NC} Dependencies installed"
 
 # ============================================================================
+# Optional: ripgrep (for faster file search)
+# ============================================================================
+
+echo -e "${CYAN}→${NC} Checking ripgrep (optional, for faster search)..."
+
+if command -v rg &> /dev/null; then
+    echo -e "${GREEN}✓${NC} ripgrep found"
+else
+    echo -e "${YELLOW}⚠${NC} ripgrep not found (file search will use grep fallback)"
+    read -p "Install ripgrep for faster search? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        INSTALLED=false
+        
+        # Check if sudo is available
+        if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+            if command -v apt &> /dev/null; then
+                sudo apt install -y ripgrep && INSTALLED=true
+            elif command -v dnf &> /dev/null; then
+                sudo dnf install -y ripgrep && INSTALLED=true
+            fi
+        fi
+        
+        # Try brew (no sudo needed)
+        if [ "$INSTALLED" = false ] && command -v brew &> /dev/null; then
+            brew install ripgrep && INSTALLED=true
+        fi
+        
+        # Try cargo (no sudo needed)
+        if [ "$INSTALLED" = false ] && command -v cargo &> /dev/null; then
+            echo -e "${CYAN}→${NC} Trying cargo install (no sudo required)..."
+            cargo install ripgrep && INSTALLED=true
+        fi
+        
+        if [ "$INSTALLED" = true ]; then
+            echo -e "${GREEN}✓${NC} ripgrep installed"
+        else
+            echo -e "${YELLOW}⚠${NC} Auto-install failed. Install options:"
+            echo "    sudo apt install ripgrep     # Debian/Ubuntu"
+            echo "    brew install ripgrep         # macOS"
+            echo "    cargo install ripgrep        # With Rust (no sudo)"
+            echo "    https://github.com/BurntSushi/ripgrep#installation"
+        fi
+    fi
+fi
+
+# ============================================================================
 # Environment file
 # ============================================================================
 

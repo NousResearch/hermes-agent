@@ -128,6 +128,78 @@ function Test-Node {
     return $true  # Don't fail - Node is optional
 }
 
+function Test-Ripgrep {
+    Write-Info "Checking ripgrep (optional, for faster file search)..."
+    
+    if (Get-Command rg -ErrorAction SilentlyContinue) {
+        $version = rg --version | Select-Object -First 1
+        Write-Success "$version found"
+        $script:HasRipgrep = $true
+        return $true
+    }
+    
+    Write-Warning "ripgrep not found (file search will use findstr fallback)"
+    
+    # Check what package managers are available
+    $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
+    $hasChoco = Get-Command choco -ErrorAction SilentlyContinue
+    $hasScoop = Get-Command scoop -ErrorAction SilentlyContinue
+    
+    # Offer to install
+    Write-Host ""
+    $response = Read-Host "Would you like to install ripgrep? (faster search, recommended) [Y/n]"
+    
+    if ($response -eq "" -or $response -match "^[Yy]") {
+        Write-Info "Installing ripgrep..."
+        
+        if ($hasWinget) {
+            try {
+                winget install BurntSushi.ripgrep.MSVC --silent 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "ripgrep installed via winget"
+                    $script:HasRipgrep = $true
+                    return $true
+                }
+            } catch { }
+        }
+        
+        if ($hasChoco) {
+            try {
+                choco install ripgrep -y 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "ripgrep installed via chocolatey"
+                    $script:HasRipgrep = $true
+                    return $true
+                }
+            } catch { }
+        }
+        
+        if ($hasScoop) {
+            try {
+                scoop install ripgrep 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "ripgrep installed via scoop"
+                    $script:HasRipgrep = $true
+                    return $true
+                }
+            } catch { }
+        }
+        
+        Write-Warning "Auto-install failed. You can install manually:"
+    } else {
+        Write-Info "Skipping ripgrep installation. To install manually:"
+    }
+    
+    # Show manual install instructions
+    Write-Info "  winget install BurntSushi.ripgrep.MSVC"
+    Write-Info "  Or: choco install ripgrep"
+    Write-Info "  Or: scoop install ripgrep"
+    Write-Info "  Or download from: https://github.com/BurntSushi/ripgrep/releases"
+    
+    $script:HasRipgrep = $false
+    return $true  # Don't fail - ripgrep is optional
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -405,6 +477,20 @@ function Write-Completion {
     Write-Host ""
     Write-Host "⚡ Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
     Write-Host ""
+    
+    # Show notes about optional tools
+    if (-not $HasNode) {
+        Write-Host "Note: Node.js was not found. Browser automation tools" -ForegroundColor Yellow
+        Write-Host "will have limited functionality." -ForegroundColor Yellow
+        Write-Host ""
+    }
+    
+    if (-not $HasRipgrep) {
+        Write-Host "Note: ripgrep (rg) was not found. File search will use" -ForegroundColor Yellow
+        Write-Host "findstr as a fallback. For faster search:" -ForegroundColor Yellow
+        Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
+        Write-Host ""
+    }
 }
 
 # ============================================================================
@@ -416,7 +502,8 @@ function Main {
     
     if (-not (Test-Python)) { exit 1 }
     if (-not (Test-Git)) { exit 1 }
-    Test-Node  # Optional, doesn't fail
+    Test-Node      # Optional, doesn't fail
+    Test-Ripgrep   # Optional, doesn't fail
     
     Install-Repository
     Install-Venv

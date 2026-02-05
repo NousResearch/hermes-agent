@@ -151,6 +151,20 @@ OPTIONAL_ENV_VARS = {
         "tools": ["image_generate"],
         "password": True,
     },
+    "TINKER_API_KEY": {
+        "description": "Tinker API key for RL training",
+        "prompt": "Tinker API key",
+        "url": "https://tinker-console.thinkingmachines.ai/keys",
+        "tools": ["rl_start_training", "rl_check_status", "rl_stop_training"],
+        "password": True,
+    },
+    "WANDB_API_KEY": {
+        "description": "Weights & Biases API key for experiment tracking",
+        "prompt": "WandB API key",
+        "url": "https://wandb.ai/authorize",
+        "tools": ["rl_get_results", "rl_check_status"],
+        "password": True,
+    },
     "OPENAI_BASE_URL": {
         "description": "Custom OpenAI-compatible API endpoint URL",
         "prompt": "API base URL (e.g., https://api.example.com/v1)",

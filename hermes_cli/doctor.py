@@ -167,6 +167,13 @@ def run_doctor(args):
     else:
         check_warn("git not found", "(optional)")
     
+    # ripgrep (optional, for faster file search)
+    if shutil.which("rg"):
+        check_ok("ripgrep (rg)", "(faster file search)")
+    else:
+        check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
+        check_info("Install for faster search: sudo apt install ripgrep")
+    
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "docker":

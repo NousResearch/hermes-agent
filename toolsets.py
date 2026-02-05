@@ -90,12 +90,30 @@ TOOLSETS = {
         "includes": []
     },
     
+    "rl": {
+        "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
+        "tools": [
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_list_runs", "rl_test_inference"
+        ],
+        "includes": []
+    },
+    
+    "file": {
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
+        "tools": ["read_file", "write_file", "patch", "search"],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal"],
-        "includes": ["web"]  # For searching error messages and solutions
+        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
     "safe": {
@@ -115,6 +133,8 @@ TOOLSETS = {
             "web_search", "web_extract",
             # Terminal
             "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
             # Vision
             "vision_analyze",
             # Image generation
@@ -143,6 +163,8 @@ TOOLSETS = {
         "tools": [
             # Terminal - enabled with dangerous command approval system
             "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
             # Web tools
             "web_search", "web_extract",
             # Vision - analyze images sent by users
@@ -177,6 +199,8 @@ TOOLSETS = {
             "web_search", "web_extract",
             # Terminal - only for trusted personal accounts
             "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
             # Vision
             "vision_analyze",
             # Skills

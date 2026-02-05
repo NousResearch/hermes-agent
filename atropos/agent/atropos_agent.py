@@ -353,17 +353,25 @@ class AtroposAgent:
             if not wait_every_s or wait_every_s <= 0:
                 return await managed.chat_completion(**chat_kwargs)
 
+            # Heartbeat mode: wait in chunks without cancelling the underlying request.
+            # NOTE: do NOT use `asyncio.wait_for(task, timeout=...)` here, because a timeout
+            # will cancel the task and surface as `CancelledError` on the next loop.
             task = asyncio.create_task(managed.chat_completion(**chat_kwargs))
             t0 = time.perf_counter()
-            while True:
-                try:
-                    return await asyncio.wait_for(task, timeout=wait_every_s)
-                except TimeoutError:
+            try:
+                while True:
+                    done, _pending = await asyncio.wait({task}, timeout=wait_every_s)
+                    if task in done:
+                        return task.result()
+
                     waited = time.perf_counter() - t0
                     print(
                         f"[AtroposAgent] step={step_num} still waiting for chat_completion... ({waited:.1f}s)",
                         flush=True,
                     )
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
 
         try:
             if timeout_s and timeout_s > 0:

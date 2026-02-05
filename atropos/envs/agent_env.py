@@ -448,6 +448,8 @@ class AgentEnv(BaseEnv, ABC, Generic[AgentEnvConfigT]):
 
         if len(items) != self.config.group_size:
             return None, backlog
+        
+        # TODO: Mack sure logprobs included
 
         group: ScoredDataGroup = ScoredDataGroup(
             tokens=[],

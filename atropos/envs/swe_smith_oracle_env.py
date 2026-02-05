@@ -6,6 +6,8 @@ This environment is intentionally minimal:
 - runs an AtroposAgent tool loop to apply a fix
 - verifies by running pytest nodeids from the dataset (reward = pass/fail)
 - Python only (no multi-language support currently, need to properly bauild & add to dropbox)
+- TODO: Get the other nonpython sandboxes up and running, then add a config knob to switch between them per row
+- oh and add to dockerhub
 
 Dataset: NousResearch/SWE-smith-oracle (train; does NOT use SWE-bench eval set).
 """
@@ -185,6 +187,8 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
         # The dataset "text" field can be extremely large (e.g. includes large code blobs
         # and long test lists). In local dev and bring-up runs this can make the first LLM
         # call appear "hung" while the model chews through a massive prompt. Keep a cap.
+
+        # TODO: Remove, smoke test only
         def _cap(s: str, n: int) -> tuple[str, bool]:
             if len(s) <= n:
                 return s, False
@@ -200,6 +204,7 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
 
         repo_dir = self._repo_name(item)
         verify_note = ""
+        # TODO: Remove, smoke testing only
         if self.config.verification_mode == "install":
             verify_note = (
                 "\nVerification for this run is INSTALL-ONLY:\n"
@@ -272,7 +277,9 @@ class SweSmithOracleEnv(AgentEnv[SweSmithOracleEnvConfig]):
 
         # Prefer a lightweight "fetch by sha" to avoid pulling full history.
         # If it fails (some servers disallow fetching unadvertised objects, or we hit
-        # shallow-object edge cases), fall back to a full clone.
+        # shallow-object edge cases), fall back to a full clone
+
+        # TODO: tbh, should just do this before setting up worktree & after sandbox build
         clone_attempts: list[tuple[str, str]] = []
         clone_attempts.append(
             (

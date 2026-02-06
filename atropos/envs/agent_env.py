@@ -60,6 +60,16 @@ class AgentEnvConfig(BaseEnvConfig):
         ),
     )
     purge_job_on_shutdown: bool = Field(default=True, description="Nomad mode: stop/purge job on shutdown")
+    
+    # Nomad driver selection (docker or singularity)
+    driver: str = Field(
+        default="docker",
+        description="Nomad task driver: 'docker' (default) or 'singularity' (for HPC without sudo Docker)",
+    )
+    singularity_image: Optional[str] = Field(
+        default=None,
+        description="Path to .sif file for Singularity driver (required if driver='singularity')",
+    )
 
     # modal mode settings (stub; implementation pending)
     modal_app_name: str = Field(default="atropos-sandbox", description="Modal app name (stub)")

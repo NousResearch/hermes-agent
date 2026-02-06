@@ -610,3 +610,248 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 | `skills/` | On-demand knowledge documents |
 | `docs/` | Documentation |
 | `configs/` | Example batch run scripts |
+
+# Atropos Integrations & RL Training
+
+Atropos is an RL training framework that uses Hermes-Agent for agent-based environments. This section covers setting up the sandbox infrastructure with either Docker or Singularity backends.
+
+## Prerequisites
+
+### 1. Install Nomad
+Nomad is a workload orchestrator that manages the sandbox containers:
+
+```bash
+# Install Nomad (Linux)
+curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt update && sudo apt install nomad
+
+# Verify installation
+nomad --version
+```
+
+For other platforms, see: https://developer.hashicorp.com/nomad/docs/install
+
+### 2. Install Atropos Dependencies
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[atropos]'
+```
+
+## Backend Options
+
+Atropos supports two container backends for the sandbox environment:
+
+| Backend | Use Case | Requirements |
+|---------|----------|--------------|
+| **Docker** | Development, servers with Docker | Docker installed, user in `docker` group |
+| **Singularity** | HPC clusters, rootless environments | Apptainer/Singularity installed (no root needed) |
+
+---
+
+## Docker Backend (Default)
+
+### 1. Build the Sandbox Image
+
+```bash
+cd atropos
+docker build -t atropos-sandbox:local .
+```
+
+### 2. Start Nomad (Development Mode)
+
+```bash
+# Start Nomad with Docker driver
+nomad agent -dev -config=nomad-dev.hcl
+```
+
+Or create `nomad-dev.hcl`:
+```hcl
+client {
+  enabled = true
+  options {
+    "driver.allowlist" = "docker"
+  }
+}
+```
+
+### 3. Run with Docker Backend
+
+```bash
+source .venv/bin/activate
+
+# Test the environment
+python -m atropos.envs.swe_smith_oracle_env process \
+    --env.use_wandb false \
+    --env.total_steps 1 \
+    --env.max_items 1 \
+    --env.driver docker
+```
+
+---
+
+## Singularity Backend (HPC/Rootless)
+
+Singularity/Apptainer is ideal for HPC clusters where Docker requires root privileges.
+
+### 1. Build the Singularity Image
+
+```bash
+cd atropos
+
+# Option A: Convert from Docker image (if Docker is available)
+docker build -t atropos-sandbox:local .
+apptainer build atropos-sandbox.sif docker-daemon://atropos-sandbox:local
+
+# Option B: Build directly from Dockerfile (requires root or fakeroot)
+apptainer build atropos-sandbox.sif docker://ghcr.io/nousresearch/atropos-sandbox:latest
+```
+
+### 2. Start Nomad with raw_exec Driver
+
+Singularity uses Nomad's `raw_exec` driver. Create `nomad-singularity.hcl`:
+
+```hcl
+client {
+  enabled = true
+  options {
+    "driver.allowlist" = "raw_exec,docker"
+  }
+}
+
+plugin "raw_exec" {
+  config {
+    enabled = true
+  }
+}
+```
+
+Start Nomad:
+```bash
+nomad agent -dev -config=nomad-singularity.hcl
+```
+
+### 3. Run with Singularity Backend
+
+```bash
+source .venv/bin/activate
+
+# Basic test
+python -m atropos.envs.swe_smith_oracle_env process \
+    --env.use_wandb false \
+    --env.total_steps 1 \
+    --env.max_items 1 \
+    --env.driver singularity \
+    --env.singularity_image /path/to/atropos-sandbox.sif
+
+# Full example with all options
+python -m atropos.envs.swe_smith_oracle_env process \
+    --env.use_wandb false \
+    --env.total_steps 10 \
+    --env.group_size 4 \
+    --env.max_items 100 \
+    --env.driver singularity \
+    --env.singularity_image /path/to/atropos-sandbox.sif \
+    --env.slots_per_container 10 \
+    --env.min_containers 1 \
+    --env.max_containers 5
+```
+
+---
+
+## CLI Arguments Reference
+
+### Environment Configuration (`--env.*`)
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--env.driver` | `docker` | Container backend: `docker` or `singularity` |
+| `--env.singularity_image` | - | Path to `.sif` file (required for singularity driver) |
+| `--env.sandbox_image` | `atropos-sandbox:local` | Docker image name (for docker driver) |
+| `--env.slots_per_container` | `10` | Number of parallel slots per container |
+| `--env.min_containers` | `1` | Minimum number of containers to run |
+| `--env.max_containers` | `10` | Maximum containers for auto-scaling |
+| `--env.nomad_address` | `http://localhost:4646` | Nomad server address |
+| `--env.privileged` | `false` | Run containers in privileged mode (Docker only) |
+
+### Processing Configuration
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--env.total_steps` | `1` | Number of processing steps |
+| `--env.group_size` | `1` | Items per processing group |
+| `--env.max_items` | `0` | Max dataset items (0 = all) |
+| `--env.use_wandb` | `true` | Enable Weights & Biases logging |
+| `--env.agent_max_steps` | `50` | Max agent steps per trajectory |
+
+---
+
+## Troubleshooting
+
+### Port Already in Use
+```bash
+# Find and kill process on port 8080
+lsof -ti :8080 | xargs kill
+
+# Or use a different port
+--env.port 8081
+```
+
+### Singularity: Permission Denied
+```bash
+# Check Apptainer is installed
+apptainer --version
+
+# Ensure the .sif file is readable
+ls -la /path/to/atropos-sandbox.sif
+```
+
+### Nomad: Job Not Starting
+```bash
+# Check Nomad status
+nomad status
+
+# View job logs
+nomad alloc logs -job atropos-sandbox-agent-env
+
+# Check stderr for errors
+nomad alloc logs -stderr -job atropos-sandbox-agent-env
+```
+
+### OpenAI API Token Error
+If you see `NotImplementedError: OpenAI endpoints do not support token IDs`:
+```bash
+# For testing/evaluation only (not training)
+export ATROPOS_ALLOW_DUMMY_MANAGED_SERVER=1
+```
+
+---
+
+## Example: Full HPC Workflow
+
+```bash
+# 1. Setup environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[atropos]'
+
+# 2. Build Singularity image (on a machine with Docker)
+cd atropos
+docker build -t atropos-sandbox:local .
+apptainer build atropos-sandbox.sif docker-daemon://atropos-sandbox:local
+
+# 3. Transfer .sif to HPC cluster
+scp atropos-sandbox.sif user@hpc-cluster:/scratch/user/
+
+# 4. On HPC cluster: Start Nomad
+nomad agent -dev -config=nomad-singularity.hcl &
+
+# 5. Run training
+python -m atropos.envs.swe_smith_oracle_env process \
+    --env.driver singularity \
+    --env.singularity_image /scratch/user/atropos-sandbox.sif \
+    --env.total_steps 100 \
+    --env.max_items 1000
+```

@@ -44,6 +44,11 @@ class SlotPoolConfig:
     cpu: int = 500  # MHz
     memory: int = 512  # MB
     
+    # Driver selection: "docker" or "singularity"
+    driver: str = "docker"
+    # Path to .sif file for singularity driver (required if driver="singularity")
+    singularity_image: Optional[str] = None
+    
     # Scaling settings
     min_containers: int = 1
     max_containers: int = 10
@@ -238,7 +243,7 @@ class SlotPool:
 
             if job is None:
                 # Deploy new job
-                logger.info(f"Deploying sandbox job: {self.config.job_id}")
+                logger.info(f"Deploying sandbox job: {self.config.job_id} (driver={self.config.driver})")
                 job_spec = create_sandbox_job(
                     job_id=self.config.job_id,
                     image=self.config.image,
@@ -248,6 +253,8 @@ class SlotPool:
                     cpu=self.config.cpu,
                     memory=self.config.memory,
                     datacenter=self.config.datacenter,
+                    driver=self.config.driver,
+                    singularity_image=self.config.singularity_image,
                 )
                 result = await self.nomad.submit_job(job_spec)
                 if "error" in result:

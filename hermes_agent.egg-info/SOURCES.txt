@@ -15,8 +15,13 @@ atropos/agent/atropos_agent.py
 atropos/api/__init__.py
 atropos/api/tool_executor_server.py
 atropos/api/tool_server.py
+atropos/backends/__init__.py
+atropos/backends/base.py
+atropos/backends/modal_backend.py
+atropos/backends/nomad_backend.py
 atropos/envs/__init__.py
 atropos/envs/agent_env.py
+atropos/envs/hermes_compat_test_env.py
 atropos/envs/sandbox_terminal_smoke_env.py
 atropos/envs/swe_smith_oracle_env.py
 atropos/envs/test_env.py
@@ -50,6 +55,7 @@ tests/test_modal_terminal.py
 tests/test_nous_api_limits.py
 tests/test_nous_api_pattern.py
 tests/test_temperature_fix.py
+tests/test_tool_call_parsing.py
 tests/test_web_tools.py
 tools/__init__.py
 tools/browser_tool.py

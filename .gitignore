@@ -44,3 +44,10 @@ images/
 cli-config.yaml
 
 .DS_Store
+
+# artifacts
+*.jsonl
+*.html
+*.json
+*.log
+*.csv

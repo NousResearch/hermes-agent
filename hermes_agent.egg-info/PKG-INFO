@@ -647,3 +647,13 @@ All environment variables can be configured in the `.env` file (copy from `.env.
 | `skills/` | On-demand knowledge documents |
 | `docs/` | Documentation |
 | `configs/` | Example batch run scripts |
+
+# Atropos Integrations & RL Training
+
+## Nomad Setup
+Follow this: https://developer.hashicorp.com/nomad/docs/deploy
+
+## Atropos dependencies
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[atropos]'

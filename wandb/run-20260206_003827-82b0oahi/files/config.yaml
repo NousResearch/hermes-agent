@@ -1,0 +1,180 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            2gw7xuffca69jbm2b60l3w5ymo5pb5lf:
+                args:
+                    - process
+                    - --env.driver
+                    - singularity
+                    - --env.singularity_image
+                    - /root/Hermes-Agent/atropos/atropos-sandbox.sif
+                email: shannon@nousresearch.com
+                executable: /root/Hermes-Agent/.venv/bin/python
+                git:
+                    commit: 4d619bcd21feedc9eed36c53c038585d97e7295e
+                    remote: https://github.com/NousResearch/Hermes-Agent.git
+                host: vultr
+                os: Linux-6.8.0-90-generic-x86_64-with-glibc2.39
+                program: -m atropos.envs.swe_smith_oracle_env
+                python: CPython 3.12.3
+                root: /root/Hermes-Agent
+                startedAt: "2026-02-06T00:38:27.351013Z"
+                writerId: 2gw7xuffca69jbm2b60l3w5ymo5pb5lf
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 11
+                - 49
+                - 51
+                - 95
+            "3":
+                - 13
+                - 16
+            "4": 3.12.3
+            "5": 0.24.2
+            "6": 5.0.0
+            "12": 0.24.2
+            "13": linux-x86_64
+acquire_timeout_s:
+    value: 30
+agent_max_steps:
+    value: 50
+agent_max_tokens:
+    value: null
+agent_temperature:
+    value: 0.7
+agent_tool_delay_s:
+    value: 0
+allow_network:
+    value: true
+batch_size:
+    value: 1
+custom_thinking_prompt:
+    value: null
+data_dir_to_save_evals:
+    value: null
+data_path_to_save_groups:
+    value: data/swe_smith_oracle_env_2.jsonl
+dataset_name:
+    value: NousResearch/SWE-smith-oracle
+dataset_split:
+    value: train
+disabled_toolsets:
+    value: []
+driver:
+    value: singularity
+enabled_toolsets:
+    value:
+        - terminal
+ensure_scores_are_not_same:
+    value: false
+eval_handling:
+    value: STOP_TRAIN
+eval_limit_ratio:
+    value: 0.5
+group_size:
+    value: 1
+include_messages:
+    value: true
+inference_weight:
+    value: 1
+install_timeout_s:
+    value: 600
+max_batches_offpolicy:
+    value: 3
+max_containers:
+    value: 10
+max_eval_workers:
+    value: 16
+max_items:
+    value: 0
+max_num_workers:
+    value: -1
+max_num_workers_per_node:
+    value: 8
+max_reasoning_tokens:
+    value: null
+max_token_length:
+    value: 8192
+min_batch_allocation:
+    value: null
+min_containers:
+    value: 1
+min_items_sent_before_logging:
+    value: 2
+modal_app_name:
+    value: atropos-sandbox
+modal_function_name:
+    value: sandbox_server
+modal_volume_mount_path:
+    value: /data
+modal_volume_name:
+    value: null
+nomad_address:
+    value: http://localhost:4646
+num_rollouts_per_group_for_logging:
+    value: 1
+num_rollouts_to_keep:
+    value: 32
+privileged:
+    value: false
+prompt_mode:
+    value: problem_statement
+purge_job_on_shutdown:
+    value: true
+purge_job_on_start:
+    value: true
+python_only:
+    value: true
+reasoning_effort:
+    value: null
+repo_base_url:
+    value: https://github.com
+require_sandbox:
+    value: false
+require_stateful_sandbox:
+    value: false
+rollout_server_url:
+    value: http://localhost:8000
+sandbox_image:
+    value: atropos-sandbox:local
+sandbox_job_id:
+    value: atropos-sandbox-agent-env
+score_include_fail_to_pass:
+    value: true
+seed:
+    value: 0
+shuffle:
+    value: true
+singularity_image:
+    value: /root/Hermes-Agent/atropos/atropos-sandbox.sif
+slots_per_container:
+    value: 10
+steps_per_eval:
+    value: 1
+test_timeout_s:
+    value: 600
+thinking_mode:
+    value: false
+tokenizer_name:
+    value: NousResearch/Hermes-4.3-36B
+tool_batch_window_ms:
+    value: 20
+tool_max_batch_size:
+    value: 200
+tool_pool_mode:
+    value: nomad
+tool_server_token:
+    value: null
+tool_server_url:
+    value: null
+total_steps:
+    value: 1
+use_wandb:
+    value: true
+wandb_name:
+    value: swe_smith_oracle
+worker_timeout:
+    value: 600

@@ -241,9 +241,10 @@ class NomadClient:
             if networks:
                 network = networks[0]
                 address = network.get("IP")
-                # Look for dynamic ports
+                # Look for dynamic ports OR reserved ports (Singularity/raw_exec uses reserved)
                 dyn_ports = network.get("DynamicPorts") or []
-                for dp in dyn_ports:
+                reserved_ports = network.get("ReservedPorts") or []
+                for dp in dyn_ports + reserved_ports:
                     if dp.get("Label") == "http":
                         port = dp.get("Value")
                         break
@@ -353,16 +354,18 @@ def create_sandbox_job(
     memory: int = 512,
     port: int = 8080,
     datacenter: str = "dc1",
+    driver: str = "docker",  # "docker" or "singularity"
+    singularity_image: str = None,  # Path to .sif file for singularity driver
 ) -> Dict[str, Any]:
     """
     Create a sandbox job specification.
     
-    This job runs the sandbox_server.py inside a Python container,
+    This job runs the sandbox_server.py inside a container,
     with the specified number of slots for agent workspaces.
     
     Args:
         job_id: Unique job identifier
-        image: Docker image to use
+        image: Docker image to use (for docker driver)
         count: Number of container instances
         slots_per_container: Number of slots per container
         privileged: Run container in privileged mode (recommended for bubblewrap)
@@ -370,10 +373,81 @@ def create_sandbox_job(
         memory: Memory allocation in MB
         port: HTTP port for sandbox server
         datacenter: Nomad datacenter
+        driver: Container driver - "docker" or "singularity"
+        singularity_image: Path to .sif file (required if driver="singularity")
         
     Returns:
         Job specification dict
     """
+    # Build task config based on driver
+    if driver == "singularity":
+        if not singularity_image:
+            raise ValueError("singularity_image path required when driver='singularity'")
+        
+        # Use raw_exec driver to run apptainer via shell for variable expansion
+        # The container binds the allocation directory for workspace persistence
+        # For raw_exec, we use static port since Nomad's dynamic port mapping doesn't
+        # work the same as Docker - the process runs directly on the host.
+        shell_cmd = (
+            f'apptainer run '
+            f'--bind "$NOMAD_ALLOC_DIR/data:/data" '
+            f'--pwd /app '
+            f'--env PYTHONUNBUFFERED=1 '
+            f'{singularity_image} '
+            f'python sandbox_server.py '
+            f'--port {port} '
+            f'--slots {slots_per_container} '
+            f'--data-dir /data'
+        )
+        task_config = {
+            "command": "/bin/sh",
+            "args": ["-c", shell_cmd],
+        }
+        task_driver = "raw_exec"
+    else:
+        # Docker driver (default)
+        task_config = {
+            "image": image,
+            "force_pull": False,  # Use local image, don't try to pull
+            "ports": ["http"],
+            "privileged": privileged,
+            "command": "python",
+            "args": [
+                "sandbox_server.py",
+                "--port", str(port),
+                "--slots", str(slots_per_container),
+                "--data-dir", "/data",
+            ],
+            # Note: On Linux, you can mount persistent storage:
+            # "volumes": ["${NOMAD_ALLOC_DIR}/data:/data"],
+            # On macOS/Docker Desktop, skip volumes for PoC
+            # (container /data is ephemeral but works for testing)
+        }
+        task_driver = "docker"
+    
+    # For Singularity/raw_exec, use static ports since the process runs directly on host.
+    # For Docker, use dynamic ports with port mapping.
+    if driver == "singularity":
+        network_config = {
+            "Mode": "host",
+            "ReservedPorts": [
+                {
+                    "Label": "http",
+                    "Value": port,
+                }
+            ],
+        }
+    else:
+        network_config = {
+            "Mode": "host",
+            "DynamicPorts": [
+                {
+                    "Label": "http",
+                    "To": port,
+                }
+            ],
+        }
+    
     return {
         "ID": job_id,
         "Name": job_id,
@@ -390,38 +464,12 @@ def create_sandbox_job(
                     "HealthCheck": "task_states",
                     "MinHealthyTime": 0,
                 },
-                "Networks": [
-                    {
-                        "Mode": "host",
-                        "DynamicPorts": [
-                            {
-                                "Label": "http",
-                                "To": port,
-                            }
-                        ],
-                    }
-                ],
+                "Networks": [network_config],
                 "Tasks": [
                     {
                         "Name": "sandbox-server",
-                        "Driver": "docker",
-                        "Config": {
-                            "image": image,
-                            "force_pull": False,  # Use local image, don't try to pull
-                            "ports": ["http"],
-                            "privileged": privileged,
-                            "command": "python",
-                            "args": [
-                                "sandbox_server.py",
-                                "--port", str(port),
-                                "--slots", str(slots_per_container),
-                                "--data-dir", "/data",
-                            ],
-                            # Note: On Linux, you can mount persistent storage:
-                            # "volumes": ["${NOMAD_ALLOC_DIR}/data:/data"],
-                            # On macOS/Docker Desktop, skip volumes for PoC
-                            # (container /data is ephemeral but works for testing)
-                        },
+                        "Driver": task_driver,
+                        "Config": task_config,
                         "Env": {
                             "PYTHONUNBUFFERED": "1",
                             "NOMAD_ALLOC_DIR": "${NOMAD_ALLOC_DIR}",

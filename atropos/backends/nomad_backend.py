@@ -26,6 +26,10 @@ class NomadBackendConfig:
     privileged: bool
     acquire_timeout_s: float
     purge_job_on_start: bool
+    # Driver selection: "docker" or "singularity"
+    driver: str = "docker"
+    # Path to .sif file for singularity driver (required if driver="singularity")
+    singularity_image: Optional[str] = None
 
     @classmethod
     def from_agent_env_config(cls, cfg: Any) -> "NomadBackendConfig":
@@ -39,6 +43,8 @@ class NomadBackendConfig:
             privileged=bool(getattr(cfg, "privileged")),
             acquire_timeout_s=float(getattr(cfg, "acquire_timeout_s")),
             purge_job_on_start=bool(getattr(cfg, "purge_job_on_start", False)),
+            driver=str(getattr(cfg, "driver", "docker")),
+            singularity_image=getattr(cfg, "singularity_image", None),
         )
 
 
@@ -56,6 +62,8 @@ class NomadToolBackend(ToolBackend):
                 privileged=config.privileged,
                 acquire_timeout=config.acquire_timeout_s,
                 purge_job_on_start=bool(config.purge_job_on_start),
+                driver=config.driver,
+                singularity_image=config.singularity_image,
             )
         )
 

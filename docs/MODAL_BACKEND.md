@@ -202,10 +202,6 @@ config = ModalSandboxConfig(
 )
 ```
 
----
-
----
-
 ## Troubleshooting
 
 ### "Modal package not installed"

@@ -51,3 +51,14 @@ cli-config.yaml
 *.json
 *.log
 *.csv
+
+# Singularity/Apptainer images (large binary files)
+*.sif
+
+# Test files
+test_singularity_*.py
+test_*.py
+!tests/test_*.py
+
+# Nomad data
+/tmp/NomadClient*/

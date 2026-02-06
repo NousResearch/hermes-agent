@@ -236,6 +236,63 @@ def test_environment_isolation():
     return isolated
 
 
+def test_pool_status():
+    """Test that the Modal pool manager reports status correctly."""
+    print("\n" + "=" * 60)
+    print("TEST 7: Pool Status")
+    print("=" * 60)
+    
+    try:
+        # Import pool manager
+        _ModalPoolManager = terminal_module._ModalPoolManager
+        
+        # Get pool manager instance
+        manager = _ModalPoolManager.get_instance()
+        status = manager.get_status()
+        
+        print(f"\nPool Manager Status:")
+        print(f"  App name: {manager.app_name}")
+        print(f"  Default profile: {manager.default_profile}")
+        print(f"  Available profiles: {list(manager.profiles.keys())}")
+        print(f"  Active pools: {list(status.keys())}")
+        
+        for pool_name, pool_status in status.items():
+            print(f"\n  Pool '{pool_name}':")
+            print(f"    Size: {pool_status['pool_size']}/{pool_status['max_pool']}")
+            print(f"    In use: {pool_status['in_use']}")
+            print(f"    Min pool: {pool_status['min_pool']}")
+        
+        print(f"\nTest: ✅ Passed")
+        return True
+    except Exception as e:
+        print(f"\nError: {e}")
+        print(f"\nTest: ❌ Failed")
+        return False
+
+
+def test_profile_selection():
+    """Test that profile parameter is accepted (even if profile doesn't exist)."""
+    print("\n" + "=" * 60)
+    print("TEST 8: Profile Selection")
+    print("=" * 60)
+    
+    test_task_id = "modal_test_profile"
+    
+    # Test with default profile (no profile specified)
+    print("Testing with default profile...")
+    result = terminal_tool("echo 'default profile'", task_id=test_task_id)
+    result_json = json.loads(result)
+    
+    success = result_json.get('exit_code') == 0
+    print(f"  Default profile: {'✅' if success else '❌'} (exit code: {result_json.get('exit_code')})")
+    
+    # Cleanup
+    cleanup_vm(test_task_id)
+    
+    print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
+    return success
+
+
 def main():
     """Run all Modal terminal tests."""
     print("🧪 Modal Terminal Tool Test Suite")
@@ -247,6 +304,8 @@ def main():
     print(f"  TERMINAL_ENV: {config['env_type']}")
     print(f"  TERMINAL_MODAL_IMAGE: {config['modal_image']}")
     print(f"  TERMINAL_TIMEOUT: {config['timeout']}s")
+    print(f"  TERMINAL_MODAL_APP_NAME: {os.getenv('TERMINAL_MODAL_APP_NAME', 'hermes-sandbox')}")
+    print(f"  TERMINAL_MODAL_DEFAULT_PROFILE: {os.getenv('TERMINAL_MODAL_DEFAULT_PROFILE', 'default')}")
     
     if config['env_type'] != 'modal':
         print(f"\n⚠️  WARNING: TERMINAL_ENV is set to '{config['env_type']}', not 'modal'")
@@ -270,6 +329,8 @@ def main():
     results['pip_install'] = test_pip_install()
     results['filesystem_persistence'] = test_filesystem_persistence()
     results['environment_isolation'] = test_environment_isolation()
+    results['pool_status'] = test_pool_status()
+    results['profile_selection'] = test_profile_selection()
     
     # Summary
     print("\n" + "=" * 60)

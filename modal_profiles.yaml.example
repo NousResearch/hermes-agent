@@ -1,0 +1,134 @@
+# Modal Sandbox Profiles Configuration
+# =====================================
+# This file defines different sandbox profiles for heterogeneous workloads.
+# Copy to modal_profiles.yaml and customize as needed.
+#
+# Usage:
+#   terminal_tool("python train.py", profile="pytorch-gpu")
+#   terminal_tool("npm test", profile="node")
+#
+# Each profile can specify:
+#   - image: Docker image to use
+#   - gpu: GPU type (null, "T4", "A10G", "A100", "H100")
+#   - cpu: CPU cores (float)
+#   - memory: Memory in MB
+#   - min_pool: Minimum warm sandboxes (cost vs latency tradeoff)
+#   - max_pool: Maximum sandboxes (hard cost cap)
+#   - idle_timeout: Server-side auto-cleanup in seconds
+#   - max_lifetime: Maximum sandbox lifetime in seconds
+#   - scale_down_idle: Client-side scale-down threshold in seconds
+#   - workdir: Working directory inside container
+#   - secrets: List of Modal Secret names to inject (created via dashboard/CLI)
+#   - env_vars: Dict of environment variables to pass directly
+#   - use_dotenv: If true, loads local .env file into sandbox
+#
+# SECRETS SETUP:
+#   Create secrets via Modal dashboard or CLI:
+#     modal secret create huggingface-token HF_TOKEN=hf_xxx
+#     modal secret create openai-key OPENAI_API_KEY=sk-xxx
+#   Then reference by name in profile's secrets list.
+
+# Default profile used when no profile specified
+default_profile: default
+
+profiles:
+  # Default Python environment - good for most tasks
+  default:
+    image: python:3.11
+    gpu: null
+    cpu: 1.0
+    memory: 2048
+    min_pool: 1        # Keep 1 warm for fast response
+    max_pool: 5
+    idle_timeout: 120  # Modal terminates if idle 2 min
+    max_lifetime: 3600 # Max 1 hour
+    scale_down_idle: 180
+    workdir: /workspace
+    secrets: []        # Add secret names here: ["my-api-keys"]
+    env_vars: {}       # Add env vars here: {DEBUG: "1"}
+    use_dotenv: false  # Set to true to load local .env
+
+  # PyTorch with GPU for ML training/inference
+  pytorch-gpu:
+    image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+    gpu: T4            # Options: T4, A10G, A100, H100
+    cpu: 4.0
+    memory: 16384      # 16GB
+    min_pool: 0        # Don't keep GPU sandboxes warm (expensive!)
+    max_pool: 2
+    idle_timeout: 60   # Shorter idle timeout for GPU (cost)
+    max_lifetime: 1800 # 30 min max for GPU tasks
+    scale_down_idle: 60
+    workdir: /workspace
+    # ML-specific secrets
+    secrets:
+      - huggingface-token  # HF_TOKEN env var
+      - wandb-key          # WANDB_API_KEY env var
+    env_vars:
+      CUDA_VISIBLE_DEVICES: "0"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+  # High-end GPU for large models
+  pytorch-a100:
+    image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+    gpu: A100
+    cpu: 8.0
+    memory: 65536      # 64GB
+    min_pool: 0
+    max_pool: 1        # Only 1 at a time (very expensive)
+    idle_timeout: 30
+    max_lifetime: 3600
+    scale_down_idle: 30
+    workdir: /workspace
+
+  # Node.js for JavaScript/TypeScript tasks
+  node:
+    image: node:18
+    gpu: null
+    cpu: 1.0
+    memory: 2048
+    min_pool: 0        # Create on-demand
+    max_pool: 3
+    idle_timeout: 120
+    max_lifetime: 3600
+    scale_down_idle: 180
+    workdir: /workspace
+
+  # High memory for data processing
+  high-memory:
+    image: python:3.11
+    gpu: null
+    cpu: 4.0
+    memory: 32768      # 32GB
+    min_pool: 0
+    max_pool: 2
+    idle_timeout: 120
+    max_lifetime: 3600
+    scale_down_idle: 180
+    workdir: /workspace
+
+  # Rust development environment
+  rust:
+    image: rust:1.75
+    gpu: null
+    cpu: 2.0
+    memory: 4096
+    min_pool: 0
+    max_pool: 2
+    idle_timeout: 120
+    max_lifetime: 3600
+    scale_down_idle: 180
+    workdir: /workspace
+
+  # Go development environment
+  golang:
+    image: golang:1.21
+    gpu: null
+    cpu: 2.0
+    memory: 4096
+    min_pool: 0
+    max_pool: 2
+    idle_timeout: 120
+    max_lifetime: 3600
+    scale_down_idle: 180
+    workdir: /workspace

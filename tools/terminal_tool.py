@@ -36,8 +36,11 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, ClassVar, List
+
+import yaml
 
 # Add mini-swe-agent to path if not installed
 mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
@@ -723,38 +726,582 @@ class _DockerEnvironment:
             pass
 
 
-class _ModalEnvironment:
+
+@dataclass
+class ModalProfile:
     """
-    Modal cloud execution environment wrapper with sudo support.
+    Configuration for a Modal sandbox profile.
     
-    Wraps mini-swe-agent's SwerexModalEnvironment but adds:
-    - SUDO_PASSWORD support via _transform_sudo_command
+    Each profile defines the container image, resources, and pool scaling behavior.
+    Different profiles can be used for different workloads
     
-    Note: stdin handling is not needed for Modal since it uses remote async execution.
+    Secrets:
+        secrets: List of Modal Secret names to inject into the sandbox.
+                 These secrets must be created on Modal dashboard or via CLI.
+        
+        env_vars: Dict of environment variables to pass directly to sandbox.
+                  Use for non-sensitive configuration.
+                  Example: {"DEBUG": "1", "LOG_LEVEL": "info"}
+        
+        use_dotenv: loads local dotenv
+    """
+    name: str
+    image: str = "python:3.11"
+    gpu: Optional[str] = None           # None, "T4", "A10G", "A100", "H100"
+    cpu: float = 1.0
+    memory: int = 2048                  # MB
+    min_pool: int = 1
+    max_pool: int = 5
+    idle_timeout: int = 120             # Modal server-side auto-cleanup (seconds)
+    max_lifetime: int = 3600            # Max sandbox lifetime (seconds)
+    scale_down_idle: int = 180          # Client-side scale down threshold (seconds)
+    workdir: str = "/workspace"
+    # Secrets and environment variables
+    secrets: List[str] = field(default_factory=list)  # Modal Secret names
+    env_vars: Dict[str, str] = field(default_factory=dict)  # Direct env vars
+    use_dotenv: bool = False            # Load .env file and pass to sandbox
+    
+    @classmethod
+    def from_env(cls, profile_name: str) -> "ModalProfile":
+        """Load profile configuration from environment variables."""
+        prefix = f"TERMINAL_MODAL_PROFILE_{profile_name}_"
+        
+        # Parse secrets list from comma-separated string
+        secrets_str = os.getenv(f"{prefix}SECRETS", "")
+        secrets = [s.strip() for s in secrets_str.split(",") if s.strip()]
+        
+        # Parse env_vars from KEY=VALUE pairs separated by semicolons
+        env_vars_str = os.getenv(f"{prefix}ENV_VARS", "")
+        env_vars = {}
+        if env_vars_str:
+            for pair in env_vars_str.split(";"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    env_vars[k.strip()] = v.strip()
+        
+        return cls(
+            name=profile_name,
+            image=os.getenv(f"{prefix}IMAGE", "python:3.11"),
+            gpu=os.getenv(f"{prefix}GPU"),
+            cpu=float(os.getenv(f"{prefix}CPU", "1.0")),
+            memory=int(os.getenv(f"{prefix}MEMORY", "2048")),
+            min_pool=int(os.getenv(f"{prefix}MIN_POOL", "1")),
+            max_pool=int(os.getenv(f"{prefix}MAX_POOL", "5")),
+            idle_timeout=int(os.getenv(f"{prefix}IDLE_TIMEOUT", "120")),
+            max_lifetime=int(os.getenv(f"{prefix}MAX_LIFETIME", "3600")),
+            scale_down_idle=int(os.getenv(f"{prefix}SCALE_DOWN_IDLE", "180")),
+            workdir=os.getenv(f"{prefix}WORKDIR", "/workspace"),
+            secrets=secrets,
+            env_vars=env_vars,
+            use_dotenv=os.getenv(f"{prefix}USE_DOTENV", "").lower() in ("true", "1", "yes"),
+        )
+    
+    @classmethod
+    def load_profiles(cls, config_file: Optional[str] = None) -> Dict[str, "ModalProfile"]:
+        """
+        Load all profiles from YAML file or environment variables.
+        
+        Priority:
+        1. YAML file specified by config_file or TERMINAL_MODAL_PROFILES_FILE
+        2. Environment variables with TERMINAL_MODAL_PROFILE_<name>_* pattern
+        3. Default profile with basic settings
+        """
+        profiles = {}
+        
+        # Try YAML file first
+        yaml_path = config_file or os.getenv("TERMINAL_MODAL_PROFILES_FILE", "modal_profiles.yaml")
+        if Path(yaml_path).exists():
+            try:
+                with open(yaml_path) as f:
+                    config = yaml.safe_load(f)
+                for name, cfg in config.get("profiles", {}).items():
+                    profiles[name] = cls(name=name, **cfg)
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Loaded {len(profiles)} profiles from {yaml_path}")
+                return profiles
+            except Exception as e:
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Warning: Failed to load {yaml_path}: {e}")
+        
+        # Check for environment variable profiles
+        # Look for any env vars starting with TERMINAL_MODAL_PROFILE_
+        profile_names = set()
+        for key in os.environ:
+            if key.startswith("TERMINAL_MODAL_PROFILE_") and "_IMAGE" in key:
+                # Extract profile name: TERMINAL_MODAL_PROFILE_<name>_IMAGE
+                parts = key.replace("TERMINAL_MODAL_PROFILE_", "").rsplit("_IMAGE", 1)
+                if parts[0]:
+                    profile_names.add(parts[0])
+        
+        for name in profile_names:
+            profiles[name] = cls.from_env(name)
+        
+        # If no profiles found, create a default one
+        if not profiles:
+            default_name = os.getenv("TERMINAL_MODAL_DEFAULT_PROFILE", "default")
+            profiles[default_name] = cls(
+                name=default_name,
+                image=os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11"),
+                min_pool=int(os.getenv("TERMINAL_MODAL_MIN_POOL", "1")),
+                max_pool=int(os.getenv("TERMINAL_MODAL_MAX_POOL", "5")),
+                idle_timeout=int(os.getenv("TERMINAL_MODAL_IDLE_TIMEOUT", "120")),
+                max_lifetime=int(os.getenv("TERMINAL_MODAL_MAX_LIFETIME", "3600")),
+                scale_down_idle=int(os.getenv("TERMINAL_MODAL_SCALE_DOWN_IDLE", "180")),
+            )
+        
+        return profiles
+
+
+class _ModalSandboxPool:
+    """
+    Auto-scaling pool of warm Modal sandboxes for a single profile.
+    
+    Features:
+    - Named sandboxes for recovery after restart
+    - Reactive scale-up when demand exceeds capacity
+    - Background scale-down when sandboxes are idle
+    - Server-side idle_timeout for orphan protection
     """
     
-    def __init__(self, image: str, cwd: str = "/", timeout: int = 60):
-        from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
-        self._inner = SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+    def __init__(self, profile: ModalProfile, app_name: str):
+        self.profile = profile
+        self.app_name = app_name
+        self._app = None
+        self._modal_image = None
+        self._pool: Dict[str, Any] = {}          # sandbox_name -> modal.Sandbox
+        self._in_use: Dict[str, str] = {}        # task_id -> sandbox_name
+        self._last_used: Dict[str, float] = {}   # sandbox_name -> timestamp
+        self._lock = threading.Lock()
+        self._running = True
+        self._next_index = 0
+        
+        # Start scale-down monitor if min_pool > 0 (worth keeping warm)
+        self._monitor_thread = None
+        if profile.min_pool > 0 or profile.max_pool > 0:
+            self._monitor_thread = threading.Thread(
+                target=self._scale_down_monitor, 
+                daemon=True,
+                name=f"modal-pool-{profile.name}"
+            )
+            self._monitor_thread.start()
+    
+    def _get_sandbox_name(self, index: int) -> str:
+        """Generate a unique sandbox name for this profile."""
+        return f"hermes-{self.profile.name}-{index}"
+    
+    def _ensure_app(self):
+        """Lazy initialization of Modal app and image."""
+        if self._app is None:
+            try:
+                import modal
+                self._app = modal.App.lookup(self.app_name, create_if_missing=True)
+                self._modal_image = modal.Image.from_registry(self.profile.image)
+            except ImportError:
+                raise ImportError("Modal package not installed. Run: pip install modal")
+    
+    def _recover_or_create_sandbox(self, name: str) -> Any:
+        """
+        Try to recover an existing named sandbox, or create a new one.
+        
+        Uses Modal's named sandbox feature for recovery after Hermes restart.
+        Supports Modal Secrets for secure credential injection.
+        """
+        import modal
+        
+        # Try to recover existing sandbox
+        try:
+            sb = modal.Sandbox.from_name(self.app_name, name)
+            if sb.poll() is None:  # Still running
+                # Health check - verify sandbox is responsive
+                try:
+                    sb.exec("echo", "ok", timeout=10)
+                    if not os.getenv("HERMES_QUIET"):
+                        print(f"[Modal] Recovered existing sandbox: {name}")
+                    return sb
+                except Exception:
+                    # Sandbox is not healthy, will create new
+                    pass
+        except modal.exception.NotFoundError:
+            pass
+        except Exception as e:
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[Modal] Could not recover sandbox {name}: {e}")
+        
+        # Build create kwargs based on profile
+        create_kwargs = {
+            "app": self._app,
+            "name": name,
+            "image": self._modal_image,
+            "timeout": self.profile.max_lifetime,
+            "idle_timeout": self.profile.idle_timeout,
+            "workdir": self.profile.workdir,
+        }
+        
+        # Add resource specs
+        if self.profile.cpu != 1.0:
+            create_kwargs["cpu"] = self.profile.cpu
+        if self.profile.memory != 2048:
+            create_kwargs["memory"] = self.profile.memory
+        
+        # Add GPU if specified
+        if self.profile.gpu:
+            create_kwargs["gpu"] = self.profile.gpu
+        
+        # Build secrets list
+        secrets_list = []
+        
+        # Add named secrets from Modal dashboard/CLI
+        for secret_name in self.profile.secrets:
+            try:
+                secrets_list.append(modal.Secret.from_name(secret_name))
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Adding secret: {secret_name}")
+            except Exception as e:
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Warning: Could not load secret '{secret_name}': {e}")
+        
+        # Add direct environment variables
+        if self.profile.env_vars:
+            secrets_list.append(modal.Secret.from_dict(self.profile.env_vars))
+        
+        # Add .env file if requested
+        if self.profile.use_dotenv:
+            try:
+                secrets_list.append(modal.Secret.from_dotenv())
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Loading .env file into sandbox")
+            except Exception as e:
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Warning: Could not load .env file: {e}")
+        
+        # Add global secrets from environment variable
+        global_secrets_str = os.getenv("TERMINAL_MODAL_SECRETS", "")
+        if global_secrets_str:
+            for secret_name in global_secrets_str.split(","):
+                secret_name = secret_name.strip()
+                if secret_name and secret_name not in self.profile.secrets:
+                    try:
+                        secrets_list.append(modal.Secret.from_name(secret_name))
+                    except Exception as e:
+                        if not os.getenv("HERMES_QUIET"):
+                            print(f"[Modal] Warning: Could not load global secret '{secret_name}': {e}")
+        
+        if secrets_list:
+            create_kwargs["secrets"] = secrets_list
+        
+        if not os.getenv("HERMES_QUIET"):
+            gpu_str = f" with GPU={self.profile.gpu}" if self.profile.gpu else ""
+            secrets_str = f" with {len(secrets_list)} secret(s)" if secrets_list else ""
+            print(f"[Modal] Creating sandbox: {name}{gpu_str}{secrets_str}")
+        
+        return modal.Sandbox.create(**create_kwargs)
+    
+    def _find_available_slot(self) -> Optional[str]:
+        """Find an available sandbox in the pool (not currently in use)."""
+        in_use_names = set(self._in_use.values())
+        for name in self._pool:
+            if name not in in_use_names:
+                # Verify sandbox is still running
+                try:
+                    if self._pool[name].poll() is None:
+                        return name
+                    else:
+                        # Sandbox died, remove it
+                        del self._pool[name]
+                        self._last_used.pop(name, None)
+                except:
+                    pass
+        return None
+    
+    def _current_size(self) -> int:
+        """Get current pool size."""
+        return len(self._pool)
+    
+    def acquire(self, task_id: str, timeout: float = 60.0) -> Any:
+        """
+        Acquire a sandbox for a task.
+        
+        - Returns existing sandbox if task already has one
+        - Finds available sandbox in pool if any
+        - Scales up if under max_pool and all busy
+        - Waits if at max_pool and all busy
+        """
+        deadline = time.time() + timeout
+        
+        while True:
+            with self._lock:
+                # Task already has a sandbox?
+                if task_id in self._in_use:
+                    name = self._in_use[task_id]
+                    self._last_used[name] = time.time()
+                    return self._pool[name]
+                
+                self._ensure_app()
+                
+                # Find available slot in pool
+                available = self._find_available_slot()
+                if available:
+                    self._in_use[task_id] = available
+                    self._last_used[available] = time.time()
+                    return self._pool[available]
+                
+                # Scale up if under max
+                if self._current_size() < self.profile.max_pool:
+                    name = self._get_sandbox_name(self._next_index)
+                    self._next_index += 1
+                    try:
+                        sb = self._recover_or_create_sandbox(name)
+                        self._pool[name] = sb
+                        self._in_use[task_id] = name
+                        self._last_used[name] = time.time()
+                        return sb
+                    except Exception as e:
+                        if not os.getenv("HERMES_QUIET"):
+                            print(f"[Modal] Failed to create sandbox: {e}")
+                        raise
+            
+            # At capacity - wait and retry
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"No Modal sandbox available for profile '{self.profile.name}' "
+                    f"within {timeout}s (pool size: {self._current_size()}/{self.profile.max_pool})"
+                )
+            time.sleep(0.5)
+    
+    def release(self, task_id: str, terminate: bool = False):
+        """
+        Release a sandbox back to the pool.
+        
+        If terminate=False, sandbox stays warm for reuse.
+        If terminate=True, sandbox is terminated immediately.
+        """
+        with self._lock:
+            if task_id not in self._in_use:
+                return
+            
+            name = self._in_use.pop(task_id)
+            self._last_used[name] = time.time()
+            
+            if terminate:
+                self._terminate_sandbox(name)
+    
+    def _terminate_sandbox(self, name: str, during_shutdown: bool = False):
+        """Terminate and remove a sandbox from the pool."""
+        if name in self._pool:
+            try:
+                self._pool[name].terminate()
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Terminated sandbox: {name}")
+            except Exception as e:
+                if not during_shutdown and not os.getenv("HERMES_QUIET"):
+                    print(f"[Modal] Error terminating {name}: {e}")
+            del self._pool[name]
+            self._last_used.pop(name, None)
+    
+    def _scale_down_monitor(self):
+        """Background thread: terminate idle sandboxes above min_pool size."""
+        while self._running:
+            time.sleep(30)  # Check every 30 seconds
+            
+            with self._lock:
+                if self._current_size() <= self.profile.min_pool:
+                    continue
+                
+                now = time.time()
+                in_use_names = set(self._in_use.values())
+                
+                # Find idle sandboxes to terminate
+                to_terminate = []
+                for name, last_used in list(self._last_used.items()):
+                    if name in in_use_names:
+                        continue
+                    if now - last_used > self.profile.scale_down_idle:
+                        # Don't go below min_pool
+                        if self._current_size() - len(to_terminate) > self.profile.min_pool:
+                            to_terminate.append(name)
+                
+                for name in to_terminate:
+                    if not os.getenv("HERMES_QUIET"):
+                        print(f"[Modal] Scaling down idle sandbox: {name}")
+                    self._terminate_sandbox(name)
+    
+    def shutdown(self, during_shutdown: bool = False):
+        """Stop monitor thread and terminate all sandboxes."""
+        self._running = False
+        with self._lock:
+            for name in list(self._pool.keys()):
+                self._terminate_sandbox(name, during_shutdown=during_shutdown)
+
+
+class _ModalPoolManager:
+    """
+    Manages multiple sandbox pools, one per profile.
+    
+    Singleton pattern - shared across all _ModalSandboxEnvironment instances.
+    Each profile has its own pool with independent scaling.
+    """
+    
+    _instance: ClassVar[Optional["_ModalPoolManager"]] = None
+    _init_lock: ClassVar[threading.Lock] = threading.Lock()
+    
+    @classmethod
+    def get_instance(cls) -> "_ModalPoolManager":
+        """Get or create the singleton instance."""
+        with cls._init_lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+    
+    @classmethod
+    def reset_instance(cls):
+        """Reset the singleton (for testing)."""
+        with cls._init_lock:
+            if cls._instance is not None:
+                cls._instance.shutdown()
+                cls._instance = None
+    
+    def __init__(self):
+        self.app_name = os.getenv("TERMINAL_MODAL_APP_NAME", "hermes-sandbox")
+        self.profiles = ModalProfile.load_profiles()
+        self.default_profile = os.getenv("TERMINAL_MODAL_DEFAULT_PROFILE", "default")
+        
+        # Fall back to first profile if default not found
+        if self.default_profile not in self.profiles and self.profiles:
+            self.default_profile = next(iter(self.profiles.keys()))
+        
+        self._pools: Dict[str, _ModalSandboxPool] = {}
+        self._pools_lock = threading.Lock()
+        
+        if not os.getenv("HERMES_QUIET"):
+            print(f"[Modal] Pool manager initialized with profiles: {list(self.profiles.keys())}")
+            print(f"[Modal] Default profile: {self.default_profile}")
+    
+    def _get_pool(self, profile_name: str) -> _ModalSandboxPool:
+        """Get or create a pool for a profile."""
+        with self._pools_lock:
+            if profile_name not in self._pools:
+                if profile_name not in self.profiles:
+                    available = list(self.profiles.keys())
+                    raise ValueError(
+                        f"Unknown Modal profile: '{profile_name}'. "
+                        f"Available profiles: {available}"
+                    )
+                profile = self.profiles[profile_name]
+                self._pools[profile_name] = _ModalSandboxPool(profile, self.app_name)
+            return self._pools[profile_name]
+    
+    def acquire(self, task_id: str, profile: Optional[str] = None, timeout: float = 60.0) -> Any:
+        """Acquire a sandbox from the appropriate profile's pool."""
+        profile_name = profile or self.default_profile
+        return self._get_pool(profile_name).acquire(task_id, timeout=timeout)
+    
+    def release(self, task_id: str, profile: Optional[str] = None, terminate: bool = False):
+        """Release a sandbox back to its pool."""
+        profile_name = profile or self.default_profile
+        if profile_name in self._pools:
+            self._pools[profile_name].release(task_id, terminate=terminate)
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get status of all pools."""
+        status = {}
+        with self._pools_lock:
+            for name, pool in self._pools.items():
+                with pool._lock:
+                    status[name] = {
+                        "pool_size": pool._current_size(),
+                        "in_use": len(pool._in_use),
+                        "max_pool": pool.profile.max_pool,
+                        "min_pool": pool.profile.min_pool,
+                    }
+        return status
+    
+    def shutdown(self, during_shutdown: bool = False):
+        """Shutdown all pools."""
+        with self._pools_lock:
+            for pool in self._pools.values():
+                pool.shutdown(during_shutdown=during_shutdown)
+            self._pools.clear()
+
+
+class _ModalSandboxEnvironment:
+    """
+    Modal Sandbox environment with profile-based pool management.
+    
+    Features:
+    - Profile selection for heterogeneous workloads
+    - Auto-scaling warm sandbox pool
+    - Named sandbox recovery
+    - SUDO_PASSWORD support
+    """
+    
+    def __init__(
+        self,
+        image: str,                     # Used only if no profile config
+        cwd: str = "/workspace",
+        timeout: int = 60,
+        task_id: str = "",
+        profile: Optional[str] = None,  # Profile name (e.g., "pytorch-gpu")
+    ):
         self.cwd = cwd
         self.timeout = timeout
+        self.task_id = task_id or str(uuid.uuid4())
+        self.profile = profile
+        self._released = False
+        
+        # Acquire sandbox from pool
+        manager = _ModalPoolManager.get_instance()
+        self._sandbox = manager.acquire(self.task_id, profile=profile)
     
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
-        """Execute a command in Modal with sudo support."""
+        """Execute a command in the Modal sandbox."""
         # Transform sudo commands if SUDO_PASSWORD is available
         exec_command = _transform_sudo_command(command)
+        work_dir = cwd or self.cwd
         
-        # Delegate to inner environment with transformed command
-        return self._inner.execute(exec_command, cwd=cwd, timeout=timeout)
+        try:
+            # Run command via bash with proper working directory
+            process = self._sandbox.exec(
+                "bash", "-c", f"cd {work_dir} && {exec_command}",
+                timeout=timeout or self.timeout
+            )
+            
+            # Read output
+            stdout = process.stdout.read()
+            stderr = process.stderr.read()
+            process.wait()
+            
+            # Combine stdout and stderr
+            output = stdout
+            if stderr:
+                output = output + stderr if output else stderr
+            
+            return {"output": output, "returncode": process.returncode}
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "timeout" in error_msg.lower():
+                return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
+            return {"output": f"Modal execution error: {error_msg}", "returncode": 1}
     
     def cleanup(self):
-        """Cleanup the Modal deployment."""
-        if hasattr(self._inner, 'stop'):
-            self._inner.stop()
+        """Release sandbox back to pool (stays warm for reuse)."""
+        if not self._released:
+            self._released = True
+            _ModalPoolManager.get_instance().release(
+                self.task_id, 
+                profile=self.profile, 
+                terminate=False
+            )
     
     def stop(self):
-        """Stop the Modal deployment."""
-        self.cleanup()
+        """Terminate this sandbox explicitly."""
+        if not self._released:
+            self._released = True
+            _ModalPoolManager.get_instance().release(
+                self.task_id, 
+                profile=self.profile, 
+                terminate=True
+            )
     
     def __del__(self):
         """Cleanup on destruction."""
@@ -768,7 +1315,7 @@ class _ModalEnvironment:
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 
 **Environment:**
-- Isolated execution environment (local, Docker, or Modal cloud based on configuration)
+- Isolated execution environment (local, Docker, Singularity, or Modal cloud based on configuration)
 - Filesystem persists between tool calls within the same task
 - Internet access available
 
@@ -776,17 +1323,20 @@ TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 - Simple commands: Just provide the 'command' parameter
 - Background processes: Set 'background': True for servers/long-running tasks
 - Command timeout: Optional 'timeout' parameter in seconds
+- Modal profiles: Use 'profile' parameter for specialized environments (e.g., GPU)
 
 **Examples:**
 - Run command: `{"command": "ls -la"}`
 - Background task: `{"command": "source venv/bin/activate && python server.py", "background": True}`
 - With timeout: `{"command": "long_task.sh", "timeout": 300}`
+- GPU task (Modal): `{"command": "python train.py", "profile": "pytorch-gpu"}`
 
 **Best Practices:**
 - Run servers/long processes in background
 - Monitor disk usage for large tasks
 - Install whatever tools you need with apt-get or pip
 - Do not be afraid to run pip with --break-system-packages
+- For ML/GPU tasks with Modal, use the appropriate profile
 
 **Things to avoid:**
 - Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck.
@@ -820,9 +1370,17 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_config: dict = None):
+def _create_environment(
+    env_type: str, 
+    image: str, 
+    cwd: str, 
+    timeout: int, 
+    ssh_config: dict = None,
+    task_id: str = "",
+    profile: Optional[str] = None,
+):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment.
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal", "ssh"
@@ -830,6 +1388,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
+        task_id: Unique task identifier (used for Modal pool management)
+        profile: Modal profile name (e.g., "pytorch-gpu") - only used for modal
         
     Returns:
         Environment instance with execute() method
@@ -847,8 +1407,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
         return _SingularityEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "modal":
-        # Use custom Modal wrapper with sudo support
-        return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+        # Use native Modal Sandbox with auto-scaling pool and profile support
+        return _ModalSandboxEnvironment(
+            image=image, 
+            cwd=cwd, 
+            timeout=timeout,
+            task_id=task_id,
+            profile=profile,
+        )
     
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
@@ -1044,20 +1610,34 @@ def cleanup_vm(task_id: str):
 atexit.register(_stop_cleanup_thread)
 
 
+def _shutdown_modal_pools():
+    """Shutdown Modal pool manager on exit (silently, as interpreter is shutting down)."""
+    try:
+        if _ModalPoolManager._instance is not None:
+            _ModalPoolManager._instance.shutdown(during_shutdown=True)
+    except:
+        pass  # Ignore all errors during interpreter shutdown
+
+atexit.register(_shutdown_modal_pools)
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
     timeout: Optional[int] = None,
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> str:
     """
-    Execute a command using mini-swe-agent's execution environments.
+    Execute a command using configured execution environments.
 
     Args:
         command: The command to execute
         background: Whether to run in background (default: False)
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
+        profile: Modal profile name for heterogeneous workloads (e.g., "pytorch-gpu")
+                 Only used when TERMINAL_ENV=modal. If not specified, uses default profile.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1071,6 +1651,9 @@ def terminal_tool(
 
         # With custom timeout
         >>> result = terminal_tool(command="long_task.sh", timeout=300)
+        
+        # Use GPU profile for ML tasks (Modal only)
+        >>> result = terminal_tool(command="python train.py", profile="pytorch-gpu")
     """
     global _active_environments, _last_activity
 
@@ -1114,8 +1697,9 @@ def terminal_tool(
         # Get or create environment
         with _env_lock:
             if effective_task_id not in _active_environments:
-                # Check disk usage before creating new environment
-                _check_disk_usage_warning()
+                # Check disk usage before creating new environment (Singularity only)
+                if env_type == "singularity":
+                    _check_disk_usage_warning()
                 
                 try:
                     # Build SSH config if using SSH environment
@@ -1133,7 +1717,9 @@ def terminal_tool(
                         image=image,
                         cwd=cwd,
                         timeout=effective_timeout,
-                        ssh_config=ssh_config
+                        ssh_config=ssh_config,
+                        task_id=effective_task_id,
+                        profile=profile,
                     )
                 except ImportError as e:
                     return json.dumps({

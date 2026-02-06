@@ -51,6 +51,8 @@ hermes_agent.egg-info/requires.txt
 hermes_agent.egg-info/top_level.txt
 tests/test_batch_runner.py
 tests/test_checkpoint_resumption.py
+tests/test_modal_integration.py
+tests/test_modal_stress.py
 tests/test_modal_terminal.py
 tests/test_nous_api_limits.py
 tests/test_nous_api_pattern.py

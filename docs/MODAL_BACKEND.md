@@ -204,14 +204,6 @@ config = ModalSandboxConfig(
 
 ---
 
-## Cost Optimization Tips
-
-1. **Use slots**: Set `slots_per_sandbox=10+` to share containers
-2. **Set idle_timeout**: Auto-terminate unused sandboxes (default: 120s)
-3. **Use min_sandboxes=0**: For bursty workloads, scale from zero
-4. **Match resources**: Don't over-provision CPU/memory
-5. **Use profiles**: GPU only when needed
-
 ---
 
 ## Troubleshooting

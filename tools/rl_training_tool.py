@@ -1300,10 +1300,26 @@ async def rl_test_inference(
 # Requirements Check
 # ============================================================================
 
+def check_rl_python_version() -> bool:
+    """
+    Check if Python version meets the minimum for RL tools.
+    
+    tinker-atropos depends on the 'tinker' package which requires Python >= 3.11.
+    """
+    return sys.version_info >= (3, 11)
+
+
 def check_rl_api_keys() -> bool:
     """
-    Check if required API keys are available.
+    Check if required API keys and Python version are available.
+    
+    RL training requires:
+    - Python >= 3.11 (tinker package requirement)
+    - TINKER_API_KEY for the Tinker training API
+    - WANDB_API_KEY for Weights & Biases metrics
     """
+    if not check_rl_python_version():
+        return False
     tinker_key = os.getenv("TINKER_API_KEY")
     wandb_key = os.getenv("WANDB_API_KEY")
     return bool(tinker_key) and bool(wandb_key)
@@ -1311,9 +1327,11 @@ def check_rl_api_keys() -> bool:
 
 def get_missing_keys() -> List[str]:
     """
-    Get list of missing required API keys.
+    Get list of missing requirements for RL tools (API keys and Python version).
     """
     missing = []
+    if not check_rl_python_version():
+        missing.append(f"Python >= 3.11 (current: {sys.version_info.major}.{sys.version_info.minor})")
     if not os.getenv("TINKER_API_KEY"):
         missing.append("TINKER_API_KEY")
     if not os.getenv("WANDB_API_KEY"):

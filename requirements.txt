@@ -6,6 +6,10 @@ httpx
 rich
 tenacity
 prompt_toolkit
+pyyaml
+requests
+jinja2
+pydantic>=2.0
 
 # Web tools
 firecrawl-py
@@ -15,10 +19,6 @@ fal-client
 
 # mini-swe-agent dependencies (for terminal tool)
 # Note: Install mini-swe-agent itself with: pip install -e ./mini-swe-agent
-pyyaml
-requests
-jinja2
-pydantic>=2.0
 litellm>=1.75.5
 typer
 platformdirs
@@ -27,18 +27,17 @@ platformdirs
 # Requires Docker installed and user in 'docker' group
 
 # Optional: For Modal backend (cloud execution)
-# modal
-# boto3
+# swe-rex[modal]>=1.4.0  # Includes modal + boto3 + swe-rex runtime
 
 # Optional: For cron expression parsing (cronjob scheduling)
 croniter
 
 # Optional: For messaging platform integrations (gateway)
-# Telegram: pip install python-telegram-bot
+# Telegram
 python-telegram-bot>=20.0
 
-# Discord: pip install discord.py
+# Discord
 discord.py>=2.0
 
-# WhatsApp: Requires Node.js bridge (see docs/messaging.md)
-# aiohttp  # For WhatsApp bridge communication
+# WhatsApp bridge communication + general async HTTP (used by gateway)
+aiohttp>=3.9.0

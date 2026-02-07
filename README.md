@@ -15,9 +15,9 @@ irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/ins
 ```
 
 The installer will:
-- Clone to `~/.hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
-- Create a virtual environment
-- Install all dependencies
+- Clone to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
+- Create a virtual environment (Python 3.11+ recommended)
+- Install all dependencies and submodule packages
 - Run the interactive setup wizard
 - Add `hermes` to your PATH
 
@@ -179,8 +179,8 @@ hermes config set terminal.singularity_image ~/python.sif
 
 **Modal** (serverless cloud):
 ```bash
-pip install modal boto3
-modal setup  # Authenticate
+pip install "swe-rex[modal]"   # Installs swe-rex + modal + boto3
+modal setup                    # Authenticate with Modal
 hermes config set terminal.backend modal
 ```
 
@@ -275,16 +275,19 @@ See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 Train language models with reinforcement learning using the Tinker API and Atropos framework.
 
+> **Note:** RL training tools require **Python 3.11+** (the upstream `tinker` package has this requirement). On Python 3.10, the RL toolset will be automatically disabled — all other features work fine.
+
 #### Requirements
 
-1. **API Keys:** Add to `~/.hermes/.env`:
+1. **Python 3.11+** (check with `python3 --version`)
+2. **API Keys:** Add to `~/.hermes/.env`:
 ```bash
 TINKER_API_KEY=your-tinker-key      # Get from https://tinker-console.thinkingmachines.ai/keys
 WANDB_API_KEY=your-wandb-key        # Get from https://wandb.ai/authorize
 OPENROUTER_API_KEY=your-key         # Optional: for rl_test_inference
 ```
 
-2. **That's it!** tinker-atropos is included as a submodule - no separate installation needed.
+3. **That's it!** tinker-atropos is included as a submodule — the installer handles it automatically.
 
 #### Using RL Tools
 
@@ -425,26 +428,332 @@ skills/
 
 ## Manual Installation
 
-If you prefer not to use the installer:
+If you prefer full control over the installation process (or the quick-install script doesn't suit your environment), follow these steps to set everything up by hand.
+
+### Prerequisites
+
+| Requirement | Minimum Version | Check Command | Notes |
+|-------------|----------------|---------------|-------|
+| **Python** | 3.11+ recommended (3.10 minimum) | `python3 --version` | Required. 3.11+ needed for RL training tools |
+| **Git** | Any recent | `git --version` | Required |
+| **pip** | 21+ | `pip --version` | Comes with Python |
+| **Node.js** | 18+ | `node --version` | Optional — needed for browser automation tools |
+| **ripgrep** | Any | `rg --version` | Optional — faster file search in terminal tool (falls back to grep) |
+
+<details>
+<summary><strong>Installing prerequisites by platform</strong></summary>
+
+**Ubuntu / Debian:**
+```bash
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3-pip git
+# Optional:
+sudo apt install ripgrep nodejs npm
+```
+
+**macOS (Homebrew):**
+```bash
+brew install python@3.11 git
+# Optional:
+brew install ripgrep node
+```
+
+**Windows (WSL recommended):**
+Use the [Windows Subsystem for Linux](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu instructions above. Alternatively, use the PowerShell quick-install script at the top of this README.
+
+</details>
+
+---
+
+### Step 1: Clone the Repository
+
+Clone with `--recurse-submodules` to pull the required submodules ([mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) for the terminal tool backend and [tinker-atropos](https://github.com/nousresearch/tinker-atropos) for RL training):
 
 ```bash
-# Clone the repository (with submodules)
+git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+```
+
+If you already cloned without `--recurse-submodules`, initialize them manually:
+```bash
+git submodule update --init --recursive
+```
+
+---
+
+### Step 2: Create & Activate a Virtual Environment
+
+A virtual environment keeps Hermes dependencies isolated from your system Python:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+
+# Upgrade core packaging tools
+pip install --upgrade pip wheel setuptools
+```
+
+> **Tip:** Every time you open a new terminal to use Hermes, activate the venv first:
+> `source /path/to/hermes-agent/venv/bin/activate`
+
+---
+
+### Step 3: Install Python Dependencies
+
+Install the main package in editable mode with all optional extras (messaging, cron, CLI menus):
+
+```bash
+pip install -e ".[all]"
+```
+
+If you only want the core agent (no Telegram/Discord/cron support):
+```bash
+pip install -e "."
+```
+
+<details>
+<summary><strong>Optional extras breakdown</strong></summary>
+
+| Extra | What it adds | Install command |
+|-------|-------------|-----------------|
+| `all` | Everything below | `pip install -e ".[all]"` |
+| `messaging` | Telegram & Discord gateway | `pip install -e ".[messaging]"` |
+| `cron` | Cron expression parsing for scheduled tasks | `pip install -e ".[cron]"` |
+| `cli` | Terminal menu UI for setup wizard | `pip install -e ".[cli]"` |
+| `modal` | Modal cloud execution backend (swe-rex + modal + boto3) | `pip install -e ".[modal]"` |
+| `dev` | pytest & test utilities | `pip install -e ".[dev]"` |
+
+You can combine extras: `pip install -e ".[messaging,cron]"`
+
+</details>
+
+---
+
+### Step 4: Install Submodule Packages
+
+These are local packages checked out as Git submodules. Install them in editable mode:
+
+```bash
+# Terminal tool backend (required for the terminal/command-execution tool)
+pip install -e "./mini-swe-agent"
+
+# RL training backend (requires Python 3.11+)
+pip install -e "./tinker-atropos"
+```
+
+Both are optional — if you skip them, the corresponding toolsets simply won't be available.
+
+> **Note:** `tinker-atropos` requires Python 3.11+ (the upstream `tinker` package has this constraint). On Python 3.10, skip this line — RL tools will be disabled but everything else works.
+
+---
+
+### Step 5: Install Node.js Dependencies (Optional)
+
+Only needed if you plan to use the **browser automation** toolset (Browserbase-powered):
+
+```bash
+npm install
+```
+
+This installs the `agent-browser` package defined in `package.json`. Skip this step if you don't need browser tools.
+
+---
+
+### Step 6: Create the Configuration Directory
+
+Hermes stores all user configuration in `~/.hermes/`:
+
+```bash
+# Create the directory structure
+mkdir -p ~/.hermes/{cron,sessions,logs}
+
+# Copy the example config file
+cp cli-config.yaml.example ~/.hermes/config.yaml
+
+# Create an empty .env file for API keys
+touch ~/.hermes/.env
+```
+
+Your `~/.hermes/` directory should now look like:
+```
+~/.hermes/
+├── config.yaml     # Agent settings (model, terminal, toolsets, compression, etc.)
+├── .env            # API keys and secrets (one per line: KEY=value)
+├── cron/           # Scheduled job data
+├── sessions/       # Messaging gateway sessions
+└── logs/           # Conversation logs
+```
+
+---
+
+### Step 7: Add Your API Keys
+
+Open `~/.hermes/.env` in your editor and add at minimum an LLM provider key:
+
+```bash
+# Required — at least one LLM provider:
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# Optional — enable additional tools:
+FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping
+BROWSERBASE_API_KEY=bb-your-key        # Browser automation
+BROWSERBASE_PROJECT_ID=your-project-id # Browser automation
+FAL_KEY=your-fal-key                   # Image generation (FLUX)
+TINKER_API_KEY=your-tinker-key         # RL training
+WANDB_API_KEY=your-wandb-key           # RL training metrics
+
+# Optional — messaging gateway:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF      # From @BotFather
+TELEGRAM_ALLOWED_USERS=your-user-id    # Comma-separated
+DISCORD_BOT_TOKEN=MTIz...              # From Developer Portal
+DISCORD_ALLOWED_USERS=your-user-id     # Comma-separated
+```
+
+Or set them one at a time via the CLI:
+```bash
+hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
+```
+
+---
+
+### Step 8: Add `hermes` to Your PATH
+
+The `hermes` command is installed into the virtual environment's `bin/` directory. Add it to your shell PATH so you can run `hermes` from anywhere:
+
+**Bash** (`~/.bashrc`):
+```bash
+echo '' >> ~/.bashrc
+echo '# Hermes Agent' >> ~/.bashrc
+echo 'export PATH="$HOME/hermes-agent/venv/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Zsh** (`~/.zshrc`):
+```bash
+echo '' >> ~/.zshrc
+echo '# Hermes Agent' >> ~/.zshrc
+echo 'export PATH="$HOME/hermes-agent/venv/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Fish** (`~/.config/fish/config.fish`):
+```fish
+fish_add_path $HOME/hermes-agent/venv/bin
+```
+
+> **Note:** Adjust the path if you cloned to a different location. The key is to add the `venv/bin` directory inside your clone to your PATH.
+
+Alternatively, if you don't want to modify your PATH, you can create a symlink:
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+```
+(Most distributions already have `~/.local/bin` on the PATH.)
+
+---
+
+### Step 9: Run the Setup Wizard (Optional)
+
+The interactive setup wizard walks you through configuring your API keys and preferences:
+
+```bash
+hermes setup
+```
+
+This is optional if you already configured `~/.hermes/.env` and `~/.hermes/config.yaml` manually in the steps above.
+
+---
+
+### Step 10: Verify the Installation
+
+```bash
+# Check that the command is available
+hermes version
+
+# Run diagnostics to verify everything is working
+hermes doctor
+
+# Check your configuration
+hermes status
+
+# Test with a quick query
+hermes chat -q "Hello! What tools do you have available?"
+```
+
+If `hermes doctor` reports issues, it will tell you exactly what's missing and how to fix it.
+
+---
+
+### Quick-Reference: Manual Install (Condensed)
+
+For those who just want the commands without the explanations:
+
+```bash
+# Clone & enter
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Run setup script
-./setup-hermes.sh
-
-# Or manually:
+# Virtual environment
 python3 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip wheel setuptools
+
+# Install everything
 pip install -e ".[all]"
+pip install -e "./mini-swe-agent"
+pip install -e "./tinker-atropos"
+npm install  # optional, for browser tools
 
-# Install submodules (required for terminal and RL tools)
-pip install -e "./mini-swe-agent"    # Terminal tool backend
-pip install -e "./tinker-atropos"    # RL training backend
+# Configure
+mkdir -p ~/.hermes/{cron,sessions,logs}
+cp cli-config.yaml.example ~/.hermes/config.yaml
+touch ~/.hermes/.env
+echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 
-hermes setup
+# Add to PATH (adjust for your shell)
+echo 'export PATH="'$(pwd)'/venv/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify
+hermes doctor
+hermes
+```
+
+---
+
+### Updating a Manual Installation
+
+To update an existing manual install to the latest version:
+
+```bash
+cd /path/to/hermes-agent
+source venv/bin/activate
+
+# Pull latest code and submodules
+git pull origin main
+git submodule update --init --recursive
+
+# Reinstall (picks up new dependencies)
+pip install -e ".[all]"
+pip install -e "./mini-swe-agent"
+pip install -e "./tinker-atropos"
+
+# Check for new config options added since your last update
+hermes config check
+hermes config migrate   # Interactively add any missing options
+```
+
+### Uninstalling a Manual Installation
+
+```bash
+# Remove the cloned repository
+rm -rf /path/to/hermes-agent
+
+# Remove user configuration (optional — keep if you plan to reinstall)
+rm -rf ~/.hermes
+
+# Remove the PATH line from your shell config (~/.bashrc or ~/.zshrc)
+# Look for the "# Hermes Agent" comment and remove that block
 ```
 
 ---

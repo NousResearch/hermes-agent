@@ -652,6 +652,23 @@ def run_setup_wizard(args):
         print_info("Modal Cloud Configuration:")
         print_info("Get credentials at: https://modal.com/settings")
         
+        # Check if swe-rex[modal] is installed, install if missing
+        try:
+            from swerex.deployment.modal import ModalDeployment
+            print_info("swe-rex[modal] package: installed ✓")
+        except ImportError:
+            print_info("Installing required package: swe-rex[modal]...")
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "swe-rex[modal]>=1.4.0"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print_success("swe-rex[modal] installed (includes modal + boto3)")
+            else:
+                print_warning("Failed to install swe-rex[modal] — install manually:")
+                print_info('  pip install "swe-rex[modal]>=1.4.0"')
+        
         # Always show current status and allow reconfiguration
         current_token = get_env_value('MODAL_TOKEN_ID')
         if current_token:
@@ -917,6 +934,24 @@ def run_setup_wizard(args):
                 save_env_value("BROWSERBASE_API_KEY", api_key)
             if project_id:
                 save_env_value("BROWSERBASE_PROJECT_ID", project_id)
+            
+            # Check if Node.js dependencies are installed (required for browser tools)
+            import shutil
+            node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
+            if not node_modules.exists() and shutil.which("npm"):
+                print_info("    Installing Node.js dependencies for browser tools...")
+                import subprocess
+                result = subprocess.run(
+                    ["npm", "install", "--silent"],
+                    capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                )
+                if result.returncode == 0:
+                    print_success("    Node.js dependencies installed")
+                else:
+                    print_warning("    npm install failed — run manually: cd ~/.hermes/hermes-agent && npm install")
+            elif not node_modules.exists():
+                print_warning("    Node.js not found — browser tools require: npm install (in the hermes-agent directory)")
+            
             print_success("    Configured ✓")
     print()
     
@@ -950,6 +985,11 @@ def run_setup_wizard(args):
     tinker_configured = get_env_value('TINKER_API_KEY')
     wandb_configured = get_env_value('WANDB_API_KEY')
     
+    # Check Python version requirement upfront
+    rl_python_ok = sys.version_info >= (3, 11)
+    if not rl_python_ok:
+        print_warning(f"  Requires Python 3.11+ (current: {sys.version_info.major}.{sys.version_info.minor})")
+    
     if tinker_configured and wandb_configured:
         print_success("  Status: Configured ✓")
         if prompt_yes_no("  Update RL training credentials?", False):
@@ -969,18 +1009,46 @@ def run_setup_wizard(args):
             print_warning("  Status: Not configured (tools will be disabled)")
         
         if prompt_yes_no("  Set up RL Training?", False):
-            print_info("    Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
-            print_info("    Get WandB key at: https://wandb.ai/authorize")
-            api_key = prompt("    Tinker API key", password=True)
-            if api_key:
-                save_env_value("TINKER_API_KEY", api_key)
-            wandb_key = prompt("    WandB API key", password=True)
-            if wandb_key:
-                save_env_value("WANDB_API_KEY", wandb_key)
-            if api_key and wandb_key:
-                print_success("    Configured ✓")
+            # Check Python version before proceeding
+            if not rl_python_ok:
+                print_error(f"    Python 3.11+ required (current: {sys.version_info.major}.{sys.version_info.minor})")
+                print_info("    Upgrade Python and reinstall to enable RL training tools")
             else:
-                print_warning("    Partially configured (both keys required)")
+                print_info("    Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
+                print_info("    Get WandB key at: https://wandb.ai/authorize")
+                api_key = prompt("    Tinker API key", password=True)
+                if api_key:
+                    save_env_value("TINKER_API_KEY", api_key)
+                wandb_key = prompt("    WandB API key", password=True)
+                if wandb_key:
+                    save_env_value("WANDB_API_KEY", wandb_key)
+                
+                # Check if tinker-atropos submodule is installed
+                try:
+                    __import__("tinker_atropos")
+                except ImportError:
+                    tinker_dir = PROJECT_ROOT / "tinker-atropos"
+                    if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
+                        print_info("    Installing tinker-atropos submodule...")
+                        import subprocess
+                        result = subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "-e", str(tinker_dir)],
+                            capture_output=True, text=True
+                        )
+                        if result.returncode == 0:
+                            print_success("    tinker-atropos installed")
+                        else:
+                            print_warning("    tinker-atropos install failed — run manually:")
+                            print_info('      pip install -e "./tinker-atropos"')
+                    else:
+                        print_warning("    tinker-atropos submodule not found — run:")
+                        print_info("      git submodule update --init --recursive")
+                        print_info('      pip install -e "./tinker-atropos"')
+                
+                if api_key and wandb_key:
+                    print_success("    Configured ✓")
+                else:
+                    print_warning("    Partially configured (both keys required)")
     
     # =========================================================================
     # Save config and show summary

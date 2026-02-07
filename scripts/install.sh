@@ -149,22 +149,29 @@ detect_os() {
 check_python() {
     log_info "Checking Python..."
     
-    # Try different python commands
+    # Try different python commands (prefer 3.11+ for full feature support)
     for cmd in python3.12 python3.11 python3.10 python3 python; do
         if command -v $cmd &> /dev/null; then
             PYTHON_CMD=$cmd
             PYTHON_VERSION=$($cmd -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
             
-            # Check version
-            if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+            # Check minimum version (3.10)
+            if $cmd -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
                 log_success "Python $PYTHON_VERSION found"
+                
+                # Warn if < 3.11 (RL training tools require 3.11+)
+                if ! $cmd -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+                    log_warn "Python 3.11+ recommended — RL Training tools (tinker-atropos) require >= 3.11"
+                    log_info "Core agent features will work fine on $PYTHON_VERSION"
+                fi
+                
                 return 0
             fi
         fi
     done
     
     log_error "Python 3.10+ not found"
-    log_info "Please install Python 3.10 or newer:"
+    log_info "Please install Python 3.11 or newer (recommended):"
     
     case "$OS" in
         linux)
@@ -179,7 +186,7 @@ check_python() {
                     log_info "  sudo pacman -S python"
                     ;;
                 *)
-                    log_info "  Use your package manager to install Python 3.10+"
+                    log_info "  Use your package manager to install Python 3.11+"
                     ;;
             esac
             ;;
@@ -480,8 +487,14 @@ install_deps() {
     
     log_info "Installing tinker-atropos (RL training backend)..."
     if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        pip install -e "./tinker-atropos" > /dev/null 2>&1 || log_warn "tinker-atropos install failed (RL tools may not work)"
-        log_success "tinker-atropos installed"
+        # tinker-atropos depends on the 'tinker' package which requires Python >= 3.11
+        if $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+            pip install -e "./tinker-atropos" > /dev/null 2>&1 || log_warn "tinker-atropos install failed (RL tools may not work)"
+            log_success "tinker-atropos installed"
+        else
+            log_warn "tinker-atropos requires Python 3.11+ (skipping — RL training tools won't be available)"
+            log_info "Upgrade to Python 3.11+ to enable RL training features"
+        fi
     else
         log_warn "tinker-atropos not found (run: git submodule update --init)"
     fi

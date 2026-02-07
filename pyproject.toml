@@ -22,6 +22,8 @@ dependencies = [
   "requests",
   "jinja2",
   "pydantic>=2.0",
+  # Interactive CLI (prompt_toolkit is used directly by cli.py)
+  "prompt_toolkit",
   # Tools
   "firecrawl-py",
   "fal-client",
@@ -32,12 +34,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-modal = ["modal", "boto3"]
+modal = ["swe-rex[modal]>=1.4.0"]
 dev = ["pytest", "pytest-asyncio"]
-messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0"]
+messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
 cron = ["croniter"]
 cli = ["simple-term-menu"]
-all = ["croniter", "python-telegram-bot>=20.0", "discord.py>=2.0", "simple-term-menu"]
+all = ["croniter", "python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "simple-term-menu"]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"

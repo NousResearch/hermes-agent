@@ -323,6 +323,94 @@ For extended RL workflows with longer timeouts:
 python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
 ```
 
+### 🧪 Atropos RL Environments
+
+Hermes-Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using hermes-agent's tools.
+
+#### Architecture
+
+The integration has three layers:
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| **Agent Loop** | `environments/agent_loop.py` | Reusable multi-turn tool-calling engine (standard OpenAI spec) |
+| **Base Environment** | `environments/hermes_base_env.py` | Abstract Atropos `BaseEnv` subclass with toolset resolution, ToolContext, scoring |
+| **Concrete Envs** | `environments/terminal_test_env.py`, `environments/hermes_swe_env.py` | Task-specific environments |
+
+#### Two-Phase Operation
+
+- **Phase 1 (OpenAI server type)**: Works with any OpenAI-compatible endpoint (VLLM, SGLang, OpenRouter, OpenAI API). The server handles tool call parsing natively. Good for **SFT data generation**, **verifier testing**, and **evaluation**.
+- **Phase 2 (VLLM server type)**: Uses ManagedServer for exact token IDs + logprobs via `/generate`. Client-side tool call parser registry reconstructs structured `tool_calls` from raw output. Required for **full RL training**.
+
+#### Quick Start
+
+```bash
+# 1. Launch VLLM with tool parser
+vllm serve YourModel --tool-parser hermes
+
+# 2. Start the Atropos API server
+run-api
+
+# 3. Run an environment
+python environments/terminal_test_env.py serve \
+    --openai.base_url http://localhost:8000/v1 \
+    --openai.model_name YourModel \
+    --openai.server_type openai
+```
+
+#### ToolContext (Reward Functions)
+
+Reward functions receive a `ToolContext` with unrestricted access to all hermes-agent tools, scoped to the rollout's sandbox:
+
+```python
+async def compute_reward(self, item, result, ctx: ToolContext) -> float:
+    # Run tests in the model's terminal sandbox
+    test = ctx.terminal("pytest -v")
+    if test["exit_code"] == 0:
+        return 1.0
+    # Or check a file, search the web, navigate a browser...
+    return 0.0
+```
+
+#### Creating Custom Environments
+
+Subclass `HermesAgentBaseEnv` and implement 5 methods:
+
+```python
+from environments.hermes_base_env import HermesAgentBaseEnv
+
+class MyEnv(HermesAgentBaseEnv):
+    name = "my-env"
+    async def setup(self): ...            # Load data
+    async def get_next_item(self): ...    # Return next item
+    def format_prompt(self, item): ...    # Item -> prompt string
+    async def compute_reward(self, item, result, ctx): ...  # Score with ToolContext
+    async def evaluate(self, *args, **kwargs): ...          # Periodic eval
+
+if __name__ == "__main__":
+    MyEnv.cli()
+```
+
+#### Toolset Distributions
+
+Configure which tools are available per group, either explicitly or probabilistically:
+
+```bash
+# Explicit toolsets
+--env.enabled_toolsets '["terminal","file","web"]'
+
+# Probabilistic distribution (sampled per group)
+--env.distribution development
+```
+
+#### Tool Call Parsers (Phase 2)
+
+For VLLM server type, a parser registry extracts structured `tool_calls` from raw model output. Supported parsers: `hermes`, `mistral`, `llama3_json`, `qwen`, `deepseek_v3`, `deepseek_v3_1`, `kimi_k2`, `longcat`, `glm45`, `glm47`, `qwen3_coder`.
+
+```bash
+--env.tool_call_parser hermes  # Match your VLLM --tool-parser flag
+```
+
 ### ⏰ Scheduled Tasks (Cron)
 
 Schedule tasks to run automatically:

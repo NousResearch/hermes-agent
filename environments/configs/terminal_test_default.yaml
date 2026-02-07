@@ -1,0 +1,35 @@
+# Terminal Test Environment -- Default Configuration
+#
+# Simple file-creation tasks for validating the full Atropos + hermes-agent stack.
+# Uses Modal terminal backend and OpenRouter (Claude) for inference.
+# API keys loaded from ~/hermes-agent/.env
+#
+# Usage:
+#   run-api
+#   python environments/terminal_test_env.py serve
+#   # Or with config file:
+#   python environments/terminal_test_env.py serve --config environments/configs/terminal_test_default.yaml
+
+env:
+  enabled_toolsets: ["terminal", "file"]
+  max_agent_turns: 10
+  max_token_length: 2048
+  group_size: 3
+  total_steps: 3
+  steps_per_eval: 3
+  terminal_backend: "modal"
+  tool_call_parser: "hermes"
+  tokenizer_name: "NousResearch/DeepHermes-3-Llama-3-3B-Preview"
+  ensure_scores_are_not_same: false
+  use_wandb: false
+  system_prompt: >
+    You are a helpful assistant with access to a terminal and file tools.
+    Complete the user's request by using the available tools.
+    Be precise and follow instructions exactly.
+
+openai:
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-opus-4.6"
+  server_type: "openai"
+  health_check: false
+  # api_key loaded from OPENROUTER_API_KEY in .env

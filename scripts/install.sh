@@ -3,6 +3,7 @@
 # Hermes Agent Installer
 # ============================================================================
 # Installation script for Linux and macOS.
+# Uses uv for fast Python provisioning and package management.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -29,7 +30,7 @@ REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 HERMES_HOME="$HOME/.hermes"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
-PYTHON_MIN_VERSION="3.10"
+PYTHON_VERSION="3.11"
 
 # Options
 USE_VENV=true
@@ -64,7 +65,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
-            echo "  --dir PATH     Installation directory (default: ~/.hermes-agent)"
+            echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
             echo "  -h, --help     Show this help"
             exit 0
             ;;
@@ -146,57 +147,80 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
-check_python() {
-    log_info "Checking Python..."
+install_uv() {
+    log_info "Checking for uv package manager..."
     
-    # Try different python commands (prefer 3.11+ for full feature support)
-    for cmd in python3.12 python3.11 python3.10 python3 python; do
-        if command -v $cmd &> /dev/null; then
-            PYTHON_CMD=$cmd
-            PYTHON_VERSION=$($cmd -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            
-            # Check minimum version (3.10)
-            if $cmd -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
-                log_success "Python $PYTHON_VERSION found"
-                
-                # Warn if < 3.11 (RL training tools require 3.11+)
-                if ! $cmd -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
-                    log_warn "Python 3.11+ recommended — RL Training tools (tinker-atropos) require >= 3.11"
-                    log_info "Core agent features will work fine on $PYTHON_VERSION"
-                fi
-                
-                return 0
-            fi
+    # Check common locations for uv
+    if command -v uv &> /dev/null; then
+        UV_CMD="uv"
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "uv found ($UV_VERSION)"
+        return 0
+    fi
+    
+    # Check ~/.local/bin (default uv install location) even if not on PATH yet
+    if [ -x "$HOME/.local/bin/uv" ]; then
+        UV_CMD="$HOME/.local/bin/uv"
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "uv found at ~/.local/bin ($UV_VERSION)"
+        return 0
+    fi
+    
+    # Check ~/.cargo/bin (alternative uv install location)
+    if [ -x "$HOME/.cargo/bin/uv" ]; then
+        UV_CMD="$HOME/.cargo/bin/uv"
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
+        return 0
+    fi
+    
+    # Install uv
+    log_info "Installing uv (fast Python package manager)..."
+    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        # uv installs to ~/.local/bin by default
+        if [ -x "$HOME/.local/bin/uv" ]; then
+            UV_CMD="$HOME/.local/bin/uv"
+        elif [ -x "$HOME/.cargo/bin/uv" ]; then
+            UV_CMD="$HOME/.cargo/bin/uv"
+        elif command -v uv &> /dev/null; then
+            UV_CMD="uv"
+        else
+            log_error "uv installed but not found on PATH"
+            log_info "Try adding ~/.local/bin to your PATH and re-running"
+            exit 1
         fi
-    done
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "uv installed ($UV_VERSION)"
+    else
+        log_error "Failed to install uv"
+        log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        exit 1
+    fi
+}
+
+check_python() {
+    log_info "Checking Python $PYTHON_VERSION..."
     
-    log_error "Python 3.10+ not found"
-    log_info "Please install Python 3.11 or newer (recommended):"
+    # Let uv handle Python — it can download and manage Python versions
+    # First check if a suitable Python is already available
+    if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
+        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
+        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        log_success "Python found: $PYTHON_FOUND_VERSION"
+        return 0
+    fi
     
-    case "$OS" in
-        linux)
-            case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "  sudo apt update && sudo apt install python3.11 python3.11-venv"
-                    ;;
-                fedora)
-                    log_info "  sudo dnf install python3.11"
-                    ;;
-                arch)
-                    log_info "  sudo pacman -S python"
-                    ;;
-                *)
-                    log_info "  Use your package manager to install Python 3.11+"
-                    ;;
-            esac
-            ;;
-        macos)
-            log_info "  brew install python@3.11"
-            log_info "  Or download from https://www.python.org/downloads/"
-            ;;
-    esac
-    
-    exit 1
+    # Python not found — use uv to install it (no sudo needed!)
+    log_info "Python $PYTHON_VERSION not found, installing via uv..."
+    if $UV_CMD python install "$PYTHON_VERSION"; then
+        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
+        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        log_success "Python installed: $PYTHON_FOUND_VERSION"
+    else
+        log_error "Failed to install Python $PYTHON_VERSION"
+        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        exit 1
+    fi
 }
 
 check_git() {
@@ -301,7 +325,6 @@ check_ripgrep() {
         # Check if we can use sudo
         CAN_SUDO=false
         if command -v sudo &> /dev/null; then
-            # Check if user has sudo access (without actually running sudo)
             if sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
                 CAN_SUDO=true
             fi
@@ -335,7 +358,6 @@ check_ripgrep() {
                     esac
                 else
                     log_warn "sudo not available - cannot auto-install system packages"
-                    # Try cargo as fallback if available
                     if command -v cargo &> /dev/null; then
                         log_info "Trying cargo install (no sudo required)..."
                         if cargo install ripgrep 2>/dev/null; then
@@ -378,7 +400,6 @@ check_ripgrep() {
                     log_info "  https://github.com/BurntSushi/ripgrep#installation"
                     ;;
             esac
-            # Show cargo alternative for users without sudo
             if command -v cargo &> /dev/null; then
                 log_info "  Or without sudo: cargo install ripgrep"
             fi
@@ -447,39 +468,36 @@ setup_venv() {
         return 0
     fi
     
-    log_info "Creating virtual environment..."
+    log_info "Creating virtual environment with Python $PYTHON_VERSION..."
     
     if [ -d "venv" ]; then
-        log_info "Virtual environment already exists"
-    else
-        $PYTHON_CMD -m venv venv
+        log_info "Virtual environment already exists, recreating..."
+        rm -rf venv
     fi
     
-    # Activate
-    source venv/bin/activate
+    # uv creates the venv and pins the Python version in one step
+    $UV_CMD venv venv --python "$PYTHON_VERSION"
     
-    # Upgrade pip
-    pip install --upgrade pip wheel setuptools > /dev/null
-    
-    log_success "Virtual environment ready"
+    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
     
     if [ "$USE_VENV" = true ]; then
-        source venv/bin/activate
+        # Tell uv to install into our venv (no need to activate)
+        export VIRTUAL_ENV="$INSTALL_DIR/venv"
     fi
     
     # Install the main package in editable mode with all extras
-    pip install -e ".[all]" > /dev/null 2>&1 || pip install -e "." > /dev/null
+    $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
     
     log_success "Main package installed"
     
     # Install submodules
     log_info "Installing mini-swe-agent (terminal tool backend)..."
     if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
-        pip install -e "./mini-swe-agent" > /dev/null 2>&1 || log_warn "mini-swe-agent install failed (terminal tools may not work)"
+        $UV_CMD pip install -e "./mini-swe-agent" || log_warn "mini-swe-agent install failed (terminal tools may not work)"
         log_success "mini-swe-agent installed"
     else
         log_warn "mini-swe-agent not found (run: git submodule update --init)"
@@ -487,14 +505,8 @@ install_deps() {
     
     log_info "Installing tinker-atropos (RL training backend)..."
     if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        # tinker-atropos depends on the 'tinker' package which requires Python >= 3.11
-        if $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
-            pip install -e "./tinker-atropos" > /dev/null 2>&1 || log_warn "tinker-atropos install failed (RL tools may not work)"
-            log_success "tinker-atropos installed"
-        else
-            log_warn "tinker-atropos requires Python 3.11+ (skipping — RL training tools won't be available)"
-            log_info "Upgrade to Python 3.11+ to enable RL training features"
-        fi
+        $UV_CMD pip install -e "./tinker-atropos" || log_warn "tinker-atropos install failed (RL tools may not work)"
+        log_success "tinker-atropos installed"
     else
         log_warn "tinker-atropos not found (run: git submodule update --init)"
     fi
@@ -503,53 +515,56 @@ install_deps() {
 }
 
 setup_path() {
-    log_info "Setting up PATH..."
+    log_info "Setting up hermes command..."
     
-    # Determine the bin directory
     if [ "$USE_VENV" = true ]; then
-        BIN_DIR="$INSTALL_DIR/venv/bin"
+        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
     else
-        BIN_DIR="$HOME/.local/bin"
-        mkdir -p "$BIN_DIR"
+        HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
+        if [ -z "$HERMES_BIN" ]; then
+            log_warn "hermes not found on PATH after install"
+            return 0
+        fi
+    fi
+    
+    # Create symlink in ~/.local/bin (standard user binary location, usually on PATH)
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
+    log_success "Symlinked hermes → ~/.local/bin/hermes"
+    
+    # Check if ~/.local/bin is on PATH; if not, add it to shell config
+    if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
+        SHELL_CONFIG=""
+        if [ -n "$BASH_VERSION" ]; then
+            if [ -f "$HOME/.bashrc" ]; then
+                SHELL_CONFIG="$HOME/.bashrc"
+            elif [ -f "$HOME/.bash_profile" ]; then
+                SHELL_CONFIG="$HOME/.bash_profile"
+            fi
+        elif [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
+            SHELL_CONFIG="$HOME/.zshrc"
+        fi
         
-        # Create a wrapper script
-        cat > "$BIN_DIR/hermes" << EOF
-#!/bin/bash
-cd "$INSTALL_DIR"
-exec python -m hermes_cli.main "\$@"
-EOF
-        chmod +x "$BIN_DIR/hermes"
-    fi
-    
-    # Add to PATH in shell config
-    SHELL_CONFIG=""
-    if [ -n "$BASH_VERSION" ]; then
-        if [ -f "$HOME/.bashrc" ]; then
-            SHELL_CONFIG="$HOME/.bashrc"
-        elif [ -f "$HOME/.bash_profile" ]; then
-            SHELL_CONFIG="$HOME/.bash_profile"
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+        
+        if [ -n "$SHELL_CONFIG" ]; then
+            if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
+                echo "$PATH_LINE" >> "$SHELL_CONFIG"
+                log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
+            else
+                log_info "~/.local/bin already referenced in $SHELL_CONFIG"
+            fi
         fi
-    elif [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
-        SHELL_CONFIG="$HOME/.zshrc"
+    else
+        log_info "~/.local/bin already on PATH"
     fi
     
-    PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+    # Export for current session so hermes works immediately
+    export PATH="$HOME/.local/bin:$PATH"
     
-    if [ -n "$SHELL_CONFIG" ]; then
-        if ! grep -q "hermes-agent" "$SHELL_CONFIG" 2>/dev/null; then
-            echo "" >> "$SHELL_CONFIG"
-            echo "# Hermes Agent" >> "$SHELL_CONFIG"
-            echo "$PATH_LINE" >> "$SHELL_CONFIG"
-            log_success "Added to $SHELL_CONFIG"
-        else
-            log_info "PATH already configured in $SHELL_CONFIG"
-        fi
-    fi
-    
-    # Also export for current session
-    export PATH="$BIN_DIR:$PATH"
-    
-    log_success "PATH configured"
+    log_success "hermes command ready"
 }
 
 copy_config_templates() {
@@ -566,7 +581,6 @@ copy_config_templates() {
             cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
             log_success "Created ~/.hermes/.env from template"
         else
-            # Create empty .env if no example exists
             touch "$HERMES_HOME/.env"
             log_success "Created ~/.hermes/.env"
         fi
@@ -614,12 +628,14 @@ run_setup_wizard() {
     log_info "Starting setup wizard..."
     echo ""
     
-    if [ "$USE_VENV" = true ]; then
-        source "$INSTALL_DIR/venv/bin/activate"
-    fi
-    
     cd "$INSTALL_DIR"
-    python -m hermes_cli.main setup
+    
+    # Run hermes setup using the venv Python directly (no activation needed)
+    if [ "$USE_VENV" = true ]; then
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup
+    else
+        python -m hermes_cli.main setup
+    fi
 }
 
 print_success() {
@@ -686,6 +702,7 @@ main() {
     print_banner
     
     detect_os
+    install_uv
     check_python
     check_git
     check_node

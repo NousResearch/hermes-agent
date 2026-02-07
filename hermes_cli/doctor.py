@@ -103,7 +103,7 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: pip install {module}")
+            issues.append(f"Install {name}: uv pip install {module}")
     
     for module, name in optional_packages:
         try:
@@ -279,8 +279,8 @@ def run_doctor(args):
             __import__("minisweagent")
             check_ok("mini-swe-agent", "(terminal backend)")
         except ImportError:
-            check_warn("mini-swe-agent found but not installed", "(run: pip install -e ./mini-swe-agent)")
-            issues.append("Install mini-swe-agent: pip install -e ./mini-swe-agent")
+            check_warn("mini-swe-agent found but not installed", "(run: uv pip install -e ./mini-swe-agent)")
+            issues.append("Install mini-swe-agent: uv pip install -e ./mini-swe-agent")
     else:
         check_warn("mini-swe-agent not found", "(run: git submodule update --init --recursive)")
     
@@ -292,8 +292,8 @@ def run_doctor(args):
                 __import__("tinker_atropos")
                 check_ok("tinker-atropos", "(RL training backend)")
             except ImportError:
-                check_warn("tinker-atropos found but not installed", "(run: pip install -e ./tinker-atropos)")
-                issues.append("Install tinker-atropos: pip install -e ./tinker-atropos")
+                check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
+                issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
         else:
             check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
     else:

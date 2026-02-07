@@ -54,6 +54,11 @@ fi
 PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION found"
 
+# Warn if < 3.11 (RL training tools require 3.11+)
+if ! $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+    echo -e "${YELLOW}⚠${NC} Python 3.11+ recommended — RL Training tools (tinker-atropos) require >= 3.11"
+fi
+
 # ============================================================================
 # Virtual environment
 # ============================================================================
@@ -79,6 +84,34 @@ echo -e "${CYAN}→${NC} Installing dependencies..."
 pip install -e ".[all]" > /dev/null 2>&1 || pip install -e "." > /dev/null
 
 echo -e "${GREEN}✓${NC} Dependencies installed"
+
+# ============================================================================
+# Submodules (terminal backend + RL training)
+# ============================================================================
+
+echo -e "${CYAN}→${NC} Installing submodules..."
+
+# mini-swe-agent (terminal tool backend)
+if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
+    pip install -e "./mini-swe-agent" > /dev/null 2>&1 && \
+        echo -e "${GREEN}✓${NC} mini-swe-agent installed" || \
+        echo -e "${YELLOW}⚠${NC} mini-swe-agent install failed (terminal tools may not work)"
+else
+    echo -e "${YELLOW}⚠${NC} mini-swe-agent not found (run: git submodule update --init --recursive)"
+fi
+
+# tinker-atropos (RL training backend — requires Python 3.11+)
+if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
+    if $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+        pip install -e "./tinker-atropos" > /dev/null 2>&1 && \
+            echo -e "${GREEN}✓${NC} tinker-atropos installed" || \
+            echo -e "${YELLOW}⚠${NC} tinker-atropos install failed (RL tools may not work)"
+    else
+        echo -e "${YELLOW}⚠${NC} tinker-atropos requires Python 3.11+ (skipping — RL training tools won't be available)"
+    fi
+else
+    echo -e "${YELLOW}⚠${NC} tinker-atropos not found (run: git submodule update --init --recursive)"
+fi
 
 # ============================================================================
 # Optional: ripgrep (for faster file search)

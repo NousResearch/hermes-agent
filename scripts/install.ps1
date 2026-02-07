@@ -69,7 +69,7 @@ function Write-Error {
 function Test-Python {
     Write-Info "Checking Python..."
     
-    # Try different python commands
+    # Try different python commands (prefer 3.11+ for full feature support)
     $pythonCmds = @("python3", "python", "py -3")
     
     foreach ($cmd in $pythonCmds) {
@@ -79,7 +79,15 @@ function Test-Python {
                 $major, $minor = $version.Split('.')
                 if ([int]$major -ge 3 -and [int]$minor -ge 10) {
                     $script:PythonCmd = $cmd
+                    $script:PythonVersion = $version
                     Write-Success "Python $version found"
+                    
+                    # Warn if < 3.11 (RL training tools require 3.11+)
+                    if ([int]$minor -lt 11) {
+                        Write-Warning "Python 3.11+ recommended — RL Training tools (tinker-atropos) require >= 3.11"
+                        Write-Info "Core agent features will work fine on $version"
+                    }
+                    
                     return $true
                 }
             }
@@ -89,7 +97,7 @@ function Test-Python {
     }
     
     Write-Error "Python 3.10+ not found"
-    Write-Info "Please install Python 3.10 or newer from:"
+    Write-Info "Please install Python 3.11 or newer (recommended) from:"
     Write-Info "  https://www.python.org/downloads/"
     Write-Info ""
     Write-Info "Make sure to check 'Add Python to PATH' during installation"
@@ -312,11 +320,18 @@ function Install-Dependencies {
     
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
-        try {
-            pip install -e ".\tinker-atropos" 2>&1 | Out-Null
-            Write-Success "tinker-atropos installed"
-        } catch {
-            Write-Warning "tinker-atropos install failed (RL tools may not work)"
+        # tinker-atropos depends on the 'tinker' package which requires Python >= 3.11
+        $major, $minor = $PythonVersion.Split('.')
+        if ([int]$minor -ge 11) {
+            try {
+                pip install -e ".\tinker-atropos" 2>&1 | Out-Null
+                Write-Success "tinker-atropos installed"
+            } catch {
+                Write-Warning "tinker-atropos install failed (RL tools may not work)"
+            }
+        } else {
+            Write-Warning "tinker-atropos requires Python 3.11+ (skipping — RL training tools won't be available)"
+            Write-Info "Upgrade to Python 3.11+ to enable RL training features"
         }
     } else {
         Write-Warning "tinker-atropos not found (run: git submodule update --init)"

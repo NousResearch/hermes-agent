@@ -2,6 +2,7 @@
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
+# Uses uv for fast Python provisioning and package management.
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
@@ -27,6 +28,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+$PythonVersion = "3.11"
 
 # ============================================================================
 # Helper functions
@@ -52,12 +54,12 @@ function Write-Success {
     Write-Host "✓ $Message" -ForegroundColor Green
 }
 
-function Write-Warning {
+function Write-Warn {
     param([string]$Message)
     Write-Host "⚠ $Message" -ForegroundColor Yellow
 }
 
-function Write-Error {
+function Write-Err {
     param([string]$Message)
     Write-Host "✗ $Message" -ForegroundColor Red
 }
@@ -66,41 +68,93 @@ function Write-Error {
 # Dependency checks
 # ============================================================================
 
-function Test-Python {
-    Write-Info "Checking Python..."
+function Install-Uv {
+    Write-Info "Checking for uv package manager..."
     
-    # Try different python commands (prefer 3.11+ for full feature support)
-    $pythonCmds = @("python3", "python", "py -3")
+    # Check if uv is already available
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $version = uv --version
+        $script:UvCmd = "uv"
+        Write-Success "uv found ($version)"
+        return $true
+    }
     
-    foreach ($cmd in $pythonCmds) {
-        try {
-            $version = & $cmd.Split()[0] $cmd.Split()[1..99] -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-            if ($version) {
-                $major, $minor = $version.Split('.')
-                if ([int]$major -ge 3 -and [int]$minor -ge 10) {
-                    $script:PythonCmd = $cmd
-                    $script:PythonVersion = $version
-                    Write-Success "Python $version found"
-                    
-                    # Warn if < 3.11 (RL training tools require 3.11+)
-                    if ([int]$minor -lt 11) {
-                        Write-Warning "Python 3.11+ recommended — RL Training tools (tinker-atropos) require >= 3.11"
-                        Write-Info "Core agent features will work fine on $version"
-                    }
-                    
-                    return $true
-                }
-            }
-        } catch {
-            # Try next command
+    # Check common install locations
+    $uvPaths = @(
+        "$env:USERPROFILE\.local\bin\uv.exe",
+        "$env:USERPROFILE\.cargo\bin\uv.exe"
+    )
+    foreach ($uvPath in $uvPaths) {
+        if (Test-Path $uvPath) {
+            $script:UvCmd = $uvPath
+            $version = & $uvPath --version
+            Write-Success "uv found at $uvPath ($version)"
+            return $true
         }
     }
     
-    Write-Error "Python 3.10+ not found"
-    Write-Info "Please install Python 3.11 or newer (recommended) from:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info ""
-    Write-Info "Make sure to check 'Add Python to PATH' during installation"
+    # Install uv
+    Write-Info "Installing uv (fast Python package manager)..."
+    try {
+        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        
+        # Find the installed binary
+        $uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
+        if (-not (Test-Path $uvExe)) {
+            $uvExe = "$env:USERPROFILE\.cargo\bin\uv.exe"
+        }
+        if (-not (Test-Path $uvExe)) {
+            # Refresh PATH and try again
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+            if (Get-Command uv -ErrorAction SilentlyContinue) {
+                $uvExe = (Get-Command uv).Source
+            }
+        }
+        
+        if (Test-Path $uvExe) {
+            $script:UvCmd = $uvExe
+            $version = & $uvExe --version
+            Write-Success "uv installed ($version)"
+            return $true
+        }
+        
+        Write-Err "uv installed but not found on PATH"
+        Write-Info "Try restarting your terminal and re-running"
+        return $false
+    } catch {
+        Write-Err "Failed to install uv"
+        Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
+        return $false
+    }
+}
+
+function Test-Python {
+    Write-Info "Checking Python $PythonVersion..."
+    
+    # Let uv find or install Python
+    try {
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Success "Python found: $ver"
+            return $true
+        }
+    } catch { }
+    
+    # Python not found — use uv to install it (no admin needed!)
+    Write-Info "Python $PythonVersion not found, installing via uv..."
+    try {
+        & $UvCmd python install $PythonVersion 2>&1 | Out-Null
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Success "Python installed: $ver"
+            return $true
+        }
+    } catch { }
+    
+    Write-Err "Failed to install Python $PythonVersion"
+    Write-Info "Install Python $PythonVersion manually, then re-run this script"
     return $false
 }
 
@@ -113,7 +167,7 @@ function Test-Git {
         return $true
     }
     
-    Write-Error "Git not found"
+    Write-Err "Git not found"
     Write-Info "Please install Git from:"
     Write-Info "  https://git-scm.com/download/win"
     return $false
@@ -129,7 +183,7 @@ function Test-Node {
         return $true
     }
     
-    Write-Warning "Node.js not found (browser tools will be limited)"
+    Write-Warn "Node.js not found (browser tools will be limited)"
     Write-Info "To install Node.js (optional):"
     Write-Info "  https://nodejs.org/en/download/"
     $script:HasNode = $false
@@ -146,7 +200,7 @@ function Test-Ripgrep {
         return $true
     }
     
-    Write-Warning "ripgrep not found (file search will use findstr fallback)"
+    Write-Warn "ripgrep not found (file search will use findstr fallback)"
     
     # Check what package managers are available
     $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
@@ -193,7 +247,7 @@ function Test-Ripgrep {
             } catch { }
         }
         
-        Write-Warning "Auto-install failed. You can install manually:"
+        Write-Warn "Auto-install failed. You can install manually:"
     } else {
         Write-Info "Skipping ripgrep installation. To install manually:"
     }
@@ -224,13 +278,12 @@ function Install-Repository {
             git pull origin $Branch
             Pop-Location
         } else {
-            Write-Error "Directory exists but is not a git repository: $InstallDir"
+            Write-Err "Directory exists but is not a git repository: $InstallDir"
             Write-Info "Remove it or choose a different directory with -InstallDir"
             exit 1
         }
     } else {
         # Try SSH first (for private repo access), fall back to HTTPS
-        # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
         Write-Info "Trying SSH clone..."
         $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
         
@@ -243,7 +296,7 @@ function Install-Repository {
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "Cloned via HTTPS"
             } else {
-                Write-Error "Failed to clone repository"
+                Write-Err "Failed to clone repository"
                 Write-Info "For private repo access, ensure your SSH key is added to GitHub:"
                 Write-Info "  ssh-add ~/.ssh/id_rsa"
                 Write-Info "  ssh -T git@github.com  # Test connection"
@@ -252,7 +305,7 @@ function Install-Repository {
         }
     }
     
-    # Ensure submodules are initialized and updated (for existing installs or if --recurse failed)
+    # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
     Push-Location $InstallDir
     git submodule update --init --recursive
@@ -268,23 +321,21 @@ function Install-Venv {
         return
     }
     
-    Write-Info "Creating virtual environment..."
+    Write-Info "Creating virtual environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
     
-    if (-not (Test-Path "venv")) {
-        & $PythonCmd -m venv venv
+    if (Test-Path "venv") {
+        Write-Info "Virtual environment already exists, recreating..."
+        Remove-Item -Recurse -Force "venv"
     }
     
-    # Activate
-    & .\venv\Scripts\Activate.ps1
-    
-    # Upgrade pip
-    pip install --upgrade pip wheel setuptools | Out-Null
+    # uv creates the venv and pins the Python version in one step
+    & $UvCmd venv venv --python $PythonVersion
     
     Pop-Location
     
-    Write-Success "Virtual environment ready"
+    Write-Success "Virtual environment ready (Python $PythonVersion)"
 }
 
 function Install-Dependencies {
@@ -293,14 +344,15 @@ function Install-Dependencies {
     Push-Location $InstallDir
     
     if (-not $NoVenv) {
-        & .\venv\Scripts\Activate.ps1
+        # Tell uv to install into our venv (no activation needed)
+        $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
     
-    # Install main package
+    # Install main package with all extras
     try {
-        pip install -e ".[all]" 2>&1 | Out-Null
+        & $UvCmd pip install -e ".[all]" 2>&1 | Out-Null
     } catch {
-        pip install -e "." | Out-Null
+        & $UvCmd pip install -e "." | Out-Null
     }
     
     Write-Success "Main package installed"
@@ -309,32 +361,25 @@ function Install-Dependencies {
     Write-Info "Installing mini-swe-agent (terminal tool backend)..."
     if (Test-Path "mini-swe-agent\pyproject.toml") {
         try {
-            pip install -e ".\mini-swe-agent" 2>&1 | Out-Null
+            & $UvCmd pip install -e ".\mini-swe-agent" 2>&1 | Out-Null
             Write-Success "mini-swe-agent installed"
         } catch {
-            Write-Warning "mini-swe-agent install failed (terminal tools may not work)"
+            Write-Warn "mini-swe-agent install failed (terminal tools may not work)"
         }
     } else {
-        Write-Warning "mini-swe-agent not found (run: git submodule update --init)"
+        Write-Warn "mini-swe-agent not found (run: git submodule update --init)"
     }
     
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
-        # tinker-atropos depends on the 'tinker' package which requires Python >= 3.11
-        $major, $minor = $PythonVersion.Split('.')
-        if ([int]$minor -ge 11) {
-            try {
-                pip install -e ".\tinker-atropos" 2>&1 | Out-Null
-                Write-Success "tinker-atropos installed"
-            } catch {
-                Write-Warning "tinker-atropos install failed (RL tools may not work)"
-            }
-        } else {
-            Write-Warning "tinker-atropos requires Python 3.11+ (skipping — RL training tools won't be available)"
-            Write-Info "Upgrade to Python 3.11+ to enable RL training features"
+        try {
+            & $UvCmd pip install -e ".\tinker-atropos" 2>&1 | Out-Null
+            Write-Success "tinker-atropos installed"
+        } catch {
+            Write-Warn "tinker-atropos install failed (RL tools may not work)"
         }
     } else {
-        Write-Warning "tinker-atropos not found (run: git submodule update --init)"
+        Write-Warn "tinker-atropos not found (run: git submodule update --init)"
     }
     
     Pop-Location
@@ -343,41 +388,44 @@ function Install-Dependencies {
 }
 
 function Set-PathVariable {
-    Write-Info "Setting up PATH..."
+    Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
-        $binDir = "$InstallDir"
+        $hermesBin = "$InstallDir"
     } else {
-        $binDir = "$InstallDir\venv\Scripts"
+        $hermesBin = "$InstallDir\venv\Scripts"
     }
     
-    # Add to user PATH
+    # Add the venv Scripts dir to user PATH so hermes is globally available
+    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     
-    if ($currentPath -notlike "*$binDir*") {
+    if ($currentPath -notlike "*$hermesBin*") {
         [Environment]::SetEnvironmentVariable(
             "Path",
-            "$binDir;$currentPath",
+            "$hermesBin;$currentPath",
             "User"
         )
-        Write-Success "Added to user PATH"
+        Write-Success "Added to user PATH: $hermesBin"
     } else {
         Write-Info "PATH already configured"
     }
     
     # Update current session
-    $env:Path = "$binDir;$env:Path"
+    $env:Path = "$hermesBin;$env:Path"
+    
+    Write-Success "hermes command ready"
 }
 
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
-    # Create ~/.hermes directory structure (config at top level, code in subdir)
+    # Create ~/.hermes directory structure
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
     
-    # Create .env at ~/.hermes/.env (top level, easy to find)
+    # Create .env
     $envPath = "$HermesHome\.env"
     if (-not (Test-Path $envPath)) {
         $examplePath = "$InstallDir\.env.example"
@@ -385,7 +433,6 @@ function Copy-ConfigTemplates {
             Copy-Item $examplePath $envPath
             Write-Success "Created ~/.hermes/.env from template"
         } else {
-            # Create empty .env if no example exists
             New-Item -ItemType File -Force -Path $envPath | Out-Null
             Write-Success "Created ~/.hermes/.env"
         }
@@ -393,7 +440,7 @@ function Copy-ConfigTemplates {
         Write-Info "~/.hermes/.env already exists, keeping it"
     }
     
-    # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
+    # Create config.yaml
     $configPath = "$HermesHome\config.yaml"
     if (-not (Test-Path $configPath)) {
         $examplePath = "$InstallDir\cli-config.yaml.example"
@@ -422,7 +469,7 @@ function Install-NodeDeps {
             npm install --silent 2>&1 | Out-Null
             Write-Success "Node.js dependencies installed"
         } catch {
-            Write-Warning "npm install failed (browser tools may not work)"
+            Write-Warn "npm install failed (browser tools may not work)"
         }
     }
     
@@ -441,11 +488,12 @@ function Invoke-SetupWizard {
     
     Push-Location $InstallDir
     
+    # Run hermes setup using the venv Python directly (no activation needed)
     if (-not $NoVenv) {
-        & .\venv\Scripts\Activate.ps1
+        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+    } else {
+        python -m hermes_cli.main setup
     }
-    
-    python -m hermes_cli.main setup
     
     Pop-Location
 }
@@ -493,7 +541,6 @@ function Write-Completion {
     Write-Host "⚡ Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
     Write-Host ""
     
-    # Show notes about optional tools
     if (-not $HasNode) {
         Write-Host "Note: Node.js was not found. Browser automation tools" -ForegroundColor Yellow
         Write-Host "will have limited functionality." -ForegroundColor Yellow
@@ -515,6 +562,7 @@ function Write-Completion {
 function Main {
     Write-Banner
     
+    if (-not (Install-Uv)) { exit 1 }
     if (-not (Test-Python)) { exit 1 }
     if (-not (Test-Git)) { exit 1 }
     Test-Node      # Optional, doesn't fail

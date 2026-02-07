@@ -41,6 +41,7 @@ privvy*
 images/
 __pycache__/
 hermes_agent.egg-info/
+wandb/
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml

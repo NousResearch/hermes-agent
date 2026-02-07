@@ -1,0 +1,33 @@
+# SWE Environment -- Default Configuration
+#
+# SWE-bench style tasks with Modal sandboxes for cloud isolation.
+# Uses terminal + file + web toolsets.
+#
+# Usage:
+#   python environments/hermes_swe_env.py serve --config environments/configs/swe_default.yaml
+
+env:
+  enabled_toolsets: ["terminal", "file", "web"]
+  max_agent_turns: 30
+  max_token_length: 4096
+  group_size: 4
+  terminal_backend: "modal"
+  tool_call_parser: "hermes"
+  tokenizer_name: "NousResearch/DeepHermes-3-Llama-3-3B-Preview"
+  dataset_name: "bigcode/humanevalpack"
+  dataset_split: "test"
+  prompt_field: "prompt"
+  steps_per_eval: 50
+  total_steps: 500
+  use_wandb: true
+  wandb_name: "hermes-swe"
+  system_prompt: >
+    You are a skilled software engineer. You have access to a terminal,
+    file tools, and web search. Use these tools to complete the coding task.
+    Write clean, working code and verify it runs correctly before finishing.
+
+openai:
+  base_url: "http://localhost:8000/v1"
+  model_name: "NousResearch/DeepHermes-3-Llama-3-3B-Preview"
+  server_type: "openai"
+  api_key: ""

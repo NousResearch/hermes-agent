@@ -1,3 +1,0 @@
-[console_scripts]
-hermes = hermes_cli.main:main
-hermes-agent = run_agent:main

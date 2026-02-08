@@ -659,15 +659,24 @@ def run_setup_wizard(args):
         except ImportError:
             print_info("Installing required package: swe-rex[modal]...")
             import subprocess
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "swe-rex[modal]>=1.4.0"],
-                capture_output=True, text=True
-            )
+            import shutil
+            # Prefer uv for speed, fall back to pip
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "swe-rex[modal]>=1.4.0"],
+                    capture_output=True, text=True
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "swe-rex[modal]>=1.4.0"],
+                    capture_output=True, text=True
+                )
             if result.returncode == 0:
                 print_success("swe-rex[modal] installed (includes modal + boto3)")
             else:
                 print_warning("Failed to install swe-rex[modal] — install manually:")
-                print_info('  pip install "swe-rex[modal]>=1.4.0"')
+                print_info('  uv pip install "swe-rex[modal]>=1.4.0"')
         
         # Always show current status and allow reconfiguration
         current_token = get_env_value('MODAL_TOKEN_ID')
@@ -1031,19 +1040,28 @@ def run_setup_wizard(args):
                     if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
                         print_info("    Installing tinker-atropos submodule...")
                         import subprocess
-                        result = subprocess.run(
-                            [sys.executable, "-m", "pip", "install", "-e", str(tinker_dir)],
-                            capture_output=True, text=True
-                        )
+                        import shutil
+                        # Prefer uv for speed, fall back to pip
+                        uv_bin = shutil.which("uv")
+                        if uv_bin:
+                            result = subprocess.run(
+                                [uv_bin, "pip", "install", "-e", str(tinker_dir)],
+                                capture_output=True, text=True
+                            )
+                        else:
+                            result = subprocess.run(
+                                [sys.executable, "-m", "pip", "install", "-e", str(tinker_dir)],
+                                capture_output=True, text=True
+                            )
                         if result.returncode == 0:
                             print_success("    tinker-atropos installed")
                         else:
                             print_warning("    tinker-atropos install failed — run manually:")
-                            print_info('      pip install -e "./tinker-atropos"')
+                            print_info('      uv pip install -e "./tinker-atropos"')
                     else:
                         print_warning("    tinker-atropos submodule not found — run:")
                         print_info("      git submodule update --init --recursive")
-                        print_info('      pip install -e "./tinker-atropos"')
+                        print_info('      uv pip install -e "./tinker-atropos"')
                 
                 if api_key and wandb_key:
                     print_success("    Configured ✓")

@@ -121,7 +121,7 @@ class TerminalTestEnv(HermesAgentBaseEnv):
             distribution=None,
             # Agent settings
             max_agent_turns=10,  # Simple tasks, don't need many turns
-            max_token_length=2048,
+            max_token_length=16000,
             agent_temperature=1.0,
             system_prompt=(
                 "You are a helpful assistant with access to a terminal and file tools. "

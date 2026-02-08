@@ -11,6 +11,8 @@ identical to hermes-agent's run_agent.py. Tool execution is dispatched via
 handle_function_call() from model_tools.py.
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import uuid
@@ -19,7 +21,23 @@ from typing import Any, Dict, List, Optional, Set
 
 from model_tools import handle_function_call
 
+# Thread pool for running sync tool calls that internally use asyncio.run()
+# (e.g., mini-swe-agent's modal/docker backends). Running them in a separate
+# thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
+_tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolError:
+    """Record of a tool execution error during the agent loop."""
+
+    turn: int                  # Which turn the error occurred on
+    tool_name: str             # Which tool was called
+    arguments: str             # The arguments passed (truncated)
+    error: str                 # The error message
+    tool_result: str           # The raw result returned to the model
 
 
 @dataclass
@@ -36,6 +54,8 @@ class AgentResult:
     finished_naturally: bool = False
     # Extracted reasoning content per turn (from PR #297 helpers)
     reasoning_per_turn: List[Optional[str]] = field(default_factory=list)
+    # Tool errors encountered during the loop
+    tool_errors: List[ToolError] = field(default_factory=list)
 
 
 def _extract_reasoning_from_message(message) -> Optional[str]:
@@ -133,6 +153,7 @@ class HermesAgentLoop:
             AgentResult with full conversation history, managed state, and metadata
         """
         reasoning_per_turn = []
+        tool_errors: List[ToolError] = []
 
         for turn in range(self.max_turns):
             # Build the chat_completion kwargs
@@ -161,6 +182,7 @@ class HermesAgentLoop:
                     turns_used=turn + 1,
                     finished_naturally=False,
                     reasoning_per_turn=reasoning_per_turn,
+                    tool_errors=tool_errors,
                 )
 
             if not response or not response.choices:
@@ -171,6 +193,7 @@ class HermesAgentLoop:
                     turns_used=turn + 1,
                     finished_naturally=False,
                     reasoning_per_turn=reasoning_per_turn,
+                    tool_errors=tool_errors,
                 )
 
             assistant_msg = response.choices[0].message
@@ -209,6 +232,7 @@ class HermesAgentLoop:
                 # Execute each tool call via hermes-agent's dispatch
                 for tc in assistant_msg.tool_calls:
                     tool_name = tc.function.name
+                    tool_args_raw = tc.function.arguments
 
                     # Validate tool name
                     if tool_name not in self.valid_tool_names:
@@ -218,34 +242,74 @@ class HermesAgentLoop:
                                 f"Available tools: {sorted(self.valid_tool_names)}"
                             }
                         )
+                        tool_errors.append(ToolError(
+                            turn=turn + 1, tool_name=tool_name,
+                            arguments=tool_args_raw[:200],
+                            error=f"Unknown tool '{tool_name}'",
+                            tool_result=tool_result,
+                        ))
                         logger.warning(
                             "Model called unknown tool '%s' on turn %d",
-                            tool_name,
-                            turn + 1,
+                            tool_name, turn + 1,
                         )
                     else:
                         # Parse arguments and dispatch
                         try:
-                            args = json.loads(tc.function.arguments)
+                            args = json.loads(tool_args_raw)
                         except json.JSONDecodeError:
                             args = {}
                             logger.warning(
                                 "Invalid JSON in tool call arguments for '%s': %s",
-                                tool_name,
-                                tc.function.arguments[:200],
+                                tool_name, tool_args_raw[:200],
                             )
 
                         try:
-                            tool_result = handle_function_call(
-                                tool_name, args, task_id=self.task_id
+                            if tool_name == "terminal":
+                                import os
+                                backend = os.getenv("TERMINAL_ENV", "local")
+                                cmd_preview = args.get("command", "")[:80]
+                                print(f"  🖥️  [{backend}] $ {cmd_preview}")
+
+                            # Run tool calls in a thread pool so backends that use
+                            # asyncio.run() internally (modal, docker) get a clean
+                            # event loop instead of deadlocking inside Atropos's loop.
+                            loop = asyncio.get_event_loop()
+                            tool_result = await loop.run_in_executor(
+                                _tool_executor,
+                                lambda: handle_function_call(
+                                    tool_name, args, task_id=self.task_id
+                                ),
                             )
                         except Exception as e:
                             tool_result = json.dumps(
-                                {"error": f"Tool execution failed: {str(e)}"}
+                                {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
                             )
+                            tool_errors.append(ToolError(
+                                turn=turn + 1, tool_name=tool_name,
+                                arguments=tool_args_raw[:200],
+                                error=f"{type(e).__name__}: {str(e)}",
+                                tool_result=tool_result,
+                            ))
                             logger.error(
-                                "Tool '%s' execution failed: %s", tool_name, e
+                                "Tool '%s' execution failed on turn %d: %s",
+                                tool_name, turn + 1, e,
                             )
+
+                        # Also check if the tool returned an error in its JSON result
+                        try:
+                            result_data = json.loads(tool_result)
+                            if isinstance(result_data, dict):
+                                err = result_data.get("error")
+                                exit_code = result_data.get("exit_code")
+                                if err and exit_code and exit_code < 0:
+                                    tool_errors.append(ToolError(
+                                        turn=turn + 1, tool_name=tool_name,
+                                        arguments=tool_args_raw[:200],
+                                        error=str(err),
+                                        tool_result=tool_result[:500],
+                                    ))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
                     # Add tool response to conversation
                     messages.append(
@@ -282,6 +346,7 @@ class HermesAgentLoop:
                     turns_used=turn + 1,
                     finished_naturally=True,
                     reasoning_per_turn=reasoning_per_turn,
+                    tool_errors=tool_errors,
                 )
 
         # Hit max turns without the model stopping
@@ -292,6 +357,7 @@ class HermesAgentLoop:
             turns_used=self.max_turns,
             finished_naturally=False,
             reasoning_per_turn=reasoning_per_turn,
+            tool_errors=tool_errors,
         )
 
     def _get_managed_state(self) -> Optional[Dict[str, Any]]:

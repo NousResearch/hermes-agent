@@ -25,13 +25,42 @@ Example usage in a compute_reward():
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
+
+import asyncio
+import concurrent.futures
 
 from model_tools import handle_function_call
 from tools.terminal_tool import cleanup_vm
 from tools.browser_tool import cleanup_browser
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for running sync tool calls that internally use asyncio.run()
+_tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str) -> str:
+    """
+    Run a tool call in a thread pool executor so backends that use asyncio.run()
+    internally (modal, docker) get a clean event loop.
+
+    If we're already in an async context, uses run_in_executor.
+    If not (e.g., called from sync code), runs directly.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        # We're in an async context -- need to run in thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                handle_function_call, tool_name, arguments, task_id
+            )
+            return future.result(timeout=300)
+    except RuntimeError:
+        # No running event loop -- safe to call directly
+        return handle_function_call(tool_name, arguments, task_id)
 
 
 class ToolContext:
@@ -61,10 +90,15 @@ class ToolContext:
         Returns:
             Dict with 'exit_code' (int) and 'output' (str)
         """
-        result = handle_function_call(
+        import os
+        backend = os.getenv("TERMINAL_ENV", "local")
+        logger.debug("ToolContext.terminal [%s backend] task=%s: %s", backend, self.task_id[:8], command[:100])
+
+        # Run in thread pool so modal/docker backends' asyncio.run() doesn't deadlock
+        result = _run_tool_in_thread(
             "terminal",
             {"command": command, "timeout": timeout},
-            task_id=self.task_id,
+            self.task_id,
         )
         try:
             return json.loads(result)
@@ -222,7 +256,7 @@ class ToolContext:
         Returns:
             Raw JSON string result from the tool
         """
-        return handle_function_call(tool_name, arguments, task_id=self.task_id)
+        return _run_tool_in_thread(tool_name, arguments, self.task_id)
 
     # -------------------------------------------------------------------------
     # Cleanup
@@ -240,7 +274,16 @@ class ToolContext:
         except Exception as e:
             logger.debug("VM cleanup for task %s: %s", self.task_id, e)
 
+        # Suppress browser_tool's noisy debug prints during cleanup.
+        # The cleanup still runs (safe), it just doesn't spam the console.
+        _prev_quiet = os.environ.get("HERMES_QUIET")
+        os.environ["HERMES_QUIET"] = "1"
         try:
             cleanup_browser(self.task_id)
         except Exception as e:
             logger.debug("Browser cleanup for task %s: %s", self.task_id, e)
+        finally:
+            if _prev_quiet is None:
+                os.environ.pop("HERMES_QUIET", None)
+            else:
+                os.environ["HERMES_QUIET"] = _prev_quiet

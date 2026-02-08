@@ -1191,8 +1191,19 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
-        # Run async function in event loop
-        return asyncio.run(web_extract_tool(urls, "markdown"))
+        # Run async function -- use existing loop if available (Atropos),
+        # otherwise create one (normal CLI)
+        try:
+            loop = asyncio.get_running_loop()
+            # Already in an async context (Atropos) -- run in a thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    lambda: asyncio.run(web_extract_tool(urls, "markdown"))
+                ).result(timeout=120)
+        except RuntimeError:
+            # No running loop (normal CLI) -- use asyncio.run directly
+            return asyncio.run(web_extract_tool(urls, "markdown"))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)

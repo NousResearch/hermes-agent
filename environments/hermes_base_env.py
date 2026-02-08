@@ -41,6 +41,12 @@ _env_path = _repo_root / ".env"
 if _env_path.exists():
     load_dotenv(dotenv_path=_env_path)
 
+# Apply monkey patches for async-safe tool operation inside Atropos's event loop.
+# This patches SwerexModalEnvironment to use a background thread instead of
+# asyncio.run(), which would deadlock inside Atropos. Safe for normal CLI too.
+from environments.patches import apply_patches
+apply_patches()
+
 from atroposlib.envs.base import (
     BaseEnv,
     BaseEnvConfig,
@@ -172,9 +178,13 @@ class HermesAgentBaseEnv(BaseEnv):
         # Set terminal backend environment variable so hermes tools pick it up
         if config.terminal_backend:
             os.environ["TERMINAL_ENV"] = config.terminal_backend
+            print(f"🖥️  Terminal backend: {config.terminal_backend}")
 
         # Current group's resolved tools (set in collect_trajectories)
         self._current_group_tools: Optional[Tuple[List[Dict], Set[str]]] = None
+
+        # Tool error tracking for wandb logging
+        self._tool_error_buffer: List[Dict[str, Any]] = []
 
     # =========================================================================
     # Toolset resolution (per-group)
@@ -348,6 +358,33 @@ class HermesAgentBaseEnv(BaseEnv):
         if len(self.rollouts_for_wandb) > self.config.num_rollouts_to_keep:
             self.rollouts_for_wandb.pop(0)
 
+    async def wandb_log(self, wandb_metrics: Optional[Dict] = None):
+        """Log base metrics including tool errors to wandb."""
+        if wandb_metrics is None:
+            wandb_metrics = {}
+
+        # Log tool error stats
+        if self._tool_error_buffer:
+            wandb_metrics["train/tool_errors_count"] = len(self._tool_error_buffer)
+
+            # Log error details as a summary string (tables can crash wandb on tmp cleanup)
+            error_summaries = []
+            for err in self._tool_error_buffer:
+                error_summaries.append(
+                    f"[turn {err['turn']}] {err['tool']}({err['args'][:80]}) -> {err['error'][:150]}"
+                )
+            wandb_metrics["train/tool_error_details"] = "\n".join(error_summaries)
+
+            # Also print to stdout for immediate visibility
+            for summary in error_summaries:
+                print(f"  Tool Error: {summary}")
+
+            self._tool_error_buffer = []
+        else:
+            wandb_metrics["train/tool_errors_count"] = 0
+
+        await super().wandb_log(wandb_metrics)
+
     async def collect_trajectory(
         self, item: Item
     ) -> Tuple[Optional[Union[ScoredDataItem, Any]], List[Item]]:
@@ -376,8 +413,22 @@ class HermesAgentBaseEnv(BaseEnv):
         result: AgentResult
         if self._use_managed_server():
             # Phase 2: ManagedServer with parser -- exact tokens + logprobs
+            # Load the tool call parser from registry based on config
+            from environments.tool_call_parsers import get_parser
             try:
-                async with self.server.managed_server(tokenizer=self.tokenizer) as managed:
+                tc_parser = get_parser(self.config.tool_call_parser)
+            except KeyError:
+                logger.warning(
+                    "Tool call parser '%s' not found, falling back to 'hermes'",
+                    self.config.tool_call_parser,
+                )
+                tc_parser = get_parser("hermes")
+
+            try:
+                async with self.server.managed_server(
+                    tokenizer=self.tokenizer,
+                    tool_call_parser=tc_parser,
+                ) as managed:
                     agent = HermesAgentLoop(
                         server=managed,
                         tool_schemas=tools,
@@ -417,15 +468,39 @@ class HermesAgentBaseEnv(BaseEnv):
             )
             result = await agent.run(messages)
 
-        # Compute reward using ToolContext (gives verifier full tool access)
-        ctx = ToolContext(task_id)
-        try:
-            reward = await self.compute_reward(item, result, ctx)
-        except Exception as e:
-            logger.error("compute_reward failed: %s", e)
+        # Skip reward computation if the agent loop produced no meaningful work
+        # (e.g., API call failed on turn 1). No point spinning up a Modal sandbox
+        # just to verify files that were never created.
+        only_system_and_user = all(
+            msg.get("role") in ("system", "user") for msg in result.messages
+        )
+        if result.turns_used == 0 or only_system_and_user:
+            logger.warning(
+                "Agent loop produced no output (turns=%d, msgs=%d). Skipping reward.",
+                result.turns_used, len(result.messages),
+            )
             reward = 0.0
-        finally:
-            ctx.cleanup()
+        else:
+            # Compute reward using ToolContext (gives verifier full tool access)
+            ctx = ToolContext(task_id)
+            try:
+                reward = await self.compute_reward(item, result, ctx)
+            except Exception as e:
+                logger.error("compute_reward failed: %s", e)
+                reward = 0.0
+            finally:
+                ctx.cleanup()
+
+        # Track tool errors for wandb logging
+        if result.tool_errors:
+            for err in result.tool_errors:
+                self._tool_error_buffer.append({
+                    "turn": err.turn,
+                    "tool": err.tool_name,
+                    "args": err.arguments[:150],
+                    "error": err.error[:300],
+                    "result": err.tool_result[:300],
+                })
 
         # Build ScoredDataItem from ManagedServer state
         # Phase 2: real tokens/masks/logprobs from SequenceNodes

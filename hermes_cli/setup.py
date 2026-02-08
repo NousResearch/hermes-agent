@@ -501,11 +501,12 @@ def run_setup_wizard(args):
     # =========================================================================
     print_header("Default Model")
     
-    current_model = config.get('model', 'anthropic/claude-sonnet-4')
+    current_model = config.get('model', 'anthropic/claude-opus-4.6')
     print_info(f"Current: {current_model}")
     
     model_choices = [
-        "anthropic/claude-sonnet-4.5 (recommended)",
+        "anthropic/claude-opus-4.6 (recommended)",
+        "anthropic/claude-sonnet-4.5",
         "anthropic/claude-opus-4.5",
         "openai/gpt-5.2",
         "openai/gpt-5.2-codex",
@@ -518,27 +519,31 @@ def run_setup_wizard(args):
         f"Keep current ({current_model})"
     ]
     
-    model_idx = prompt_choice("Select default model:", model_choices, 10)  # Default: keep current
+    model_idx = prompt_choice("Select default model:", model_choices, 11)  # Default: keep current
     
     model_map = {
-        0: "anthropic/claude-sonnet-4.5",
-        1: "anthropic/claude-opus-4.5",
-        2: "openai/gpt-5.2",
-        3: "openai/gpt-5.2-codex",
-        4: "google/gemini-3-pro-preview",
-        5: "google/gemini-3-flash-preview",
-        6: "z-ai/glm-4.7",
-        7: "moonshotai/kimi-k2.5",
-        8: "minimax/minimax-m2.1",
+        0: "anthropic/claude-opus-4.6",
+        1: "anthropic/claude-sonnet-4.5",
+        2: "anthropic/claude-opus-4.5",
+        3: "openai/gpt-5.2",
+        4: "openai/gpt-5.2-codex",
+        5: "google/gemini-3-pro-preview",
+        6: "google/gemini-3-flash-preview",
+        7: "z-ai/glm-4.7",
+        8: "moonshotai/kimi-k2.5",
+        9: "minimax/minimax-m2.1",
     }
     
     if model_idx in model_map:
         config['model'] = model_map[model_idx]
-    elif model_idx == 9:  # Custom
-        custom = prompt("Enter model name (e.g., anthropic/claude-sonnet-4.5)")
+        # Also update LLM_MODEL in .env so it stays in sync (cli.py reads .env first)
+        save_env_value("LLM_MODEL", model_map[model_idx])
+    elif model_idx == 10:  # Custom
+        custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
         if custom:
             config['model'] = custom
-    # else: Keep current (model_idx == 10)
+            save_env_value("LLM_MODEL", custom)
+    # else: Keep current (model_idx == 11)
     
     # =========================================================================
     # Step 4: Terminal Backend

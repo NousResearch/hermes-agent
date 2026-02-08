@@ -88,7 +88,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "terminal": {
             "env_type": "local",
-            "cwd": "/tmp",
+            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
             "timeout": 60,
             "lifetime_seconds": 300,
             "docker_image": "python:3.11",
@@ -839,7 +839,7 @@ class HermesCLI:
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
-        terminal_cwd = os.getenv("TERMINAL_CWD", "/tmp")
+        terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
         config_path = Path(__file__).parent / 'cli-config.yaml'

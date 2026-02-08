@@ -961,7 +961,7 @@ class _ModalEnvironment:
     Note: stdin handling is not needed for Modal since it uses remote async execution.
     """
     
-    def __init__(self, image: str, cwd: str = "/", timeout: int = 60):
+    def __init__(self, image: str, cwd: str = "/root", timeout: int = 60):
         from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
         self._inner = SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
         self.cwd = cwd
@@ -1034,12 +1034,25 @@ def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    env_type = os.getenv("TERMINAL_ENV", "local")
+    
+    # Default cwd depends on backend:
+    #   - local/ssh: current working directory (CLI resolves "." before we get here)
+    #   - docker/singularity: /tmp inside the container (singularity bind-mounts /scratch there)
+    #   - modal: /root (ephemeral cloud container, full filesystem access)
+    if env_type == "modal":
+        default_cwd = "/root"
+    elif env_type in ("docker", "singularity"):
+        default_cwd = "/tmp"
+    else:
+        default_cwd = os.getcwd()
+    
     return {
-        "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, singularity, modal, or ssh
+        "env_type": env_type,
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "cwd": os.getenv("TERMINAL_CWD", "/tmp"),
+        "cwd": os.getenv("TERMINAL_CWD", default_cwd),
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
         # SSH-specific config
@@ -1574,6 +1587,6 @@ if __name__ == "__main__":
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
-    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', '/tmp')}")
+    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")

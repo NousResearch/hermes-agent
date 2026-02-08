@@ -254,12 +254,12 @@ class ShellFileOperations(FileOperations):
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or /tmp)
+            cwd: Working directory (defaults to env's cwd or current directory)
         """
         self.env = terminal_env
         # Determine cwd from various possible sources
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
-                   getattr(getattr(terminal_env, 'config', None), 'cwd', None) or '/tmp'
+                   getattr(getattr(terminal_env, 'config', None), 'cwd', None) or os.getcwd()
         
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}

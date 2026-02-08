@@ -700,13 +700,21 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file with pagination support. Returns content with line numbers in 'LINE_NUM|CONTENT' format. For binary files (images), returns base64-encoded data. If file not found, suggests similar filenames.",
+                "description": (
+                    "Read a file with pagination support. Preferred over 'cat' in the terminal because it "
+                    "provides line numbers, handles binary/image files, and suggests similar filenames if "
+                    "the file is not found.\n\n"
+                    "**Output format:** Each line is returned as 'LINE_NUM|CONTENT' for easy reference.\n"
+                    "**Binary files:** Detected automatically; images (png/jpg/gif/webp) are returned as base64 with MIME type and dimensions.\n"
+                    "**Large files:** Use offset and limit to paginate. The response includes total line count and a hint for the next page.\n"
+                    "**Paths:** Supports absolute paths, relative paths (from working directory), and ~ expansion."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to the file to read (absolute or relative)"
+                            "description": "Path to the file to read (absolute, relative, or ~/path)"
                         },
                         "offset": {
                             "type": "integer",
@@ -729,17 +737,25 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write content to a file. Creates parent directories automatically. Returns bytes written and lint check results for supported languages.",
+                "description": (
+                    "Write content to a file, completely replacing any existing content. Creates parent "
+                    "directories automatically if they don't exist. Preferred over 'echo' or heredoc in the "
+                    "terminal because it safely handles special characters, newlines, and shell metacharacters "
+                    "without escaping issues.\n\n"
+                    "**Important:** This OVERWRITES the entire file. To make targeted edits to an existing file, "
+                    "use the 'patch' tool instead.\n"
+                    "**Paths:** Supports absolute paths, relative paths, and ~ expansion."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to the file to write (will be created if doesn't exist)"
+                            "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"
                         },
                         "content": {
                             "type": "string",
-                            "description": "Content to write to the file"
+                            "description": "Complete content to write to the file"
                         }
                     },
                     "required": ["path", "content"]
@@ -750,36 +766,48 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "patch",
-                "description": "Modify files using either simple string replacement or V4A patch format. Mode 'replace' does find-and-replace with fuzzy matching. Mode 'patch' applies multi-file changes using V4A format (*** Begin/End Patch). Auto-runs syntax checks on modified files.",
+                "description": (
+                    "Modify existing files using targeted edits. Preferred over 'sed' or manual rewriting because "
+                    "it uses intelligent fuzzy matching that tolerates minor whitespace and indentation differences, "
+                    "and auto-runs syntax checks (Python, JS, TS, Go, Rust) after editing.\n\n"
+                    "**Replace mode (recommended):** Find a unique string in the file and replace it. Uses a "
+                    "9-strategy fuzzy matching chain (exact → line-trimmed → whitespace-normalized → "
+                    "indentation-flexible → context-aware) so small formatting differences won't cause failures. "
+                    "Returns a unified diff showing exactly what changed.\n\n"
+                    "**Patch mode:** Apply multi-file changes using V4A patch format for large-scale edits across "
+                    "multiple files in one call.\n\n"
+                    "**Auto-lint:** After every edit, automatically runs syntax checks and reports errors so you "
+                    "can fix them immediately."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "mode": {
                             "type": "string",
                             "enum": ["replace", "patch"],
-                            "description": "Edit mode: 'replace' for string replacement, 'patch' for V4A patch format",
+                            "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches",
                             "default": "replace"
                         },
                         "path": {
                             "type": "string",
-                            "description": "File path (required for 'replace' mode)"
+                            "description": "File path to edit (required for 'replace' mode)"
                         },
                         "old_string": {
                             "type": "string",
-                            "description": "Text to find and replace (required for 'replace' mode). Must be unique in file unless replace_all=true"
+                            "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "Replacement text (required for 'replace' mode)"
+                            "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."
                         },
                         "replace_all": {
                             "type": "boolean",
-                            "description": "Replace all occurrences instead of requiring unique match (default: false)",
+                            "description": "Replace all occurrences instead of requiring a unique match (default: false)",
                             "default": False
                         },
                         "patch": {
                             "type": "string",
-                            "description": "V4A format patch content (required for 'patch' mode). Format: *** Begin Patch / *** Update File: path / @@ context @@ / -removed / +added / *** End Patch"
+                            "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"
                         }
                     },
                     "required": ["mode"]
@@ -790,7 +818,16 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "search",
-                "description": "Search for content in files or search for files by name. Use target='content' to search inside files (like grep), or target='files' to find files by name pattern (like glob/find). Results sorted by modification time (newest first).",
+                "description": (
+                    "Search for content inside files or find files by name. Preferred over 'grep' or 'find' "
+                    "in the terminal because it uses ripgrep (fast) with automatic fallback to grep, handles "
+                    "pagination, and returns structured results sorted by modification time (newest first).\n\n"
+                    "**Content search (target='content'):** Regex-powered search inside files with optional "
+                    "file type filtering and context lines. Three output modes: full matches with line numbers, "
+                    "file paths only, or match counts per file.\n\n"
+                    "**File search (target='files'):** Find files by glob pattern (e.g., '*.py', '*config*'). "
+                    "Results sorted by modification time so recently changed files appear first."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -801,12 +838,12 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                         "target": {
                             "type": "string",
                             "enum": ["content", "files"],
-                            "description": "Search mode: 'content' searches inside files, 'files' searches for files by name",
+                            "description": "Search mode: 'content' searches inside files (like grep/rg), 'files' searches for files by name (like find/glob)",
                             "default": "content"
                         },
                         "path": {
                             "type": "string",
-                            "description": "Directory or file to search in (default: current directory)",
+                            "description": "Directory or file to search in (default: current working directory)",
                             "default": "."
                         },
                         "file_glob": {
@@ -815,7 +852,7 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (default: 50)",
+                            "description": "Maximum number of results to return (default: 50)",
                             "default": 50
                         },
                         "offset": {
@@ -826,12 +863,12 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                         "output_mode": {
                             "type": "string",
                             "enum": ["content", "files_only", "count"],
-                            "description": "For target='content': 'content' shows matches, 'files_only' shows file paths, 'count' shows match counts per file",
+                            "description": "Output format for content search: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
                             "default": "content"
                         },
                         "context": {
                             "type": "integer",
-                            "description": "Lines of context around matches (only for target='content', output_mode='content')",
+                            "description": "Number of lines to show before and after each match (only for target='content', output_mode='content')",
                             "default": 0
                         }
                     },
@@ -909,6 +946,53 @@ def get_all_tool_names() -> List[str]:
     return tool_names
 
 
+# Master mapping of every tool name → its toolset.
+# This is the single source of truth for all valid tool names in the system.
+# Import TOOL_TO_TOOLSET_MAP from here whenever you need to check valid tools.
+TOOL_TO_TOOLSET_MAP = {
+    "web_search": "web_tools",
+    "web_extract": "web_tools",
+    "terminal": "terminal_tools",
+    "vision_analyze": "vision_tools",
+    "mixture_of_agents": "moa_tools",
+    "image_generate": "image_tools",
+    # Skills tools
+    "skills_categories": "skills_tools",
+    "skills_list": "skills_tools",
+    "skill_view": "skills_tools",
+    # Browser automation tools
+    "browser_navigate": "browser_tools",
+    "browser_snapshot": "browser_tools",
+    "browser_click": "browser_tools",
+    "browser_type": "browser_tools",
+    "browser_scroll": "browser_tools",
+    "browser_back": "browser_tools",
+    "browser_press": "browser_tools",
+    "browser_close": "browser_tools",
+    "browser_get_images": "browser_tools",
+    "browser_vision": "browser_tools",
+    # Cronjob management tools
+    "schedule_cronjob": "cronjob_tools",
+    "list_cronjobs": "cronjob_tools",
+    "remove_cronjob": "cronjob_tools",
+    # RL Training tools
+    "rl_list_environments": "rl_tools",
+    "rl_select_environment": "rl_tools",
+    "rl_get_current_config": "rl_tools",
+    "rl_edit_config": "rl_tools",
+    "rl_start_training": "rl_tools",
+    "rl_check_status": "rl_tools",
+    "rl_stop_training": "rl_tools",
+    "rl_get_results": "rl_tools",
+    "rl_list_runs": "rl_tools",
+    # File manipulation tools
+    "read_file": "file_tools",
+    "write_file": "file_tools",
+    "patch": "file_tools",
+    "search": "file_tools",
+}
+
+
 def get_toolset_for_tool(tool_name: str) -> str:
     """
     Get the toolset that a tool belongs to.
@@ -919,50 +1003,7 @@ def get_toolset_for_tool(tool_name: str) -> str:
     Returns:
         str: Name of the toolset, or "unknown" if not found
     """
-    toolset_mapping = {
-        "web_search": "web_tools",
-        "web_extract": "web_tools",
-        "terminal": "terminal_tools",
-        "vision_analyze": "vision_tools",
-        "mixture_of_agents": "moa_tools",
-        "image_generate": "image_tools",
-        # Skills tools
-        "skills_categories": "skills_tools",
-        "skills_list": "skills_tools",
-        "skill_view": "skills_tools",
-        # Browser automation tools
-        "browser_navigate": "browser_tools",
-        "browser_snapshot": "browser_tools",
-        "browser_click": "browser_tools",
-        "browser_type": "browser_tools",
-        "browser_scroll": "browser_tools",
-        "browser_back": "browser_tools",
-        "browser_press": "browser_tools",
-        "browser_close": "browser_tools",
-        "browser_get_images": "browser_tools",
-        "browser_vision": "browser_tools",
-        # Cronjob management tools
-        "schedule_cronjob": "cronjob_tools",
-        "list_cronjobs": "cronjob_tools",
-        "remove_cronjob": "cronjob_tools",
-        # RL Training tools
-        "rl_list_environments": "rl_tools",
-        "rl_select_environment": "rl_tools",
-        "rl_get_current_config": "rl_tools",
-        "rl_edit_config": "rl_tools",
-        "rl_start_training": "rl_tools",
-        "rl_check_status": "rl_tools",
-        "rl_stop_training": "rl_tools",
-        "rl_get_results": "rl_tools",
-        "rl_list_runs": "rl_tools",
-        # File manipulation tools
-        "read_file": "file_tools",
-        "write_file": "file_tools",
-        "patch": "file_tools",
-        "search": "file_tools",
-    }
-    
-    return toolset_mapping.get(tool_name, "unknown")
+    return TOOL_TO_TOOLSET_MAP.get(tool_name, "unknown")
 
 
 def get_tool_definitions(

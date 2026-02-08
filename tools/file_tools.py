@@ -2,6 +2,7 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import json
+import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
@@ -11,23 +12,85 @@ _file_ops_cache: dict = {}
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
-    """Get or create ShellFileOperations for a terminal environment."""
-    from tools.terminal_tool import _active_environments, _env_lock, _LocalEnvironment
+    """Get or create ShellFileOperations for a terminal environment.
     
+    Respects the TERMINAL_ENV setting -- if the task_id doesn't have an
+    environment yet, creates one using the configured backend (local, docker,
+    modal, etc.) rather than always defaulting to local.
+    """
+    from tools.terminal_tool import (
+        _active_environments, _env_lock, _create_environment,
+        _get_env_config, _last_activity, _start_cleanup_thread,
+        _check_disk_usage_warning,
+    )
+    import time
+    
+    # Fast path: check cache without heavy locks
     with _file_ops_lock:
         if task_id in _file_ops_cache:
             return _file_ops_cache[task_id]
+    
+    # Check if we need to create a new environment
+    needs_creation = False
+    with _env_lock:
+        if task_id not in _active_environments:
+            needs_creation = True
+    
+    # Create environment OUTSIDE locks so we don't block other rollouts
+    # during slow Modal/Docker startup (~10s)
+    if needs_creation:
+        config = _get_env_config()
+        env_type = config["env_type"]
         
+        if env_type == "docker":
+            image = config["docker_image"]
+        elif env_type == "singularity":
+            image = config["singularity_image"]
+        elif env_type == "modal":
+            image = config["modal_image"]
+        else:
+            image = ""
+        
+        cwd = config["cwd"]
+        _check_disk_usage_warning()
+        if not os.getenv("HERMES_QUIET"):
+            print(f"[FileTools] Creating new {env_type} environment for task {task_id[:8]}...", flush=True)
+        
+        new_env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=cwd,
+            timeout=config["timeout"],
+        )
+        
+        # Store under lock (brief) -- do NOT call _start_cleanup_thread inside
+        # the lock because it also acquires _env_lock (non-reentrant = deadlock)
+        created = False
         with _env_lock:
             if task_id not in _active_environments:
-                import os
-                env = _LocalEnvironment(cwd=os.getcwd(), timeout=60)
-                _active_environments[task_id] = env
-            terminal_env = _active_environments[task_id]
+                _active_environments[task_id] = new_env
+                created = True
+            else:
+                try:
+                    if hasattr(new_env, 'stop'):
+                        new_env.stop()
+                except Exception:
+                    pass
         
-        file_ops = ShellFileOperations(terminal_env)
+        if created:
+            _start_cleanup_thread()
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[FileTools] {env_type} environment ready for task {task_id[:8]}", flush=True)
+    
+    # Now get the environment and build file_ops
+    with _env_lock:
+        _last_activity[task_id] = time.time()
+        terminal_env = _active_environments[task_id]
+    
+    file_ops = ShellFileOperations(terminal_env)
+    with _file_ops_lock:
         _file_ops_cache[task_id] = file_ops
-        return file_ops
+    return file_ops
 
 
 def clear_file_ops_cache(task_id: str = None):
@@ -56,6 +119,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
+        print(f"[FileTools] write_file error: {type(e).__name__}: {e}", flush=True)  
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

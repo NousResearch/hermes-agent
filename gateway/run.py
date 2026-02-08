@@ -481,7 +481,7 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "60"))
             
             agent = AIAgent(
-                model=os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4"),
+                model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 enabled_toolsets=[toolset],

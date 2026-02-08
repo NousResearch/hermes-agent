@@ -83,7 +83,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4-20250514",
+            "default": "anthropic/claude-opus-4.6",
             "base_url": "https://openrouter.ai/api/v1",
         },
         "terminal": {
@@ -101,7 +101,7 @@ def load_cli_config() -> Dict[str, Any]:
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.85,    # Compress at 85% of model's context limit
-            "summary_model": "google/gemini-2.0-flash-001",  # Fast/cheap model for summaries
+            "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
         "agent": {
             "max_turns": 60,  # Default max tool-calling iterations
@@ -1332,6 +1332,11 @@ class HermesCLI:
             # Get the final response
             response = result.get("final_response", "") if result else ""
             
+            # Handle failed results (e.g., non-retryable errors like invalid model)
+            if result and result.get("failed") and not response:
+                error_detail = result.get("error", "Unknown error")
+                response = f"Error: {error_detail}"
+            
             # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
@@ -1403,6 +1408,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._should_exit = False
+        self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
         
         # Create a persistent input area using prompt_toolkit Application
         input_buffer = Buffer()
@@ -1422,11 +1428,28 @@ class HermesCLI:
         
         @kb.add('c-c')
         def handle_ctrl_c(event):
-            """Handle Ctrl+C - interrupt or exit."""
+            """Handle Ctrl+C - interrupt agent or force exit on double press.
+            
+            First Ctrl+C: interrupt the running agent gracefully.
+            Second Ctrl+C within 2 seconds (or when agent is idle): force exit.
+            """
+            import time as _time
+            now = _time.time()
+            
             if self._agent_running and self.agent:
-                print("\n⚡ Interrupting agent...")
+                # Check for double Ctrl+C (second press within 2 seconds)
+                if now - self._last_ctrl_c_time < 2.0:
+                    print("\n⚡ Force exiting...")
+                    self._should_exit = True
+                    event.app.exit()
+                    return
+                
+                # First Ctrl+C: try graceful interrupt
+                self._last_ctrl_c_time = now
+                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
+                # Agent not running, exit immediately
                 self._should_exit = True
                 event.app.exit()
         

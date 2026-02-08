@@ -71,7 +71,7 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-sonnet-4.5",
+    "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
     "max_turns": 100,
     
@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.85,
-        "summary_model": "google/gemini-2.0-flash-001",
+        "summary_model": "google/gemini-3-flash-preview",
     },
     
     "display": {
@@ -555,7 +555,7 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
-        print(f"  Model:        {compression.get('summary_model', 'google/gemini-2.0-flash-001')}")
+        print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
     
     # Messaging
     print()

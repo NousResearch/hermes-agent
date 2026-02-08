@@ -244,6 +244,9 @@ def _process_single_prompt(
             providers_ignored=config.get("providers_ignored"),
             providers_order=config.get("providers_order"),
             provider_sort=config.get("provider_sort"),
+            max_tokens=config.get("max_tokens"),
+            reasoning_config=config.get("reasoning_config"),
+            prefill_messages=config.get("prefill_messages"),
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
@@ -428,6 +431,9 @@ class BatchRunner:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        max_tokens: int = None,
+        reasoning_config: Dict[str, Any] = None,
+        prefill_messages: List[Dict[str, Any]] = None,
     ):
         """
         Initialize the batch runner.
@@ -449,6 +455,9 @@ class BatchRunner:
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
+            max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+            reasoning_config (Dict): OpenRouter reasoning config override (e.g. {"effort": "none"} to disable thinking)
+            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming)
         """
         self.dataset_file = Path(dataset_file)
         self.batch_size = batch_size
@@ -466,6 +475,9 @@ class BatchRunner:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.max_tokens = max_tokens
+        self.reasoning_config = reasoning_config
+        self.prefill_messages = prefill_messages
         
         # Validate distribution
         if not validate_distribution(distribution):
@@ -735,6 +747,9 @@ class BatchRunner:
             "providers_ignored": self.providers_ignored,
             "providers_order": self.providers_order,
             "provider_sort": self.provider_sort,
+            "max_tokens": self.max_tokens,
+            "reasoning_config": self.reasoning_config,
+            "prefill_messages": self.prefill_messages,
         }
         
         # For backward compatibility, still track by index (but this is secondary to content matching)
@@ -956,6 +971,10 @@ def main(
     providers_ignored: str = None,
     providers_order: str = None,
     provider_sort: str = None,
+    max_tokens: int = None,
+    reasoning_effort: str = None,
+    reasoning_disabled: bool = False,
+    prefill_messages_file: str = None,
 ):
     """
     Run batch processing of agent prompts from a dataset.
@@ -979,6 +998,10 @@ def main(
         providers_ignored (str): Comma-separated list of OpenRouter providers to ignore (e.g. "together,deepinfra")
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
+        max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "xhigh")
+        reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
+        prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         
     Examples:
         # Basic usage
@@ -990,9 +1013,13 @@ def main(
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
-        # With ephemeral system prompt (not saved to dataset)
+        # With disabled reasoning and max tokens
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
-                               --ephemeral_system_prompt="You are a helpful assistant focused on image generation."
+                               --reasoning_disabled --max_tokens=128000
+        
+        # With prefill messages from file
+        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+                               --prefill_messages_file=configs/prefill_opus.json
         
         # List available distributions
         python batch_runner.py --list_distributions
@@ -1031,6 +1058,36 @@ def main(
     providers_ignored_list = [p.strip() for p in providers_ignored.split(",")] if providers_ignored else None
     providers_order_list = [p.strip() for p in providers_order.split(",")] if providers_order else None
     
+    # Build reasoning_config from CLI flags
+    # --reasoning_disabled takes priority, then --reasoning_effort, then default (xhigh)
+    reasoning_config = None
+    if reasoning_disabled:
+        # Completely disable reasoning/thinking tokens
+        reasoning_config = {"effort": "none"}
+        print("🧠 Reasoning: DISABLED (effort=none)")
+    elif reasoning_effort:
+        # Use specified effort level
+        valid_efforts = ["xhigh", "high", "medium", "low", "minimal", "none"]
+        if reasoning_effort not in valid_efforts:
+            print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
+            return
+        reasoning_config = {"enabled": True, "effort": reasoning_effort}
+        print(f"🧠 Reasoning effort: {reasoning_effort}")
+    
+    # Load prefill messages from JSON file if provided
+    prefill_messages = None
+    if prefill_messages_file:
+        try:
+            with open(prefill_messages_file, 'r', encoding='utf-8') as f:
+                prefill_messages = json.load(f)
+            if not isinstance(prefill_messages, list):
+                print(f"❌ Error: prefill_messages_file must contain a JSON array of messages")
+                return
+            print(f"💬 Loaded {len(prefill_messages)} prefill messages from {prefill_messages_file}")
+        except Exception as e:
+            print(f"❌ Error loading prefill messages: {e}")
+            return
+    
     # Initialize and run batch runner
     try:
         runner = BatchRunner(
@@ -1050,6 +1107,9 @@ def main(
             providers_ignored=providers_ignored_list,
             providers_order=providers_order_list,
             provider_sort=provider_sort,
+            max_tokens=max_tokens,
+            reasoning_config=reasoning_config,
+            prefill_messages=prefill_messages,
         )
 
         runner.run(resume=resume)

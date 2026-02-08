@@ -7,7 +7,7 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
-  default: "anthropic/claude-sonnet-4"
+  default: "anthropic/claude-opus-4.6"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
@@ -140,7 +140,7 @@ compression:
   
   # Model to use for generating summaries (fast/cheap recommended)
   # This model compresses the middle turns into a concise summary
-  summary_model: "google/gemini-2.0-flash-001"
+  summary_model: "google/gemini-3-flash-preview"
 
 # =============================================================================
 # Agent Behavior

@@ -132,7 +132,7 @@ class TerminalTestEnv(HermesAgentBaseEnv):
             terminal_backend="modal",
             # Atropos settings
             group_size=3,              # 3 rollouts per group
-            tokenizer_name="NousResearch/DeepHermes-3-Llama-3-3B-Preview",
+            tokenizer_name="NousResearch/q-30b-t-h45-e1",
             tool_call_parser="hermes",
             steps_per_eval=3,          # Eval after all 3 steps
             total_steps=3,             # 3 groups total (1 group per step)

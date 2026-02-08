@@ -10,7 +10,10 @@ from ..slots.executor import ExecutionResult
 from ..slots.slot import Slot, SlotState
 from .base import ToolBackend
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
 
 @dataclass
 class ModalSandboxConfig:

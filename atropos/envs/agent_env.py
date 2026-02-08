@@ -71,11 +71,22 @@ class AgentEnvConfig(BaseEnvConfig):
         description="Path to .sif file for Singularity driver (required if driver='singularity')",
     )
 
-    # modal mode settings (stub; implementation pending)
-    modal_app_name: str = Field(default="atropos-sandbox", description="Modal app name (stub)")
-    modal_function_name: str = Field(default="sandbox_server", description="Modal function/actor name (stub)")
-    modal_volume_name: Optional[str] = Field(default=None, description="Modal Volume name for persistent storage (stub)")
-    modal_volume_mount_path: str = Field(default="/data", description="Modal Volume mount path (stub)")
+    # Modal mode settings
+    modal_app_name: str = Field(default="atropos-sandbox", description="Modal app name prefix")
+    modal_image: str = Field(default="python:3.11", description="Modal: container image")
+    modal_gpu: Optional[str] = Field(default=None, description="Modal: GPU type (None, 'T4', 'A10G', 'A100', 'H100')")
+    modal_cpu: float = Field(default=1.0, description="Modal: CPU cores")
+    modal_memory: int = Field(default=2048, description="Modal: memory in MB")
+    modal_slots_per_sandbox: int = Field(default=10, description="Modal: slots per sandbox")
+    modal_min_sandboxes: int = Field(default=1, description="Modal: minimum sandboxes")
+    modal_max_sandboxes: int = Field(default=5, description="Modal: maximum sandboxes")
+    modal_idle_timeout: int = Field(default=120, description="Modal: server-side idle timeout (seconds)")
+    modal_max_lifetime: int = Field(default=3600, description="Modal: max sandbox lifetime (seconds)")
+    modal_acquire_timeout: float = Field(default=60.0, description="Modal: slot acquisition timeout (seconds)")
+    modal_execution_timeout: float = Field(default=30.0, description="Modal: default command execution timeout (seconds)")
+    modal_secrets: str = Field(default="", description="Modal: comma-separated list of Modal Secret names")
+    modal_env_vars: str = Field(default="", description="Modal: semicolon-separated KEY=VALUE pairs for env vars")
+    modal_workspace_base: str = Field(default="/data", description="Modal: workspace base directory in sandbox")
 
     # basic agent defaults
     agent_max_steps: int = Field(default=50, description="Max ReACT steps per trajectory")

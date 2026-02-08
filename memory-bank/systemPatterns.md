@@ -147,3 +147,45 @@ The agent validates responses before accepting:
 3. Sets environment variables for terminal config
 4. `AIAgent` reads env vars when initializing terminal tool
 5. Terminal tool creates appropriate backend based on `TERMINAL_ENV`
+
+## Atropos Backend Architecture
+
+### Backend Hierarchy
+```
+ToolBackend (Protocol - base.py)
+    ├── NomadToolBackend → SlotPool → NomadClient + SandboxExecutor (HTTP)
+    │   ├── Docker driver (default)
+    │   └── Singularity driver (HPC)
+    └── ModalToolBackend → _ModalSandboxPool → modal.Sandbox.exec() (direct)
+        └── _ModalMultiProfileManager (multi-profile support)
+```
+
+### Slot-Based Multiplexing Pattern
+All backends share the same slot multiplexing concept:
+- **Sandbox/Container**: Long-lived compute unit
+- **Slot**: Isolated workspace directory within a sandbox (e.g., `/data/slot_0`)
+- **Trajectory**: One agent task using one slot
+- Multiple trajectories share a sandbox via different slots
+
+### Nomad Backend (HTTP-based)
+- Deploys `sandbox_server.py` inside containers (Docker or Singularity)
+- Uses `SandboxExecutor` for HTTP communication (POST /execute, POST /batch)
+- Nomad manages container lifecycle (scaling, health checks)
+- Tools: bash, bash_stateful, read_file, write_file, tmux
+
+### Modal Backend (exec-based)
+- Creates `modal.Sandbox` instances (long-lived containers)
+- Uses `sandbox.exec("bash", "-c", command)` directly (no HTTP server)
+- Modal manages container lifecycle (idle_timeout, max_lifetime)
+- Multi-profile support: different resource configs (CPU, GPU, memory)
+- Named sandboxes for recovery: `Sandbox.from_name(app_name, sandbox_name)`
+- YAML config via `modal_profiles.yaml`
+
+### Backend Selection
+```python
+# In agent_env.py / create_tool_backend()
+if mode == "nomad":
+    return NomadToolBackend(NomadBackendConfig.from_agent_env_config(cfg))
+if mode == "modal":
+    return ModalToolBackend(ModalSandboxConfig.from_agent_env_config(cfg))
+```

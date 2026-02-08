@@ -15,11 +15,13 @@ irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/ins
 ```
 
 The installer will:
+- Install [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
+- Install Python 3.11 via uv if not already available (no sudo needed)
 - Clone to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
-- Create a virtual environment (Python 3.11+ recommended)
+- Create a virtual environment with Python 3.11
 - Install all dependencies and submodule packages
+- Symlink `hermes` into `~/.local/bin` so it works globally (no venv activation needed)
 - Run the interactive setup wizard
-- Add `hermes` to your PATH
 
 After installation, reload your shell and run:
 ```bash
@@ -179,7 +181,7 @@ hermes config set terminal.singularity_image ~/python.sif
 
 **Modal** (serverless cloud):
 ```bash
-pip install "swe-rex[modal]"   # Installs swe-rex + modal + boto3
+uv pip install "swe-rex[modal]"   # Installs swe-rex + modal + boto3
 modal setup                    # Authenticate with Modal
 hermes config set terminal.backend modal
 ```
@@ -522,26 +524,25 @@ If you prefer full control over the installation process (or the quick-install s
 
 | Requirement | Minimum Version | Check Command | Notes |
 |-------------|----------------|---------------|-------|
-| **Python** | 3.11+ recommended (3.10 minimum) | `python3 --version` | Required. 3.11+ needed for RL training tools |
 | **Git** | Any recent | `git --version` | Required |
-| **pip** | 21+ | `pip --version` | Comes with Python |
 | **Node.js** | 18+ | `node --version` | Optional — needed for browser automation tools |
 | **ripgrep** | Any | `rg --version` | Optional — faster file search in terminal tool (falls back to grep) |
+
+> **Note:** Python and pip are **not** prerequisites. The installer uses [uv](https://docs.astral.sh/uv/) to provision Python 3.11 automatically (no sudo needed). If you already have Python 3.11+ installed, uv will use it.
 
 <details>
 <summary><strong>Installing prerequisites by platform</strong></summary>
 
 **Ubuntu / Debian:**
 ```bash
-sudo apt update
-sudo apt install python3.11 python3.11-venv python3-pip git
+sudo apt update && sudo apt install git
 # Optional:
 sudo apt install ripgrep nodejs npm
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install python@3.11 git
+brew install git
 # Optional:
 brew install ripgrep node
 ```
@@ -569,34 +570,37 @@ git submodule update --init --recursive
 
 ---
 
-### Step 2: Create & Activate a Virtual Environment
+### Step 2: Install uv & Create Virtual Environment
 
-A virtual environment keeps Hermes dependencies isolated from your system Python:
+[uv](https://docs.astral.sh/uv/) is a fast Python package manager that can also provision Python itself. Install it and create the venv in one go:
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Upgrade core packaging tools
-pip install --upgrade pip wheel setuptools
+# Create venv with Python 3.11 (uv downloads it if not present — no sudo needed)
+uv venv venv --python 3.11
 ```
 
-> **Tip:** Every time you open a new terminal to use Hermes, activate the venv first:
-> `source /path/to/hermes-agent/venv/bin/activate`
+> **Tip:** You do **not** need to activate the venv to use `hermes`. The entry point has a hardcoded shebang pointing to the venv Python, so it works globally once symlinked (see Step 8). For installing packages, uv can target the venv directly via `VIRTUAL_ENV`.
 
 ---
 
 ### Step 3: Install Python Dependencies
 
-Install the main package in editable mode with all optional extras (messaging, cron, CLI menus):
+Install the main package in editable mode with all optional extras (messaging, cron, CLI menus, modal):
 
 ```bash
-pip install -e ".[all]"
+# Tell uv which venv to install into
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Install with all extras
+uv pip install -e ".[all]"
 ```
 
 If you only want the core agent (no Telegram/Discord/cron support):
 ```bash
-pip install -e "."
+uv pip install -e "."
 ```
 
 <details>
@@ -604,14 +608,14 @@ pip install -e "."
 
 | Extra | What it adds | Install command |
 |-------|-------------|-----------------|
-| `all` | Everything below | `pip install -e ".[all]"` |
-| `messaging` | Telegram & Discord gateway | `pip install -e ".[messaging]"` |
-| `cron` | Cron expression parsing for scheduled tasks | `pip install -e ".[cron]"` |
-| `cli` | Terminal menu UI for setup wizard | `pip install -e ".[cli]"` |
-| `modal` | Modal cloud execution backend (swe-rex + modal + boto3) | `pip install -e ".[modal]"` |
-| `dev` | pytest & test utilities | `pip install -e ".[dev]"` |
+| `all` | Everything below | `uv pip install -e ".[all]"` |
+| `messaging` | Telegram & Discord gateway | `uv pip install -e ".[messaging]"` |
+| `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
+| `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
+| `modal` | Modal cloud execution backend (swe-rex + modal + boto3) | `uv pip install -e ".[modal]"` |
+| `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
 
-You can combine extras: `pip install -e ".[messaging,cron]"`
+You can combine extras: `uv pip install -e ".[messaging,cron]"`
 
 </details>
 
@@ -623,15 +627,13 @@ These are local packages checked out as Git submodules. Install them in editable
 
 ```bash
 # Terminal tool backend (required for the terminal/command-execution tool)
-pip install -e "./mini-swe-agent"
+uv pip install -e "./mini-swe-agent"
 
-# RL training backend (requires Python 3.11+)
-pip install -e "./tinker-atropos"
+# RL training backend
+uv pip install -e "./tinker-atropos"
 ```
 
 Both are optional — if you skip them, the corresponding toolsets simply won't be available.
-
-> **Note:** `tinker-atropos` requires Python 3.11+ (the upstream `tinker` package has this constraint). On Python 3.10, skip this line — RL tools will be disabled but everything else works.
 
 ---
 
@@ -706,13 +708,20 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
 
 ### Step 8: Add `hermes` to Your PATH
 
-The `hermes` command is installed into the virtual environment's `bin/` directory. Add it to your shell PATH so you can run `hermes` from anywhere:
+The `hermes` entry point at `venv/bin/hermes` has a hardcoded shebang pointing to the venv's Python, so it works **without activating the venv**. The recommended approach is a symlink into `~/.local/bin` (most distributions already have this on PATH):
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+```
+
+If `~/.local/bin` isn't on your PATH yet, add it:
 
 **Bash** (`~/.bashrc`):
 ```bash
 echo '' >> ~/.bashrc
 echo '# Hermes Agent' >> ~/.bashrc
-echo 'export PATH="$HOME/hermes-agent/venv/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -720,23 +729,14 @@ source ~/.bashrc
 ```bash
 echo '' >> ~/.zshrc
 echo '# Hermes Agent' >> ~/.zshrc
-echo 'export PATH="$HOME/hermes-agent/venv/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
 **Fish** (`~/.config/fish/config.fish`):
 ```fish
-fish_add_path $HOME/hermes-agent/venv/bin
+fish_add_path $HOME/.local/bin
 ```
-
-> **Note:** Adjust the path if you cloned to a different location. The key is to add the `venv/bin` directory inside your clone to your PATH.
-
-Alternatively, if you don't want to modify your PATH, you can create a symlink:
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
-(Most distributions already have `~/.local/bin` on the PATH.)
 
 ---
 
@@ -777,19 +777,21 @@ If `hermes doctor` reports issues, it will tell you exactly what's missing and h
 For those who just want the commands without the explanations:
 
 ```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Clone & enter
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Virtual environment
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip wheel setuptools
+# Create venv with Python 3.11 (uv downloads it if needed)
+uv venv venv --python 3.11
+export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install everything
-pip install -e ".[all]"
-pip install -e "./mini-swe-agent"
-pip install -e "./tinker-atropos"
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
 npm install  # optional, for browser tools
 
 # Configure
@@ -798,9 +800,9 @@ cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 
-# Add to PATH (adjust for your shell)
-echo 'export PATH="'$(pwd)'/venv/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+# Make hermes available globally (no venv activation needed)
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 
 # Verify
 hermes doctor
@@ -815,16 +817,16 @@ To update an existing manual install to the latest version:
 
 ```bash
 cd /path/to/hermes-agent
-source venv/bin/activate
+export VIRTUAL_ENV="$(pwd)/venv"
 
 # Pull latest code and submodules
 git pull origin main
 git submodule update --init --recursive
 
 # Reinstall (picks up new dependencies)
-pip install -e ".[all]"
-pip install -e "./mini-swe-agent"
-pip install -e "./tinker-atropos"
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
 
 # Check for new config options added since your last update
 hermes config check
@@ -834,14 +836,14 @@ hermes config migrate   # Interactively add any missing options
 ### Uninstalling a Manual Installation
 
 ```bash
+# Remove the hermes symlink
+rm -f ~/.local/bin/hermes
+
 # Remove the cloned repository
 rm -rf /path/to/hermes-agent
 
 # Remove user configuration (optional — keep if you plan to reinstall)
 rm -rf ~/.hermes
-
-# Remove the PATH line from your shell config (~/.bashrc or ~/.zshrc)
-# Look for the "# Hermes Agent" comment and remove that block
 ```
 
 ---

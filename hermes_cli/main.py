@@ -119,6 +119,7 @@ def cmd_uninstall(args):
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import subprocess
+    import shutil
     
     print("🦋 Updating Hermes Agent...")
     print()
@@ -163,13 +164,21 @@ def cmd_update(args):
         print("→ Pulling updates...")
         subprocess.run(["git", "pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
         
-        # Reinstall Python dependencies
+        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")
-        venv_pip = PROJECT_ROOT / "venv" / "bin" / "pip"
-        if venv_pip.exists():
-            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        uv_bin = shutil.which("uv")
+        if uv_bin:
+            subprocess.run(
+                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+                cwd=PROJECT_ROOT, check=True,
+                env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            )
         else:
-            subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            venv_pip = PROJECT_ROOT / "venv" / "bin" / "pip"
+            if venv_pip.exists():
+                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            else:
+                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():

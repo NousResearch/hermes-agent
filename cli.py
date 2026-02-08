@@ -238,6 +238,10 @@ from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, valida
 # Cron job system for scheduled tasks
 from cron import create_job, list_jobs, remove_job, get_job, run_daemon as run_cron_daemon, tick as cron_tick
 
+# Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
+from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
+from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
+
 # ============================================================================
 # ASCII Art & Branding
 # ============================================================================
@@ -1217,33 +1221,35 @@ class HermesCLI:
         Returns:
             bool: True to continue, False to exit
         """
-        cmd = command.lower().strip()
+        # Lowercase only for dispatch matching; preserve original case for arguments
+        cmd_lower = command.lower().strip()
+        cmd_original = command.strip()
         
-        if cmd in ("/quit", "/exit", "/q"):
+        if cmd_lower in ("/quit", "/exit", "/q"):
             return False
-        elif cmd == "/help":
+        elif cmd_lower == "/help":
             self.show_help()
-        elif cmd == "/tools":
+        elif cmd_lower == "/tools":
             self.show_tools()
-        elif cmd == "/toolsets":
+        elif cmd_lower == "/toolsets":
             self.show_toolsets()
-        elif cmd == "/config":
+        elif cmd_lower == "/config":
             self.show_config()
-        elif cmd == "/clear":
-            # Clear terminal screen
-            import os as _os
-            _os.system('clear' if _os.name != 'nt' else 'cls')
+        elif cmd_lower == "/clear":
+            # Clear terminal screen using Rich (portable, no shell needed)
+            self.console.clear()
             # Reset conversation
             self.conversation_history = []
             # Show fresh banner
             self.show_banner()
             print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
-        elif cmd == "/history":
+        elif cmd_lower == "/history":
             self.show_history()
-        elif cmd == "/reset":
+        elif cmd_lower == "/reset":
             self.reset_conversation()
-        elif cmd.startswith("/model"):
-            parts = cmd.split(maxsplit=1)
+        elif cmd_lower.startswith("/model"):
+            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
+            parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 new_model = parts[1]
                 self.model = new_model
@@ -1256,18 +1262,20 @@ class HermesCLI:
             else:
                 print(f"Current model: {self.model}")
                 print("  Usage: /model <model-name> to change")
-        elif cmd.startswith("/prompt"):
-            self._handle_prompt_command(cmd)
-        elif cmd.startswith("/personality"):
-            self._handle_personality_command(cmd)
-        elif cmd == "/save":
+        elif cmd_lower.startswith("/prompt"):
+            # Use original case so prompt text isn't lowercased
+            self._handle_prompt_command(cmd_original)
+        elif cmd_lower.startswith("/personality"):
+            # Use original case (handler lowercases the personality name itself)
+            self._handle_personality_command(cmd_original)
+        elif cmd_lower == "/save":
             self.save_conversation()
-        elif cmd.startswith("/cron"):
-            self._handle_cron_command(command)  # Use original command for proper parsing
-        elif cmd == "/platforms" or cmd == "/gateway":
+        elif cmd_lower.startswith("/cron"):
+            self._handle_cron_command(cmd_original)
+        elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         else:
-            self.console.print(f"[bold red]Unknown command: {cmd}[/]")
+            self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
             self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
@@ -1275,6 +1283,11 @@ class HermesCLI:
     def chat(self, message: str) -> Optional[str]:
         """
         Send a message to the agent and get a response.
+        
+        Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
+        race conditions between the process_loop and interrupt monitoring. Messages
+        typed while the agent is running go to _interrupt_queue; messages typed while
+        idle go to _pending_input.
         
         Args:
             message: The user's message
@@ -1307,21 +1320,22 @@ class HermesCLI:
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
             
-            # Monitor for new input in the pending queue while agent runs
+            # Monitor the dedicated interrupt queue while the agent runs.
+            # _interrupt_queue is separate from _pending_input, so process_loop
+            # and chat() never compete for the same queue.
             interrupt_msg = None
             while agent_thread.is_alive():
-                # Check if there's new input in the queue (from the persistent input area)
-                if hasattr(self, '_pending_input'):
+                if hasattr(self, '_interrupt_queue'):
                     try:
-                        interrupt_msg = self._pending_input.get(timeout=0.1)
+                        interrupt_msg = self._interrupt_queue.get(timeout=0.1)
                         if interrupt_msg:
                             print(f"\n⚡ New message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
                             break
-                    except:
+                    except queue.Empty:
                         pass  # Queue empty or timeout, continue waiting
                 else:
-                    # Fallback if no queue (shouldn't happen)
+                    # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
             
             agent_thread.join()  # Ensure agent thread completes
@@ -1356,10 +1370,11 @@ class HermesCLI:
                 print()
                 print("─" * 60)
             
-            # If we have a pending message from interrupt, process it immediately
-            if pending_message:
-                print(f"\n📨 Processing: '{pending_message[:50]}{'...' if len(pending_message) > 50 else ''}'")
-                return self.chat(pending_message)  # Recursive call to handle the new message
+            # If we have a pending message from interrupt, re-queue it for process_loop
+            # instead of recursing (avoids unbounded recursion from rapid interrupts)
+            if pending_message and hasattr(self, '_pending_input'):
+                print(f"\n📨 Queued: '{pending_message[:50]}{'...' if len(pending_message) > 50 else ''}'")
+                self._pending_input.put(pending_message)
             
             return response
             
@@ -1406,7 +1421,8 @@ class HermesCLI:
         
         # State for async operation
         self._agent_running = False
-        self._pending_input = queue.Queue()
+        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
+        self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
         
@@ -1418,11 +1434,22 @@ class HermesCLI:
         
         @kb.add('enter')
         def handle_enter(event):
-            """Handle Enter key - submit input."""
+            """Handle Enter key - submit input.
+            
+            Routes to the correct queue based on agent state:
+            - Agent running: goes to _interrupt_queue (chat() monitors this)
+            - Agent idle: goes to _pending_input (process_loop monitors this)
+            Commands (starting with /) always go to _pending_input so they're
+            handled as commands, not sent as interrupt text to the agent.
+            """
             text = event.app.current_buffer.text.strip()
             if text:
-                # Store the input
-                self._pending_input.put(text)
+                if self._agent_running and not text.startswith("/"):
+                    # Agent is working - route to interrupt queue for chat() to pick up
+                    self._interrupt_queue.put(text)
+                else:
+                    # Agent idle, or it's a command - route to normal input queue
+                    self._pending_input.put(text)
                 # Clear the buffer
                 event.app.current_buffer.reset()
         
@@ -1542,6 +1569,11 @@ class HermesCLI:
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
         
+        # Register atexit cleanup so resources are freed even on unexpected exit
+        # (terminal VMs, browser sessions, etc.)
+        atexit.register(_cleanup_all_browsers)
+        atexit.register(_cleanup_all_terminals)
+        
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
@@ -1550,6 +1582,15 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
+            # Explicitly clean up resources before exit
+            try:
+                _cleanup_all_terminals()
+            except Exception:
+                pass
+            try:
+                _cleanup_all_browsers()
+            except Exception:
+                pass
             print("\nGoodbye! ⚕")
 
 
@@ -1668,6 +1709,10 @@ def main(
         cli.show_banner()
         cli.show_toolsets()
         sys.exit(0)
+    
+    # Register cleanup for single-query mode (interactive mode registers in run())
+    atexit.register(_cleanup_all_browsers)
+    atexit.register(_cleanup_all_terminals)
     
     # Handle single query mode
     if query:

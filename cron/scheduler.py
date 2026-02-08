@@ -40,7 +40,7 @@ def run_job(job: dict) -> tuple[bool, str, Optional[str]]:
         # Create agent with default settings
         # Jobs run in isolated sessions (no prior context)
         agent = AIAgent(
-            model=os.getenv("HERMES_MODEL", "anthropic/claude-sonnet-4"),
+            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
             quiet_mode=True,
             session_id=f"cron_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )

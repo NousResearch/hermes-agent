@@ -1347,40 +1347,61 @@ def terminal_tool(
         _start_cleanup_thread()
 
         # Get or create environment
+        # Check under lock, but create OUTSIDE lock so we don't block
+        # other concurrent rollouts during slow Modal/Docker startup
+        needs_creation = False
         with _env_lock:
             if effective_task_id not in _active_environments:
-                # Check disk usage before creating new environment
-                _check_disk_usage_warning()
-                
-                try:
-                    # Build SSH config if using SSH environment
-                    ssh_config = None
-                    if env_type == "ssh":
-                        ssh_config = {
-                            "host": config.get("ssh_host", ""),
-                            "user": config.get("ssh_user", ""),
-                            "port": config.get("ssh_port", 22),
-                            "key": config.get("ssh_key", ""),
-                        }
-                    
-                    _active_environments[effective_task_id] = _create_environment(
-                        env_type=env_type,
-                        image=image,
-                        cwd=cwd,
-                        timeout=effective_timeout,
-                        ssh_config=ssh_config
-                    )
-                except ImportError as e:
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
-                        "status": "disabled"
-                    }, ensure_ascii=False)
+                needs_creation = True
+            else:
+                _last_activity[effective_task_id] = time.time()
+                env = _active_environments[effective_task_id]
 
-            # Update last activity time
-            _last_activity[effective_task_id] = time.time()
-            env = _active_environments[effective_task_id]
+        if needs_creation:
+            _check_disk_usage_warning()
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[Terminal] Creating new {env_type} environment for task {effective_task_id[:8]}...", flush=True)
+            try:
+                ssh_config = None
+                if env_type == "ssh":
+                    ssh_config = {
+                        "host": config.get("ssh_host", ""),
+                        "user": config.get("ssh_user", ""),
+                        "port": config.get("ssh_port", 22),
+                        "key": config.get("ssh_key", ""),
+                    }
+
+                new_env = _create_environment(
+                    env_type=env_type,
+                    image=image,
+                    cwd=cwd,
+                    timeout=effective_timeout,
+                    ssh_config=ssh_config
+                )
+            except ImportError as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                    "status": "disabled"
+                }, ensure_ascii=False)
+
+            # Store under lock (brief)
+            with _env_lock:
+                if effective_task_id not in _active_environments:
+                    _active_environments[effective_task_id] = new_env
+                else:
+                    # Another thread created it while we were building -- clean up ours
+                    try:
+                        if hasattr(new_env, 'stop'):
+                            new_env.stop()
+                    except Exception:
+                        pass
+
+                _last_activity[effective_task_id] = time.time()
+                env = _active_environments[effective_task_id]
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Terminal] {env_type} environment ready for task {effective_task_id[:8]}", flush=True)
 
         # Check for dangerous commands (only for local/ssh in interactive modes)
         # Skip check if force=True (user has confirmed they want to run it)
@@ -1435,13 +1456,20 @@ def terminal_tool(
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         print(f"⚠️  Terminal: execution error, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                        print(f"   Command: {command[:200]}")
+                        print(f"   Error: {type(e).__name__}: {e}")
+                        print(f"   Task ID: {effective_task_id}, Backend: {env_type}")
                         time.sleep(wait_time)
                         continue
                     
+                    print(f"❌ Terminal: execution failed after {max_retries} retries")
+                    print(f"   Command: {command[:200]}")
+                    print(f"   Error: {type(e).__name__}: {e}")
+                    print(f"   Task ID: {effective_task_id}, Backend: {env_type}")
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {str(e)}"
+                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
                     }, ensure_ascii=False)
                 
                 # Got a result

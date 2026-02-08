@@ -198,10 +198,10 @@ DISTRIBUTIONS = {
         "toolsets": {
             "terminal": 97,   # 97% - terminal almost always available
             "file": 97,       # 97% - file tools almost always available
-            "web": 15,        # 15% - web search/scrape for documentation
-            "browser": 10,    # 10% - browser occasionally for web interaction
-            "vision": 8,      # 8% - vision analysis rarely
-            "image_gen": 3    # 3% - image generation very rarely
+            "web": 97,        # 15% - web search/scrape for documentation
+            "browser": 75,    # 10% - browser occasionally for web interaction
+            "vision": 50,      # 8% - vision analysis rarely
+            "image_gen": 10    # 3% - image generation very rarely
         }
     },
     

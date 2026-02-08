@@ -1120,6 +1120,24 @@ class AIAgent:
             return content
         return content.replace("<REASONING_SCRATCHPAD>", "<think>").replace("</REASONING_SCRATCHPAD>", "</think>")
     
+    @staticmethod
+    def _has_incomplete_scratchpad(content: str) -> bool:
+        """
+        Check if content has an opening <REASONING_SCRATCHPAD> without a closing tag.
+        
+        This indicates the model ran out of output tokens mid-reasoning, producing
+        a broken turn that shouldn't be saved. The caller should retry or discard.
+        
+        Args:
+            content: Assistant message content to check
+            
+        Returns:
+            True if there's an unclosed scratchpad tag
+        """
+        if not content:
+            return False
+        return "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
+    
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.
@@ -1204,6 +1222,11 @@ class AIAgent:
                         }
                         content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
                     
+                    # Ensure every gpt turn has a <think> block (empty if no reasoning)
+                    # so the format is consistent for training data
+                    if "<think>" not in content:
+                        content = "<think>\n</think>\n" + content
+                    
                     trajectory.append({
                         "from": "gpt",
                         "value": content.rstrip()
@@ -1255,6 +1278,10 @@ class AIAgent:
                     # (used when native thinking is disabled and model reasons via XML)
                     raw_content = msg["content"] or ""
                     content += self._convert_scratchpad_to_think(raw_content)
+                    
+                    # Ensure every gpt turn has a <think> block (empty if no reasoning)
+                    if "<think>" not in content:
+                        content = "<think>\n</think>\n" + content
                     
                     trajectory.append({
                         "from": "gpt",
@@ -1902,6 +1929,48 @@ class AIAgent:
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                
+                # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
+                # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
+                if self._has_incomplete_scratchpad(assistant_message.content or ""):
+                    if not hasattr(self, '_incomplete_scratchpad_retries'):
+                        self._incomplete_scratchpad_retries = 0
+                    self._incomplete_scratchpad_retries += 1
+                    
+                    print(f"{self.log_prefix}⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+                    
+                    if self._incomplete_scratchpad_retries <= 2:
+                        print(f"{self.log_prefix}🔄 Retrying API call ({self._incomplete_scratchpad_retries}/2)...")
+                        # Don't add the broken message, just retry
+                        continue
+                    else:
+                        # Max retries - discard this turn and save as partial
+                        print(f"{self.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.")
+                        self._incomplete_scratchpad_retries = 0
+                        
+                        rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
+                        
+                        try:
+                            cleanup_vm(effective_task_id)
+                        except Exception:
+                            pass
+                        try:
+                            cleanup_browser(effective_task_id)
+                        except Exception:
+                            pass
+                        
+                        return {
+                            "final_response": None,
+                            "messages": rolled_back_messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
+                        }
+                
+                # Reset incomplete scratchpad counter on clean response
+                if hasattr(self, '_incomplete_scratchpad_retries'):
+                    self._incomplete_scratchpad_retries = 0
                 
                 # Check for tool calls
                 if assistant_message.tool_calls:

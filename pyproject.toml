@@ -40,14 +40,18 @@ dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
 cron = ["croniter"]
 cli = ["simple-term-menu"]
-# Install Atropos from source (PyPI is often stale for this internal dependency).
+# Install Atropos + Tinker training integration from source.
 atropos = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
+  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
   # Atropos integration runtime deps (kept optional for Hermes-only users)
   "aiohttp",
   "fastapi",
   "uvicorn",
   "pyte",
+  "torch",
+  "wandb",
+  "math-verify",
 ]
 all = [
   "hermes-agent[modal]",

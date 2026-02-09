@@ -995,6 +995,137 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 
 ---
 
+## RL Training with Tinker
+
+Hermes-Agent includes an RL training integration with [Tinker](https://thinkingmachines.ai/tinker/) (Thinking Machines) and [Atropos](https://github.com/NousResearch/atropos) for training language models with reinforcement learning from agent trajectories.
+
+### Prerequisites
+
+1. **Install with Atropos extras** (includes Tinker SDK, atroposlib, torch, wandb):
+```bash
+pip install -e ".[atropos]"
+```
+
+2. **Initialize the tinker-atropos submodule**:
+```bash
+git submodule update --init
+pip install -e ./tinker-atropos
+```
+
+3. **Get API keys**:
+   - `TINKER_API_KEY` from [Tinker Console](https://tinker-console.thinkingmachines.ai/keys) (requires billing setup)
+   - `WANDB_API_KEY` from [Weights & Biases](https://wandb.ai/settings) (for metrics tracking)
+
+4. **Add keys to your `.env` file**:
+```bash
+# Add to .env or ~/.hermes/.env
+TINKER_API_KEY=your_tinker_key
+WANDB_API_KEY=your_wandb_key
+```
+
+### Architecture
+
+The RL training pipeline uses three processes that communicate over HTTP:
+
+```
+┌──────────────────────┐   ┌─────────────────────┐   ┌────────────────────────┐
+│ Atropos Rollout API  │   │ Tinker Trainer       │   │ Environment            │
+│ (port 8000)          │◄──│ (port 8001)          │◄──│ (worker)               │
+│                      │   │                      │   │                        │
+│ • Collects batches   │   │ • LoRA training      │   │ • Generates prompts    │
+│ • Coordinates env    │   │ • Inference server   │   │ • Calls inference API  │
+│   and trainer        │   │ • Weight updates     │   │ • Scores responses     │
+│                      │   │ • WandB logging      │   │ • Sends scored batches │
+└──────────────────────┘   └─────────────────────┘   └────────────────────────┘
+```
+
+### Quick Start: GSM8k Agent Training
+
+This example trains a model on math problems using a Python REPL tool — the model learns to write and execute Python code to solve math:
+
+```bash
+# Terminal 1: Start Atropos Rollout API
+cd tinker-atropos
+source ../.venv/bin/activate
+set -a && source ../.env && set +a
+run-api
+
+# Terminal 2: Start Tinker Trainer + Inference Server
+cd tinker-atropos
+source ../.venv/bin/activate
+set -a && source ../.env && set +a
+python launch_training.py --config configs/gsm8k_agent.yaml
+
+# Terminal 3: Start GSM8k Agent Environment
+cd tinker-atropos
+source ../.venv/bin/activate
+set -a && source ../.env && set +a
+python tinker_atropos/environments/gsm8k_agent.py serve --config configs/gsm8k_agent.yaml
+```
+
+### Available Environments
+
+| Environment | File | Description |
+|------------|------|-------------|
+| `gsm8k` | `gsm8k_tinker.py` | Standard GSM8k math (no tools) |
+| `gsm8k_agent` | `gsm8k_agent.py` | GSM8k with Python REPL tool calling |
+
+### Configuration
+
+Configs are YAML files in `tinker-atropos/configs/` with three sections:
+
+```yaml
+env:                              # Atropos environment settings
+  group_size: 4                   # Parallel rollouts per problem
+  batch_size: 16                  # Training batch size
+  tokenizer_name: "Qwen/Qwen3-4B-Instruct-2507"
+  max_token_length: 2048          # Max generation length
+  total_steps: 20                 # Training steps
+
+openai:                           # Inference server (served by Tinker trainer)
+  - model_name: "Qwen/Qwen3-4B-Instruct-2507"
+    base_url: "http://localhost:8001/v1"
+
+tinker:                           # Tinker training parameters
+  lora_rank: 16                   # LoRA rank (lower = faster, less capacity)
+  learning_rate: 0.00005          # Learning rate
+  max_token_trainer_length: 4096  # Max tokens for training
+  wandb_project: "hermes-agent-rl"
+```
+
+### RL CLI (Agent-Driven Training)
+
+For interactive training management via the Hermes agent:
+
+```bash
+# Interactive mode - let the agent manage training
+python rl_cli.py --interactive
+
+# List available environments
+python rl_cli.py --list-environments
+
+# Direct task
+python rl_cli.py "Train a model on GSM8k with tool use"
+```
+
+### Sandbox Backends for Agent Environments
+
+For agent environments that need isolated tool execution (e.g., SWE tasks), Hermes-Agent supports multiple sandbox backends:
+
+| Backend | Use Case | Command |
+|---------|----------|---------|
+| **Nomad + Docker** | Default, local development | `--env.tool_pool_mode nomad` |
+| **Nomad + Singularity** | HPC clusters without Docker | `--env.tool_pool_mode nomad --env.driver singularity` |
+| **Modal** | Cloud-based, auto-scaling | `--env.tool_pool_mode modal` |
+
+See [docs/MODAL_BACKEND.md](docs/MODAL_BACKEND.md) for Modal backend details.
+
+### Cost
+
+Check the [Tinker Rate Card](https://tinker-console.thinkingmachines.ai/rate-card) for available models and pricing.
+
+---
+
 ## Troubleshooting
 
 ```bash

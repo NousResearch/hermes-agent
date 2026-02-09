@@ -51,6 +51,7 @@ import subprocess
 import shutil
 import sys
 import asyncio
+import tempfile
 import threading
 import time
 import requests
@@ -644,16 +645,24 @@ def _find_agent_browser() -> str:
     """
     Find the agent-browser CLI executable.
     
+    Checks in order: PATH, local node_modules/.bin/, npx fallback.
+    
     Returns:
         Path to agent-browser executable
         
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
-    # Check if it's in PATH
+    # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
     if which_result:
         return which_result
+    
+    # Check local node_modules/.bin/ (npm install in repo root)
+    repo_root = Path(__file__).parent.parent
+    local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
+    if local_bin.exists():
+        return str(local_bin)
     
     # Check common npx locations
     npx_path = shutil.which("npx")
@@ -662,6 +671,7 @@ def _find_agent_browser() -> str:
     
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: npm install -g agent-browser\n"
+        "Or run 'npm install' in the repo root to install locally.\n"
         "Or ensure npx is available in your PATH."
     )
 
@@ -708,12 +718,26 @@ def _run_browser_command(
     ] + args
     
     try:
+        # Give each task its own socket directory to prevent concurrency conflicts.
+        # Without this, parallel workers fight over the same default socket path,
+        # causing "Failed to create socket directory: Permission denied" errors.
+        task_socket_dir = os.path.join(
+            tempfile.gettempdir(), 
+            f"agent-browser-{session_info['session_name']}"
+        )
+        os.makedirs(task_socket_dir, exist_ok=True)
+        
+        browser_env = {
+            **os.environ,
+            "AGENT_BROWSER_SOCKET_DIR": task_socket_dir,
+        }
+        
         result = subprocess.run(
             cmd_parts,
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ}
+            env=browser_env,
         )
         
         # Parse JSON output
@@ -1486,6 +1510,13 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                 print(f"[browser_tool] WARNING: Could not close BrowserBase session {bb_session_id}", file=sys.stderr)
         except Exception as e:
             print(f"[browser_tool] Exception during BrowserBase session close: {e}", file=sys.stderr)
+        
+        # Clean up per-task socket directory
+        session_name = session_info.get("session_name", "")
+        if session_name:
+            socket_dir = os.path.join(tempfile.gettempdir(), f"agent-browser-{session_name}")
+            if os.path.exists(socket_dir):
+                shutil.rmtree(socket_dir, ignore_errors=True)
         
         del _active_sessions[task_id]
         if not os.getenv("HERMES_QUIET"):

@@ -83,9 +83,9 @@ def _get_apptainer_cache_dir() -> Path:
         cache_path.mkdir(parents=True, exist_ok=True)
         return cache_path
     
-    # Use scratch dir parent for cache (one level up from sandboxes)
+    # Use user-specific subdirectory in scratch for cache
     scratch = _get_scratch_dir()
-    cache_path = scratch.parent / ".apptainer"
+    cache_path = scratch / ".apptainer"
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
 
@@ -655,49 +655,37 @@ class _SingularityEnvironment:
         # Get or build SIF from docker:// URL (fast if already cached)
         self.image = _get_or_build_sif(image, self.executable)
         
-        # Get scratch directory for sandbox
+        # Get scratch directory for working files
         self.scratch_dir = _get_scratch_dir()
         
-        # Create unique sandbox directory
+        # Create unique ID for this environment
         self.sandbox_id = f"hermes-{uuid.uuid4().hex[:12]}"
-        self.sandbox_dir = self.scratch_dir / self.sandbox_id
         
         # Create a working directory that will be bound into the container
+        # This persists files across commands within the same task
         self.work_dir = self.scratch_dir / f"{self.sandbox_id}-work"
         self.work_dir.mkdir(parents=True, exist_ok=True)
         
-        # Build the sandbox
-        self._build_sandbox()
-    
-    def _build_sandbox(self):
-        """Build a writable sandbox from the container image (SIF or other)."""
-        try:
-            result = subprocess.run(
-                [self.executable, "build", "--sandbox", str(self.sandbox_dir), self.image],
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 min timeout for building
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"Failed to build sandbox: {result.stderr}")
-            
-            # Create /workspace directory inside the sandbox for bind mounting
-            workspace_in_sandbox = self.sandbox_dir / "workspace"
-            workspace_in_sandbox.mkdir(parents=True, exist_ok=True)
-            
-        except subprocess.TimeoutExpired:
-            shutil.rmtree(self.sandbox_dir, ignore_errors=True)
-            raise RuntimeError("Sandbox build timed out")
+        # No sandbox build needed! We use --writable-tmpfs which runs directly
+        # from the read-only SIF with an in-memory writable overlay.
+        # This is instant (vs minutes for sandbox build) and scales to any
+        # number of concurrent workers since they all share the same SIF.
+        print(f"[Singularity] Environment {self.sandbox_id} ready (tmpfs overlay, no build needed)", flush=True)
     
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
         """Execute a command in the Singularity container."""
         cmd = [self.executable, "exec"]
         
-        # Isolation flags - contain but allow network
-        cmd.extend(["--contain", "--cleanenv"])
+        # Isolation flags - contain filesystem, clean env, isolate PID namespace
+        # --contain: isolate filesystem (no host mounts except explicit binds)
+        # --cleanenv: don't inherit host environment variables
+        # --pid: isolate PID namespace (ps aux only shows container processes)
+        # --writable-tmpfs: RAM-backed writable overlay on top of read-only SIF
+        #   (instant startup, no sandbox build, scales to 250+ concurrent workers)
+        cmd.extend(["--contain", "--cleanenv", "--pid", "--writable-tmpfs"])
         
         # Bind the working directory into the container at /workspace
-        # This gives the container access to a large writable space
+        # This gives the container access to a large writable space on disk
         cmd.extend(["--bind", f"{self.work_dir}:/workspace"])
         
         # Also bind it to /tmp inside container for pip cache etc.
@@ -707,8 +695,8 @@ class _SingularityEnvironment:
         work_dir = cwd or self.cwd
         cmd.extend(["--pwd", work_dir])
         
-        # Use writable sandbox
-        cmd.extend(["--writable", str(self.sandbox_dir)])
+        # Use the SIF directly (read-only, shared by all workers)
+        cmd.append(str(self.image))
         
         # Transform sudo commands if SUDO_PASSWORD is available
         exec_command = _transform_sudo_command(command)
@@ -732,8 +720,7 @@ class _SingularityEnvironment:
             return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
     
     def cleanup(self):
-        """Clean up sandbox and working directory."""
-        shutil.rmtree(self.sandbox_dir, ignore_errors=True)
+        """Clean up working directory (no sandbox to remove with tmpfs overlay)."""
         shutil.rmtree(self.work_dir, ignore_errors=True)
     
     def stop(self):

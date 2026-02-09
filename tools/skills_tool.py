@@ -349,7 +349,7 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
-def skills_categories(task_id: str = None) -> str:
+def skills_categories(verbose: bool = False, task_id: str = None) -> str:
     """
     List available skill categories with descriptions (progressive disclosure tier 0).
     
@@ -358,6 +358,7 @@ def skills_categories(task_id: str = None) -> str:
     or first paragraph to explain what skills are in that category.
     
     Args:
+        verbose: If True, include skill counts per category (default: False, but currently always included)
         task_id: Optional task identifier (unused, for API consistency)
         
     Returns:

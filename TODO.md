@@ -4,84 +4,6 @@
 
 ---
 
-## 🚨 HIGH PRIORITY - Immediate Fixes
-
-These items need to be addressed ASAP:
-
-### 1. SUDO Breaking Terminal Tool 🔐 ✅ COMPLETE
-- [x] **Problem:** SUDO commands break the terminal tool execution (hangs indefinitely)
-- [x] **Fix:** Created custom environment wrappers in `tools/terminal_tool.py`
-  - `stdin=subprocess.DEVNULL` prevents hanging on interactive prompts
-  - Sudo fails gracefully with clear error if no password configured
-  - Same UX as Claude Code - agent sees error, tells user to run it themselves
-- [x] **All 5 environments now have consistent behavior:**
-  - `_LocalEnvironment` - local execution
-  - `_DockerEnvironment` - Docker containers
-  - `_SingularityEnvironment` - Singularity/Apptainer containers
-  - `_ModalEnvironment` - Modal cloud sandboxes
-  - `_SSHEnvironment` - remote SSH execution
-- [x] **Optional sudo support via `SUDO_PASSWORD` env var:**
-  - Shared `_transform_sudo_command()` helper used by all environments
-  - If set, auto-transforms `sudo cmd` → pipes password via `sudo -S`
-  - Documented in `.env.example`, `cli-config.yaml`, and README
-  - Works for chained commands: `cmd1 && sudo cmd2`
-- [x] **Interactive sudo prompt in CLI mode:**
-  - When sudo detected and no password configured, prompts user
-  - 45-second timeout (auto-skips if no input)
-  - Hidden password input via `getpass` (password not visible)
-  - Password cached for session (don't ask repeatedly)
-  - Spinner pauses during prompt for clean UX
-  - Uses `HERMES_INTERACTIVE` env var to detect CLI mode
-
-### 2. Fix `browser_get_images` Tool 🖼️ ✅ VERIFIED WORKING
-- [x] **Tested:** Tool works correctly on multiple sites
-- [x] **Results:** Successfully extracts image URLs, alt text, dimensions
-- [x] **Note:** Some sites (Pixabay, etc.) have Cloudflare bot protection that blocks headless browsers - this is expected behavior, not a bug
-
-### 3. Better Action Logging for Debugging 📝 ✅ COMPLETE
-- [x] **Problem:** Need better logging of agent actions for debugging
-- [x] **Implementation:**
-  - Save full session trajectories to `logs/` directory as JSON
-  - Each session gets a unique file: `session_YYYYMMDD_HHMMSS_UUID.json`
-  - Logs all messages, tool calls with inputs/outputs, timestamps
-  - Structured JSON format for easy parsing and replay
-  - Automatic on CLI runs (configurable)
-
-### 4. Stream Thinking Summaries in Real-Time 💭 ⏸️ DEFERRED
-- [ ] **Problem:** Thinking/reasoning summaries not shown while streaming
-- [ ] **Complexity:** This is a significant refactor - leaving for later
-
-**OpenRouter Streaming Info:**
-- Uses `stream=True` with OpenAI SDK
-- Reasoning comes in `choices[].delta.reasoning_details` chunks
-- Types: `reasoning.summary`, `reasoning.text`, `reasoning.encrypted`
-- Tool call arguments stream as partial JSON (need accumulation)
-- Items paradigm: same ID emitted multiple times with updated content
-
-**Key Challenges:**
-- Tool call JSON accumulation (partial `{"query": "wea` → `{"query": "weather"}`)
-- Multiple concurrent outputs (thinking + tool calls + text simultaneously)
-- State management for partial responses
-- Error handling if connection drops mid-stream
-- Deciding when tool calls are "complete" enough to execute
-
-**UX Questions to Resolve:**
-- Show raw thinking text or summarized?
-- Live expanding text vs. spinner replacement?
-- Markdown rendering while streaming?
-- How to handle thinking + tool call display simultaneously?
-
-**Implementation Options:**
-- New `run_conversation_streaming()` method (keep non-streaming as fallback)
-- Wrapper that handles streaming internally
-- Big refactor of existing `run_conversation()`
-
-**References:**
-- https://openrouter.ai/docs/api/reference/streaming
-- https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#streaming-response
-
----
-
 ## 1. Subagent Architecture (Context Isolation) 🎯
 
 **Problem:** Long-running tools (terminal commands, browser automation, complex file operations) consume massive context. A single `ls -la` can add hundreds of lines. Browser snapshots, debugging sessions, and iterative terminal work quickly bloat the main conversation, leaving less room for actual reasoning.
@@ -160,87 +82,48 @@ These items need to be addressed ASAP:
 
 ---
 
-## 2. Context Management (complements Subagents)
+## 2. Planning & Task Management 📋
 
-**Problem:** Context grows unbounded during long conversations. Trajectory compression exists for training data post-hoc, but live conversations lack intelligent context management.
+**Problem:** Agent handles tasks reactively without explicit planning. Complex multi-step tasks lack structure, progress tracking, and the ability to decompose work into manageable chunks.
 
 **Ideas:**
-- [ ] **Incremental summarization** - Compress old tool outputs on-the-fly during conversations
-  - Trigger when context exceeds threshold (e.g., 80% of max tokens)
-  - Preserve recent turns fully, summarize older tool responses
-  - Could reuse logic from `trajectory_compressor.py`
+- [ ] **Task decomposition tool** - Break complex requests into subtasks:
+  ```
+  User: "Set up a new Python project with FastAPI, tests, and Docker"
   
-- [ ] **Semantic memory retrieval** - Vector store for long conversation recall
-  - Embed important facts/findings as conversation progresses
-  - Retrieve relevant memories when needed instead of keeping everything in context
-  - Consider lightweight solutions: ChromaDB, FAISS, or even a simple embedding cache
+  Agent creates plan:
+  ├── 1. Create project structure and requirements.txt
+  ├── 2. Implement FastAPI app skeleton
+  ├── 3. Add pytest configuration and initial tests
+  ├── 4. Create Dockerfile and docker-compose.yml
+  └── 5. Verify everything works together
+  ```
+  - Each subtask becomes a trackable unit
+  - Agent can report progress: "Completed 3/5 tasks"
   
-- [ ] **Working vs. episodic memory** distinction
-  - Working memory: Current task state, recent tool results (always in context)
-  - Episodic memory: Past findings, tried approaches (retrieved on demand)
-  - Clear eviction policies for each
+- [ ] **Progress checkpoints** - Periodic self-assessment:
+  - After N tool calls or time elapsed, pause to evaluate
+  - "What have I accomplished? What remains? Am I on track?"
+  - Detect if stuck in loops or making no progress
+  - Could trigger replanning if approach isn't working
+  
+- [ ] **Explicit plan storage** - Persist plan in conversation:
+  - Store as structured data (not just in context)
+  - Update status as tasks complete
+  - User can ask "What's the plan?" or "What's left?"
+  - Survives context compression (plans are protected)
 
-**Files to modify:** `run_agent.py` (add memory manager), possibly new `tools/memory_tool.py`
+- [ ] **Failure recovery with replanning** - When things go wrong:
+  - Record what failed and why
+  - Revise plan to work around the issue
+  - "Step 3 failed because X, adjusting approach to Y"
+  - Prevents repeating failed strategies
+
+**Files to modify:** `run_agent.py` (add planning hooks), new `tools/planning_tool.py`
 
 ---
 
-## 3. Self-Reflection & Course Correction 🔄
-
-**Problem:** Current retry logic handles malformed outputs but not semantic failures. Agent doesn't reason about *why* something failed.
-
-**Ideas:**
-- [ ] **Meta-reasoning after failures** - When a tool returns an error or unexpected result:
-  ```
-  Tool failed → Reflect: "Why did this fail? What assumptions were wrong?"
-  → Adjust approach → Retry with new strategy
-  ```
-  - Could be a lightweight LLM call or structured self-prompt
-  
-- [ ] **Planning/replanning module** - For complex multi-step tasks:
-  - Generate plan before execution
-  - After each step, evaluate: "Am I on track? Should I revise the plan?"
-  - Store plan in working memory, update as needed
-  
-- [ ] **Approach memory** - Remember what didn't work:
-  - "I tried X for this type of problem and it failed because Y"
-  - Prevents repeating failed strategies in the same conversation
-
-**Files to modify:** `run_agent.py` (add reflection hooks in tool loop), new `tools/reflection_tool.py`
-
----
-
-## 4. Tool Composition & Learning 🔧
-
-**Problem:** Tools are atomic. Complex tasks require repeated manual orchestration of the same tool sequences.
-
-**Ideas:**
-- [ ] **Macro tools / Tool chains** - Define reusable tool sequences:
-  ```yaml
-  research_topic:
-    description: "Deep research on a topic"
-    steps:
-      - web_search: {query: "$topic"}
-      - web_extract: {urls: "$search_results.urls[:3]"}
-      - summarize: {content: "$extracted"}
-  ```
-  - Could be defined in skills or a new `macros/` directory
-  - Agent can invoke macro as single tool call
-  
-- [ ] **Tool failure patterns** - Learn from failures:
-  - Track: tool, input pattern, error type, what worked instead
-  - Before calling a tool, check: "Has this pattern failed before?"
-  - Persistent across sessions (stored in skills or separate DB)
-  
-- [ ] **Parallel tool execution** - When tools are independent, run concurrently:
-  - Detect independence (no data dependencies between calls)
-  - Use `asyncio.gather()` for parallel execution
-  - Already have async support in some tools, just need orchestration
-
-**Files to modify:** `model_tools.py`, `toolsets.py`, new `tool_macros.py`
-
----
-
-## 5. Dynamic Skills Expansion 📚
+## 3. Dynamic Skills Expansion 📚
 
 **Problem:** Skills system is elegant but static. Skills must be manually created and added.
 
@@ -269,21 +152,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 6. Task Continuation Hints 🎯
-
-**Problem:** Could be more helpful by suggesting logical next steps.
-
-**Ideas:**
-- [ ] **Suggest next steps** - At end of a task, suggest logical continuations:
-  - "Code is written. Want me to also write tests / docs / deploy?"
-  - Based on common workflows for task type
-  - Non-intrusive, just offer options
-
-**Files to modify:** `run_agent.py`, response generation logic
-
----
-
-## 7. Interactive Clarifying Questions Tool ❓
+## 4. Interactive Clarifying Questions Tool ❓
 
 **Problem:** Agent sometimes makes assumptions or guesses when it should ask the user. Currently can only ask via text, which gets lost in long outputs.
 
@@ -319,25 +188,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 8. Resource Awareness & Efficiency 💰
-
-**Problem:** No awareness of costs, time, or resource usage. Could be smarter about efficiency.
-
-**Ideas:**
-- [ ] **Tool result caching** - Don't repeat identical operations:
-  - Cache web searches, extractions within a session
-  - Invalidation based on time-sensitivity of query
-  - Hash-based lookup: same input → cached output
-
-- [ ] **Lazy evaluation** - Don't fetch everything upfront:
-  - Get summaries first, full content only if needed
-  - "I found 5 relevant pages. Want me to deep-dive on any?"
-
-**Files to modify:** `model_tools.py`, new `resource_tracker.py`
-
----
-
-## 9. Collaborative Problem Solving 🤝
+## 5. Collaborative Problem Solving 🤝
 
 **Problem:** Interaction is command/response. Complex problems benefit from dialogue.
 
@@ -356,7 +207,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 10. Project-Local Context 💾
+## 6. Project-Local Context 💾
 
 **Problem:** Valuable context lost between sessions.
 
@@ -374,30 +225,7 @@ These items need to be addressed ASAP:
 
 **Files to modify:** New `project_context.py`, auto-load in `run_agent.py`
 
----
-
-## 11. Graceful Degradation & Robustness 🛡️
-
-**Problem:** When things go wrong, recovery is limited. Should fail gracefully.
-
-**Ideas:**
-- [ ] **Fallback chains** - When primary approach fails, have backups:
-  - `web_extract` fails → try `browser_navigate` → try `web_search` for cached version
-  - Define fallback order per tool type
-  
-- [ ] **Partial progress preservation** - Don't lose work on failure:
-  - Long task fails midway → save what we've got
-  - "I completed 3/5 steps before the error. Here's what I have..."
-  
-- [ ] **Self-healing** - Detect and recover from bad states:
-  - Browser stuck → close and retry
-  - Terminal hung → timeout and reset
-
-**Files to modify:** `model_tools.py`, tool implementations, new `fallback_manager.py`
-
----
-
-## 12. Tools & Skills Wishlist 🧰
+## 6. Tools & Skills Wishlist 🧰
 
 *Things that would need new tool implementations (can't do well with current tools):*
 
@@ -464,7 +292,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 13. Messaging Platform Integrations 💬
+## 7. Messaging Platform Integrations 💬 ✅ COMPLETE
 
 **Problem:** Agent currently only works via `cli.py` which requires direct terminal access. Users may want to interact via messaging apps from their phone or other devices.
 
@@ -485,75 +313,41 @@ These items need to be addressed ASAP:
 ```
 
 **Platform support (each user sets up their own credentials):**
-- [ ] **Telegram** - via `python-telegram-bot` or `grammy` equivalent
+- [x] **Telegram** - via `python-telegram-bot`
   - Bot token from @BotFather
   - Easiest to set up, good for personal use
-- [ ] **Discord** - via `discord.py`
+- [x] **Discord** - via `discord.py`
   - Bot token from Discord Developer Portal
   - Can work in servers (group sessions) or DMs
-- [ ] **WhatsApp** - via `baileys` (WhatsApp Web protocol)
-  - QR code scan to authenticate
+- [x] **WhatsApp** - via Node.js bridge (whatsapp-web.js/baileys)
+  - Requires Node.js bridge setup
   - More complex, but reaches most people
 
 **Session management:**
-- [ ] **Session store** - JSONL persistence per session key
-  - `~/.hermes/sessions/{session_key}.jsonl`
-  - Session keys: `telegram:dm:{user_id}`, `discord:channel:{id}`, etc.
-- [ ] **Session expiry** - Configurable reset policies
-  - Daily reset (default 4am) OR idle timeout (e.g., 2 hours)
+- [x] **Session store** - JSONL persistence per session key
+  - `~/.hermes/sessions/{session_id}.jsonl`
+  - Session keys: `agent:main:telegram:dm`, `agent:main:discord:group:123`, etc.
+- [x] **Session expiry** - Configurable reset policies
+  - Daily reset (default 4am) OR idle timeout (default 2 hours)
   - Manual reset via `/reset` or `/new` command in chat
-- [ ] **Session continuity** - Conversations persist across messages until reset
+  - Per-platform and per-type overrides
+- [x] **Session continuity** - Conversations persist across messages until reset
 
-**Files to create:** `monitors/telegram_monitor.py`, `monitors/discord_monitor.py`, `monitors/session_store.py`
+**Files created:** `gateway/`, `gateway/platforms/`, `gateway/config.py`, `gateway/session.py`, `gateway/delivery.py`, `gateway/run.py`
 
----
+**Configuration:**
+- Environment variables: `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, etc.
+- Config file: `~/.hermes/gateway.json`
+- CLI commands: `/platforms` to check status, `--gateway` to start
 
-## 14. Scheduled Tasks / Cron Jobs ⏰
-
-**Problem:** Agent only runs on-demand. Some tasks benefit from scheduled execution (daily summaries, monitoring, reminders).
-
-**Ideas:**
-- [ ] **Cron-style scheduler** - Run agent turns on a schedule
-  - Store jobs in `~/.hermes/cron/jobs.json`
-  - Each job: `{ id, schedule, prompt, session_mode, delivery }`
-  - Uses APScheduler or similar Python library
-  
-- [ ] **Session modes:**
-  - `isolated` - Fresh session each run (no history, clean context)
-  - `main` - Append to main session (agent remembers previous scheduled runs)
-  
-- [ ] **Delivery options:**
-  - Write output to file (`~/.hermes/cron/output/{job_id}/{timestamp}.md`)
-  - Send to messaging channel (if integrations enabled)
-  - Both
-  
-- [ ] **CLI interface:**
-  ```bash
-  # List scheduled jobs
-  python cli.py --cron list
-  
-  # Add a job (runs daily at 9am)
-  python cli.py --cron add "Summarize my email inbox" --schedule "0 9 * * *"
-  
-  # Quick syntax for simple intervals  
-  python cli.py --cron add "Check server status" --every 30m
-  
-  # Remove a job
-  python cli.py --cron remove <job_id>
-  ```
-
-- [ ] **Agent self-scheduling** - Let the agent create its own cron jobs
-  - New tool: `schedule_task(prompt, schedule, session_mode)`
-  - "Remind me to check the deployment tomorrow at 9am"
-  - Agent can set follow-up tasks for itself
-
-- [ ] **In-chat command:** `/cronjob {prompt} {frequency}` when using messaging integrations
-
-**Files to create:** `cron/scheduler.py`, `cron/jobs.py`, `tools/schedule_tool.py`
+**Dynamic context injection:**
+- Agent knows its source platform and chat
+- Agent knows connected platforms and home channels
+- Agent can deliver cron outputs to specific platforms
 
 ---
 
-## 15. Text-to-Speech (TTS) 🔊
+## 8. Text-to-Speech (TTS) 🔊
 
 **Problem:** Agent can only respond with text. Some users prefer audio responses (accessibility, hands-free use, podcasts).
 
@@ -584,7 +378,7 @@ These items need to be addressed ASAP:
 
 ---
 
-## 16. Speech-to-Text / Audio Transcription 🎤
+## 13. Speech-to-Text / Audio Transcription 🎤
 
 **Problem:** Users may want to send voice memos instead of typing. Agent is blind to audio content.
 
@@ -613,103 +407,6 @@ These items need to be addressed ASAP:
 
 **Files to create:** `tools/transcribe_tool.py`, integrate with messaging monitors
 
----
-
-## Priority Order (Suggested)
-
-1. **🎯 Subagent Architecture** - Critical for context management, enables everything else
-2. **Memory & Context Management** - Complements subagents for remaining context
-3. **Self-Reflection** - Improves reliability and reduces wasted tool calls  
-4. **Project-Local Context** - Practical win, keeps useful info across sessions
-5. **Messaging Integrations** - Unlocks mobile access, new interaction patterns
-6. **Scheduled Tasks / Cron Jobs** - Enables automation, reminders, monitoring
-7. **Tool Composition** - Quality of life, builds on other improvements
-8. **Dynamic Skills** - Force multiplier for repeated tasks
-9. **Interactive Clarifying Questions** - Better UX for ambiguous tasks
-10. **TTS / Audio Transcription** - Accessibility, hands-free use
-
----
-
-## Removed Items (Unrealistic)
-
-The following were removed because they're architecturally impossible:
-
-- ~~Proactive suggestions / Prefetching~~ - Agent only runs on user request, can't interject
-- ~~Clipboard integration~~ - No access to user's local system clipboard
-
-The following **moved to active TODO** (now possible with new architecture):
-
-- ~~Session save/restore~~ → See **Messaging Integrations** (session persistence)
-- ~~Voice/TTS playback~~ → See **TTS** (can generate audio files, send via messaging)
-- ~~Set reminders~~ → See **Scheduled Tasks / Cron Jobs**
-
-The following were removed because they're **already possible**:
-
-- ~~HTTP/API Client~~ → Use `curl` or Python `requests` in terminal
-- ~~Structured Data Manipulation~~ → Use `pandas` in terminal
-- ~~Git-Native Operations~~ → Use `git` CLI in terminal
-- ~~Symbolic Math~~ → Use `SymPy` in terminal
-- ~~Code Quality Tools~~ → Run linters (`eslint`, `black`, `mypy`) in terminal
-- ~~Testing Framework~~ → Run `pytest`, `jest`, etc. in terminal
-- ~~Translation~~ → LLM handles this fine, or use translation APIs
-
----
-
----
-
-## 🧪 Brainstorm Ideas (Not Yet Fleshed Out)
-
-*These are early-stage ideas that need more thinking before implementation. Captured here so they don't get lost.*
-
-### Remote/Distributed Execution 🌐
-
-**Concept:** Run agent on a powerful remote server while interacting from a thin client.
-
-**Why interesting:**
-- Run on beefy GPU server for local LLM inference
-- Agent has access to remote machine's resources (files, tools, internet)
-- User interacts via lightweight client (phone, low-power laptop)
-
-**Open questions:**
-- How does this differ from just SSH + running cli.py on remote?
-- Would need secure communication channel (WebSocket? gRPC?)
-- How to handle tool outputs that reference remote paths?
-- Credential management for remote execution
-- Latency considerations for interactive use
-
-**Possible architecture:**
-```
-┌─────────────┐         ┌─────────────────────────┐
-│ Thin Client │ ◄─────► │ Remote Hermes Server    │
-│ (phone/web) │  WS/API │ - Full agent + tools    │
-└─────────────┘         │ - GPU for local LLM     │
-                        │ - Access to server files│
-                        └─────────────────────────┘
-```
-
-**Related to:** Messaging integrations (could be the "server" that monitors receive from)
-
----
-
-### Multi-Agent Parallel Execution 🤖🤖
-
-**Concept:** Extension of Subagent Architecture (Section 1) - run multiple subagents in parallel.
-
-**Why interesting:**
-- Independent subtasks don't need to wait for each other
-- "Research X while setting up Y" - both run simultaneously
-- Faster completion for complex multi-part tasks
-
-**Open questions:**
-- How to detect which tasks are truly independent?
-- Resource management (API rate limits, concurrent connections)
-- How to merge results when parallel tasks have conflicts?
-- Cost implications of multiple parallel LLM calls
-
-*Note: Basic subagent delegation (Section 1) should be implemented first, parallel execution is an optimization on top.*
-
----
-
 ### Plugin/Extension System 🔌
 
 **Concept:** Allow users to add custom tools/skills without modifying core code.
@@ -723,6 +420,169 @@ The following were removed because they're **already possible**:
 - Security implications of loading arbitrary code
 - Versioning and compatibility
 - Discovery and installation UX
+
+---
+
+## Recently Completed ✅
+
+### Dangerous Command Approval System
+**Implemented:** Dangerous command detection and approval for terminal tool.
+
+**Features:**
+- Pattern-based detection of dangerous commands (rm -rf, DROP TABLE, chmod 777, etc.)
+- CLI prompt with options: `[o]nce | [s]ession | [a]lways | [d]eny`
+- Session caching (approved patterns don't re-prompt)
+- Permanent allowlist in `~/.hermes/config.yaml`
+- Force flag for agent to bypass after user confirmation
+- Skip check for isolated backends (Docker, Singularity, Modal)
+- Helpful sudo failure messages for messaging platforms
+
+**Files:** `tools/terminal_tool.py`, `model_tools.py`, `hermes_cli/config.py`
+
+---
+
+## 14. Learning Machine / Dynamic Memory System 🧠
+
+*Inspired by [Dash](~/agent-codebases/dash) - a self-learning data agent.*
+
+**Problem:** Agent starts fresh every session. Valuable learnings from debugging, error patterns, successful approaches, and user preferences are lost.
+
+**Dash's Key Insight:** Separate **Knowledge** (static, curated) from **Learnings** (dynamic, discovered):
+
+| System | What It Stores | How It Evolves |
+|--------|---------------|----------------|
+| **Knowledge** (Skills) | Validated approaches, templates, best practices | Curated by user |
+| **Learnings** | Error patterns, gotchas, discovered fixes | Managed automatically |
+
+**Tools to implement:**
+- [ ] `save_learning(topic, learning, context?)` - Record a discovered pattern
+  ```python
+  save_learning(
+    topic="python-ssl",
+    learning="On Ubuntu 22.04, SSL certificate errors often fixed by: apt install ca-certificates",
+    context="Debugging requests SSL failure"
+  )
+  ```
+- [ ] `search_learnings(query)` - Find relevant past learnings
+  ```python
+  search_learnings("SSL certificate error Python")
+  # Returns: "On Ubuntu 22.04, SSL certificate errors often fixed by..."
+  ```
+
+**User Profile & Memory:**
+- [ ] `user_profile` - Structured facts about user preferences
+  ```yaml
+  # ~/.hermes/user_profile.yaml
+  coding_style:
+    python_formatter: black
+    type_hints: always
+    test_framework: pytest
+  preferences:
+    verbosity: detailed
+    confirm_destructive: true
+  environment:
+    os: linux
+    shell: bash
+    default_python: 3.11
+  ```
+- [ ] `user_memory` - Unstructured observations the agent learns
+  ```yaml
+  # ~/.hermes/user_memory.yaml
+  - "User prefers tabs over spaces despite black's defaults"
+  - "User's main project is ~/work/myapp - a Django app"
+  - "User often works late - don't ask about timezone"
+  ```
+
+**When to learn:**
+- After fixing an error that took multiple attempts
+- When user corrects the agent's approach
+- When a workaround is discovered for a tool limitation
+- When user expresses a preference
+
+**Storage:** Vector database (ChromaDB) or simple YAML with embedding search.
+
+**Files to create:** `tools/learning_tools.py`, `learning/store.py`, `~/.hermes/learnings/`
+
+---
+
+## 15. Layered Context Architecture 📊
+
+*Inspired by Dash's "Six Layers of Context" - grounding responses in multiple sources.*
+
+**Problem:** Context sources are ad-hoc. No clear hierarchy or strategy for what context to include when.
+
+**Proposed Layers for Hermes:**
+
+| Layer | Source | When Loaded | Example |
+|-------|--------|-------------|---------|
+| 1. **Project Context** | `.hermes/context.md` | Auto on cwd | "This is a FastAPI project using PostgreSQL" |
+| 2. **Skills** | `skills/*.md` | On request | "How to set up React project" |
+| 3. **User Profile** | `~/.hermes/user_profile.yaml` | Always | "User prefers pytest, uses black" |
+| 4. **Learnings** | `~/.hermes/learnings/` | Semantic search | "SSL fix for Ubuntu" |
+| 5. **External Knowledge** | Web search, docs | On demand | Current API docs, Stack Overflow |
+| 6. **Runtime Introspection** | Tool calls | Real-time | File contents, terminal output |
+
+**Benefits:**
+- Clear mental model for what context is available
+- Prioritization: local > learned > external
+- Debugging: "Why did agent do X?" → check which layers contributed
+
+**Files to modify:** `run_agent.py` (context loading), new `context/layers.py`
+
+---
+
+## 16. Evaluation System with LLM Grading 📏
+
+*Inspired by Dash's evaluation framework.*
+
+**Problem:** `batch_runner.py` runs test cases but lacks quality assessment.
+
+**Dash's Approach:**
+- **String matching** (default) - Check if expected strings appear
+- **LLM grader** (-g flag) - GPT evaluates response quality
+- **Result comparison** (-r flag) - Compare against golden output
+
+**Implementation for Hermes:**
+
+- [ ] **Test case format:**
+  ```python
+  TestCase(
+    name="create_python_project",
+    prompt="Create a new Python project with FastAPI and tests",
+    expected_strings=["requirements.txt", "main.py", "test_"],  # Basic check
+    golden_actions=["write:main.py", "write:requirements.txt", "terminal:pip install"],
+    grader_criteria="Should create complete project structure with working code"
+  )
+  ```
+
+- [ ] **LLM grader mode:**
+  ```python
+  def grade_response(response: str, criteria: str) -> Grade:
+      """Use GPT to evaluate response quality."""
+      prompt = f"""
+      Evaluate this agent response against the criteria.
+      Criteria: {criteria}
+      Response: {response}
+      
+      Score (1-5) and explain why.
+      """
+      # Returns: Grade(score=4, explanation="Created all files but tests are minimal")
+  ```
+
+- [ ] **Action comparison mode:**
+  - Record tool calls made during test
+  - Compare against expected actions
+  - "Expected terminal call to pip install, got npm install"
+
+- [ ] **CLI flags:**
+  ```bash
+  python batch_runner.py eval test_cases.yaml       # String matching
+  python batch_runner.py eval test_cases.yaml -g    # + LLM grading
+  python batch_runner.py eval test_cases.yaml -r    # + Result comparison
+  python batch_runner.py eval test_cases.yaml -v    # Verbose (show responses)
+  ```
+
+**Files to modify:** `batch_runner.py`, new `evals/test_cases.py`, new `evals/grader.py`
 
 ---
 

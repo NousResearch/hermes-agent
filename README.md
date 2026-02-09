@@ -1,857 +1,1025 @@
-# Hermes Agent
+# Hermes Agent 🦋
 
-An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.
+An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system, messaging integrations, and scheduled tasks.
+
+## Quick Install
+
+**Linux/macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+The installer will:
+- Install [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
+- Install Python 3.11 via uv if not already available (no sudo needed)
+- Clone to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
+- Create a virtual environment with Python 3.11
+- Install all dependencies and submodule packages
+- Symlink `hermes` into `~/.local/bin` so it works globally (no venv activation needed)
+- Run the interactive setup wizard
+
+After installation, reload your shell and run:
+```bash
+hermes setup    # Configure API keys (if you skipped during install)
+hermes          # Start chatting!
+```
+
+---
+
+## Configuration
+
+All your settings are stored in `~/.hermes/` for easy access:
+
+```
+~/.hermes/
+├── config.yaml     # Settings (model, terminal, compression, etc.)
+├── .env            # API keys and secrets
+├── cron/           # Scheduled jobs
+├── sessions/       # Gateway sessions
+└── logs/           # Logs
+```
+
+### Managing Configuration
+
+```bash
+hermes config              # View current configuration
+hermes config edit         # Open config.yaml in your editor
+hermes config set KEY VAL  # Set a specific value
+hermes config check        # Check for missing options (after updates)
+hermes config migrate      # Interactively add missing options
+
+# Examples:
+hermes config set model anthropic/claude-opus-4
+hermes config set terminal.backend docker
+hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
+```
+
+### Required API Keys
+
+You need at least one LLM provider:
+
+| Provider | Get Key | Env Variable |
+|----------|---------|--------------|
+| **OpenRouter** (recommended) | [openrouter.ai/keys](https://openrouter.ai/keys) | `OPENROUTER_API_KEY` |
+
+
+### Optional API Keys
+
+| Feature | Provider | Env Variable |
+|---------|----------|--------------|
+| Custom OpenAI Endpoint (OAI or VLLM/SGLANG) | [platform.openai.com](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
+| Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY` |
+| Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
+| Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
+| RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
+| Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
+
+---
+
+## Commands
+
+```bash
+hermes                    # Interactive chat (default)
+hermes chat -q "Hello"    # Single query mode
+hermes setup              # Configure API keys and settings
+hermes config             # View/edit configuration
+hermes config check       # Check for missing config (useful after updates)
+hermes config migrate     # Interactively add missing options
+hermes status             # Show configuration status
+hermes doctor             # Diagnose issues
+hermes update             # Update to latest version (prompts for new config)
+hermes uninstall          # Uninstall (can keep configs for later reinstall)
+hermes gateway            # Start messaging gateway
+hermes cron list          # View scheduled jobs
+hermes version            # Show version info
+```
+
+### CLI Commands (inside chat)
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/tools` | List available tools |
+| `/model [name]` | Show or change model |
+| `/personality [name]` | Set personality (kawaii, pirate, etc.) |
+| `/clear` | Clear screen and reset |
+| `/cron` | Manage scheduled tasks |
+| `/config` | Show current configuration |
+| `/quit` | Exit |
+
+---
 
 ## Features
 
-- **Interactive CLI**: Beautiful terminal interface with animated feedback, personalities, and session management
-- **Web Tools**: Search, extract content, and crawl websites
-- **Terminal Tools**: Execute commands via local, Docker, Singularity, Modal, or SSH backends
-- **Browser Tools**: Automate web browsers to navigate, click, type, and extract content
-- **Vision Tools**: Analyze images from URLs
-- **Reasoning Tools**: Advanced multi-model reasoning (Mixture of Agents)
-- **Creative Tools**: Generate images from text prompts
-- **Skills Tools**: On-demand knowledge documents with progressive disclosure
-- **Toolsets System**: Organize tools into logical groups for different scenarios
-- **Batch Processing**: Process datasets in parallel with checkpointing and statistics tracking
-- **Ephemeral System Prompts**: Guide model behavior without polluting training datasets
+### 🛠️ Tools & Toolsets
 
-## Quick Start (CLI)
+Tools are organized into logical **toolsets**:
 
 ```bash
-# After setup (see below), just run:
-./hermes
+# Use specific toolsets
+hermes --toolsets "web,terminal"
 
-# Or with options:
-./hermes --model "anthropic/claude-sonnet-4" --toolsets "web,terminal"
+# List all toolsets
+hermes --list-tools
 ```
 
-The CLI provides:
-- Animated spinners during thinking and tool execution
-- Kawaii-style feedback messages
-- `/commands` for configuration, history, and session management
-- Customizable personalities (`/personality kawaii`, `/personality pirate`, etc.)
-- Persistent configuration via `cli-config.yaml`
+**Available toolsets:** `web`, `terminal`, `browser`, `vision`, `creative`, `reasoning`, `skills`, `cronjob`, and more.
 
-## Setup
+### 🖥️ Terminal Backend
 
-### 1. Clone the Repository
-```bash
-# Clone with submodules (recommended)
-git clone --recurse-submodules https://github.com/NousResearch/Hermes-Agent.git
-cd Hermes-Agent
+The terminal tool can execute commands in different environments:
 
-# Or if already cloned without submodules:
-git submodule update --init --recursive
+| Backend | Description | Use Case |
+|---------|-------------|----------|
+| `local` | Run on your machine (default) | Development, trusted tasks |
+| `docker` | Isolated containers | Security, reproducibility |
+| `ssh` | Remote server | Sandboxing, keep agent away from its own code |
+| `singularity` | HPC containers | Cluster computing, rootless |
+| `modal` | Cloud execution | Serverless, scale |
+
+**Configure in `~/.hermes/config.yaml`:**
+```yaml
+terminal:
+  backend: local    # or: docker, ssh, singularity, modal
+  cwd: "."          # Working directory ("." = current dir)
+  timeout: 180      # Command timeout in seconds
 ```
 
-### 2. Install Dependencies
-```bash
-# Create and activate virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install Python packages
-pip install -r requirements.txt
-
-# Install mini-swe-agent for terminal tools
-pip install -e ./mini-swe-agent
-
-# Install Node.js dependencies for browser tools (requires Node.js)
-npm install
+**Docker Backend:**
+```yaml
+terminal:
+  backend: docker
+  docker_image: python:3.11-slim
 ```
 
-### 3. Configure Environment Variables
-```bash
-# Copy the example environment file
-cp .env.example .env
-
-# Edit .env and add your API keys
-nano .env  # or use your preferred editor
+**SSH Backend** (recommended for security - agent can't modify its own code):
+```yaml
+terminal:
+  backend: ssh
 ```
-
-**Required API Keys:**
-- `OPENROUTER_API_KEY` - LLM access via OpenRouter (get at: https://openrouter.ai/keys)
-- `FIRECRAWL_API_KEY` - Web tools (get at: https://firecrawl.dev/)
-- `NOUS_API_KEY` - Vision & reasoning tools (get at: https://inference-api.nousresearch.com/)
-- `FAL_KEY` - Image generation (get at: https://fal.ai/)
-
-**Optional API Keys (for specific features):**
-- `BROWSERBASE_API_KEY` - Browser automation (get at: https://browserbase.com/)
-- `BROWSERBASE_PROJECT_ID` - From Browserbase dashboard
-- `MORPH_API_KEY` - For legacy Hecate terminal backend (get at: https://morph.so/)
-
-### 4. Configure Terminal Backend
-
-The terminal tool uses **mini-swe-agent** environments. Configure in `.env` or `cli-config.yaml`:
-
 ```bash
-# Backend: "local", "docker", "singularity", "modal", or "ssh"
-TERMINAL_ENV=local          # Default: runs on host machine (no isolation)
-TERMINAL_ENV=ssh            # Remote execution via SSH (agent code stays local)
-TERMINAL_ENV=singularity    # Recommended for HPC: Apptainer/Singularity containers
-TERMINAL_ENV=docker         # Isolated Docker containers
-TERMINAL_ENV=modal          # Cloud execution via Modal
-
-# Container image (for docker/singularity/modal backends)
-TERMINAL_DOCKER_IMAGE=python:3.11-slim
-TERMINAL_SINGULARITY_IMAGE=docker://python:3.11-slim
-TERMINAL_TIMEOUT=60
-
-# SSH backend (for ssh)
+# Set credentials in ~/.hermes/.env
 TERMINAL_SSH_HOST=my-server.example.com
 TERMINAL_SSH_USER=myuser
-TERMINAL_SSH_KEY=~/.ssh/id_rsa  # Optional, uses ssh-agent if not set
+TERMINAL_SSH_KEY=~/.ssh/id_rsa
 ```
 
-**Backend Requirements:**
-- **local**: No extra setup (runs directly on your machine, no isolation)
-- **ssh**: SSH access to remote machine (great for sandboxing - agent can't touch its own code)
-- **singularity**: Requires Apptainer or Singularity installed (common on HPC clusters, no root needed)
-- **docker**: Requires Docker installed and user in `docker` group
-- **modal**: Requires Modal account (see setup below)
+**Singularity/Apptainer** (for HPC clusters):
+```bash
+# Pre-build SIF for parallel workers
+apptainer build ~/python.sif docker://python:3.11-slim
 
-### Singularity/Apptainer Setup (Recommended for HPC)
+# Configure
+hermes config set terminal.backend singularity
+hermes config set terminal.singularity_image ~/python.sif
+```
 
-Singularity/Apptainer provides rootless container execution, ideal for HPC clusters:
+**Modal** (serverless cloud):
+```bash
+uv pip install "swe-rex[modal]"   # Installs swe-rex + modal + boto3
+modal setup                    # Authenticate with Modal
+hermes config set terminal.backend modal
+```
+
+**Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.
+
+### 📱 Messaging Gateway
+
+Chat with Hermes from Telegram, Discord, or WhatsApp.
+
+#### Telegram Setup
+
+1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
+2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) - it replies with your numeric ID
+3. **Configure:**
 
 ```bash
-# 1. Verify Apptainer is installed
-apptainer --version  # or: singularity --version
-
-# 2. Set up cache directories (important for parallel workers)
-# Use /scratch if available (HPC), otherwise /tmp
-export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer
-export APPTAINER_TMPDIR=/scratch/$USER/.apptainer/tmp
-mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
-
-# 3. Pre-build SIF image (recommended for parallel batch processing)
-# This avoids race conditions when multiple workers start simultaneously
-apptainer build $APPTAINER_CACHEDIR/python-nodejs.sif docker://nikolaik/python-nodejs:python3.11-nodejs20
-
-# 4. Configure .env to use the local SIF
-TERMINAL_ENV=singularity
-TERMINAL_SINGULARITY_IMAGE=/scratch/$USER/.apptainer/python-nodejs.sif
+# Add to ~/.hermes/.env:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
 ```
 
-**Tip:** The batch scripts in `configs/` automatically handle SIF pre-building if `/scratch` is available.
-
-### Modal Cloud Backend Setup
-
-[Modal](https://modal.com) provides serverless cloud compute for running sandboxed environments at scale.
+4. **Start the gateway:**
 
 ```bash
-# 1. Install Modal and dependencies
-pip install modal boto3
-
-# 2. Authenticate with Modal (opens browser)
-modal setup
-
-# 3. Set terminal backend to modal in .env
-TERMINAL_ENV=modal
+hermes gateway              # Run in foreground
+hermes gateway install      # Install as systemd service (Linux)
+hermes gateway start        # Start the service
 ```
 
-Modal uses CLI-based authentication (stored in `~/.modal/`), so no API key is needed in `.env`. After running `modal setup`, commands will automatically execute in Modal's cloud sandboxes.
+#### Discord Setup
 
-### Browser Tools Setup
-
-Browser tools enable the agent to navigate websites, fill forms, click buttons, and extract content. They use [agent-browser](https://github.com/vercel-labs/agent-browser) CLI with [Browserbase](https://browserbase.com) cloud execution.
+1. **Create a bot:** Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
+3. **Configure:**
 
 ```bash
-# 1. Install Node.js (if not already installed)
-# Use nvm (recommended) or your package manager
-
-# 2. Install agent-browser CLI (choose one option):
-npm install -g agent-browser     # Option A: Global install (recommended)
-npm install                      # Option B: Local install (uses npx fallback)
-
-# 3. Get Browserbase credentials
-# Sign up at https://browserbase.com/ and get your:
-# - API Key (from Settings → API Keys)
-# - Project ID (from your project dashboard)
-
-# 4. Add to your .env file:
-BROWSERBASE_API_KEY=your_api_key_here
-BROWSERBASE_PROJECT_ID=your_project_id_here
+# Add to ~/.hermes/.env:
+DISCORD_BOT_TOKEN=MTIz...
+DISCORD_ALLOWED_USERS=YOUR_USER_ID
 ```
 
-**Available Browser Tools:**
+#### Security (Important!)
+
+**Without an allowlist, anyone who finds your bot can use it!**
+
+```bash
+# Restrict to specific users (recommended):
+TELEGRAM_ALLOWED_USERS=123456789,987654321
+DISCORD_ALLOWED_USERS=123456789012345678
+
+# Or allow all users in a specific platform:
+# (Leave the variable unset - NOT recommended for bots with terminal access)
+```
+
+#### Gateway Commands
+
+| Command | Description |
+|---------|-------------|
+| `/new` or `/reset` | Start fresh conversation |
+| `/status` | Show session info |
+
+#### Working Directory
+
+- **CLI (`hermes`)**: Uses current directory where you run the command
+- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+
+```bash
+# Set custom messaging working directory in ~/.hermes/.env
+MESSAGING_CWD=/home/myuser/projects
+```
+
+#### Tool Progress Notifications
+
+Get real-time updates as the agent works:
+
+```bash
+# Enable in ~/.hermes/.env
+HERMES_TOOL_PROGRESS=true
+HERMES_TOOL_PROGRESS_MODE=new    # or "all" for every tool call
+```
+
+When enabled, you'll see messages like:
+```
+💻 `ls -la`...
+🔍 web_search...
+📄 web_extract...
+```
+
+See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
+
+### 🤖 RL Training (Tinker + Atropos)
+
+Train language models with reinforcement learning using the Tinker API and Atropos framework.
+
+> **Note:** RL training tools require **Python 3.11+** (the upstream `tinker` package has this requirement). On Python 3.10, the RL toolset will be automatically disabled — all other features work fine.
+
+#### Requirements
+
+1. **Python 3.11+** (check with `python3 --version`)
+2. **API Keys:** Add to `~/.hermes/.env`:
+```bash
+TINKER_API_KEY=your-tinker-key      # Get from https://tinker-console.thinkingmachines.ai/keys
+WANDB_API_KEY=your-wandb-key        # Get from https://wandb.ai/authorize
+OPENROUTER_API_KEY=your-key         # Optional: for rl_test_inference
+```
+
+3. **That's it!** tinker-atropos is included as a submodule — the installer handles it automatically.
+
+#### Using RL Tools
+
+The agent can now use RL training tools:
+
+```
+You: Start training on GSM8k with group_size=16
+
+Agent: I'll set up an RL training run on the GSM8k environment...
+[Uses rl_list_environments, rl_select_environment, rl_edit_config, rl_start_training]
+```
+
+#### Available RL Tools
 
 | Tool | Description |
 |------|-------------|
-| `browser_navigate` | Navigate to a URL |
-| `browser_snapshot` | Get text-based page snapshot with element refs |
-| `browser_click` | Click an element by ref (e.g., `@e5`) |
-| `browser_type` | Type text into an input field |
-| `browser_scroll` | Scroll up or down |
-| `browser_back` | Go back in browser history |
-| `browser_press` | Press a keyboard key (Enter, Tab, etc.) |
-| `browser_close` | Close the browser session |
-| `browser_get_images` | Get list of images on the page |
+| `rl_list_environments` | List available RL environments |
+| `rl_select_environment` | Select an environment for training |
+| `rl_get_current_config` | View all configurable options |
+| `rl_edit_config` | Change a configuration value |
+| `rl_test_inference` | Test environment with OpenRouter (pre-training validation) |
+| `rl_start_training` | Start a training run |
+| `rl_check_status` | Check training progress |
+| `rl_stop_training` | Stop a running training |
+| `rl_get_results` | Fetch WandB metrics |
+| `rl_list_runs` | List active training runs |
 
-**Example Usage:**
+#### Dedicated RL CLI
+
+For extended RL workflows with longer timeouts:
+
 ```bash
-# Use browser tools with web search and vision
-python run_agent.py \
-  --query "Go to amazon.com and find the price of the latest Kindle" \
-  --enabled_toolsets=browser,web,vision
-
-# Use browser-focused distribution
-python batch_runner.py \
-  --dataset_file=browser_tasks.jsonl \
-  --distribution=browser_use \
-  --run_name=browser_run
+python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
 ```
 
-See `.env.example` for all available configuration options including debug settings.
+### 🧪 Atropos RL Environments
 
-### Skills Tools
+Hermes-Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using hermes-agent's tools.
 
-Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage:
+#### Architecture
 
-```
-skills/
-├── mlops/                    # Category folder
-│   ├── axolotl/             # Skill folder
-│   │   ├── SKILL.md         # Main instructions (required)
-│   │   ├── references/      # Additional docs, API specs
-│   │   └── templates/       # Output formats, configs
-│   └── vllm/
-│       └── SKILL.md
-```
+The integration has three layers:
 
-**Available Skills Tools:**
+| Layer | File | Purpose |
+|-------|------|---------|
+| **Agent Loop** | `environments/agent_loop.py` | Reusable multi-turn tool-calling engine (standard OpenAI spec) |
+| **Base Environment** | `environments/hermes_base_env.py` | Abstract Atropos `BaseEnv` subclass with toolset resolution, ToolContext, scoring |
+| **Concrete Envs** | `environments/terminal_test_env.py`, `environments/hermes_swe_env.py` | Task-specific environments |
 
-| Tool | Description |
-|------|-------------|
-| `skills_categories` | List available skill categories (~50 tokens) |
-| `skills_list` | List skills with name + description (~3k tokens for 40 skills) |
-| `skill_view` | Load full skill content, tags, and linked files |
+#### Two-Phase Operation
 
-**Example Usage:**
+- **Phase 1 (OpenAI server type)**: Works with any OpenAI-compatible endpoint (VLLM, SGLang, OpenRouter, OpenAI API). The server handles tool call parsing natively. Good for **SFT data generation**, **verifier testing**, and **evaluation**.
+- **Phase 2 (VLLM server type)**: Uses ManagedServer for exact token IDs + logprobs via `/generate`. Client-side tool call parser registry reconstructs structured `tool_calls` from raw output. Required for **full RL training**.
+
+#### Quick Start
+
 ```bash
-# Use skills tools
-python run_agent.py \
-  --query "What skills do you have for fine-tuning? Show me the axolotl skill." \
-  --enabled_toolsets=skills
+# 1. Launch VLLM with tool parser
+vllm serve YourModel --tool-parser hermes
+
+# 2. Start the Atropos API server
+run-api
+
+# 3. Run an environment
+python environments/terminal_test_env.py serve \
+    --openai.base_url http://localhost:8000/v1 \
+    --openai.model_name YourModel \
+    --openai.server_type openai
+```
+
+#### ToolContext (Reward Functions)
+
+Reward functions receive a `ToolContext` with unrestricted access to all hermes-agent tools, scoped to the rollout's sandbox:
+
+```python
+async def compute_reward(self, item, result, ctx: ToolContext) -> float:
+    # Run tests in the model's terminal sandbox
+    test = ctx.terminal("pytest -v")
+    if test["exit_code"] == 0:
+        return 1.0
+    # Or check a file, search the web, navigate a browser...
+    return 0.0
+```
+
+#### Creating Custom Environments
+
+Subclass `HermesAgentBaseEnv` and implement 5 methods:
+
+```python
+from environments.hermes_base_env import HermesAgentBaseEnv
+
+class MyEnv(HermesAgentBaseEnv):
+    name = "my-env"
+    async def setup(self): ...            # Load data
+    async def get_next_item(self): ...    # Return next item
+    def format_prompt(self, item): ...    # Item -> prompt string
+    async def compute_reward(self, item, result, ctx): ...  # Score with ToolContext
+    async def evaluate(self, *args, **kwargs): ...          # Periodic eval
+
+if __name__ == "__main__":
+    MyEnv.cli()
+```
+
+#### Toolset Distributions
+
+Configure which tools are available per group, either explicitly or probabilistically:
+
+```bash
+# Explicit toolsets
+--env.enabled_toolsets '["terminal","file","web"]'
+
+# Probabilistic distribution (sampled per group)
+--env.distribution development
+```
+
+#### Tool Call Parsers (Phase 2)
+
+For VLLM server type, a parser registry extracts structured `tool_calls` from raw model output. Supported parsers: `hermes`, `mistral`, `llama3_json`, `qwen`, `deepseek_v3`, `deepseek_v3_1`, `kimi_k2`, `longcat`, `glm45`, `glm47`, `qwen3_coder`.
+
+```bash
+--env.tool_call_parser hermes  # Match your VLLM --tool-parser flag
+```
+
+### ⏰ Scheduled Tasks (Cron)
+
+Schedule tasks to run automatically:
+
+```bash
+# In the CLI
+/cron add 30m "Remind me to check the build"
+/cron add "every 2h" "Check server status"
+/cron add "0 9 * * *" "Morning briefing"
+/cron list
+/cron remove <job_id>
+```
+
+The agent can also self-schedule using `schedule_cronjob` tool.
+
+**Run the scheduler:**
+```bash
+hermes cron daemon         # Built-in daemon
+# Or add to system cron for reliability
+```
+
+### 🗜️ Context Compression
+
+Long conversations are automatically summarized when approaching context limits:
+
+```yaml
+# In ~/.hermes/config.yaml
+compression:
+  enabled: true
+  threshold: 0.85    # Compress at 85% of limit
+```
+
+### 📝 Session Logging
+
+Every conversation is logged to `~/.hermes-agent/logs/` for debugging:
+
+```
+logs/
+├── session_20260201_143052_a1b2c3.json
+└── ...
+```
+
+### 🌐 Browser Automation
+
+Browser tools let the agent navigate websites, fill forms, click buttons, and extract content using [Browserbase](https://browserbase.com/).
+
+**Setup:**
+```bash
+# 1. Get credentials from browserbase.com
+hermes config set BROWSERBASE_API_KEY your_api_key
+hermes config set BROWSERBASE_PROJECT_ID your_project_id
+
+# 2. Install Node.js dependencies (if not already)
+cd ~/.hermes-agent && npm install
+```
+
+**Available tools:** `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_back`, `browser_press`, `browser_close`, `browser_get_images`
+
+**Example:**
+```bash
+hermes --toolsets browser -q "Go to amazon.com and find the price of the latest Kindle"
+```
+
+### 📚 Skills System
+
+Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage.
+
+**Using Skills:**
+```bash
+hermes --toolsets skills -q "What skills do you have?"
+hermes --toolsets skills -q "Show me the axolotl skill"
 ```
 
 **Creating Skills:**
 
-Skills use YAML frontmatter for metadata:
-```yaml
+Create `skills/category/skill-name/SKILL.md`:
+```markdown
 ---
 name: my-skill
 description: Brief description shown in skills_list
-tags: [tag1, tag2]
-related_skills: [other-skill]
+tags: [python, automation]
 version: 1.0.0
 ---
+
 # Skill Content
 
 Instructions, examples, and guidelines here...
 ```
 
-Skills can include:
-- `references/` - Additional documentation, API specs, examples
-- `templates/` - Output formats, config files, boilerplate code
-- `scripts/` - Executable helpers (Python, shell scripts)
-
-## Session Logging
-
-Every conversation is automatically logged to `logs/` for debugging and inspection:
-
+**Skill Structure:**
 ```
-logs/
-├── session_20260201_143052_a1b2c3.json
-├── session_20260201_150217_d4e5f6.json
-└── ...
+skills/
+├── mlops/
+│   ├── axolotl/
+│   │   ├── SKILL.md          # Main instructions (required)
+│   │   ├── references/       # Additional docs
+│   │   └── templates/        # Output formats
+│   └── vllm/
+│       └── SKILL.md
 ```
 
-**Log Format:**
-```json
-{
-  "session_id": "20260201_143052_a1b2c3",
-  "model": "anthropic/claude-sonnet-4",
-  "session_start": "2026-02-01T14:30:52.123456",
-  "last_updated": "2026-02-01T14:35:12.789012",
-  "message_count": 8,
-  "conversations": [
-    {"from": "system", "value": "..."},
-    {"from": "human", "value": "..."},
-    {"from": "gpt", "value": "..."},
-    {"from": "tool", "value": "..."}
-  ]
-}
+---
+
+## Manual Installation
+
+If you prefer full control over the installation process (or the quick-install script doesn't suit your environment), follow these steps to set everything up by hand.
+
+### Prerequisites
+
+| Requirement | Minimum Version | Check Command | Notes |
+|-------------|----------------|---------------|-------|
+| **Git** | Any recent | `git --version` | Required |
+| **Node.js** | 18+ | `node --version` | Optional — needed for browser automation tools |
+| **ripgrep** | Any | `rg --version` | Optional — faster file search in terminal tool (falls back to grep) |
+
+> **Note:** Python and pip are **not** prerequisites. The installer uses [uv](https://docs.astral.sh/uv/) to provision Python 3.11 automatically (no sudo needed). If you already have Python 3.11+ installed, uv will use it.
+
+<details>
+<summary><strong>Installing prerequisites by platform</strong></summary>
+
+**Ubuntu / Debian:**
+```bash
+sudo apt update && sudo apt install git
+# Optional:
+sudo apt install ripgrep nodejs npm
 ```
 
-- **Automatic**: Logs are created and updated automatically after each conversation turn
-- **Session ID in Banner**: The CLI displays the session ID in the welcome banner
-- **Trajectory Format**: Uses the same format as batch processing for consistency
-- **Git Ignored**: `logs/` is in `.gitignore` so logs aren't committed
+**macOS (Homebrew):**
+```bash
+brew install git
+# Optional:
+brew install ripgrep node
+```
 
-## Interactive CLI
+**Windows (WSL recommended):**
+Use the [Windows Subsystem for Linux](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu instructions above. Alternatively, use the PowerShell quick-install script at the top of this README.
 
-The CLI provides a rich interactive experience for working with the agent.
+</details>
 
-### Running the CLI
+---
+
+### Step 1: Clone the Repository
+
+Clone with `--recurse-submodules` to pull the required submodules ([mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) for the terminal tool backend and [tinker-atropos](https://github.com/nousresearch/tinker-atropos) for RL training):
 
 ```bash
-# Basic usage
-./hermes
-
-# With specific model
-./hermes --model "anthropic/claude-sonnet-4"
-
-# With specific toolsets
-./hermes --toolsets "web,terminal,skills"
+git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
 ```
 
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/tools` | List available tools by toolset |
-| `/toolsets` | List available toolsets |
-| `/model [name]` | Show or change the current model |
-| `/prompt [text]` | View/set custom system prompt |
-| `/personality [name]` | Set a predefined personality |
-| `/clear` | Clear screen and reset conversation |
-| `/reset` | Reset conversation only |
-| `/history` | Show conversation history |
-| `/save` | Save current conversation to file |
-| `/config` | Show current configuration |
-| `/quit` | Exit the CLI |
-
-### Configuration
-
-Copy `cli-config.yaml.example` to `cli-config.yaml` and customize:
-
-```yaml
-# Model settings
-model:
-  default: "anthropic/claude-sonnet-4"
-
-# Terminal backend (local, docker, singularity, modal, or ssh)
-terminal:
-  env_type: "local"
-  cwd: "."  # Use current directory
-
-# Or use SSH for remote execution (keeps agent code isolated)
-# terminal:
-#   env_type: "ssh"
-#   ssh_host: "my-server.example.com"
-#   ssh_user: "myuser"
-#   ssh_key: "~/.ssh/id_rsa"
-#   cwd: "/home/myuser/project"
-
-# Enable specific toolsets
-toolsets:
-  - all  # or: web, terminal, browser, vision, etc.
-
-# Custom personalities (use with /personality command)
-agent:
-  personalities:
-    helpful: "You are a helpful assistant."
-    kawaii: "You are a kawaii assistant! Use cute expressions..."
+If you already cloned without `--recurse-submodules`, initialize them manually:
+```bash
+git submodule update --init --recursive
 ```
 
-### Personalities
+---
 
-Built-in personalities available via `/personality`:
-- `helpful`, `concise`, `technical`, `creative`, `teacher`
-- `kawaii`, `catgirl`, `pirate`, `shakespeare`, `surfer`
-- `noir`, `uwu`, `philosopher`, `hype`
+### Step 2: Install uv & Create Virtual Environment
 
-## Toolsets System
-
-The agent uses a toolsets system for organizing and managing tools. All tools must be part of a toolset to be accessible - individual tool selection is not supported. This ensures consistent and logical grouping of capabilities.
-
-### Key Concepts
-
-- **Toolsets**: Logical groups of tools for specific use cases (e.g., "research", "development", "debugging")
-- **Composition**: Toolsets can include other toolsets for powerful combinations
-- **Custom Toolsets**: Create your own toolsets at runtime or by editing `toolsets.py`
-- **Toolset-Only Access**: Tools are only accessible through toolsets, not individually
-
-### Available Toolsets
-
-See `toolsets.py` for the complete list of predefined toolsets including:
-- Basic toolsets (web, terminal, vision, creative, reasoning)
-- Composite toolsets (research, development, analysis, etc.)
-- Scenario-specific toolsets (debugging, documentation, API testing, etc.)
-- Special toolsets (safe mode without terminal, minimal, offline)
-
-### Using Toolsets
+[uv](https://docs.astral.sh/uv/) is a fast Python package manager that can also provision Python itself. Install it and create the venv in one go:
 
 ```bash
-# Use a predefined toolset
-python run_agent.py --enabled_toolsets=research --query "Find latest AI papers"
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Combine multiple toolsets
-python run_agent.py --enabled_toolsets=web,vision --query "Analyze this website"
-
-# Enable all toolsets explicitly (same as omitting the flag)
-python run_agent.py --enabled_toolsets=all --query "Do web research and run commands if helpful"
-
-# Safe mode (no terminal access)
-python run_agent.py --enabled_toolsets=safe --query "Help without running commands"
-
-# List all available toolsets and tools
-python run_agent.py --list_tools
+# Create venv with Python 3.11 (uv downloads it if not present — no sudo needed)
+uv venv venv --python 3.11
 ```
 
-See `toolsets.py` for the complete list of available toolsets and how to create custom ones.
+> **Tip:** You do **not** need to activate the venv to use `hermes`. The entry point has a hardcoded shebang pointing to the venv Python, so it works globally once symlinked (see Step 8). For installing packages, uv can target the venv directly via `VIRTUAL_ENV`.
 
-## Basic Usage
+---
 
-### Default (all tools enabled)
+### Step 3: Install Python Dependencies
+
+Install the main package in editable mode with all optional extras (messaging, cron, CLI menus, modal):
+
 ```bash
-# Uses OpenRouter by default - just set OPENROUTER_API_KEY in .env
-python run_agent.py \
-  --query "search up the latest docs on jit in python 3.13 and write me basic example that's not in their docs. profile its perf" \
-  --max_turns 20 \
-  --model anthropic/claude-sonnet-4-20250514
+# Tell uv which venv to install into
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Install with all extras
+uv pip install -e ".[all]"
 ```
 
-### With specific toolset
+If you only want the core agent (no Telegram/Discord/cron support):
 ```bash
-python run_agent.py \
-  --query "Debug this Python error" \
-  --enabled_toolsets=debugging \
-  --model anthropic/claude-sonnet-4-20250514
+uv pip install -e "."
 ```
 
-### Python API
-```python
-from run_agent import AIAgent
+<details>
+<summary><strong>Optional extras breakdown</strong></summary>
 
-# Uses OpenRouter by default (reads OPENROUTER_API_KEY from .env)
-agent = AIAgent(
-    model="anthropic/claude-sonnet-4-20250514",
-    enabled_toolsets=["research"]
-)
-response = agent.chat("Find information about quantum computing")
+| Extra | What it adds | Install command |
+|-------|-------------|-----------------|
+| `all` | Everything below | `uv pip install -e ".[all]"` |
+| `messaging` | Telegram & Discord gateway | `uv pip install -e ".[messaging]"` |
+| `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
+| `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
+| `modal` | Modal cloud execution backend (swe-rex + modal + boto3) | `uv pip install -e ".[modal]"` |
+| `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
 
-# Create custom toolset at runtime
-from toolsets import create_custom_toolset
+You can combine extras: `uv pip install -e ".[messaging,cron]"`
 
-create_custom_toolset(
-    name="my_tools",
-    description="My custom toolkit",
-    tools=["web_search"],
-    includes=["terminal", "vision"]
-)
+</details>
 
-agent = AIAgent(enabled_toolsets=["my_tools"])
+---
+
+### Step 4: Install Submodule Packages
+
+These are local packages checked out as Git submodules. Install them in editable mode:
+
+```bash
+# Terminal tool backend (required for the terminal/command-execution tool)
+uv pip install -e "./mini-swe-agent"
+
+# RL training backend
+uv pip install -e "./tinker-atropos"
 ```
+
+Both are optional — if you skip them, the corresponding toolsets simply won't be available.
+
+---
+
+### Step 5: Install Node.js Dependencies (Optional)
+
+Only needed if you plan to use the **browser automation** toolset (Browserbase-powered):
+
+```bash
+npm install
+```
+
+This installs the `agent-browser` package defined in `package.json`. Skip this step if you don't need browser tools.
+
+---
+
+### Step 6: Create the Configuration Directory
+
+Hermes stores all user configuration in `~/.hermes/`:
+
+```bash
+# Create the directory structure
+mkdir -p ~/.hermes/{cron,sessions,logs}
+
+# Copy the example config file
+cp cli-config.yaml.example ~/.hermes/config.yaml
+
+# Create an empty .env file for API keys
+touch ~/.hermes/.env
+```
+
+Your `~/.hermes/` directory should now look like:
+```
+~/.hermes/
+├── config.yaml     # Agent settings (model, terminal, toolsets, compression, etc.)
+├── .env            # API keys and secrets (one per line: KEY=value)
+├── cron/           # Scheduled job data
+├── sessions/       # Messaging gateway sessions
+└── logs/           # Conversation logs
+```
+
+---
+
+### Step 7: Add Your API Keys
+
+Open `~/.hermes/.env` in your editor and add at minimum an LLM provider key:
+
+```bash
+# Required — at least one LLM provider:
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# Optional — enable additional tools:
+FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping
+BROWSERBASE_API_KEY=bb-your-key        # Browser automation
+BROWSERBASE_PROJECT_ID=your-project-id # Browser automation
+FAL_KEY=your-fal-key                   # Image generation (FLUX)
+TINKER_API_KEY=your-tinker-key         # RL training
+WANDB_API_KEY=your-wandb-key           # RL training metrics
+
+# Optional — messaging gateway:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF      # From @BotFather
+TELEGRAM_ALLOWED_USERS=your-user-id    # Comma-separated
+DISCORD_BOT_TOKEN=MTIz...              # From Developer Portal
+DISCORD_ALLOWED_USERS=your-user-id     # Comma-separated
+```
+
+Or set them one at a time via the CLI:
+```bash
+hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
+```
+
+---
+
+### Step 8: Add `hermes` to Your PATH
+
+The `hermes` entry point at `venv/bin/hermes` has a hardcoded shebang pointing to the venv's Python, so it works **without activating the venv**. The recommended approach is a symlink into `~/.local/bin` (most distributions already have this on PATH):
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+```
+
+If `~/.local/bin` isn't on your PATH yet, add it:
+
+**Bash** (`~/.bashrc`):
+```bash
+echo '' >> ~/.bashrc
+echo '# Hermes Agent' >> ~/.bashrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Zsh** (`~/.zshrc`):
+```bash
+echo '' >> ~/.zshrc
+echo '# Hermes Agent' >> ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Fish** (`~/.config/fish/config.fish`):
+```fish
+fish_add_path $HOME/.local/bin
+```
+
+---
+
+### Step 9: Run the Setup Wizard (Optional)
+
+The interactive setup wizard walks you through configuring your API keys and preferences:
+
+```bash
+hermes setup
+```
+
+This is optional if you already configured `~/.hermes/.env` and `~/.hermes/config.yaml` manually in the steps above.
+
+---
+
+### Step 10: Verify the Installation
+
+```bash
+# Check that the command is available
+hermes version
+
+# Run diagnostics to verify everything is working
+hermes doctor
+
+# Check your configuration
+hermes status
+
+# Test with a quick query
+hermes chat -q "Hello! What tools do you have available?"
+```
+
+If `hermes doctor` reports issues, it will tell you exactly what's missing and how to fix it.
+
+---
+
+### Quick-Reference: Manual Install (Condensed)
+
+For those who just want the commands without the explanations:
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone & enter
+git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+
+# Create venv with Python 3.11 (uv downloads it if needed)
+uv venv venv --python 3.11
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Install everything
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
+npm install  # optional, for browser tools
+
+# Configure
+mkdir -p ~/.hermes/{cron,sessions,logs}
+cp cli-config.yaml.example ~/.hermes/config.yaml
+touch ~/.hermes/.env
+echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+
+# Make hermes available globally (no venv activation needed)
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+
+# Verify
+hermes doctor
+hermes
+```
+
+---
+
+### Updating a Manual Installation
+
+To update an existing manual install to the latest version:
+
+```bash
+cd /path/to/hermes-agent
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Pull latest code and submodules
+git pull origin main
+git submodule update --init --recursive
+
+# Reinstall (picks up new dependencies)
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
+
+# Check for new config options added since your last update
+hermes config check
+hermes config migrate   # Interactively add any missing options
+```
+
+### Uninstalling a Manual Installation
+
+```bash
+# Remove the hermes symlink
+rm -f ~/.local/bin/hermes
+
+# Remove the cloned repository
+rm -rf /path/to/hermes-agent
+
+# Remove user configuration (optional — keep if you plan to reinstall)
+rm -rf ~/.hermes
+```
+
+---
 
 ## Batch Processing
 
-Process multiple prompts from a dataset in parallel with automatic checkpointing and statistics tracking:
+Process multiple prompts in parallel with automatic checkpointing:
 
 ```bash
-# Basic batch processing
 python batch_runner.py \
   --dataset_file=prompts.jsonl \
   --batch_size=20 \
-  --run_name=my_run
-
-# With specific distribution
-python batch_runner.py \
-  --dataset_file=prompts.jsonl \
-  --batch_size=20 \
-  --run_name=image_run \
-  --distribution=image_gen \
-  --num_workers=4
+  --run_name=my_run \
+  --num_workers=4 \
+  --distribution=default
 ```
 
-**Key Features:**
-- Parallel processing with configurable workers
-- Toolset distributions for varied data generation
-- Automatic checkpointing and resume capability
-- Combined output in `data/<run_name>/trajectories.jsonl`
-- Tool usage statistics and success rates
+**Key Options:**
+| Flag | Description |
+|------|-------------|
+| `--dataset_file` | JSONL file with prompts |
+| `--batch_size` | Prompts per batch |
+| `--run_name` | Name for output/checkpoints |
+| `--num_workers` | Parallel workers (default: 4) |
+| `--distribution` | Toolset distribution |
+| `--resume` | Resume from checkpoint |
+| `--ephemeral_system_prompt` | Guide behavior without saving to trajectories |
+| `--list_distributions` | Show available distributions |
 
-Use `--list_distributions` to see available toolset distributions for varied data generation.
+**Output:** `data/<run_name>/trajectories.jsonl`
 
 ### Trajectory Compression
 
-Post-process trajectories to fit within token budgets for training:
+Compress trajectories to fit token budgets for training:
 
 ```bash
-# Compress a directory of JSONL files
+# Compress a directory
 python trajectory_compressor.py --input=data/my_run
 
-# Compress a single JSONL file
-python trajectory_compressor.py --input=data/trajectories.jsonl
+# Compress with sampling
+python trajectory_compressor.py --input=data/my_run --sample_percent=15
 
-# Compress a 15% sample (useful for creating smaller training sets)
-python trajectory_compressor.py --input=data/trajectories.jsonl --sample_percent=15
-
-# Custom output and token target
-python trajectory_compressor.py \
-  --input=data/trajectories.jsonl \
-  --output=data/compressed.jsonl \
-  --target_max_tokens=16000
+# Custom token target
+python trajectory_compressor.py --input=data/my_run --target_max_tokens=16000
 ```
 
-**Features:**
-- Protects first turns (system, human, first GPT response, first tool call)
-- Protects last N turns (configurable)
-- Summarizes middle turns using LLM to fit target token budget
-- Supports both directory and single file input
-- Optional random sampling with `--sample_percent`
+Features:
+- Protects first/last turns
+- Summarizes middle turns via LLM
 - Configurable via `configs/trajectory_compression.yaml`
 
-### Ephemeral System Prompts
-
-The ephemeral system prompt feature allows you to guide the model's behavior during batch processing **without** saving that prompt to the training dataset trajectories. This is useful for:
-
-- Guiding model behavior during data collection
-- Adding task-specific instructions 
-- Keeping saved trajectories clean and focused on tool-calling format
-
-**Example:**
-```bash
-python batch_runner.py \
-  --dataset_file=prompts.jsonl \
-  --batch_size=10 \
-  --run_name=my_run \
-  --ephemeral_system_prompt="You are a helpful assistant focused on image generation."
-```
-
-The ephemeral prompt will influence the model's behavior during execution, but **only the standard tool-calling system prompt** will be saved in the trajectory files.
-
-The ephemeral prompt influences model behavior during execution, but **only the standard tool-calling system prompt** is saved in trajectory files.
-
-## Command Line Arguments
-
-**Single Agent (`run_agent.py`):**
-- `--query`: The question or task for the agent
-- `--model`: Model to use (default: claude-opus-4-20250514)
-- `--api_key`: API key for authentication
-- `--base_url`: API endpoint URL
-- `--max_turns`: Maximum number of tool-calling iterations
-- `--enabled_toolsets`: Comma-separated list of toolsets to enable. Use `all` (or `*`) to enable everything. If omitted, all toolsets are enabled by default.
-- `--disabled_toolsets`: Comma-separated list of toolsets to disable
-- `--list_tools`: List all available toolsets and tools
-- `--save_trajectories`: Save conversation trajectories to JSONL files
-
-**Batch Processing (`batch_runner.py`):**
-- `--dataset_file`: Path to JSONL file with prompts
-- `--batch_size`: Number of prompts per batch
-- `--run_name`: Name for this run (for output/checkpointing)
-- `--distribution`: Toolset distribution to use (default: "default")
-- `--num_workers`: Number of parallel workers (default: 4)
-- `--resume`: Resume from checkpoint if interrupted
-- `--ephemeral_system_prompt`: System prompt used during execution but NOT saved to trajectories
-- `--list_distributions`: List available toolset distributions
-
-## Environment Variables
-
-All environment variables can be configured in the `.env` file (copy from `.env.example`).
-
-**LLM Provider (OpenRouter):**
-- `OPENROUTER_API_KEY`: Primary LLM access via OpenRouter (supports Claude, GPT-4, Gemini, etc.)
-- `LLM_MODEL`: Default model (e.g., `anthropic/claude-sonnet-4`, `openai/gpt-4o`)
-
-**Tool API Keys:**
-- `FIRECRAWL_API_KEY`: Web tools (search, extract, crawl)
-- `NOUS_API_KEY`: Vision and reasoning tools
-- `FAL_KEY`: Image generation tools
-
-**Terminal Tool Configuration (mini-swe-agent backend):**
-- `TERMINAL_ENV`: Backend type - `local`, `docker`, `singularity`, `modal`, or `ssh` (default: `local`)
-- `TERMINAL_DOCKER_IMAGE`: Docker image for docker backend (default: `python:3.11-slim`)
-- `TERMINAL_SINGULARITY_IMAGE`: Singularity/Apptainer image (can be `docker://...` URL or local `.sif` path)
-- `TERMINAL_TIMEOUT`: Command timeout in seconds (default: `60`)
-- `TERMINAL_LIFETIME_SECONDS`: Cleanup inactive environments after this time (default: `300`)
-- `TERMINAL_CWD`: Working directory inside containers (default: `/tmp`)
-- `TERMINAL_SCRATCH_DIR`: Custom scratch directory for sandbox storage (optional, auto-detects `/scratch`)
-- `SUDO_PASSWORD`: Enable sudo commands by piping password via `sudo -S` (works with all backends)
-  - If unset in CLI mode, you'll be prompted interactively when sudo is needed (45s timeout)
-
-**SSH Backend Configuration (for remote execution):**
-- `TERMINAL_SSH_HOST`: Remote server hostname or IP
-- `TERMINAL_SSH_USER`: SSH username
-- `TERMINAL_SSH_PORT`: SSH port (default: `22`)
-- `TERMINAL_SSH_KEY`: Path to SSH private key (optional, uses ssh-agent if not set)
-
-**Browser Tool Configuration (agent-browser + Browserbase):**
-- `BROWSERBASE_API_KEY`: Browserbase API key for cloud browser execution
-- `BROWSERBASE_PROJECT_ID`: Browserbase project ID
-- `BROWSER_SESSION_TIMEOUT`: Session timeout in seconds (default: `300`)
-
-**Legacy Hecate Terminal Backend (optional):**
-- `MORPH_API_KEY`: For Hecate/MorphCloud terminal backend
-- `HECATE_VM_LIFETIME_SECONDS`: VM lifetime (default: 300)
-- `HECATE_DEFAULT_SNAPSHOT_ID`: Default snapshot (default: snapshot_p5294qxt)
-
-**Debug Options:**
-- `WEB_TOOLS_DEBUG`, `VISION_TOOLS_DEBUG`, `MOA_TOOLS_DEBUG`, `IMAGE_TOOLS_DEBUG`: Enable debug logging
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `hermes` | CLI launcher script (run with `./hermes`) |
-| `cli.py` | Interactive CLI implementation |
-| `cli-config.yaml` | CLI configuration (copy from `.example`) |
-| `run_agent.py` | Main agent runner - single query execution |
-| `batch_runner.py` | Parallel batch processing with checkpointing |
-| `model_tools.py` | Core tool definitions and handlers |
-| `toolsets.py` | Toolset definitions and composition |
-| `toolset_distributions.py` | Probability distributions for data generation |
-| `trajectory_compressor.py` | Post-process trajectories for training |
-| `tools/` | Individual tool implementations |
-| `tools/skills_tool.py` | Skills system with progressive disclosure |
-| `skills/` | On-demand knowledge documents |
-| `docs/` | Documentation |
-| `configs/` | Example batch run scripts |
-
-# Atropos Integrations & RL Training
-
-Atropos is an RL training framework that uses Hermes-Agent for agent-based environments. This section covers setting up the sandbox infrastructure with either Docker or Singularity backends.
-
-## Prerequisites
-
-### 1. Install Nomad
-Nomad is a workload orchestrator that manages the sandbox containers:
-
-```bash
-# Install Nomad (Linux)
-curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt update && sudo apt install nomad
-
-# Verify installation
-nomad --version
-```
-
-For other platforms, see: https://developer.hashicorp.com/nomad/docs/install
-
-### 2. Install Atropos Dependencies
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[atropos]'
-```
-
-## Backend Options
-
-Atropos supports two container backends for the sandbox environment:
-
-| Backend | Use Case | Requirements |
-|---------|----------|--------------|
-| **Docker** | Development, servers with Docker | Docker installed, user in `docker` group |
-| **Singularity** | HPC clusters, rootless environments | Apptainer/Singularity installed (no root needed) |
-
 ---
 
-## Docker Backend (Default)
+## Python API
 
-### 1. Build the Sandbox Image
+```python
+from run_agent import AIAgent
 
-```bash
-cd atropos
-docker build -t atropos-sandbox:local .
-```
+agent = AIAgent(
+    model="anthropic/claude-sonnet-4",
+    enabled_toolsets=["web", "terminal"]
+)
 
-### 2. Start Nomad (Development Mode)
-
-```bash
-# Start Nomad with Docker driver
-nomad agent -dev -config=nomad-dev.hcl
-```
-
-Or create `nomad-dev.hcl`:
-```hcl
-client {
-  enabled = true
-  options {
-    "driver.allowlist" = "docker"
-  }
-}
-```
-
-### 3. Run with Docker Backend
-
-```bash
-source .venv/bin/activate
-
-# Test the environment
-python -m atropos.envs.swe_smith_oracle_env process \
-    --env.use_wandb false \
-    --env.total_steps 1 \
-    --env.max_items 1 \
-    --env.driver docker
+result = agent.run_conversation("Search for the latest Python news")
+print(result["final_response"])
 ```
 
 ---
 
-## Singularity Backend (HPC/Rootless)
+## Environment Variables Reference
 
-Singularity/Apptainer is ideal for HPC clusters where Docker requires root privileges.
+All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set them.
 
-### 1. Build the Singularity Image
+**LLM Providers:**
+| Variable | Description |
+|----------|-------------|
+| `OPENROUTER_API_KEY` | OpenRouter API key (recommended) |
+| `ANTHROPIC_API_KEY` | Direct Anthropic access |
+| `OPENAI_API_KEY` | Direct OpenAI access |
 
-```bash
-cd atropos
+**Tool APIs:**
+| Variable | Description |
+|----------|-------------|
+| `FIRECRAWL_API_KEY` | Web scraping (firecrawl.dev) |
+| `BROWSERBASE_API_KEY` | Browser automation |
+| `BROWSERBASE_PROJECT_ID` | Browserbase project |
+| `FAL_KEY` | Image generation (fal.ai) |
 
-# Option A: Convert from Docker image (if Docker is available)
-docker build -t atropos-sandbox:local .
-apptainer build atropos-sandbox.sif docker-daemon://atropos-sandbox:local
+**Terminal Backend:**
+| Variable | Description |
+|----------|-------------|
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal` |
+| `TERMINAL_DOCKER_IMAGE` | Docker image (default: `python:3.11-slim`) |
+| `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
+| `TERMINAL_TIMEOUT` | Command timeout in seconds |
+| `TERMINAL_CWD` | Working directory |
+| `SUDO_PASSWORD` | Enable sudo (stored plaintext - be careful!) |
 
-# Option B: Build directly from Dockerfile (requires root or fakeroot)
-apptainer build atropos-sandbox.sif docker://ghcr.io/nousresearch/atropos-sandbox:latest
-```
+**SSH Backend:**
+| Variable | Description |
+|----------|-------------|
+| `TERMINAL_SSH_HOST` | Remote server hostname |
+| `TERMINAL_SSH_USER` | SSH username |
+| `TERMINAL_SSH_PORT` | SSH port (default: 22) |
+| `TERMINAL_SSH_KEY` | Path to private key |
 
-### 2. Start Nomad with raw_exec Driver
+**Messaging:**
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (@BotFather) |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
+| `TELEGRAM_HOME_CHANNEL` | Default channel for cron delivery |
+| `DISCORD_BOT_TOKEN` | Discord bot token |
+| `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
+| `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
+| `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 
-Singularity uses Nomad's `raw_exec` driver. Create `nomad-singularity.hcl`:
+**Agent Behavior:**
+| Variable | Description |
+|----------|-------------|
+| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
+| `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
+| `HERMES_TOOL_PROGRESS_MODE` | `new` (only when tool changes) or `all` (every call) |
 
-```hcl
-client {
-  enabled = true
-  options {
-    "driver.allowlist" = "raw_exec,docker"
-  }
-}
-
-plugin "raw_exec" {
-  config {
-    enabled = true
-  }
-}
-```
-
-Start Nomad:
-```bash
-nomad agent -dev -config=nomad-singularity.hcl
-```
-
-### 3. Run with Singularity Backend
-
-```bash
-source .venv/bin/activate
-
-# Basic test
-python -m atropos.envs.swe_smith_oracle_env process \
-    --env.use_wandb false \
-    --env.total_steps 1 \
-    --env.max_items 1 \
-    --env.driver singularity \
-    --env.singularity_image /path/to/atropos-sandbox.sif
-
-# Full example with all options
-python -m atropos.envs.swe_smith_oracle_env process \
-    --env.use_wandb false \
-    --env.total_steps 10 \
-    --env.group_size 4 \
-    --env.max_items 100 \
-    --env.driver singularity \
-    --env.singularity_image /path/to/atropos-sandbox.sif \
-    --env.slots_per_container 10 \
-    --env.min_containers 1 \
-    --env.max_containers 5
-```
+**Context Compression:**
+| Variable | Description |
+|----------|-------------|
+| `CONTEXT_COMPRESSION_ENABLED` | Enable auto-compression (default: true) |
+| `CONTEXT_COMPRESSION_THRESHOLD` | Trigger at this % of limit (default: 0.85) |
+| `CONTEXT_COMPRESSION_MODEL` | Model for summaries |
 
 ---
 
-## CLI Arguments Reference
+## File Structure
 
-### Environment Configuration (`--env.*`)
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--env.driver` | `docker` | Container backend: `docker` or `singularity` |
-| `--env.singularity_image` | - | Path to `.sif` file (required for singularity driver) |
-| `--env.sandbox_image` | `atropos-sandbox:local` | Docker image name (for docker driver) |
-| `--env.slots_per_container` | `10` | Number of parallel slots per container |
-| `--env.min_containers` | `1` | Minimum number of containers to run |
-| `--env.max_containers` | `10` | Maximum containers for auto-scaling |
-| `--env.nomad_address` | `http://localhost:4646` | Nomad server address |
-| `--env.privileged` | `false` | Run containers in privileged mode (Docker only) |
-
-### Processing Configuration
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--env.total_steps` | `1` | Number of processing steps |
-| `--env.group_size` | `1` | Items per processing group |
-| `--env.max_items` | `0` | Max dataset items (0 = all) |
-| `--env.use_wandb` | `true` | Enable Weights & Biases logging |
-| `--env.agent_max_steps` | `50` | Max agent steps per trajectory |
+| Path | Description |
+|------|-------------|
+| `~/.hermes/config.yaml` | Your settings |
+| `~/.hermes/.env` | API keys and secrets |
+| `~/.hermes/cron/` | Scheduled jobs data |
+| `~/.hermes/sessions/` | Gateway session data |
+| `~/.hermes-agent/` | Installation directory |
+| `~/.hermes-agent/logs/` | Session logs |
+| `hermes_cli/` | CLI implementation |
+| `tools/` | Tool implementations |
+| `skills/` | Knowledge documents |
+| `gateway/` | Messaging platform adapters |
+| `cron/` | Scheduler implementation |
 
 ---
 
 ## Troubleshooting
 
-### Port Already in Use
 ```bash
-# Find and kill process on port 8080
-lsof -ti :8080 | xargs kill
-
-# Or use a different port
---env.port 8081
+hermes doctor    # Run diagnostics
+hermes status    # Check configuration
+hermes config    # View current settings
 ```
 
-### Singularity: Permission Denied
-```bash
-# Check Apptainer is installed
-apptainer --version
-
-# Ensure the .sif file is readable
-ls -la /path/to/atropos-sandbox.sif
-```
-
-### Nomad: Job Not Starting
-```bash
-# Check Nomad status
-nomad status
-
-# View job logs
-nomad alloc logs -job atropos-sandbox-agent-env
-
-# Check stderr for errors
-nomad alloc logs -stderr -job atropos-sandbox-agent-env
-```
-
-### OpenAI API Token Error
-If you see `NotImplementedError: OpenAI endpoints do not support token IDs`:
-```bash
-# For testing/evaluation only (not training)
-export ATROPOS_ALLOW_DUMMY_MANAGED_SERVER=1
-```
+Common issues:
+- **"API key not set"**: Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key`
+- **"hermes: command not found"**: Reload your shell (`source ~/.bashrc`) or check PATH
+- **Gateway won't start**: Check `hermes gateway status` and logs
+- **Missing config after update**: Run `hermes config check` to see what's new, then `hermes config migrate` to add missing options
 
 ---
 
-## Example: Full HPC Workflow
+## Contributing
 
-```bash
-# 1. Setup environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[atropos]'
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
-# 2. Build Singularity image (on a machine with Docker)
-cd atropos
-docker build -t atropos-sandbox:local .
-apptainer build atropos-sandbox.sif docker-daemon://atropos-sandbox:local
+---
 
-# 3. Transfer .sif to HPC cluster
-scp atropos-sandbox.sif user@hpc-cluster:/scratch/user/
+## License
 
-# 4. On HPC cluster: Start Nomad
-nomad agent -dev -config=nomad-singularity.hcl &
-
-# 5. Run training
-python -m atropos.envs.swe_smith_oracle_env process \
-    --env.driver singularity \
-    --env.singularity_image /scratch/user/atropos-sandbox.sif \
-    --env.total_steps 100 \
-    --env.max_items 1000
-```
+MIT License - see [LICENSE](LICENSE) for details.

@@ -23,6 +23,8 @@ dependencies = [
   "requests",
   "jinja2",
   "pydantic>=2.0",
+  # Interactive CLI (prompt_toolkit is used directly by cli.py)
+  "prompt_toolkit",
   # Tools
   "firecrawl-py",
   "fal-client",
@@ -33,8 +35,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-modal = ["modal", "boto3"]
+modal = ["swe-rex[modal]>=1.4.0"]
 dev = ["pytest", "pytest-asyncio"]
+messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
+cron = ["croniter"]
+cli = ["simple-term-menu"]
 # Install Atropos from source (PyPI is often stale for this internal dependency).
 atropos = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
@@ -44,8 +49,16 @@ atropos = [
   "uvicorn",
   "pyte",
 ]
+all = [
+  "hermes-agent[modal]",
+  "hermes-agent[messaging]",
+  "hermes-agent[cron]",
+  "hermes-agent[cli]",
+  "hermes-agent[dev]",
+]
 
 [project.scripts]
+hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-atropos-sandbox-smoke = "atropos.envs.sandbox_terminal_smoke_env:SandboxTerminalSmokeEnv.cli"
 hermes-atropos-toolserver-smoke = "atropos.envs.toolserver_smoke_env:ToolServerSmokeEnv.cli"
@@ -60,7 +73,8 @@ py-modules = [
   "toolset_distributions",
   "atropos_compatible_agent",
   "local_server",
+  "cli",
 ]
 
 [tool.setuptools.packages.find]
-include = ["tools", "atropos", "atropos.*"]
+include = ["tools", "hermes_cli", "gateway", "cron", "atropos", "atropos.*"]

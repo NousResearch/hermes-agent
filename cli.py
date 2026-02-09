@@ -24,8 +24,6 @@ from typing import List, Dict, Any, Optional
 # Suppress startup messages for clean CLI experience
 os.environ["MSWEA_SILENT_STARTUP"] = "1"  # mini-swe-agent
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
-os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
-os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 import yaml
 
@@ -35,6 +33,15 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
+from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.key_binding import KeyBindings
+import asyncio
+import threading
+import queue
 
 # Load environment variables first
 from dotenv import load_dotenv
@@ -48,22 +55,40 @@ if env_path.exists():
 
 def load_cli_config() -> Dict[str, Any]:
     """
-    Load CLI configuration from cli-config.yaml.
+    Load CLI configuration from config files.
+    
+    Config lookup order:
+    1. ~/.hermes/config.yaml (user config - preferred)
+    2. ./cli-config.yaml (project config - fallback)
     
     Environment variables take precedence over config file values.
-    Returns default values if config file doesn't exist.
+    Returns default values if no config file exists.
     """
-    config_path = Path(__file__).parent / 'cli-config.yaml'
+    # Check user config first (~/.hermes/config.yaml)
+    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    
+    # Use user config if it exists, otherwise project config
+    if user_config_path.exists():
+        config_path = user_config_path
+    else:
+        config_path = project_config_path
+    
+    # Also load .env from ~/.hermes/.env if it exists
+    user_env_path = Path.home() / '.hermes' / '.env'
+    if user_env_path.exists():
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=user_env_path, override=True)
     
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4-20250514",
+            "default": "anthropic/claude-opus-4.6",
             "base_url": "https://openrouter.ai/api/v1",
         },
         "terminal": {
             "env_type": "local",
-            "cwd": "/tmp",
+            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
             "timeout": 60,
             "lifetime_seconds": 300,
             "docker_image": "python:3.11",
@@ -73,8 +98,13 @@ def load_cli_config() -> Dict[str, Any]:
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
         },
+        "compression": {
+            "enabled": True,      # Auto-compress when approaching context limit
+            "threshold": 0.85,    # Compress at 85% of model's context limit
+            "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
+        },
         "agent": {
-            "max_turns": 20,
+            "max_turns": 60,  # Default max tool-calling iterations
             "verbose": False,
             "system_prompt": "",
             "personalities": {
@@ -105,13 +135,29 @@ def load_cli_config() -> Dict[str, Any]:
         try:
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f) or {}
-            # Deep merge with defaults
+            
+            # Handle model config - can be string (new format) or dict (old format)
+            if "model" in file_config:
+                if isinstance(file_config["model"], str):
+                    # New format: model is just a string, convert to dict structure
+                    defaults["model"]["default"] = file_config["model"]
+                elif isinstance(file_config["model"], dict):
+                    # Old format: model is a dict with default/base_url
+                    defaults["model"].update(file_config["model"])
+            
+            # Deep merge other keys with defaults
             for key in defaults:
+                if key == "model":
+                    continue  # Already handled above
                 if key in file_config:
                     if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
+            
+            # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
+            if "max_turns" in file_config and "agent" not in file_config:
+                defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             print(f"[Warning] Failed to load cli-config.yaml: {e}")
     
@@ -156,6 +202,18 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
     
+    # Apply compression config to environment variables
+    compression_config = defaults.get("compression", {})
+    compression_env_mappings = {
+        "enabled": "CONTEXT_COMPRESSION_ENABLED",
+        "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
+        "summary_model": "CONTEXT_COMPRESSION_MODEL",
+    }
+    
+    for config_key, env_var in compression_env_mappings.items():
+        if config_key in compression_config:
+            os.environ[env_var] = str(compression_config[config_key])
+    
     return defaults
 
 # Load configuration at module startup
@@ -176,6 +234,13 @@ import fire
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_all_tool_names, get_toolset_for_tool, get_available_toolsets
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
+
+# Cron job system for scheduled tasks
+from cron import create_job, list_jobs, remove_job, get_job, run_daemon as run_cron_daemon, tick as cron_tick
+
+# Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
+from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
+from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
 # ============================================================================
 # ASCII Art & Branding
@@ -270,8 +335,16 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         enabled_toolsets: List of enabled toolset names
         session_id: Unique session identifier for logging
     """
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
+    
+    # Get unavailable tools info for coloring
+    _, unavailable_toolsets = check_tool_availability(quiet=True)
+    disabled_tools = set()
+    for item in unavailable_toolsets:
+        disabled_tools.update(item.get("tools", []))
     
     # Build the side-by-side content using a table for precise control
     layout_table = Table.grid(padding=(0, 2))
@@ -298,14 +371,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     right_lines = []
     right_lines.append("[bold #FFBF00]Available Tools[/]")
     
-    # Group tools by toolset
+    # Group tools by toolset (include all possible tools, both enabled and disabled)
     toolsets_dict = {}
+    
+    # First, add all enabled tools
     for tool in tools:
         tool_name = tool["function"]["name"]
         toolset = get_toolset_for_tool(tool_name) or "other"
         if toolset not in toolsets_dict:
             toolsets_dict[toolset] = []
         toolsets_dict[toolset].append(tool_name)
+    
+    # Also add disabled toolsets so they show in the banner
+    for item in unavailable_toolsets:
+        # Map the internal toolset ID to display name
+        toolset_id = item["id"]
+        display_name = f"{toolset_id}_tools" if not toolset_id.endswith("_tools") else toolset_id
+        if display_name not in toolsets_dict:
+            toolsets_dict[display_name] = []
+        for tool_name in item.get("tools", []):
+            if tool_name not in toolsets_dict[display_name]:
+                toolsets_dict[display_name].append(tool_name)
     
     # Display tools grouped by toolset (compact format, max 8 groups)
     sorted_toolsets = sorted(toolsets_dict.keys())
@@ -314,11 +400,38 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     
     for toolset in display_toolsets:
         tool_names = toolsets_dict[toolset]
-        # Join tool names with commas, wrap if too long
-        tools_str = ", ".join(sorted(tool_names))
-        if len(tools_str) > 45:
-            tools_str = tools_str[:42] + "..."
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] [#FFF8DC]{tools_str}[/]")
+        # Color each tool name - red if disabled, normal if enabled
+        colored_names = []
+        for name in sorted(tool_names):
+            if name in disabled_tools:
+                colored_names.append(f"[red]{name}[/]")
+            else:
+                colored_names.append(f"[#FFF8DC]{name}[/]")
+        
+        tools_str = ", ".join(colored_names)
+        # Truncate if too long (accounting for markup)
+        if len(", ".join(sorted(tool_names))) > 45:
+            # Rebuild with truncation
+            short_names = []
+            length = 0
+            for name in sorted(tool_names):
+                if length + len(name) + 2 > 42:
+                    short_names.append("...")
+                    break
+                short_names.append(name)
+                length += len(name) + 2
+            # Re-color the truncated list
+            colored_names = []
+            for name in short_names:
+                if name == "...":
+                    colored_names.append("[dim]...[/]")
+                elif name in disabled_tools:
+                    colored_names.append(f"[red]{name}[/]")
+                else:
+                    colored_names.append(f"[#FFF8DC]{name}[/]")
+            tools_str = ", ".join(colored_names)
+        
+        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
     
     if remaining_toolsets > 0:
         right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
@@ -387,6 +500,8 @@ COMMANDS = {
     "/reset": "Reset conversation only (keep screen)",
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
+    "/cron": "Manage scheduled tasks (list, add, remove)",
+    "/platforms": "Show gateway/messaging platform status",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -449,11 +564,9 @@ class HermesCLI:
         toolsets: List[str] = None,
         api_key: str = None,
         base_url: str = None,
-        backend: str = None,
-        max_turns: int = 20,
+        max_turns: int = 60,
         verbose: bool = False,
         compact: bool = False,
-        interactive: bool = True,
     ):
         """
         Initialize the Hermes CLI.
@@ -463,8 +576,7 @@ class HermesCLI:
             toolsets: List of toolsets to enable (default: all)
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            backend: Agent backend ("openai" or "atropos")
-            max_turns: Maximum conversation turns
+            max_turns: Maximum tool-calling iterations (default: 60)
             verbose: Enable verbose logging
             compact: Use compact display mode
         """
@@ -472,60 +584,27 @@ class HermesCLI:
         self.console = Console()
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
-
-        self.backend = (backend or os.getenv("HERMES_BACKEND") or "openai").strip().lower()
-        if self.backend not in {"openai", "atropos"}:
-            self.console.print(
-                f"[bold yellow]Warning:[/] unknown backend '{self.backend}', falling back to 'openai'"
-            )
-            self.backend = "openai"
         
         # Configuration - priority: CLI args > env vars > config file
-        #
-        # Note: For the Atropos backend we intentionally prefer `ATROPOS_SERVER_MODEL`
-        # over `LLM_MODEL`, because `LLM_MODEL` is commonly an OpenRouter-style ID
-        # (e.g. "anthropic/claude-sonnet-4") and will not exist on local servers.
-        if model:
-            self.model = model
-        elif self.backend == "atropos":
-            self.model = (
-                os.getenv("ATROPOS_SERVER_MODEL")
-                or os.getenv("LLM_MODEL")
-                or CLI_CONFIG["model"]["default"]
-            )
+        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
+        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        
+        # Base URL: custom endpoint (OPENAI_BASE_URL) takes precedence over OpenRouter
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
+        
+        # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
+        if max_turns != 60:  # CLI arg was explicitly set
+            self.max_turns = max_turns
+        elif os.getenv("HERMES_MAX_ITERATIONS"):
+            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
+        elif CLI_CONFIG["agent"].get("max_turns"):
+            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
+        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+            self.max_turns = CLI_CONFIG["max_turns"]
         else:
-            self.model = (
-                os.getenv("LLM_MODEL")
-                or os.getenv("ATROPOS_SERVER_MODEL")
-                or CLI_CONFIG["model"]["default"]
-            )
-
-        env_openai_base_url = os.getenv("OPENAI_BASE_URL")
-        if env_openai_base_url:
-            env_openai_base_url = env_openai_base_url.rstrip("/")
-            if not env_openai_base_url.endswith("/v1"):
-                env_openai_base_url = f"{env_openai_base_url}/v1"
-
-        env_atropos_base_url = os.getenv("ATROPOS_SERVER_BASE_URL")
-        if env_atropos_base_url:
-            env_atropos_base_url = env_atropos_base_url.rstrip("/")
-            if not env_atropos_base_url.endswith("/v1"):
-                env_atropos_base_url = f"{env_atropos_base_url}/v1"
-
-        self.base_url = (
-            base_url
-            or env_atropos_base_url
-            or env_openai_base_url
-            or os.getenv("OPENROUTER_BASE_URL")
-            or CLI_CONFIG["model"]["base_url"]
-        )
-        self.api_key = (
-            api_key
-            or os.getenv("ATROPOS_SERVER_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("OPENROUTER_API_KEY")
-        )
-        self.max_turns = max_turns if max_turns != 20 else CLI_CONFIG["agent"].get("max_turns", 20)
+            self.max_turns = 60
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -551,11 +630,9 @@ class HermesCLI:
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         self.session_id = f"{timestamp_str}_{short_uuid}"
-
-        self.interactive = interactive
-        if self.interactive:
-            # Setup prompt_toolkit session with history
-            self._setup_prompt_session()
+        
+        # Setup prompt_toolkit session with history
+        self._setup_prompt_session()
     
     def _setup_prompt_session(self):
         """Setup prompt_toolkit session with history and styling."""
@@ -586,56 +663,17 @@ class HermesCLI:
             return True
         
         try:
-            if self.backend == "atropos":
-                try:
-                    from atroposlib.envs.server_handling.server_baseline import APIServerConfig
-                    from atroposlib.envs.server_handling.server_manager import ServerManager
-                except ModuleNotFoundError as exc:
-                    raise RuntimeError(
-                        "Atropos backend requires `atroposlib`. Install Hermes-Agent with the extra "
-                        "`.[atropos]` (e.g. `pip install -e '.[atropos]'` or `uv sync --extra atropos`)."
-                    ) from exc
-
-                from atropos_compatible_agent import AtroposAIAgent
-
-                server_cfg = APIServerConfig(
-                    server_type="openai",
-                    model_name=self.model,
-                    base_url=self.base_url,
-                    api_key=self.api_key or "",
-                    timeout=120,
-                    num_max_requests_at_once=1,
-                    num_requests_for_eval=1,
-                    health_check=False,
-                )
-                server = ServerManager([server_cfg], slurm=False, testing=False)
-
-                self.agent = AtroposAIAgent(
-                    server=server,
-                    tokenizer=None,
-                    model=self.model,
-                    max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
-                    verbose_logging=self.verbose,
-                    quiet_mode=True,  # Suppress verbose output for clean CLI
-                    ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
-                    session_id=self.session_id,
-                    # Do not force max_tokens/temperature by default; let the backend decide.
-                    max_tokens=None,
-                    temperature=None,
-                )
-            else:
-                self.agent = AIAgent(
-                    model=self.model,
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
-                    verbose_logging=self.verbose,
-                    quiet_mode=True,  # Suppress verbose output for clean CLI
-                    ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
-                    session_id=self.session_id,  # Pass CLI's session ID to agent
-                )
+            self.agent = AIAgent(
+                model=self.model,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                max_iterations=self.max_turns,
+                enabled_toolsets=self.enabled_toolsets,
+                verbose_logging=self.verbose,
+                quiet_mode=True,  # Suppress verbose output for clean CLI
+                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                session_id=self.session_id,  # Pass CLI's session ID to agent
+            )
             return True
         except Exception as e:
             self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -650,7 +688,7 @@ class HermesCLI:
             self._show_status()
         else:
             # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
             
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -665,12 +703,37 @@ class HermesCLI:
                 session_id=self.session_id,
             )
         
+        # Show tool availability warnings if any tools are disabled
+        self._show_tool_availability_warnings()
+        
         self.console.print()
+    
+    def _show_tool_availability_warnings(self):
+        """Show warnings about disabled tools due to missing API keys."""
+        try:
+            from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+            
+            available, unavailable = check_tool_availability()
+            
+            # Filter to only those missing API keys (not system deps)
+            api_key_missing = [u for u in unavailable if u["missing_vars"]]
+            
+            if api_key_missing:
+                self.console.print()
+                self.console.print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
+                for item in api_key_missing:
+                    tools_str = ", ".join(item["tools"][:2])  # Show first 2 tools
+                    if len(item["tools"]) > 2:
+                        tools_str += f", +{len(item['tools'])-2} more"
+                    self.console.print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
+                self.console.print("[dim]   Run 'hermes setup' to configure[/]")
+        except Exception:
+            pass  # Don't crash on import errors
     
     def _show_status(self):
         """Show current status bar."""
         # Get tool count
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         tool_count = len(tools) if tools else 0
         
         # Format model name (shorten if needed)
@@ -713,7 +776,7 @@ class HermesCLI:
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets)
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         
         if not tools:
             print("(;_;) No tools available")
@@ -780,7 +843,7 @@ class HermesCLI:
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
-        terminal_cwd = os.getenv("TERMINAL_CWD", "/tmp")
+        terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
         config_path = Path(__file__).parent / 'cli-config.yaml'
@@ -955,6 +1018,199 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_cron_command(self, cmd: str):
+        """Handle the /cron command to manage scheduled tasks."""
+        parts = cmd.split(maxsplit=2)
+        
+        if len(parts) == 1:
+            # /cron - show help and list
+            print()
+            print("+" + "-" * 60 + "+")
+            print("|" + " " * 18 + "(^_^) Scheduled Tasks" + " " * 19 + "|")
+            print("+" + "-" * 60 + "+")
+            print()
+            print("  Commands:")
+            print("    /cron                     - List scheduled jobs")
+            print("    /cron list                - List scheduled jobs")
+            print('    /cron add <schedule> <prompt>  - Add a new job')
+            print("    /cron remove <job_id>     - Remove a job")
+            print()
+            print("  Schedule formats:")
+            print("    30m, 2h, 1d              - One-shot delay")
+            print('    "every 30m", "every 2h"  - Recurring interval')
+            print('    "0 9 * * *"              - Cron expression')
+            print()
+            
+            # Show current jobs
+            jobs = list_jobs()
+            if jobs:
+                print("  Current Jobs:")
+                print("  " + "-" * 55)
+                for job in jobs:
+                    # Format repeat status
+                    times = job["repeat"].get("times")
+                    completed = job["repeat"].get("completed", 0)
+                    if times is None:
+                        repeat_str = "forever"
+                    else:
+                        repeat_str = f"{completed}/{times}"
+                    
+                    print(f"    {job['id'][:12]:<12} | {job['schedule_display']:<15} | {repeat_str:<8}")
+                    prompt_preview = job['prompt'][:45] + "..." if len(job['prompt']) > 45 else job['prompt']
+                    print(f"      {prompt_preview}")
+                    if job.get("next_run_at"):
+                        from datetime import datetime
+                        next_run = datetime.fromisoformat(job["next_run_at"])
+                        print(f"      Next: {next_run.strftime('%Y-%m-%d %H:%M')}")
+                    print()
+            else:
+                print("  No scheduled jobs. Use '/cron add' to create one.")
+            print()
+            return
+        
+        subcommand = parts[1].lower()
+        
+        if subcommand == "list":
+            # /cron list - just show jobs
+            jobs = list_jobs()
+            if not jobs:
+                print("(._.) No scheduled jobs.")
+                return
+            
+            print()
+            print("Scheduled Jobs:")
+            print("-" * 70)
+            for job in jobs:
+                times = job["repeat"].get("times")
+                completed = job["repeat"].get("completed", 0)
+                repeat_str = "forever" if times is None else f"{completed}/{times}"
+                
+                print(f"  ID: {job['id']}")
+                print(f"  Name: {job['name']}")
+                print(f"  Schedule: {job['schedule_display']} ({repeat_str})")
+                print(f"  Next run: {job.get('next_run_at', 'N/A')}")
+                print(f"  Prompt: {job['prompt'][:80]}{'...' if len(job['prompt']) > 80 else ''}")
+                if job.get("last_run_at"):
+                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                print()
+        
+        elif subcommand == "add":
+            # /cron add <schedule> <prompt>
+            if len(parts) < 3:
+                print("(._.) Usage: /cron add <schedule> <prompt>")
+                print("  Example: /cron add 30m Remind me to take a break")
+                print('  Example: /cron add "every 2h" Check server status at 192.168.1.1')
+                return
+            
+            # Parse schedule and prompt
+            rest = parts[2].strip()
+            
+            # Handle quoted schedule (e.g., "every 30m" or "0 9 * * *")
+            if rest.startswith('"'):
+                # Find closing quote
+                close_quote = rest.find('"', 1)
+                if close_quote == -1:
+                    print("(._.) Unmatched quote in schedule")
+                    return
+                schedule = rest[1:close_quote]
+                prompt = rest[close_quote + 1:].strip()
+            else:
+                # First word is schedule
+                schedule_parts = rest.split(maxsplit=1)
+                schedule = schedule_parts[0]
+                prompt = schedule_parts[1] if len(schedule_parts) > 1 else ""
+            
+            if not prompt:
+                print("(._.) Please provide a prompt for the job")
+                return
+            
+            try:
+                job = create_job(prompt=prompt, schedule=schedule)
+                print(f"(^_^)b Created job: {job['id']}")
+                print(f"  Schedule: {job['schedule_display']}")
+                print(f"  Next run: {job['next_run_at']}")
+            except Exception as e:
+                print(f"(x_x) Failed to create job: {e}")
+        
+        elif subcommand == "remove" or subcommand == "rm" or subcommand == "delete":
+            # /cron remove <job_id>
+            if len(parts) < 3:
+                print("(._.) Usage: /cron remove <job_id>")
+                return
+            
+            job_id = parts[2].strip()
+            job = get_job(job_id)
+            
+            if not job:
+                print(f"(._.) Job not found: {job_id}")
+                return
+            
+            if remove_job(job_id):
+                print(f"(^_^)b Removed job: {job['name']} ({job_id})")
+            else:
+                print(f"(x_x) Failed to remove job: {job_id}")
+        
+        else:
+            print(f"(._.) Unknown cron command: {subcommand}")
+            print("  Available: list, add, remove")
+    
+    def _show_gateway_status(self):
+        """Show status of the gateway and connected messaging platforms."""
+        from gateway.config import load_gateway_config, Platform
+        
+        print()
+        print("+" + "-" * 60 + "+")
+        print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
+        print("+" + "-" * 60 + "+")
+        print()
+        
+        try:
+            config = load_gateway_config()
+            connected = config.get_connected_platforms()
+            
+            print("  Messaging Platform Configuration:")
+            print("  " + "-" * 55)
+            
+            platform_status = {
+                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
+                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
+                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
+            }
+            
+            for platform, (name, env_var) in platform_status.items():
+                pconfig = config.platforms.get(platform)
+                if pconfig and pconfig.enabled:
+                    home = config.get_home_channel(platform)
+                    home_str = f" → {home.name}" if home else ""
+                    print(f"    ✓ {name:<12} Enabled{home_str}")
+                else:
+                    print(f"    ○ {name:<12} Not configured ({env_var})")
+            
+            print()
+            print("  Session Reset Policy:")
+            print("  " + "-" * 55)
+            policy = config.default_reset_policy
+            print(f"    Mode: {policy.mode}")
+            print(f"    Daily reset at: {policy.at_hour}:00")
+            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            
+            print()
+            print("  To start the gateway:")
+            print("    python cli.py --gateway")
+            print()
+            print("  Configuration file: ~/.hermes/gateway.json")
+            print()
+            
+        except Exception as e:
+            print(f"  Error loading gateway config: {e}")
+            print()
+            print("  To configure the gateway:")
+            print("    1. Set environment variables:")
+            print("       TELEGRAM_BOT_TOKEN=your_token")
+            print("       DISCORD_BOT_TOKEN=your_token")
+            print("    2. Or create ~/.hermes/gateway.json")
+            print()
+    
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -965,33 +1221,35 @@ class HermesCLI:
         Returns:
             bool: True to continue, False to exit
         """
-        cmd = command.lower().strip()
+        # Lowercase only for dispatch matching; preserve original case for arguments
+        cmd_lower = command.lower().strip()
+        cmd_original = command.strip()
         
-        if cmd in ("/quit", "/exit", "/q"):
+        if cmd_lower in ("/quit", "/exit", "/q"):
             return False
-        elif cmd == "/help":
+        elif cmd_lower == "/help":
             self.show_help()
-        elif cmd == "/tools":
+        elif cmd_lower == "/tools":
             self.show_tools()
-        elif cmd == "/toolsets":
+        elif cmd_lower == "/toolsets":
             self.show_toolsets()
-        elif cmd == "/config":
+        elif cmd_lower == "/config":
             self.show_config()
-        elif cmd == "/clear":
-            # Clear terminal screen
-            import os as _os
-            _os.system('clear' if _os.name != 'nt' else 'cls')
+        elif cmd_lower == "/clear":
+            # Clear terminal screen using Rich (portable, no shell needed)
+            self.console.clear()
             # Reset conversation
             self.conversation_history = []
             # Show fresh banner
             self.show_banner()
             print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
-        elif cmd == "/history":
+        elif cmd_lower == "/history":
             self.show_history()
-        elif cmd == "/reset":
+        elif cmd_lower == "/reset":
             self.reset_conversation()
-        elif cmd.startswith("/model"):
-            parts = cmd.split(maxsplit=1)
+        elif cmd_lower.startswith("/model"):
+            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
+            parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 new_model = parts[1]
                 self.model = new_model
@@ -1004,21 +1262,32 @@ class HermesCLI:
             else:
                 print(f"Current model: {self.model}")
                 print("  Usage: /model <model-name> to change")
-        elif cmd.startswith("/prompt"):
-            self._handle_prompt_command(cmd)
-        elif cmd.startswith("/personality"):
-            self._handle_personality_command(cmd)
-        elif cmd == "/save":
+        elif cmd_lower.startswith("/prompt"):
+            # Use original case so prompt text isn't lowercased
+            self._handle_prompt_command(cmd_original)
+        elif cmd_lower.startswith("/personality"):
+            # Use original case (handler lowercases the personality name itself)
+            self._handle_personality_command(cmd_original)
+        elif cmd_lower == "/save":
             self.save_conversation()
+        elif cmd_lower.startswith("/cron"):
+            self._handle_cron_command(cmd_original)
+        elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
+            self._show_gateway_status()
         else:
-            self.console.print(f"[bold red]Unknown command: {cmd}[/]")
+            self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
             self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     
-    def chat(self, message: str, *, render: bool = True) -> Optional[str]:
+    def chat(self, message: str) -> Optional[str]:
         """
         Send a message to the agent and get a response.
+        
+        Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
+        race conditions between the process_loop and interrupt monitoring. Messages
+        typed while the agent is running go to _interrupt_queue; messages typed while
+        idle go to _pending_input.
         
         Args:
             message: The user's message
@@ -1033,24 +1302,64 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        if render:
-            # Visual separator after user input
-            print("─" * 60, flush=True)
+        # Visual separator after user input
+        print("─" * 60, flush=True)
         
         try:
-            # Run the conversation
-            result = self.agent.run_conversation(
-                user_message=message,
-                conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-            )
+            # Run the conversation with interrupt monitoring
+            result = None
+            
+            def run_agent():
+                nonlocal result
+                result = self.agent.run_conversation(
+                    user_message=message,
+                    conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                )
+            
+            # Start agent in background thread
+            agent_thread = threading.Thread(target=run_agent)
+            agent_thread.start()
+            
+            # Monitor the dedicated interrupt queue while the agent runs.
+            # _interrupt_queue is separate from _pending_input, so process_loop
+            # and chat() never compete for the same queue.
+            interrupt_msg = None
+            while agent_thread.is_alive():
+                if hasattr(self, '_interrupt_queue'):
+                    try:
+                        interrupt_msg = self._interrupt_queue.get(timeout=0.1)
+                        if interrupt_msg:
+                            print(f"\n⚡ New message detected, interrupting...")
+                            self.agent.interrupt(interrupt_msg)
+                            break
+                    except queue.Empty:
+                        pass  # Queue empty or timeout, continue waiting
+                else:
+                    # Fallback for non-interactive mode (e.g., single-query)
+                    agent_thread.join(0.1)
+            
+            agent_thread.join()  # Ensure agent thread completes
             
             # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history)
+            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
             
             # Get the final response
-            response = result.get("final_response", "")
+            response = result.get("final_response", "") if result else ""
             
-            if response and render:
+            # Handle failed results (e.g., non-retryable errors like invalid model)
+            if result and result.get("failed") and not response:
+                error_detail = result.get("error", "Unknown error")
+                response = f"Error: {error_detail}"
+            
+            # Handle interrupt - check if we were interrupted
+            pending_message = None
+            if result and result.get("interrupted"):
+                pending_message = result.get("interrupt_message") or interrupt_msg
+                # Add indicator that we were interrupted
+                if response and pending_message:
+                    response = response + "\n\n---\n_[Interrupted - processing new message]_"
+            
+            if response:
                 # Use simple print for compatibility with prompt_toolkit's patch_stdout
                 print()
                 print("╭" + "─" * 58 + "╮")
@@ -1060,6 +1369,12 @@ class HermesCLI:
                 print(response)
                 print()
                 print("─" * 60)
+            
+            # If we have a pending message from interrupt, re-queue it for process_loop
+            # instead of recursing (avoids unbounded recursion from rapid interrupts)
+            if pending_message and hasattr(self, '_pending_input'):
+                print(f"\n📨 Queued: '{pending_message[:50]}{'...' if len(pending_message) > 50 else ''}'")
+                self._pending_input.put(pending_message)
             
             return response
             
@@ -1099,22 +1414,131 @@ class HermesCLI:
             return None
     
     def run(self):
-        """Run the interactive CLI loop with fixed input at bottom."""
+        """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
-        
-        # These Rich prints work fine BEFORE patch_stdout
         self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
         self.console.print()
         
-        # Use patch_stdout to ensure all output appears above the input prompt
-        with patch_stdout():
-            while True:
+        # State for async operation
+        self._agent_running = False
+        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
+        self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._should_exit = False
+        self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        
+        # Create a persistent input area using prompt_toolkit Application
+        input_buffer = Buffer()
+        
+        # Key bindings for the input area
+        kb = KeyBindings()
+        
+        @kb.add('enter')
+        def handle_enter(event):
+            """Handle Enter key - submit input.
+            
+            Routes to the correct queue based on agent state:
+            - Agent running: goes to _interrupt_queue (chat() monitors this)
+            - Agent idle: goes to _pending_input (process_loop monitors this)
+            Commands (starting with /) always go to _pending_input so they're
+            handled as commands, not sent as interrupt text to the agent.
+            """
+            text = event.app.current_buffer.text.strip()
+            if text:
+                if self._agent_running and not text.startswith("/"):
+                    # Agent is working - route to interrupt queue for chat() to pick up
+                    self._interrupt_queue.put(text)
+                else:
+                    # Agent idle, or it's a command - route to normal input queue
+                    self._pending_input.put(text)
+                # Clear the buffer
+                event.app.current_buffer.reset()
+        
+        @kb.add('c-c')
+        def handle_ctrl_c(event):
+            """Handle Ctrl+C - interrupt agent or force exit on double press.
+            
+            First Ctrl+C: interrupt the running agent gracefully.
+            Second Ctrl+C within 2 seconds (or when agent is idle): force exit.
+            """
+            import time as _time
+            now = _time.time()
+            
+            if self._agent_running and self.agent:
+                # Check for double Ctrl+C (second press within 2 seconds)
+                if now - self._last_ctrl_c_time < 2.0:
+                    print("\n⚡ Force exiting...")
+                    self._should_exit = True
+                    event.app.exit()
+                    return
+                
+                # First Ctrl+C: try graceful interrupt
+                self._last_ctrl_c_time = now
+                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+                self.agent.interrupt()
+            else:
+                # Agent not running, exit immediately
+                self._should_exit = True
+                event.app.exit()
+        
+        @kb.add('c-d')
+        def handle_ctrl_d(event):
+            """Handle Ctrl+D - exit."""
+            self._should_exit = True
+            event.app.exit()
+        
+        # Create the input area widget
+        input_area = TextArea(
+            height=1,
+            prompt='❯ ',
+            style='class:input-area',
+            multiline=False,
+            wrap_lines=False,
+        )
+        
+        # Create a status line that shows when agent is working
+        def get_status_text():
+            if self._agent_running:
+                return [('class:status', ' 🔄 Agent working... (type to interrupt) ')]
+            return [('class:status', '')]
+        
+        status_window = Window(
+            content=FormattedTextControl(get_status_text),
+            height=1,
+        )
+        
+        # Layout with status and input at bottom
+        layout = Layout(
+            HSplit([
+                Window(height=0),  # Spacer that expands
+                status_window,
+                input_area,
+            ])
+        )
+        
+        # Style for the application
+        style = PTStyle.from_dict({
+            'input-area': '#FFF8DC',
+            'status': 'bg:#333333 #FFD700',
+        })
+        
+        # Create the application
+        app = Application(
+            layout=layout,
+            key_bindings=kb,
+            style=style,
+            full_screen=False,
+            mouse_support=False,
+        )
+        
+        # Background thread to process inputs and run agent
+        def process_loop():
+            while not self._should_exit:
                 try:
-                    user_input = self.get_input()
-                    
-                    if user_input is None:
-                        print("\nGoodbye! ⚕")
-                        break
+                    # Check for pending input with timeout
+                    try:
+                        user_input = self._pending_input.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
                     
                     if not user_input:
                         continue
@@ -1122,16 +1546,52 @@ class HermesCLI:
                     # Check for commands
                     if user_input.startswith("/"):
                         if not self.process_command(user_input):
-                            print("\nGoodbye! ⚕")
-                            break
+                            self._should_exit = True
+                            # Schedule app exit
+                            if app.is_running:
+                                app.exit()
                         continue
                     
-                    # Regular chat message
-                    self.chat(user_input)
+                    # Regular chat - run agent
+                    self._agent_running = True
+                    app.invalidate()  # Refresh status line
                     
-                except KeyboardInterrupt:
-                    print("\nInterrupted. Type /quit to exit.")
-                    continue
+                    try:
+                        self.chat(user_input)
+                    finally:
+                        self._agent_running = False
+                        app.invalidate()  # Refresh status line
+                    
+                except Exception as e:
+                    print(f"Error: {e}")
+        
+        # Start processing thread
+        process_thread = threading.Thread(target=process_loop, daemon=True)
+        process_thread.start()
+        
+        # Register atexit cleanup so resources are freed even on unexpected exit
+        # (terminal VMs, browser sessions, etc.)
+        atexit.register(_cleanup_all_browsers)
+        atexit.register(_cleanup_all_terminals)
+        
+        # Run the application with patch_stdout for proper output handling
+        try:
+            with patch_stdout():
+                app.run()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        finally:
+            self._should_exit = True
+            # Explicitly clean up resources before exit
+            try:
+                _cleanup_all_terminals()
+            except Exception:
+                pass
+            try:
+                _cleanup_all_browsers()
+            except Exception:
+                pass
+            print("\nGoodbye! ⚕")
 
 
 # ============================================================================
@@ -1141,18 +1601,18 @@ class HermesCLI:
 def main(
     query: str = None,
     q: str = None,
-    prompt: str = None,
-    p: str = None,
     toolsets: str = None,
     model: str = None,
     api_key: str = None,
     base_url: str = None,
-    backend: str = None,
-    max_turns: int = 20,
+    max_turns: int = 60,
     verbose: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
+    cron_daemon: bool = False,
+    cron_tick_once: bool = False,
+    gateway: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1160,43 +1620,58 @@ def main(
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
-        prompt: Alias for query (bypass TUI). Shorthand: -p
-        p: Shorthand for --prompt
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         api_key: API key for authentication
         base_url: Base URL for the API
-        backend: Agent backend ("openai" default, or "atropos")
-        max_turns: Maximum conversation turns (default: 20)
+        max_turns: Maximum tool-calling iterations (default: 60)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
+        cron_daemon: Run as cron daemon (check and execute due jobs continuously)
+        cron_tick_once: Run due cron jobs once and exit (for system cron integration)
     
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py -q "What is Python?"       # Single query mode
-        python cli.py -p "What is Python?"       # Single query mode (alias)
         python cli.py --list-tools               # List tools and exit
+        python cli.py --cron-daemon              # Run cron scheduler daemon
+        python cli.py --cron-tick-once           # Check and run due jobs once
     """
-    # Resolve prompt modes:
-    # - query/-q: single-shot, but keep the normal banner UX
-    # - prompt/-p: single-shot, NO TUI/banner (for wrapper scripts)
-    query_text = query or q
-    prompt_text = prompt or p
-
-    # Signal to terminal_tool whether we can prompt the user (e.g. sudo password).
-    os.environ["HERMES_INTERACTIVE"] = "0" if prompt_text else "1"
-    if prompt_text:
-        # Wrapper mode should not emit spinners / interactive UX noise.
-        os.environ["HERMES_DISABLE_SPINNER"] = "1"
-
-    # Optional debug dump of the full model response objects.
-    # - HERMES_DEBUG_ATROPOS_RESPONSE=1 dumps the Atropos backend ChatCompletion
-    # - HERMES_DEBUG_OPENAI_RESPONSE=1 dumps the OpenAI backend ChatCompletion
+    # Signal to terminal_tool that we're in interactive mode
+    # This enables interactive sudo password prompts with timeout
+    os.environ["HERMES_INTERACTIVE"] = "1"
+    
+    # Handle cron daemon mode (runs before CLI initialization)
+    if cron_daemon:
+        print("Starting Hermes Cron Daemon...")
+        print("Jobs will be checked every 60 seconds.")
+        print("Press Ctrl+C to stop.\n")
+        run_cron_daemon(check_interval=60, verbose=True)
+        return
+    
+    # Handle cron tick (single run for system cron integration)
+    if cron_tick_once:
+        jobs_run = cron_tick(verbose=True)
+        if jobs_run:
+            print(f"Executed {jobs_run} job(s)")
+        return
+    
+    # Handle gateway mode (messaging platforms)
+    if gateway:
+        import asyncio
+        from gateway.run import start_gateway
+        print("Starting Hermes Gateway (messaging platforms)...")
+        asyncio.run(start_gateway())
+        return
+    
+    # Handle query shorthand
+    query = query or q
     
     # Parse toolsets - handle both string and tuple/list inputs
+    # Default to hermes-cli toolset which includes cronjob management tools
     toolsets_list = None
     if toolsets:
         if isinstance(toolsets, str):
@@ -1209,6 +1684,9 @@ def main(
                     toolsets_list.extend([x.strip() for x in t.split(",")])
                 else:
                     toolsets_list.append(str(t))
+    else:
+        # Default: use hermes-cli toolset for full CLI functionality including cronjob tools
+        toolsets_list = ["hermes-cli"]
     
     # Create CLI instance
     cli = HermesCLI(
@@ -1216,11 +1694,9 @@ def main(
         toolsets=toolsets_list,
         api_key=api_key,
         base_url=base_url,
-        backend=backend,
         max_turns=max_turns,
         verbose=verbose,
         compact=compact,
-        interactive=not bool(prompt_text),
     )
     
     # Handle list commands (don't init agent for these)
@@ -1234,18 +1710,15 @@ def main(
         cli.show_toolsets()
         sys.exit(0)
     
-    # Handle wrapper-friendly prompt mode (no banner/TUI)
-    if prompt_text:
-        response = cli.chat(prompt_text, render=False)
-        if response is not None:
-            print(response)
-        return
-
+    # Register cleanup for single-query mode (interactive mode registers in run())
+    atexit.register(_cleanup_all_browsers)
+    atexit.register(_cleanup_all_terminals)
+    
     # Handle single query mode
-    if query_text:
+    if query:
         cli.show_banner()
-        cli.console.print(f"[bold blue]Query:[/] {query_text}")
-        cli.chat(query_text)
+        cli.console.print(f"[bold blue]Query:[/] {query}")
+        cli.chat(query)
         return
     
     # Run interactive mode

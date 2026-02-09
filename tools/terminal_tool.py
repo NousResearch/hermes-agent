@@ -40,7 +40,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, ClassVar, List
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 # Add mini-swe-agent to path if not installed
 mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
@@ -209,6 +212,234 @@ def _check_disk_usage_warning():
 
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
+
+# =============================================================================
+# Dangerous Command Approval System
+# =============================================================================
+
+# Session-cached dangerous command approvals (pattern -> approved)
+_session_approved_patterns: set = set()
+
+# Dangerous command patterns (regex, description)
+DANGEROUS_PATTERNS = [
+    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (r'\brm\s+(-[^\s]*)?r', "recursive delete"),
+    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
+    (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
+    (r'\bmkfs\b', "format filesystem"),
+    (r'\bdd\s+.*if=', "disk copy"),
+    (r'>\s*/dev/sd', "write to block device"),
+    (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
+    (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
+    (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
+    (r'>\s*/etc/', "overwrite system config"),
+    (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
+    (r'\bkill\s+-9\s+-1\b', "kill all processes"),
+    (r'\bpkill\s+-9\b', "force kill processes"),
+    (r':()\s*{\s*:\s*\|\s*:&\s*}\s*;:', "fork bomb"),
+]
+
+
+def _load_permanent_allowlist() -> set:
+    """Load permanently allowed command patterns from config."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        patterns = config.get("command_allowlist", [])
+        return set(patterns) if patterns else set()
+    except Exception:
+        return set()
+
+
+def _save_permanent_allowlist(patterns: set):
+    """Save permanently allowed command patterns to config."""
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+        config["command_allowlist"] = list(patterns)
+        save_config(config)
+    except Exception as e:
+        print(f"  ⚠️ Could not save allowlist: {e}")
+
+
+def _detect_dangerous_command(command: str) -> tuple:
+    """
+    Check if command matches any dangerous patterns.
+    
+    Returns:
+        (is_dangerous, pattern_key, description) or (False, None, None)
+    """
+    import re
+    command_lower = command.lower()
+    
+    for pattern, description in DANGEROUS_PATTERNS:
+        if re.search(pattern, command_lower, re.IGNORECASE):
+            # Use a simplified pattern key for caching (first word + key chars)
+            pattern_key = pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
+            return (True, pattern_key, description)
+    
+    return (False, None, None)
+
+
+def _is_command_approved(pattern_key: str) -> bool:
+    """Check if a pattern is approved (session or permanent)."""
+    if pattern_key in _session_approved_patterns:
+        return True
+    
+    permanent = _load_permanent_allowlist()
+    if pattern_key in permanent:
+        return True
+    
+    return False
+
+
+def _prompt_dangerous_approval(command: str, description: str, timeout_seconds: int = 60) -> str:
+    """
+    Prompt user to approve a dangerous command (CLI only).
+    
+    Returns: 'once', 'session', 'always', or 'deny'
+    """
+    import sys
+    import threading
+    
+    # Pause spinner if one is running
+    os.environ["HERMES_SPINNER_PAUSE"] = "1"
+    
+    try:
+        # Use simple ASCII art for compatibility (no ANSI color codes)
+        print()
+        print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+        print(f"      {command[:80]}{'...' if len(command) > 80 else ''}")
+        print()
+        print(f"      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
+        print()
+        sys.stdout.flush()
+        
+        result = {"choice": ""}
+        
+        def get_input():
+            try:
+                result["choice"] = input("      Choice [o/s/a/D]: ").strip().lower()
+            except:
+                result["choice"] = ""
+        
+        thread = threading.Thread(target=get_input, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+        
+        if thread.is_alive():
+            print("\n      ⏱ Timeout - denying command")
+            return "deny"
+        
+        choice = result["choice"]
+        
+        if choice in ('o', 'once'):
+            print("      ✓ Allowed once")
+            return "once"
+        elif choice in ('s', 'session'):
+            print("      ✓ Allowed for this session")
+            return "session"
+        elif choice in ('a', 'always'):
+            print("      ✓ Added to permanent allowlist")
+            return "always"
+        else:
+            print("      ✗ Denied")
+            return "deny"
+            
+    except (EOFError, KeyboardInterrupt):
+        print("\n      ✗ Cancelled")
+        return "deny"
+    finally:
+        if "HERMES_SPINNER_PAUSE" in os.environ:
+            del os.environ["HERMES_SPINNER_PAUSE"]
+        print()
+        sys.stdout.flush()
+
+
+def _check_dangerous_command(command: str, env_type: str) -> dict:
+    """
+    Check if command is dangerous and handle approval.
+    
+    Only applies to local/ssh backends in interactive contexts.
+    
+    Args:
+        command: The command to check
+        env_type: The terminal backend type
+        
+    Returns:
+        {"approved": True/False, "message": str or None}
+    """
+    # Skip check for isolated environments (containers are disposable)
+    if env_type in ("docker", "singularity", "modal"):
+        return {"approved": True, "message": None}
+    
+    # Detect dangerous command
+    is_dangerous, pattern_key, description = _detect_dangerous_command(command)
+    
+    if not is_dangerous:
+        return {"approved": True, "message": None}
+    
+    # Check if already approved
+    if _is_command_approved(pattern_key):
+        return {"approved": True, "message": None}
+    
+    # Check context - only prompt in interactive modes
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    
+    if not is_cli and not is_gateway:
+        # Programmatic use - allow (user opted into local backend)
+        return {"approved": True, "message": None}
+    
+    if is_gateway:
+        # Messaging context - return informative denial, agent should ask user
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "message": f"BLOCKED: This command is potentially dangerous ({description}). Tell the user and ask if they want to add this command pattern to their allowlist. They can do this via 'hermes config edit' or by running the command directly on their machine."
+        }
+    
+    # CLI context - prompt user
+    choice = _prompt_dangerous_approval(command, description)
+    
+    if choice == "deny":
+        return {"approved": False, "message": "BLOCKED: User denied this potentially dangerous command. Do NOT retry this command - the user has explicitly rejected it."}
+    
+    # Handle approval
+    if choice == "session":
+        _session_approved_patterns.add(pattern_key)
+    elif choice == "always":
+        _session_approved_patterns.add(pattern_key)
+        permanent = _load_permanent_allowlist()
+        permanent.add(pattern_key)
+        _save_permanent_allowlist(permanent)
+    
+    return {"approved": True, "message": None}
+
+
+def _handle_sudo_failure(output: str, env_type: str) -> str:
+    """
+    Check for sudo failure and add helpful message for messaging contexts.
+    
+    Returns enhanced output if sudo failed in messaging context, else original.
+    """
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    
+    if not is_gateway:
+        return output
+    
+    # Check for sudo failure indicators
+    sudo_failures = [
+        "sudo: a password is required",
+        "sudo: no tty present",
+        "sudo: a terminal is required",
+    ]
+    
+    for failure in sudo_failures:
+        if failure in output:
+            return output + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.hermes/.env on the agent machine."
+    
+    return output
 
 
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
@@ -723,6 +954,9 @@ class _DockerEnvironment:
         try:
             self.cleanup()
         except:
+            pass
+
+
             pass
 
 
@@ -1315,7 +1549,7 @@ class _ModalSandboxEnvironment:
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 
 **Environment:**
-- Isolated execution environment (local, Docker, Singularity, or Modal cloud based on configuration)
+- Isolated execution environment (local, Docker, or Modal cloud based on configuration)
 - Filesystem persists between tool calls within the same task
 - Internet access available
 
@@ -1323,20 +1557,17 @@ TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 - Simple commands: Just provide the 'command' parameter
 - Background processes: Set 'background': True for servers/long-running tasks
 - Command timeout: Optional 'timeout' parameter in seconds
-- Modal profiles: Use 'profile' parameter for specialized environments (e.g., GPU)
 
 **Examples:**
 - Run command: `{"command": "ls -la"}`
 - Background task: `{"command": "source venv/bin/activate && python server.py", "background": True}`
 - With timeout: `{"command": "long_task.sh", "timeout": 300}`
-- GPU task (Modal): `{"command": "python train.py", "profile": "pytorch-gpu"}`
 
 **Best Practices:**
 - Run servers/long processes in background
 - Monitor disk usage for large tasks
 - Install whatever tools you need with apt-get or pip
 - Do not be afraid to run pip with --break-system-packages
-- For ML/GPU tasks with Modal, use the appropriate profile
 
 **Things to avoid:**
 - Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck.
@@ -1354,12 +1585,27 @@ _cleanup_running = False
 # Configuration from environment variables
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
+    # Default image with Python and Node.js for maximum compatibility
+    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    env_type = os.getenv("TERMINAL_ENV", "local")
+    
+    # Default cwd depends on backend:
+    #   - local/ssh: current working directory (CLI resolves "." before we get here)
+    #   - docker/singularity: /tmp inside the container (singularity bind-mounts /scratch there)
+    #   - modal: /root (ephemeral cloud container, full filesystem access)
+    if env_type == "modal":
+        default_cwd = "/root"
+    elif env_type in ("docker", "singularity"):
+        default_cwd = "/tmp"
+    else:
+        default_cwd = os.getcwd()
+    
     return {
-        "env_type": os.getenv("TERMINAL_ENV", "local"),  # local, docker, singularity, modal, or ssh
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11"),
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", "docker://python:3.11"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", "python:3.11"),
-        "cwd": os.getenv("TERMINAL_CWD", "/tmp"),
+        "env_type": env_type,
+        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "cwd": os.getenv("TERMINAL_CWD", default_cwd),
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
         # SSH-specific config
@@ -1370,17 +1616,9 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _create_environment(
-    env_type: str, 
-    image: str, 
-    cwd: str, 
-    timeout: int, 
-    ssh_config: dict = None,
-    task_id: str = "",
-    profile: Optional[str] = None,
-):
+def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_config: dict = None):
     """
-    Create an execution environment.
+    Create an execution environment from mini-swe-agent.
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal", "ssh"
@@ -1388,8 +1626,6 @@ def _create_environment(
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
-        task_id: Unique task identifier (used for Modal pool management)
-        profile: Modal profile name (e.g., "pytorch-gpu") - only used for modal
         
     Returns:
         Environment instance with execute() method
@@ -1409,8 +1645,8 @@ def _create_environment(
     elif env_type == "modal":
         # Use native Modal Sandbox with auto-scaling pool and profile support
         return _ModalSandboxEnvironment(
-            image=image, 
-            cwd=cwd, 
+            image=image,
+            cwd=cwd,
             timeout=timeout,
             task_id=task_id,
             profile=profile,
@@ -1609,7 +1845,6 @@ def cleanup_vm(task_id: str):
 
 atexit.register(_stop_cleanup_thread)
 
-
 def _shutdown_modal_pools():
     """Shutdown Modal pool manager on exit (silently, as interpreter is shutting down)."""
     try:
@@ -1626,18 +1861,18 @@ def terminal_tool(
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
+    force: bool = False,
     profile: Optional[str] = None,
 ) -> str:
     """
-    Execute a command using configured execution environments.
+    Execute a command using mini-swe-agent's execution environments.
 
     Args:
         command: The command to execute
         background: Whether to run in background (default: False)
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
-        profile: Modal profile name for heterogeneous workloads (e.g., "pytorch-gpu")
-                 Only used when TERMINAL_ENV=modal. If not specified, uses default profile.
+        force: If True, skip dangerous command check (use after user confirms)
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1652,8 +1887,8 @@ def terminal_tool(
         # With custom timeout
         >>> result = terminal_tool(command="long_task.sh", timeout=300)
         
-        # Use GPU profile for ML tasks (Modal only)
-        >>> result = terminal_tool(command="python train.py", profile="pytorch-gpu")
+        # Force run after user confirmation
+        # Note: force parameter is internal only, not exposed to model API
     """
     global _active_environments, _last_activity
 
@@ -1695,43 +1930,74 @@ def terminal_tool(
         _start_cleanup_thread()
 
         # Get or create environment
+        # Check under lock, but create OUTSIDE lock so we don't block
+        # other concurrent rollouts during slow Modal/Docker startup
+        needs_creation = False
         with _env_lock:
             if effective_task_id not in _active_environments:
-                # Check disk usage before creating new environment (Singularity only)
-                if env_type == "singularity":
-                    _check_disk_usage_warning()
-                
-                try:
-                    # Build SSH config if using SSH environment
-                    ssh_config = None
-                    if env_type == "ssh":
-                        ssh_config = {
-                            "host": config.get("ssh_host", ""),
-                            "user": config.get("ssh_user", ""),
-                            "port": config.get("ssh_port", 22),
-                            "key": config.get("ssh_key", ""),
-                        }
-                    
-                    _active_environments[effective_task_id] = _create_environment(
-                        env_type=env_type,
-                        image=image,
-                        cwd=cwd,
-                        timeout=effective_timeout,
-                        ssh_config=ssh_config,
-                        task_id=effective_task_id,
-                        profile=profile,
-                    )
-                except ImportError as e:
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
-                        "status": "disabled"
-                    }, ensure_ascii=False)
+                needs_creation = True
+            else:
+                _last_activity[effective_task_id] = time.time()
+                env = _active_environments[effective_task_id]
 
-            # Update last activity time
-            _last_activity[effective_task_id] = time.time()
-            env = _active_environments[effective_task_id]
+        if needs_creation:
+            _check_disk_usage_warning()
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[Terminal] Creating new {env_type} environment for task {effective_task_id[:8]}...", flush=True)
+            try:
+                ssh_config = None
+                if env_type == "ssh":
+                    ssh_config = {
+                        "host": config.get("ssh_host", ""),
+                        "user": config.get("ssh_user", ""),
+                        "port": config.get("ssh_port", 22),
+                        "key": config.get("ssh_key", ""),
+                    }
+
+                new_env = _create_environment(
+                    env_type=env_type,
+                    image=image,
+                    cwd=cwd,
+                    timeout=effective_timeout,
+                    ssh_config=ssh_config
+                )
+            except ImportError as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                    "status": "disabled"
+                }, ensure_ascii=False)
+
+            # Store under lock (brief)
+            with _env_lock:
+                if effective_task_id not in _active_environments:
+                    _active_environments[effective_task_id] = new_env
+                else:
+                    # Another thread created it while we were building -- clean up ours
+                    try:
+                        if hasattr(new_env, 'stop'):
+                            new_env.stop()
+                    except Exception:
+                        pass
+
+                _last_activity[effective_task_id] = time.time()
+                env = _active_environments[effective_task_id]
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[Terminal] {env_type} environment ready for task {effective_task_id[:8]}", flush=True)
+
+        # Check for dangerous commands (only for local/ssh in interactive modes)
+        # Skip check if force=True (user has confirmed they want to run it)
+        if not force:
+            approval = _check_dangerous_command(command, env_type)
+            if not approval["approved"]:
+                # Command was blocked - return informative message
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": approval.get("message", "Command denied - potentially dangerous operation"),
+                    "status": "blocked"
+                }, ensure_ascii=False)
 
         # Prepare command for execution
         if background:
@@ -1773,13 +2039,20 @@ def terminal_tool(
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         print(f"⚠️  Terminal: execution error, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                        print(f"   Command: {command[:200]}")
+                        print(f"   Error: {type(e).__name__}: {e}")
+                        print(f"   Task ID: {effective_task_id}, Backend: {env_type}")
                         time.sleep(wait_time)
                         continue
                     
+                    print(f"❌ Terminal: execution failed after {max_retries} retries")
+                    print(f"   Command: {command[:200]}")
+                    print(f"   Error: {type(e).__name__}: {e}")
+                    print(f"   Task ID: {effective_task_id}, Backend: {env_type}")
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {str(e)}"
+                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
                     }, ensure_ascii=False)
                 
                 # Got a result
@@ -1788,6 +2061,9 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
+            
+            # Add helpful message for sudo failures in messaging context
+            output = _handle_sudo_failure(output, env_type)
             
             # Truncate output if too long
             MAX_OUTPUT_CHARS = 50000
@@ -1817,16 +2093,12 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            # Prefer mini-swe-agent when available, but allow a subprocess fallback.
-            try:
-                from minisweagent.environments.local import LocalEnvironment
-
-                return True
-            except ImportError:
-                return True
+            from minisweagent.environments.local import LocalEnvironment
+            return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment
             # Check if docker is available
+            import subprocess
             result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":
@@ -1880,9 +2152,11 @@ if __name__ == "__main__":
     print("  result = terminal_tool(command='python server.py', background=True)")
 
     print("\nEnvironment Variables:")
-    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/modal)")
-    print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', 'python:3.11-slim')}")
-    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', 'python:3.11-slim')}")
-    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', '/tmp')}")
+    default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/ssh)")
+    print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
+    print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
+    print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
+    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")

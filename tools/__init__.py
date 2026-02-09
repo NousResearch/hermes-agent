@@ -127,6 +127,50 @@ except ModuleNotFoundError:  # pragma: no cover
     def check_browser_requirements() -> bool:  # type: ignore[no-redef]
         return False
 
+# Cronjob management tools (CLI-only, hermes-cli toolset)
+from .cronjob_tools import (
+    schedule_cronjob,
+    list_cronjobs,
+    remove_cronjob,
+    check_cronjob_requirements,
+    get_cronjob_tool_definitions,
+    SCHEDULE_CRONJOB_SCHEMA,
+    LIST_CRONJOBS_SCHEMA,
+    REMOVE_CRONJOB_SCHEMA
+)
+
+# RL Training tools (Tinker-Atropos)
+from .rl_training_tool import (
+    rl_list_environments,
+    rl_select_environment,
+    rl_get_current_config,
+    rl_edit_config,
+    rl_start_training,
+    rl_check_status,
+    rl_stop_training,
+    rl_get_results,
+    rl_list_runs,
+    rl_test_inference,
+    check_rl_api_keys,
+    get_missing_keys,
+)
+
+# File manipulation tools (read, write, patch, search)
+from .file_tools import (
+    read_file_tool,
+    write_file_tool,
+    patch_tool,
+    search_tool,
+    get_file_tools,
+    clear_file_ops_cache,
+)
+
+# File tools have no external requirements - they use the terminal backend
+def check_file_requirements():
+    """File tools only require terminal backend to be available."""
+    from .terminal_tool import check_terminal_requirements
+    return check_terminal_requirements()
+
 __all__ = [
     # Web tools
     'web_search_tool',
@@ -175,4 +219,34 @@ __all__ = [
     'get_active_browser_sessions',
     'check_browser_requirements',
     'BROWSER_TOOL_SCHEMAS',
+    # Cronjob management tools (CLI-only)
+    'schedule_cronjob',
+    'list_cronjobs',
+    'remove_cronjob',
+    'check_cronjob_requirements',
+    'get_cronjob_tool_definitions',
+    'SCHEDULE_CRONJOB_SCHEMA',
+    'LIST_CRONJOBS_SCHEMA',
+    'REMOVE_CRONJOB_SCHEMA',
+    # RL Training tools
+    'rl_list_environments',
+    'rl_select_environment',
+    'rl_get_current_config',
+    'rl_edit_config',
+    'rl_start_training',
+    'rl_check_status',
+    'rl_stop_training',
+    'rl_get_results',
+    'rl_list_runs',
+    'rl_test_inference',
+    'check_rl_api_keys',
+    'get_missing_keys',
+    # File manipulation tools
+    'read_file_tool',
+    'write_file_tool',
+    'patch_tool',
+    'search_tool',
+    'get_file_tools',
+    'clear_file_ops_cache',
+    'check_file_requirements',
 ]

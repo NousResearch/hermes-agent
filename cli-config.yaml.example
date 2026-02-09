@@ -7,7 +7,7 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
-  default: "anthropic/claude-sonnet-4"
+  default: "anthropic/claude-opus-4.6"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
@@ -23,9 +23,12 @@ model:
 # OPTION 1: Local execution (default)
 # Commands run directly on your machine in the current directory
 # -----------------------------------------------------------------------------
+# Working directory behavior:
+#   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
+#   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
 terminal:
   env_type: "local"
-  cwd: "."  # Use "." for current directory, or specify absolute path
+  cwd: "."  # CLI working directory - "." means current directory
   timeout: 180
   lifetime_seconds: 300
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
@@ -55,7 +58,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   docker_image: "python:3.11"
+#   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -67,7 +70,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   singularity_image: "docker://python:3.11"
+#   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # OPTION 5: Modal cloud execution
@@ -79,7 +82,7 @@ terminal:
 #   cwd: "/workspace"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   modal_image: "python:3.11"
+#   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)
@@ -113,11 +116,40 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Context Compression (Auto-shrinks long conversations)
+# =============================================================================
+# When conversation approaches model's context limit, middle turns are
+# automatically summarized to free up space while preserving important context.
+#
+# HOW IT WORKS:
+# 1. Tracks actual token usage from API responses (not estimates)
+# 2. When prompt_tokens >= threshold% of model's context_length, triggers compression
+# 3. Protects first 3 turns (system prompt, initial request, first response)
+# 4. Protects last 4 turns (recent context is most relevant)
+# 5. Summarizes middle turns using a fast/cheap model
+# 6. Inserts summary as a user message, continues conversation seamlessly
+#
+compression:
+  # Enable automatic context compression (default: true)
+  # Set to false if you prefer to manage context manually or want errors on overflow
+  enabled: true
+  
+  # Trigger compression at this % of model's context limit (default: 0.85 = 85%)
+  # Lower values = more aggressive compression, higher values = compress later
+  threshold: 0.85
+  
+  # Model to use for generating summaries (fast/cheap recommended)
+  # This model compresses the middle turns into a concise summary
+  summary_model: "google/gemini-3-flash-preview"
+
+# =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:
-  # Maximum conversation turns before stopping
-  max_turns: 20
+  # Maximum tool-calling iterations per conversation
+  # Higher = more room for complex tasks, but costs more tokens
+  # Recommended: 20-30 for focused tasks, 50-100 for open exploration
+  max_turns: 60
   
   # Enable verbose logging
   verbose: false

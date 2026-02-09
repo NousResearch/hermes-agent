@@ -28,125 +28,211 @@ Usage:
 
 import json
 import asyncio
-from typing import Dict, Any, List, Optional
+import os
+from typing import Dict, Any, List, Optional, Tuple
 
-from tools.terminal_tool import TERMINAL_TOOL_DESCRIPTION, cleanup_vm, check_terminal_requirements, terminal_tool
-
-# Optional toolsets: keep Hermes importable even when some deps aren't installed.
-try:
-    from tools.web_tools import check_firecrawl_api_key, web_crawl_tool, web_extract_tool, web_search_tool
-except ModuleNotFoundError:
-    web_search_tool = None  # type: ignore[assignment]
-    web_extract_tool = None  # type: ignore[assignment]
-    web_crawl_tool = None  # type: ignore[assignment]
-
-    def check_firecrawl_api_key() -> bool:  # type: ignore[no-redef]
-        return False
-
-try:
-    # Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
-    from tools.terminal_hecate import TERMINAL_HECATE_DESCRIPTION, check_hecate_requirements, terminal_hecate_tool
-except ModuleNotFoundError:
-    terminal_hecate_tool = None  # type: ignore[assignment]
-    TERMINAL_HECATE_DESCRIPTION = ""
-
-    def check_hecate_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-try:
-    from tools.vision_tools import check_vision_requirements, vision_analyze_tool
-except ModuleNotFoundError:
-    vision_analyze_tool = None  # type: ignore[assignment]
-
-    def check_vision_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-try:
-    from tools.mixture_of_agents_tool import check_moa_requirements, mixture_of_agents_tool
-except ModuleNotFoundError:
-    mixture_of_agents_tool = None  # type: ignore[assignment]
-
-    def check_moa_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-try:
-    from tools.image_generation_tool import check_image_generation_requirements, image_generate_tool
-except ModuleNotFoundError:
-    image_generate_tool = None  # type: ignore[assignment]
-
-    def check_image_generation_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-try:
-    from tools.skills_tool import (
-        SKILLS_TOOL_DESCRIPTION,
-        check_skills_requirements,
-        skill_view,
-        skills_categories,
-        skills_list,
-    )
-except ModuleNotFoundError:
-    SKILLS_TOOL_DESCRIPTION = ""
-
-    def check_skills_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-    def skills_categories() -> str:  # type: ignore[no-redef]
-        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
-
-    def skills_list(category: Optional[str] = None) -> str:  # type: ignore[no-redef]
-        _ = category
-        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
-
-    def skill_view(name: str, file_path: Optional[str] = None) -> str:  # type: ignore[no-redef]
-        _ = (name, file_path)
-        return json.dumps({"error": "Skills toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
-
-try:
-    # Browser automation tools (agent-browser + Browserbase)
-    from tools.browser_tool import (
-        BROWSER_TOOL_SCHEMAS,
-        browser_back,
-        browser_click,
-        browser_close,
-        browser_get_images,
-        browser_navigate,
-        browser_press,
-        browser_scroll,
-        browser_snapshot,
-        browser_type,
-        browser_vision,
-        check_browser_requirements,
-        cleanup_browser,
-    )
-except ModuleNotFoundError:
-    BROWSER_TOOL_SCHEMAS: List[Dict[str, Any]] = []
-
-    def check_browser_requirements() -> bool:  # type: ignore[no-redef]
-        return False
-
-    def cleanup_browser(task_id: Optional[str] = None) -> None:  # type: ignore[no-redef]
-        _ = task_id
-        return None
-
-    def _browser_unavailable(*_args: Any, **_kwargs: Any) -> str:
-        return json.dumps({"error": "Browser toolset is unavailable (missing dependencies)."}, ensure_ascii=False)
-
-    browser_navigate = _browser_unavailable  # type: ignore[assignment]
-    browser_snapshot = _browser_unavailable  # type: ignore[assignment]
-    browser_click = _browser_unavailable  # type: ignore[assignment]
-    browser_type = _browser_unavailable  # type: ignore[assignment]
-    browser_scroll = _browser_unavailable  # type: ignore[assignment]
-    browser_back = _browser_unavailable  # type: ignore[assignment]
-    browser_press = _browser_unavailable  # type: ignore[assignment]
-    browser_close = _browser_unavailable  # type: ignore[assignment]
-    browser_get_images = _browser_unavailable  # type: ignore[assignment]
-    browser_vision = _browser_unavailable  # type: ignore[assignment]
+from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
+from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION, cleanup_vm
+# File manipulation tools (read, write, patch, search)
+from tools.file_tools import read_file_tool, write_file_tool, patch_tool, search_tool
+from tools import check_file_requirements
+# Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
+from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirements, TERMINAL_HECATE_DESCRIPTION
+from tools.vision_tools import vision_analyze_tool, check_vision_requirements
+from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
+from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
+from tools.skills_tool import skills_categories, skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
+# RL Training tools (Tinker-Atropos)
+from tools.rl_training_tool import (
+    rl_list_environments,
+    rl_select_environment,
+    rl_get_current_config,
+    rl_edit_config,
+    rl_start_training,
+    rl_check_status,
+    rl_stop_training,
+    rl_get_results,
+    rl_list_runs,
+    rl_test_inference,
+    check_rl_api_keys,
+)
+# Cronjob management tools (CLI-only)
+from tools.cronjob_tools import (
+    schedule_cronjob,
+    list_cronjobs,
+    remove_cronjob,
+    check_cronjob_requirements,
+    get_cronjob_tool_definitions,
+    SCHEDULE_CRONJOB_SCHEMA,
+    LIST_CRONJOBS_SCHEMA,
+    REMOVE_CRONJOB_SCHEMA
+)
+# Browser automation tools (agent-browser + Browserbase)
+from tools.browser_tool import (
+    browser_navigate,
+    browser_snapshot,
+    browser_click,
+    browser_type,
+    browser_scroll,
+    browser_back,
+    browser_press,
+    browser_close,
+    browser_get_images,
+    browser_vision,
+    cleanup_browser,
+    check_browser_requirements,
+    BROWSER_TOOL_SCHEMAS
+)
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
     get_toolset_info, print_toolset_tree
 )
+
+
+# =============================================================================
+# Tool Availability Checking
+# =============================================================================
+
+# Maps toolsets to their required API keys/environment variables
+TOOLSET_REQUIREMENTS = {
+    "web": {
+        "name": "Web Search & Extract",
+        "env_vars": ["FIRECRAWL_API_KEY"],
+        "check_fn": check_firecrawl_api_key,
+        "setup_url": "https://firecrawl.dev/",
+        "tools": ["web_search", "web_extract"],
+    },
+    "vision": {
+        "name": "Vision (Image Analysis)",
+        "env_vars": ["OPENROUTER_API_KEY"],
+        "check_fn": check_vision_requirements,
+        "setup_url": "https://openrouter.ai/keys",
+        "tools": ["vision_analyze"],
+    },
+    "moa": {
+        "name": "Mixture of Agents",
+        "env_vars": ["OPENROUTER_API_KEY"],
+        "check_fn": check_moa_requirements,
+        "setup_url": "https://openrouter.ai/keys",
+        "tools": ["mixture_of_agents"],
+    },
+    "image_gen": {
+        "name": "Image Generation",
+        "env_vars": ["FAL_KEY"],
+        "check_fn": check_image_generation_requirements,
+        "setup_url": "https://fal.ai/",
+        "tools": ["image_generate"],
+    },
+    "browser": {
+        "name": "Browser Automation",
+        "env_vars": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+        "check_fn": check_browser_requirements,
+        "setup_url": "https://browserbase.com/",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_type"],
+    },
+    "terminal": {
+        "name": "Terminal/Command Execution",
+        "env_vars": [],  # No API key required, just system dependencies
+        "check_fn": check_terminal_requirements,
+        "setup_url": None,
+        "tools": ["terminal"],
+    },
+    "skills": {
+        "name": "Skills Knowledge Base",
+        "env_vars": [],  # Just needs skills directory
+        "check_fn": check_skills_requirements,
+        "setup_url": None,
+        "tools": ["skills_categories", "skills_list", "skill_view"],
+    },
+    "rl": {
+        "name": "RL Training (Tinker-Atropos)",
+        "env_vars": ["TINKER_API_KEY", "WANDB_API_KEY"],
+        "check_fn": check_rl_api_keys,
+        "setup_url": "https://wandb.ai/authorize",
+        "tools": [
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_list_runs", "rl_test_inference",
+        ],
+    },
+    "file": {
+        "name": "File Operations (read, write, patch, search)",
+        "env_vars": [],  # Uses terminal backend, no additional requirements
+        "check_fn": check_file_requirements,
+        "setup_url": None,
+        "tools": ["read_file", "write_file", "patch", "search"],
+    },
+}
+
+
+def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """
+    Check which tool categories are available based on API keys and requirements.
+    
+    Returns:
+        Tuple containing:
+        - List of available toolset names
+        - List of dicts with info about unavailable toolsets and what's missing
+    """
+    available = []
+    unavailable = []
+    
+    for toolset_id, info in TOOLSET_REQUIREMENTS.items():
+        if info["check_fn"]():
+            available.append(toolset_id)
+        else:
+            # Figure out what's missing
+            missing_vars = [var for var in info["env_vars"] if not os.getenv(var)]
+            unavailable.append({
+                "id": toolset_id,
+                "name": info["name"],
+                "missing_vars": missing_vars,
+                "setup_url": info["setup_url"],
+                "tools": info["tools"],
+            })
+    
+    return available, unavailable
+
+
+def print_tool_availability_warnings(unavailable: List[Dict[str, Any]], prefix: str = ""):
+    """Print warnings about unavailable tools."""
+    if not unavailable:
+        return
+    
+    # Filter to only those missing API keys (not system dependencies)
+    api_key_missing = [u for u in unavailable if u["missing_vars"]]
+    
+    if api_key_missing:
+        print(f"{prefix}⚠️  Some tools are disabled due to missing API keys:")
+        for item in api_key_missing:
+            vars_str = ", ".join(item["missing_vars"])
+            print(f"{prefix}   • {item['name']}: missing {vars_str}")
+            if item["setup_url"]:
+                print(f"{prefix}     Get key at: {item['setup_url']}")
+        print(f"{prefix}   Run 'hermes setup' to configure API keys")
+        print()
+
+
+def get_tool_availability_summary() -> Dict[str, Any]:
+    """
+    Get a summary of tool availability for display in status/doctor commands.
+    
+    Returns:
+        Dict with 'available' and 'unavailable' lists of tool info
+    """
+    available, unavailable = check_tool_availability()
+    
+    return {
+        "available": [
+            {"id": tid, "name": TOOLSET_REQUIREMENTS[tid]["name"], "tools": TOOLSET_REQUIREMENTS[tid]["tools"]}
+            for tid in available
+        ],
+        "unavailable": unavailable,
+    }
+
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:
     """
@@ -357,10 +443,15 @@ def get_skills_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "skills_categories",
-                "description": "List available skill categories. Call first if you want to discover categories, then use skills_list(category) to filter, or call skills_list if unsure.",
+                "description": "List available skill categories. Call this first to discover what skill categories exist, then use skills_list(category) to see skills in a category.",
                 "parameters": {
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "verbose": {
+                            "type": "boolean",
+                            "description": "If true, include skill counts per category. Default: false."
+                        }
+                    },
                     "required": []
                 }
             }
@@ -399,6 +490,393 @@ def get_browser_tool_definitions() -> List[Dict[str, Any]]:
         List[Dict]: List of browser tool definitions compatible with OpenAI API
     """
     return [{"type": "function", "function": schema} for schema in BROWSER_TOOL_SCHEMAS]
+
+
+def get_cronjob_tool_definitions_formatted() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for cronjob management tools in OpenAI's expected format.
+    
+    These tools are only available in the hermes-cli toolset (interactive CLI mode).
+    
+    Returns:
+        List[Dict]: List of cronjob tool definitions compatible with OpenAI API
+    """
+    return [{"type": "function", "function": schema} for schema in [
+        SCHEDULE_CRONJOB_SCHEMA,
+        LIST_CRONJOBS_SCHEMA,
+        REMOVE_CRONJOB_SCHEMA
+    ]]
+
+
+def get_rl_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for RL training tools in OpenAI's expected format.
+    
+    These tools enable running RL training through Tinker-Atropos.
+    
+    Returns:
+        List[Dict]: List of RL tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_list_environments",
+                "description": "List all available RL environments. Returns environment names, paths, and descriptions. TIP: Read the file_path with file tools to understand how each environment works (verifiers, data loading, rewards).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_select_environment",
+                "description": "Select an RL environment for training. Loads the environment's default configuration. After selecting, use rl_get_current_config() to see settings and rl_edit_config() to modify them.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the environment to select (from rl_list_environments)"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_get_current_config",
+                "description": "Get the current environment configuration. Returns only fields that can be modified: group_size, max_token_length, total_steps, steps_per_eval, use_wandb, wandb_name, max_num_workers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_edit_config",
+                "description": "Update a configuration field. Use rl_get_current_config() first to see all available fields for the selected environment. Each environment has different configurable options. Infrastructure settings (tokenizer, URLs, lora_rank, learning_rate) are locked.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "description": "Name of the field to update (get available fields from rl_get_current_config)"
+                        },
+                        "value": {
+                            "description": "New value for the field"
+                        }
+                    },
+                    "required": ["field", "value"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_start_training",
+                "description": "Start a new RL training run with the current environment and config. Most training parameters (lora_rank, learning_rate, etc.) are fixed. Use rl_edit_config() to set group_size, batch_size, wandb_project before starting. WARNING: Training takes hours.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_check_status",
+                "description": "Get status and metrics for a training run. RATE LIMITED: enforces 30-minute minimum between checks for the same run. Returns WandB metrics: step, state, reward_mean, loss, percent_correct.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {
+                            "type": "string",
+                            "description": "The run ID from rl_start_training()"
+                        }
+                    },
+                    "required": ["run_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_stop_training",
+                "description": "Stop a running training job. Use if metrics look bad, training is stagnant, or you want to try different settings.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {
+                            "type": "string",
+                            "description": "The run ID to stop"
+                        }
+                    },
+                    "required": ["run_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_get_results",
+                "description": "Get final results and metrics for a completed training run. Returns final metrics and path to trained weights.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {
+                            "type": "string",
+                            "description": "The run ID to get results for"
+                        }
+                    },
+                    "required": ["run_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_list_runs",
+                "description": "List all training runs (active and completed) with their status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rl_test_inference",
+                "description": "Quick inference test for any environment. Runs a few steps of inference + scoring using OpenRouter. Default: 3 steps × 16 completions = 48 rollouts per model, testing 3 models = 144 total. Tests environment loading, prompt construction, inference parsing, and verifier logic. Use BEFORE training to catch issues.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "num_steps": {
+                            "type": "integer",
+                            "description": "Number of steps to run (default: 3, recommended max for testing)",
+                            "default": 3
+                        },
+                        "group_size": {
+                            "type": "integer",
+                            "description": "Completions per step (default: 16, like training)",
+                            "default": 16
+                        },
+                        "models": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of OpenRouter model IDs. Default: qwen/qwen3-8b, z-ai/glm-4.7-flash, minimax/minimax-m2.1"
+                        }
+                    },
+                    "required": []
+                }
+            }
+        }
+    ]
+
+
+def get_file_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for file manipulation tools in OpenAI's expected format.
+    
+    File tools operate via the terminal backend and support any environment
+    (local, docker, singularity, ssh, modal).
+    
+    Returns:
+        List[Dict]: List of file tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": (
+                    "Read a file with pagination support. Preferred over 'cat' in the terminal because it "
+                    "provides line numbers, handles binary/image files, and suggests similar filenames if "
+                    "the file is not found.\n\n"
+                    "**Output format:** Each line is returned as 'LINE_NUM|CONTENT' for easy reference.\n"
+                    "**Binary files:** Detected automatically; images (png/jpg/gif/webp) are returned as base64 with MIME type and dimensions.\n"
+                    "**Large files:** Use offset and limit to paginate. The response includes total line count and a hint for the next page.\n"
+                    "**Paths:** Supports absolute paths, relative paths (from working directory), and ~ expansion."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read (absolute, relative, or ~/path)"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Line number to start reading from (1-indexed, default: 1)",
+                            "default": 1,
+                            "minimum": 1
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of lines to read (default: 500, max: 2000)",
+                            "default": 500,
+                            "maximum": 2000
+                        }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": (
+                    "Write content to a file, completely replacing any existing content. Creates parent "
+                    "directories automatically if they don't exist. Preferred over 'echo' or heredoc in the "
+                    "terminal because it safely handles special characters, newlines, and shell metacharacters "
+                    "without escaping issues.\n\n"
+                    "**Important:** This OVERWRITES the entire file. To make targeted edits to an existing file, "
+                    "use the 'patch' tool instead.\n"
+                    "**Paths:** Supports absolute paths, relative paths, and ~ expansion."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Complete content to write to the file"
+                        }
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "patch",
+                "description": (
+                    "Modify existing files using targeted edits. Preferred over 'sed' or manual rewriting because "
+                    "it uses intelligent fuzzy matching that tolerates minor whitespace and indentation differences, "
+                    "and auto-runs syntax checks (Python, JS, TS, Go, Rust) after editing.\n\n"
+                    "**Replace mode (recommended):** Find a unique string in the file and replace it. Uses a "
+                    "9-strategy fuzzy matching chain (exact → line-trimmed → whitespace-normalized → "
+                    "indentation-flexible → context-aware) so small formatting differences won't cause failures. "
+                    "Returns a unified diff showing exactly what changed.\n\n"
+                    "**Patch mode:** Apply multi-file changes using V4A patch format for large-scale edits across "
+                    "multiple files in one call.\n\n"
+                    "**Auto-lint:** After every edit, automatically runs syntax checks and reports errors so you "
+                    "can fix them immediately."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["replace", "patch"],
+                            "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches",
+                            "default": "replace"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "File path to edit (required for 'replace' mode)"
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                            "default": False
+                        },
+                        "patch": {
+                            "type": "string",
+                            "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"
+                        }
+                    },
+                    "required": ["mode"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": (
+                    "Search for content inside files or find files by name. Preferred over 'grep' or 'find' "
+                    "in the terminal because it uses ripgrep (fast) with automatic fallback to grep, handles "
+                    "pagination, and returns structured results sorted by modification time (newest first).\n\n"
+                    "**Content search (target='content'):** Regex-powered search inside files with optional "
+                    "file type filtering and context lines. Three output modes: full matches with line numbers, "
+                    "file paths only, or match counts per file.\n\n"
+                    "**File search (target='files'):** Find files by glob pattern (e.g., '*.py', '*config*'). "
+                    "Results sorted by modification time so recently changed files appear first."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "For target='content': regex pattern to search for. For target='files': glob pattern (e.g., '*.py', '*config*')"
+                        },
+                        "target": {
+                            "type": "string",
+                            "enum": ["content", "files"],
+                            "description": "Search mode: 'content' searches inside files (like grep/rg), 'files' searches for files by name (like find/glob)",
+                            "default": "content"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Directory or file to search in (default: current working directory)",
+                            "default": "."
+                        },
+                        "file_glob": {
+                            "type": "string",
+                            "description": "Filter files by pattern when target='content' (e.g., '*.py' to only search Python files)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (default: 50)",
+                            "default": 50
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Skip first N results for pagination (default: 0)",
+                            "default": 0
+                        },
+                        "output_mode": {
+                            "type": "string",
+                            "enum": ["content", "files_only", "count"],
+                            "description": "Output format for content search: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
+                            "default": "content"
+                        },
+                        "context": {
+                            "type": "integer",
+                            "description": "Number of lines to show before and after each match (only for target='content', output_mode='content')",
+                            "default": 0
+                        }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        }
+    ]
 
 
 def get_all_tool_names() -> List[str]:
@@ -443,7 +921,76 @@ def get_all_tool_names() -> List[str]:
             "browser_vision"
         ])
     
+    # Cronjob management tools (CLI-only, checked at runtime)
+    if check_cronjob_requirements():
+        tool_names.extend([
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ])
+    
+    # RL Training tools
+    if check_rl_api_keys():
+        tool_names.extend([
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_list_runs", "rl_test_inference"
+        ])
+    
+    # File manipulation tools (use terminal backend)
+    if check_file_requirements():
+        tool_names.extend([
+            "read_file", "write_file", "patch", "search"
+        ])
+    
     return tool_names
+
+
+# Master mapping of every tool name → its toolset.
+# This is the single source of truth for all valid tool names in the system.
+# Import TOOL_TO_TOOLSET_MAP from here whenever you need to check valid tools.
+TOOL_TO_TOOLSET_MAP = {
+    "web_search": "web_tools",
+    "web_extract": "web_tools",
+    "terminal": "terminal_tools",
+    "vision_analyze": "vision_tools",
+    "mixture_of_agents": "moa_tools",
+    "image_generate": "image_tools",
+    # Skills tools
+    "skills_categories": "skills_tools",
+    "skills_list": "skills_tools",
+    "skill_view": "skills_tools",
+    # Browser automation tools
+    "browser_navigate": "browser_tools",
+    "browser_snapshot": "browser_tools",
+    "browser_click": "browser_tools",
+    "browser_type": "browser_tools",
+    "browser_scroll": "browser_tools",
+    "browser_back": "browser_tools",
+    "browser_press": "browser_tools",
+    "browser_close": "browser_tools",
+    "browser_get_images": "browser_tools",
+    "browser_vision": "browser_tools",
+    # Cronjob management tools
+    "schedule_cronjob": "cronjob_tools",
+    "list_cronjobs": "cronjob_tools",
+    "remove_cronjob": "cronjob_tools",
+    # RL Training tools
+    "rl_list_environments": "rl_tools",
+    "rl_select_environment": "rl_tools",
+    "rl_get_current_config": "rl_tools",
+    "rl_edit_config": "rl_tools",
+    "rl_start_training": "rl_tools",
+    "rl_check_status": "rl_tools",
+    "rl_stop_training": "rl_tools",
+    "rl_get_results": "rl_tools",
+    "rl_list_runs": "rl_tools",
+    # File manipulation tools
+    "read_file": "file_tools",
+    "write_file": "file_tools",
+    "patch": "file_tools",
+    "search": "file_tools",
+}
 
 
 def get_toolset_for_tool(tool_name: str) -> str:
@@ -456,31 +1003,7 @@ def get_toolset_for_tool(tool_name: str) -> str:
     Returns:
         str: Name of the toolset, or "unknown" if not found
     """
-    toolset_mapping = {
-        "web_search": "web_tools",
-        "web_extract": "web_tools",
-        "terminal": "terminal_tools",
-        "vision_analyze": "vision_tools",
-        "mixture_of_agents": "moa_tools",
-        "image_generate": "image_tools",
-        # Skills tools
-        "skills_categories": "skills_tools",
-        "skills_list": "skills_tools",
-        "skill_view": "skills_tools",
-        # Browser automation tools
-        "browser_navigate": "browser_tools",
-        "browser_snapshot": "browser_tools",
-        "browser_click": "browser_tools",
-        "browser_type": "browser_tools",
-        "browser_scroll": "browser_tools",
-        "browser_back": "browser_tools",
-        "browser_press": "browser_tools",
-        "browser_close": "browser_tools",
-        "browser_get_images": "browser_tools",
-        "browser_vision": "browser_tools"
-    }
-    
-    return toolset_mapping.get(tool_name, "unknown")
+    return TOOL_TO_TOOLSET_MAP.get(tool_name, "unknown")
 
 
 def get_tool_definitions(
@@ -550,6 +1073,21 @@ def get_tool_definitions(
         for tool in get_browser_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
+    # Cronjob management tools (CLI-only)
+    if check_cronjob_requirements():
+        for tool in get_cronjob_tool_definitions_formatted():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # RL Training tools
+    if check_rl_api_keys():
+        for tool in get_rl_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # File manipulation tools (use terminal backend)
+    if check_file_requirements():
+        for tool in get_file_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
     # Determine which tools to include based on toolsets
     tools_to_include = set()
     
@@ -559,10 +1097,11 @@ def get_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved_tools = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved_tools)
-                print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
+                if not quiet_mode:
+                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
                     # Map legacy names to new system
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
@@ -576,13 +1115,24 @@ def get_tool_definitions(
                             "browser_type", "browser_scroll", "browser_back",
                             "browser_press", "browser_close", "browser_get_images",
                             "browser_vision"
-                        ]
+                        ],
+                        "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+                        "rl_tools": [
+                            "rl_list_environments", "rl_select_environment",
+                            "rl_get_current_config", "rl_edit_config",
+                            "rl_start_training", "rl_check_status",
+                            "rl_stop_training", "rl_get_results",
+                            "rl_list_runs", "rl_test_inference"
+                        ],
+                        "file_tools": ["read_file", "write_file", "patch", "search"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.update(legacy_tools)
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    if not quiet_mode:
+                        print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
                 else:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    if not quiet_mode:
+                        print(f"⚠️  Unknown toolset: {toolset_name}")
     elif disabled_toolsets:
         # Start with all tools from all toolsets, then remove disabled ones
         # Note: Only tools that are part of toolsets are accessible
@@ -601,10 +1151,11 @@ def get_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved_tools = resolve_toolset(toolset_name)
                 tools_to_include.difference_update(resolved_tools)
-                print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
+                if not quiet_mode:
+                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved_tools) if resolved_tools else 'no tools'}")
             else:
                 # Try legacy compatibility
-                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools"]:
+                if toolset_name in ["web_tools", "terminal_tools", "vision_tools", "moa_tools", "image_tools", "skills_tools", "browser_tools", "cronjob_tools"]:
                     legacy_map = {
                         "web_tools": ["web_search", "web_extract"],
                         "terminal_tools": ["terminal"],
@@ -617,13 +1168,24 @@ def get_tool_definitions(
                             "browser_type", "browser_scroll", "browser_back",
                             "browser_press", "browser_close", "browser_get_images",
                             "browser_vision"
-                        ]
+                        ],
+                        "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+                        "rl_tools": [
+                            "rl_list_environments", "rl_select_environment",
+                            "rl_get_current_config", "rl_edit_config",
+                            "rl_start_training", "rl_check_status",
+                            "rl_stop_training", "rl_get_results",
+                            "rl_list_runs", "rl_test_inference"
+                        ],
+                        "file_tools": ["read_file", "write_file", "patch", "search"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.difference_update(legacy_tools)
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    if not quiet_mode:
+                        print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
                 else:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+                    if not quiet_mode:
+                        print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # No filtering - include all tools from all defined toolsets
         from toolsets import get_all_toolsets
@@ -660,17 +1222,6 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
-    if web_search_tool is None or web_extract_tool is None or web_crawl_tool is None:
-        return json.dumps(
-            {
-                "error": (
-                    "Web toolset is unavailable (missing dependencies and/or FIRECRAWL_API_KEY). "
-                    "Install web tool deps and set FIRECRAWL_API_KEY to enable."
-                )
-            },
-            ensure_ascii=False,
-        )
-
     if function_name == "web_search":
         query = function_args.get("query", "")
         # Always use fixed limit of 5
@@ -681,8 +1232,19 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
         urls = function_args.get("urls", [])
         # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
-        # Run async function in event loop
-        return asyncio.run(web_extract_tool(urls, "markdown"))
+        # Run async function -- use existing loop if available (Atropos),
+        # otherwise create one (normal CLI)
+        try:
+            loop = asyncio.get_running_loop()
+            # Already in an async context (Atropos) -- run in a thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    lambda: asyncio.run(web_extract_tool(urls, "markdown"))
+                ).result(timeout=120)
+        except RuntimeError:
+            # No running loop (normal CLI) -- use asyncio.run directly
+            return asyncio.run(web_extract_tool(urls, "markdown"))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
@@ -705,6 +1267,8 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         command = function_args.get("command")
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
+        # Note: force parameter exists internally but is NOT exposed to the model
+        # Dangerous command approval is handled via user prompts only
 
         return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
 
@@ -723,17 +1287,6 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
     Returns:
         str: Function result as JSON string
     """
-    if vision_analyze_tool is None:
-        return json.dumps(
-            {
-                "error": (
-                    "Vision toolset is unavailable (missing dependencies and/or NOUS_API_KEY). "
-                    "Install vision deps and set NOUS_API_KEY to enable."
-                )
-            },
-            ensure_ascii=False,
-        )
-
     if function_name == "vision_analyze":
         image_url = function_args.get("image_url", "")
         question = function_args.get("question", "")
@@ -758,17 +1311,6 @@ def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) 
     Returns:
         str: Function result as JSON string
     """
-    if mixture_of_agents_tool is None:
-        return json.dumps(
-            {
-                "error": (
-                    "Mixture-of-Agents toolset is unavailable (missing dependencies and/or NOUS_API_KEY). "
-                    "Install MoA deps and set NOUS_API_KEY to enable."
-                )
-            },
-            ensure_ascii=False,
-        )
-
     if function_name == "mixture_of_agents":
         user_prompt = function_args.get("user_prompt", "")
         
@@ -793,17 +1335,6 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
     Returns:
         str: Function result as JSON string
     """
-    if image_generate_tool is None:
-        return json.dumps(
-            {
-                "error": (
-                    "Image generation toolset is unavailable (missing dependencies and/or FAL_KEY). "
-                    "Install image deps and set FAL_KEY to enable."
-                )
-            },
-            ensure_ascii=False,
-        )
-
     if function_name == "image_generate":
         prompt = function_args.get("prompt", "")
         
@@ -861,7 +1392,8 @@ def handle_skills_function_call(function_name: str, function_args: Dict[str, Any
         str: Function result as JSON string
     """
     if function_name == "skills_categories":
-        return skills_categories()
+        verbose = function_args.get("verbose", False)
+        return skills_categories(verbose=verbose)
     
     elif function_name == "skills_list":
         category = function_args.get("category")
@@ -924,6 +1456,189 @@ def handle_browser_function_call(
     return json.dumps({"error": f"Unknown browser function: {function_name}"}, ensure_ascii=False)
 
 
+def handle_cronjob_function_call(
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str] = None
+) -> str:
+    """
+    Handle function calls for cronjob management tools.
+    
+    These tools are only available in interactive CLI mode (hermes-cli toolset).
+    
+    Args:
+        function_name (str): Name of the cronjob function to call
+        function_args (Dict): Arguments for the function
+        task_id (str): Task identifier (unused, for API consistency)
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "schedule_cronjob":
+        return schedule_cronjob(
+            prompt=function_args.get("prompt", ""),
+            schedule=function_args.get("schedule", ""),
+            name=function_args.get("name"),
+            repeat=function_args.get("repeat"),
+            task_id=task_id
+        )
+    
+    elif function_name == "list_cronjobs":
+        return list_cronjobs(
+            include_disabled=function_args.get("include_disabled", False),
+            task_id=task_id
+        )
+    
+    elif function_name == "remove_cronjob":
+        return remove_cronjob(
+            job_id=function_args.get("job_id", ""),
+            task_id=task_id
+        )
+    
+    return json.dumps({"error": f"Unknown cronjob function: {function_name}"}, ensure_ascii=False)
+
+
+def handle_rl_function_call(
+    function_name: str,
+    function_args: Dict[str, Any]
+) -> str:
+    """
+    Handle function calls for RL training tools.
+    
+    These tools communicate with the RL API server to manage training runs.
+    
+    Args:
+        function_name (str): Name of the RL function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    # Run async functions in event loop
+    import asyncio
+    
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    if function_name == "rl_list_environments":
+        return loop.run_until_complete(rl_list_environments())
+    
+    elif function_name == "rl_select_environment":
+        return loop.run_until_complete(
+            rl_select_environment(name=function_args.get("name", ""))
+        )
+    
+    elif function_name == "rl_get_current_config":
+        return loop.run_until_complete(rl_get_current_config())
+    
+    elif function_name == "rl_edit_config":
+        return loop.run_until_complete(
+            rl_edit_config(
+                field=function_args.get("field", ""),
+                value=function_args.get("value")
+            )
+        )
+    
+    elif function_name == "rl_start_training":
+        return loop.run_until_complete(rl_start_training())
+    
+    elif function_name == "rl_check_status":
+        return loop.run_until_complete(
+            rl_check_status(run_id=function_args.get("run_id", ""))
+        )
+    
+    elif function_name == "rl_stop_training":
+        return loop.run_until_complete(
+            rl_stop_training(run_id=function_args.get("run_id", ""))
+        )
+    
+    elif function_name == "rl_get_results":
+        return loop.run_until_complete(
+            rl_get_results(run_id=function_args.get("run_id", ""))
+        )
+    
+    elif function_name == "rl_list_runs":
+        return loop.run_until_complete(rl_list_runs())
+    
+    elif function_name == "rl_test_inference":
+        return loop.run_until_complete(
+            rl_test_inference(
+                num_steps=function_args.get("num_steps", 3),
+                group_size=function_args.get("group_size", 16),
+                models=function_args.get("models"),
+            )
+        )
+    
+    return json.dumps({"error": f"Unknown RL function: {function_name}"}, ensure_ascii=False)
+
+
+def handle_file_function_call(
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str] = None
+) -> str:
+    """
+    Handle function calls for file manipulation tools.
+    
+    These tools use the terminal backend for all operations, supporting
+    local, docker, singularity, ssh, and modal environments.
+    
+    Args:
+        function_name (str): Name of the file function to call
+        function_args (Dict): Arguments for the function
+        task_id (str): Task identifier for environment isolation
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    # Determine task_id to use
+    tid = task_id or "default"
+    
+    if function_name == "read_file":
+        return read_file_tool(
+            path=function_args.get("path", ""),
+            offset=function_args.get("offset", 1),
+            limit=function_args.get("limit", 500),
+            task_id=tid
+        )
+    
+    elif function_name == "write_file":
+        return write_file_tool(
+            path=function_args.get("path", ""),
+            content=function_args.get("content", ""),
+            task_id=tid
+        )
+    
+    elif function_name == "patch":
+        return patch_tool(
+            mode=function_args.get("mode", "replace"),
+            path=function_args.get("path"),
+            old_string=function_args.get("old_string"),
+            new_string=function_args.get("new_string"),
+            replace_all=function_args.get("replace_all", False),
+            patch=function_args.get("patch"),
+            task_id=tid
+        )
+    
+    elif function_name == "search":
+        return search_tool(
+            pattern=function_args.get("pattern", ""),
+            target=function_args.get("target", "content"),
+            path=function_args.get("path", "."),
+            file_glob=function_args.get("file_glob"),
+            limit=function_args.get("limit", 50),
+            offset=function_args.get("offset", 0),
+            output_mode=function_args.get("output_mode", "content"),
+            context=function_args.get("context", 0),
+            task_id=tid
+        )
+    
+    return json.dumps({"error": f"Unknown file function: {function_name}"}, ensure_ascii=False)
+
+
 def handle_function_call(
     function_name: str, 
     function_args: Dict[str, Any], 
@@ -982,6 +1697,24 @@ def handle_function_call(
             "browser_vision"
         ]:
             return handle_browser_function_call(function_name, function_args, task_id, user_task)
+
+        # Route cronjob management tools
+        elif function_name in ["schedule_cronjob", "list_cronjobs", "remove_cronjob"]:
+            return handle_cronjob_function_call(function_name, function_args, task_id)
+
+        # Route RL training tools
+        elif function_name in [
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_list_runs", "rl_test_inference"
+        ]:
+            return handle_rl_function_call(function_name, function_args)
+
+        # Route file manipulation tools
+        elif function_name in ["read_file", "write_file", "patch", "search"]:
+            return handle_file_function_call(function_name, function_args, task_id)
 
         else:
             error_msg = f"Unknown function: {function_name}"
@@ -1048,6 +1781,18 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             ],
             "description": "Browser automation for web interaction using agent-browser CLI with Browserbase cloud execution",
             "requirements": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "agent-browser npm package"]
+        },
+        "cronjob_tools": {
+            "available": check_cronjob_requirements(),
+            "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+            "description": "Schedule and manage automated tasks (cronjobs) - only available in interactive CLI mode",
+            "requirements": ["HERMES_INTERACTIVE=1 (set automatically by cli.py)"]
+        },
+        "file_tools": {
+            "available": check_file_requirements(),
+            "tools": ["read_file", "write_file", "patch", "search"],
+            "description": "File manipulation tools: read/write files, search content/files, patch with fuzzy matching",
+            "requirements": ["Terminal backend available (local/docker/ssh/singularity/modal)"]
         }
     }
     
@@ -1067,7 +1812,9 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "moa_tools": check_moa_requirements(),
         "image_tools": check_image_generation_requirements(),
         "skills_tools": check_skills_requirements(),
-        "browser_tools": check_browser_requirements()
+        "browser_tools": check_browser_requirements(),
+        "cronjob_tools": check_cronjob_requirements(),
+        "file_tools": check_file_requirements()
     }
 
 if __name__ == "__main__":

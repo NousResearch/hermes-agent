@@ -84,18 +84,137 @@ TOOLSETS = {
         "includes": []
     },
     
+    "cronjob": {
+        "description": "Cronjob management tools - schedule, list, and remove automated tasks (CLI-only)",
+        "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
+        "includes": []
+    },
+    
+    "rl": {
+        "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
+        "tools": [
+            "rl_list_environments", "rl_select_environment",
+            "rl_get_current_config", "rl_edit_config",
+            "rl_start_training", "rl_check_status",
+            "rl_stop_training", "rl_get_results",
+            "rl_list_runs", "rl_test_inference"
+        ],
+        "includes": []
+    },
+    
+    "file": {
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
+        "tools": ["read_file", "write_file", "patch", "search"],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal"],
-        "includes": ["web"]  # For searching error messages and solutions
+        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": ["mixture_of_agents"],
         "includes": ["web", "vision", "creative"]
+    },
+    
+    # ==========================================================================
+    # CLI-specific toolsets (only available when running via cli.py)
+    # ==========================================================================
+    
+    "hermes-cli": {
+        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
+        "tools": [
+            # Web tools
+            "web_search", "web_extract",
+            # Terminal
+            "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
+            # Vision
+            "vision_analyze",
+            # Image generation
+            "image_generate",
+            # MoA
+            "mixture_of_agents",
+            # Skills
+            "skills_categories", "skills_list", "skill_view",
+            # Browser
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
+            # Cronjob management (CLI-only)
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    # ==========================================================================
+    # Messaging Platform-Specific Toolsets
+    # ==========================================================================
+    
+    "hermes-telegram": {
+        "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
+        "tools": [
+            # Terminal - enabled with dangerous command approval system
+            "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
+            # Web tools
+            "web_search", "web_extract",
+            # Vision - analyze images sent by users
+            "vision_analyze",
+            # Skills - access knowledge base
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob management - let users schedule tasks
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-discord": {
+        "description": "Discord bot toolset - limited for public server safety (no terminal, no file access)",
+        "tools": [
+            # Web tools - safe for messaging
+            "web_search",
+            # Vision - analyze images
+            "vision_analyze",
+            # Skills - access knowledge base
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob - let users schedule reminders
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-whatsapp": {
+        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
+        "tools": [
+            # Web tools
+            "web_search", "web_extract",
+            # Terminal - only for trusted personal accounts
+            "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
+            # Vision
+            "vision_analyze",
+            # Skills
+            "skills_categories", "skills_list", "skill_view",
+            # Cronjob management
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+        ],
+        "includes": []
+    },
+    
+    "hermes-gateway": {
+        "description": "Gateway toolset - union of all messaging platform tools",
+        "tools": [],
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp"]
     }
 }
 

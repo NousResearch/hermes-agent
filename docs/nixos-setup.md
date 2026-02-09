@@ -27,6 +27,19 @@ hermes setup
 hermes
 ```
 
+### Using direnv (recommended)
+
+If you have [direnv](https://direnv.net/) installed, the included `.envrc` will
+automatically activate the dev shell when you `cd` into the repo:
+
+```bash
+cd hermes-agent
+direnv allow    # one-time approval
+
+# From now on, entering the directory activates the environment automatically.
+# On repeat entry, the stamp file check skips dependency installation (~instant).
+```
+
 ## Option 2: Server Deployment (NixOS Module)
 
 For running Hermes Agent as persistent services (Telegram/Discord bot, cron scheduler).
@@ -136,11 +149,13 @@ systemctl status hermes-agent-cron
    - Installs all Python dependencies via `uv pip install`
    - Installs npm dependencies (agent-browser for browser automation)
    - Creates the `~/.hermes/` config structure
+   - Has `TimeoutStartSec = 300` to allow for slow network installs
 
 2. **hermes-agent-gateway.service** (persistent):
    - Runs the messaging gateway (Telegram, Discord, WhatsApp)
    - Auto-restarts on failure
    - Reads API keys from your `environmentFile`
+   - Sets `MESSAGING_CWD` to the state directory
 
 3. **hermes-agent-cron.service** (persistent):
    - Checks for due scheduled tasks every 60 seconds
@@ -213,11 +228,11 @@ journalctl -u hermes-agent-cron -f
 # View setup logs (dep installation)
 journalctl -u hermes-agent-setup
 
-# Run hermes interactively as the service user (for debugging)
-sudo -u hermes /var/lib/hermes/app/.venv/bin/hermes doctor
+# Run hermes doctor interactively as the service user (with correct env vars)
+sudo -u hermes bash -c 'source /var/lib/hermes/app/.venv/bin/activate && HERMES_HOME=/var/lib/hermes/.hermes hermes doctor'
 
 # Check which tools are available
-sudo -u hermes /var/lib/hermes/app/.venv/bin/hermes status
+sudo -u hermes bash -c 'source /var/lib/hermes/app/.venv/bin/activate && HERMES_HOME=/var/lib/hermes/.hermes hermes status'
 ```
 
 ## Using with sops-nix (recommended for secrets)

@@ -1,0 +1,74 @@
+# Endless Terminals Environment Configuration
+#
+# This config enables procedural terminal task generation for RL training.
+# Tasks are generated on-demand using Endless Terminals LLM pipeline.
+#
+# Usage:
+#   python -m atropos.envs.endless_terminals_env process \
+#     --config configs/endless_terminals.yaml
+
+# Environment settings
+env:
+  # Task generation
+  task_gen_model: "Qwen/Qwen3-32B"  # vLLM model for task generation
+  task_gen_temperature: 1.0
+  task_gen_max_tokens: 2048
+
+  # Container settings
+  base_container_image: "ubuntu:22.04"
+  container_timeout_s: 180
+  test_timeout_s: 60
+
+  # Workspace
+  workspace_dir: "/tmp/endless_terminals_workspace"
+  keep_failed_tasks: false  # Set true to debug failed tasks
+
+  # Agent config (increased for long traces)
+  agent_max_steps: 32
+  agent_temperature: 0.7
+  agent_max_tokens: null  # Let backend decide
+
+  # Tooling: terminal only
+  enabled_toolsets: ["terminal"]
+  disabled_toolsets: []
+
+  # Training settings
+  group_size: 4  # Parallel trajectory collection
+  batch_size: 32
+  total_steps: 1000  # Total training episodes
+  use_wandb: false  # Enable for experiment tracking
+  include_messages: true
+
+  # Tool execution backend (nomad or modal)
+  tool_pool_mode: "nomad"
+
+  # Nomad settings (if using nomad)
+  nomad_address: "http://localhost:4646"
+  sandbox_job_id: "atropos-sandbox-endless"
+  sandbox_image: "atropos-sandbox:local"
+  slots_per_container: 10
+  min_containers: 1
+  max_containers: 10
+  privileged: false
+  acquire_timeout_s: 30.0
+  purge_job_on_start: true
+  purge_job_on_shutdown: true
+
+  # Modal settings (if using modal instead)
+  # modal_app_name: "atropos-endless"
+  # modal_image: "python:3.11"
+  # modal_slots_per_sandbox: 10
+  # modal_min_sandboxes: 1
+  # modal_max_sandboxes: 5
+
+  # Server config
+  server_base_url: "http://127.0.0.1:8080"
+  server_model: "hermes-4-36b"
+  tokenizer_name: "NousResearch/Hermes-4.3-36B"
+
+# Server configs are auto-generated from env vars and env.server_* settings
+# Override via environment variables:
+#   ATROPOS_SERVER_BASE_URL
+#   ATROPOS_SERVER_MODEL
+#   ATROPOS_SERVER_API_KEY
+#   ATROPOS_TOKENIZER_NAME

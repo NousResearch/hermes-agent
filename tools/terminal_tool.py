@@ -1365,7 +1365,15 @@ def cleanup_vm(task_id: str):
                     print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
 
 
-atexit.register(_stop_cleanup_thread)
+def _atexit_cleanup():
+    """Stop cleanup thread and shut down all remaining sandboxes on exit."""
+    _stop_cleanup_thread()
+    if _active_environments:
+        count = len(_active_environments)
+        print(f"\n[Terminal Cleanup] Shutting down {count} remaining sandbox(es)...")
+        cleanup_all_environments()
+
+atexit.register(_atexit_cleanup)
 
 
 def terminal_tool(

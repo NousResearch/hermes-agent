@@ -19,8 +19,11 @@ env:
   max_token_length: 32000
   agent_temperature: 0.8
   terminal_backend: "modal"
+  terminal_timeout: 300        # 5 min per command (builds, pip install)
+  tool_pool_size: 128          # thread pool for 89 parallel tasks
   dataset_name: "NousResearch/terminal-bench-2"
   test_timeout: 600
+  task_timeout: 1800           # 30 min wall-clock per task, auto-FAIL if exceeded
   tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
   use_wandb: true
   wandb_name: "terminal-bench-2"

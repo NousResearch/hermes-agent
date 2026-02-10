@@ -1,0 +1,64 @@
+env:
+  group_size: 1
+  max_num_workers: -1
+  max_eval_workers: 16
+  max_num_workers_per_node: 8
+  steps_per_eval: 1
+  max_token_length: 32000
+  eval_handling: STOP_TRAIN
+  eval_limit_ratio: 0.5
+  inference_weight: 1.0
+  batch_size: -1
+  max_batches_offpolicy: 3
+  tokenizer_name: NousResearch/Hermes-3-Llama-3.1-8B
+  use_wandb: false
+  rollout_server_url: http://localhost:8000
+  total_steps: 1
+  wandb_name: terminal-bench-2
+  num_rollouts_to_keep: 32
+  num_rollouts_per_group_for_logging: 1
+  ensure_scores_are_not_same: false
+  data_path_to_save_groups: null
+  data_dir_to_save_evals: evals/terminal-bench-2
+  min_items_sent_before_logging: 2
+  include_messages: false
+  min_batch_allocation: null
+  worker_timeout: 600.0
+  thinking_mode: false
+  reasoning_effort: null
+  max_reasoning_tokens: null
+  custom_thinking_prompt: null
+  enabled_toolsets:
+  - terminal
+  - file
+  disabled_toolsets: null
+  distribution: null
+  max_agent_turns: 60
+  system_prompt: 'You are a skilled software engineer and system administrator with
+    access to a terminal and file tools. You are working inside a Linux container
+    environment. Complete the user''s task by using the available tools. Be methodical:
+    explore the environment first, plan your approach, then execute step by step.
+    Verify your work before finishing.'
+  agent_temperature: 1.0
+  terminal_backend: modal
+  dataset_name: NousResearch/terminal-bench-2
+  dataset_split: train
+  prompt_field: prompt
+  tool_call_parser: hermes
+  test_timeout: 180
+  force_build: false
+  task_filter: fix-git
+  skip_tasks: null
+openai:
+- timeout: 1200
+  num_max_requests_at_once: 512
+  num_requests_for_eval: 64
+  model_name: anthropic/claude-sonnet-4
+  rolling_buffer_length: 1000
+  server_type: openai
+  api_key: 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
+  base_url: https://openrouter.ai/api/v1
+  n_kwarg_is_ignored: false
+  health_check: false
+slurm: false
+testing: false

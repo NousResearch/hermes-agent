@@ -4,7 +4,8 @@
 # Uses terminal + file + web toolsets.
 #
 # Usage:
-#   python environments/hermes_swe_env.py serve --config environments/configs/swe_default.yaml
+#   python environments/hermes_swe_env/hermes_swe_env.py serve \
+#       --config environments/hermes_swe_env/default.yaml
 
 env:
   enabled_toolsets: ["terminal", "file", "web"]

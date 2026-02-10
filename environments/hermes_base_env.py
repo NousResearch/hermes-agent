@@ -117,6 +117,18 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         description="Terminal backend: 'local', 'docker', 'modal', 'ssh', 'singularity'. "
         "Modal recommended for production RL (cloud isolation per rollout).",
     )
+    terminal_timeout: int = Field(
+        default=120,
+        description="Per-command timeout in seconds for terminal tool calls. "
+        "Commands exceeding this are killed. Increase for tasks with long-running "
+        "commands (compilation, pip install, etc.).",
+    )
+    terminal_lifetime: int = Field(
+        default=3600,
+        description="Sandbox inactivity lifetime in seconds. The cleanup thread kills "
+        "sandboxes that have been idle longer than this. Must be longer than "
+        "the longest gap between tool calls (e.g., waiting for LLM response).",
+    )
 
     # --- Dataset ---
     dataset_name: Optional[str] = Field(
@@ -130,6 +142,14 @@ class HermesAgentEnvConfig(BaseEnvConfig):
     prompt_field: str = Field(
         default="prompt",
         description="Which field in the dataset contains the prompt.",
+    )
+
+    # --- Thread pool ---
+    tool_pool_size: int = Field(
+        default=128,
+        description="Thread pool size for tool execution. Each concurrent task needs a "
+        "thread for tool calls. Must be large enough for parallel evaluation. "
+        "Too small = thread pool starvation.",
     )
 
     # --- Phase 2: Tool call parsing ---
@@ -175,10 +195,23 @@ class HermesAgentBaseEnv(BaseEnv):
     ):
         super().__init__(config, server_configs, slurm, testing)
 
-        # Set terminal backend environment variable so hermes tools pick it up
+        # Set terminal environment variables so hermes tools pick them up.
+        # These can all be overridden per-environment via config fields instead
+        # of requiring users to set shell env vars.
         if config.terminal_backend:
             os.environ["TERMINAL_ENV"] = config.terminal_backend
-            print(f"🖥️  Terminal backend: {config.terminal_backend}")
+        os.environ["TERMINAL_TIMEOUT"] = str(config.terminal_timeout)
+        os.environ["TERMINAL_LIFETIME_SECONDS"] = str(config.terminal_lifetime)
+        print(
+            f"🖥️  Terminal: backend={config.terminal_backend}, "
+            f"timeout={config.terminal_timeout}s, lifetime={config.terminal_lifetime}s"
+        )
+
+        # Resize the agent loop's thread pool for tool execution.
+        # This must be large enough for the number of concurrent tasks
+        # (e.g., 89 parallel TB2 eval tasks each need a thread for tool calls).
+        from environments.agent_loop import resize_tool_pool
+        resize_tool_pool(config.tool_pool_size)
 
         # Current group's resolved tools (set in collect_trajectories)
         self._current_group_tools: Optional[Tuple[List[Dict], Set[str]]] = None

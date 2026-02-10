@@ -41,8 +41,9 @@ messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
 cron = ["croniter"]
 cli = ["simple-term-menu"]
 # Install Atropos + Tinker training integration from source.
+# Uses tool_call_support branch for ManagedServer tool calling (PR #366).
 atropos = [
-  "atroposlib @ git+https://github.com/NousResearch/atropos.git",
+  "atroposlib @ git+https://github.com/NousResearch/atropos.git@tool_call_support",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
   # Atropos integration runtime deps (kept optional for Hermes-only users)
   "aiohttp",

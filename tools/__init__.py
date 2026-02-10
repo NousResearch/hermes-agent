@@ -31,6 +31,8 @@ from .terminal_tool import (
     cleanup_vm,
     cleanup_all_environments,
     get_active_environments_info,
+    register_task_env_overrides,
+    clear_task_env_overrides,
     TERMINAL_TOOL_DESCRIPTION
 )
 
@@ -139,6 +141,8 @@ __all__ = [
     'cleanup_vm',
     'cleanup_all_environments',
     'get_active_environments_info',
+    'register_task_env_overrides',
+    'clear_task_env_overrides',
     'TERMINAL_TOOL_DESCRIPTION',
     # Terminal tools (Hecate/MorphCloud backend)
     'terminal_hecate_tool',

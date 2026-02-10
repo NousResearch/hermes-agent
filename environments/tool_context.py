@@ -129,11 +129,14 @@ class ToolContext:
 
     def write_file(self, path: str, content: str) -> Dict[str, Any]:
         """
-        Write a file in the rollout's filesystem.
+        Write a TEXT file in the rollout's filesystem.
+
+        Uses a shell heredoc under the hood, so this is only safe for text content.
+        For binary files (images, compiled artifacts, etc.), use upload_file() instead.
 
         Args:
             path: File path to write
-            content: Content to write
+            content: Text content to write
 
         Returns:
             Dict with success status or error
@@ -145,6 +148,177 @@ class ToolContext:
             return json.loads(result)
         except json.JSONDecodeError:
             return {"error": result}
+
+    def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """
+        Upload a local file to the rollout's sandbox (binary-safe).
+
+        Unlike write_file() which passes content through a shell heredoc (text-only),
+        this method base64-encodes the file and decodes it inside the sandbox.
+        Safe for any file type: binaries, images, archives, etc.
+
+        For large files (>1MB), the content is split into chunks to avoid
+        hitting shell command-length limits.
+
+        Args:
+            local_path: Path to a local file on the host
+            remote_path: Destination path inside the sandbox
+
+        Returns:
+            Dict with 'exit_code' and 'output'
+        """
+        import base64
+        from pathlib import Path as _Path
+
+        local = _Path(local_path)
+        if not local.exists():
+            return {"exit_code": -1, "output": f"Local file not found: {local_path}"}
+
+        raw = local.read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+
+        # Ensure parent directory exists in the sandbox
+        parent = str(_Path(remote_path).parent)
+        if parent not in (".", "/"):
+            self.terminal(f"mkdir -p {parent}", timeout=10)
+
+        # For small files, single command is fine
+        chunk_size = 60_000  # ~60KB per chunk (well within shell limits)
+        if len(b64) <= chunk_size:
+            result = self.terminal(
+                f"printf '%s' '{b64}' | base64 -d > {remote_path}",
+                timeout=30,
+            )
+        else:
+            # For larger files, write base64 in chunks then decode
+            tmp_b64 = "/tmp/_hermes_upload.b64"
+            self.terminal(f": > {tmp_b64}", timeout=5)  # truncate
+            for i in range(0, len(b64), chunk_size):
+                chunk = b64[i : i + chunk_size]
+                self.terminal(f"printf '%s' '{chunk}' >> {tmp_b64}", timeout=15)
+            result = self.terminal(
+                f"base64 -d {tmp_b64} > {remote_path} && rm -f {tmp_b64}",
+                timeout=30,
+            )
+
+        return result
+
+    def upload_dir(self, local_dir: str, remote_dir: str) -> List[Dict[str, Any]]:
+        """
+        Upload an entire local directory to the rollout's sandbox (binary-safe).
+
+        Recursively uploads all files, preserving directory structure.
+
+        Args:
+            local_dir: Path to a local directory on the host
+            remote_dir: Destination directory inside the sandbox
+
+        Returns:
+            List of results, one per file uploaded
+        """
+        from pathlib import Path as _Path
+
+        local = _Path(local_dir)
+        if not local.exists() or not local.is_dir():
+            return [{"exit_code": -1, "output": f"Local directory not found: {local_dir}"}]
+
+        results = []
+        for file_path in sorted(local.rglob("*")):
+            if file_path.is_file():
+                relative = file_path.relative_to(local)
+                target = f"{remote_dir}/{relative}"
+                results.append(self.upload_file(str(file_path), target))
+        return results
+
+    def download_file(self, remote_path: str, local_path: str) -> Dict[str, Any]:
+        """
+        Download a file from the rollout's sandbox to the host (binary-safe).
+
+        The inverse of upload_file(). Base64-encodes the file inside the sandbox,
+        reads the encoded data through the terminal, and decodes it locally.
+        Safe for any file type.
+
+        Args:
+            remote_path: Path to the file inside the sandbox
+            local_path: Destination path on the host
+
+        Returns:
+            Dict with 'success' (bool) and 'bytes' (int) or 'error' (str)
+        """
+        import base64
+        from pathlib import Path as _Path
+
+        # Base64-encode the file inside the sandbox and capture output
+        result = self.terminal(
+            f"base64 {remote_path} 2>/dev/null",
+            timeout=30,
+        )
+
+        if result.get("exit_code", -1) != 0:
+            return {
+                "success": False,
+                "error": f"Failed to read remote file: {result.get('output', '')}",
+            }
+
+        b64_data = result.get("output", "").strip()
+        if not b64_data:
+            return {"success": False, "error": f"Remote file is empty or missing: {remote_path}"}
+
+        try:
+            raw = base64.b64decode(b64_data)
+        except Exception as e:
+            return {"success": False, "error": f"Base64 decode failed: {e}"}
+
+        # Write to local host filesystem
+        local = _Path(local_path)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(raw)
+
+        return {"success": True, "bytes": len(raw)}
+
+    def download_dir(self, remote_dir: str, local_dir: str) -> List[Dict[str, Any]]:
+        """
+        Download a directory from the rollout's sandbox to the host (binary-safe).
+
+        Lists all files in the remote directory, then downloads each one.
+        Preserves directory structure.
+
+        Args:
+            remote_dir: Path to the directory inside the sandbox
+            local_dir: Destination directory on the host
+
+        Returns:
+            List of results, one per file downloaded
+        """
+        from pathlib import Path as _Path
+
+        # List files in the remote directory
+        ls_result = self.terminal(
+            f"find {remote_dir} -type f 2>/dev/null",
+            timeout=15,
+        )
+
+        if ls_result.get("exit_code", -1) != 0:
+            return [{"success": False, "error": f"Failed to list remote dir: {remote_dir}"}]
+
+        file_list = ls_result.get("output", "").strip()
+        if not file_list:
+            return [{"success": False, "error": f"Remote directory is empty or missing: {remote_dir}"}]
+
+        results = []
+        for remote_file in file_list.splitlines():
+            remote_file = remote_file.strip()
+            if not remote_file:
+                continue
+            # Compute the relative path to preserve directory structure
+            if remote_file.startswith(remote_dir):
+                relative = remote_file[len(remote_dir):].lstrip("/")
+            else:
+                relative = _Path(remote_file).name
+            local_file = str(_Path(local_dir) / relative)
+            results.append(self.download_file(remote_file, local_file))
+
+        return results
 
     def search(self, query: str, path: str = ".") -> Dict[str, Any]:
         """

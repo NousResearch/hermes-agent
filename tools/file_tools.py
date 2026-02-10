@@ -39,19 +39,24 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     # Create environment OUTSIDE locks so we don't block other rollouts
     # during slow Modal/Docker startup (~10s)
     if needs_creation:
+        from tools.terminal_tool import _task_env_overrides
+        
         config = _get_env_config()
         env_type = config["env_type"]
         
+        # Check per-task overrides (set by environments like TerminalBench2Env)
+        overrides = _task_env_overrides.get(task_id, {})
+        
         if env_type == "docker":
-            image = config["docker_image"]
+            image = overrides.get("docker_image") or config["docker_image"]
         elif env_type == "singularity":
-            image = config["singularity_image"]
+            image = overrides.get("singularity_image") or config["singularity_image"]
         elif env_type == "modal":
-            image = config["modal_image"]
+            image = overrides.get("modal_image") or config["modal_image"]
         else:
             image = ""
         
-        cwd = config["cwd"]
+        cwd = overrides.get("cwd") or config["cwd"]
         _check_disk_usage_warning()
         if not os.getenv("HERMES_QUIET"):
             print(f"[FileTools] Creating new {env_type} environment for task {task_id[:8]}...", flush=True)

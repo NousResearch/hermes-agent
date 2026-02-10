@@ -6,9 +6,8 @@
 #
 # Usage:
 #   run-api
-#   python environments/terminal_test_env.py serve
-#   # Or with config file:
-#   python environments/terminal_test_env.py serve --config environments/configs/terminal_test_default.yaml
+#   python environments/terminal_test_env/terminal_test_env.py serve \
+#       --config environments/terminal_test_env/default.yaml
 
 env:
   enabled_toolsets: ["terminal", "file"]

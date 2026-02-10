@@ -1,0 +1,41 @@
+# Terminal-Bench 2.0 Evaluation -- Default Configuration
+#
+# Eval-only environment for the TB2 benchmark (89 terminal tasks).
+# Uses Modal terminal backend for per-task cloud-isolated sandboxes
+# and OpenRouter for inference.
+#
+# Usage:
+#   python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
+#       --config environments/benchmarks/terminalbench_2/default.yaml
+#
+#   # Override model:
+#   python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
+#       --config environments/benchmarks/terminalbench_2/default.yaml \
+#       --openai.model_name anthropic/claude-sonnet-4
+
+env:
+  enabled_toolsets: ["terminal", "file"]
+  max_agent_turns: 60
+  max_token_length: 16000
+  agent_temperature: 0.6
+  terminal_backend: "modal"
+  dataset_name: "NousResearch/terminal-bench-2"
+  test_timeout: 180
+  tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
+  use_wandb: true
+  wandb_name: "terminal-bench-2"
+  ensure_scores_are_not_same: false
+  data_dir_to_save_evals: "evals/terminal-bench-2"
+  system_prompt: >
+    You are a skilled software engineer and system administrator with
+    access to a terminal and file tools. You are working inside a Linux
+    container environment. Complete the user's task by using the available
+    tools. Be methodical: explore the environment first, plan your approach,
+    then execute step by step. Verify your work before finishing.
+
+openai:
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-opus-4.6"
+  server_type: "openai"
+  health_check: false
+  # api_key loaded from OPENROUTER_API_KEY in .env

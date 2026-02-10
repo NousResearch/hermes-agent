@@ -1,61 +1,99 @@
 # Active Context
 
 ## Current Focus
-Tinker RL training integration - pipeline fully wired up, waiting on Tinker billing to test.
+Consolidating the two Atropos environment systems and fixing tool calling to use proper OpenAI-spec approach instead of ICL.
 
-## Recently Completed (Feb 9, 2026)
+## PR Feedback from Lead Dev (Feb 10, 2026)
 
-### Tinker RL Training Integration
-Created a complete agent training pipeline using Tinker (Thinking Machines) + Atropos:
+The PR was rejected because our approach has three fundamental issues:
 
-**New Files Created:**
-1. `tinker-atropos/tinker_atropos/environments/gsm8k_agent.py` - Agent GSM8k environment with:
-   - Python REPL tool calling (Hermes-style `<tool_call>` format)
-   - Multi-step agent loop within `collect_trajectories()`
-   - Math answer verification via `math_verify`
-   - Subprocess-based Python execution
-   - WandB metrics (percent_correct, tool_use_rate)
-2. `tinker-atropos/configs/gsm8k_agent.yaml` - Config for Qwen3-4B-Instruct training
+### Issue 1: ManagedServer doesn't pass `tools={}` to `apply_chat_template()`
+- When using Phase 2 (VLLM/SGLang for RL training), `ManagedServer` needs to pass tools to `tokenizer.apply_chat_template(tools=...)` 
+- This makes the system prompt include tool definitions the way models were trained to expect
+- **Fix**: Atropos PR #366 adds `tool_call_parser` support to ManagedServer (branch: `tool_call_support`)
 
-**Dependencies Updated:**
-- `pyproject.toml` `[atropos]` extra now includes: tinker SDK, torch, wandb, math-verify
-- Installed: tinker 0.12.0, tinker-atropos 0.1.0, torch (CPU)
+### Issue 2: ICL prompt vs proper tool calling
+- Our code embeds tools as XML in the system prompt (`<tools>...</tools>`)
+- Proper approach: pass `tools=` parameter in `chat_completion()` calls and let the tokenizer's chat template handle formatting
+- All Hermes datasets train on the proper format, not ICL
 
-**README Updated:**
-- Added comprehensive "RL Training with Tinker" section with architecture diagram, quick start, config docs
-- Added TINKER_API_KEY and WANDB_API_KEY to optional keys table
+### Issue 3: Only Hermes `<tool_call>` parser, no multi-model support
+- Our code only handles Hermes-style `<tool_call>` XML parsing
+- Proper approach: parser registry supporting 11+ model families (hermes, qwen, deepseek, llama, mistral, etc.)
 
-**Verified Working:**
-- Tinker SDK connection ✅
-- All imports (tinker, tinker_atropos, trainer, environment) ✅
-- Python REPL execution + tool call parsing ✅
-- Math verification ✅
-- Atropos run-api (port 8000) ✅
-- Tinker trainer starts, loads config, creates inference server (port 8001) ✅
+## Architecture: What Exists Now (Two Parallel Systems)
 
-**Blocked:** Tinker billing (402 error) - user's payment didn't process (possibly regional card issue)
-
-### Main Branch Merge (Feb 9, 2026)
-Merged `origin/main` into `atropos-integrations` - 22,560 lines, 79 files, 5 conflicts resolved.
-
-### Modal Backend (Feb 8, 2026)
-Merged modal-integration branch, working with Modal Sandboxes.
-
-### Singularity/Apptainer (Feb 6, 2026)
-Completed and tested.
-
-## Architecture: Training Pipeline
-
+### `environments/` (Teknium's proper approach) ✅ CORRECT
 ```
-Terminal 1: run-api (port 8000) - Atropos Rollout API
-Terminal 2: launch_training.py (port 8001) - Tinker Trainer + FastAPI inference
-Terminal 3: gsm8k_agent.py serve - Environment (generates trajectories)
+environments/
+├── agent_loop.py              ← Uses tools= in chat_completion() (OpenAI spec)
+├── hermes_base_env.py         ← Phase 1 (OpenAI) + Phase 2 (ManagedServer + parser)
+├── tool_context.py            ← ToolContext for reward functions
+├── tool_call_parsers/         ← 11 model parsers (hermes, qwen, deepseek, llama, etc.)
+│   ├── __init__.py            ← Registry with get_parser(), register_parser()
+│   ├── hermes_parser.py
+│   ├── qwen_parser.py
+│   ├── deepseek_v3_parser.py
+│   ├── llama_parser.py
+│   ├── mistral_parser.py
+│   └── ... (11 total)
+├── terminal_test_env.py       ← Working example: file creation tasks
+├── hermes_swe_env.py          ← SWE environment
+└── patches.py                 ← Async-safe monkey patches
 ```
 
-The agent env gets math problems → model calls Python REPL tool → scores answer → sends to Atropos → Tinker does LoRA training → updates sampling weights → repeat.
+**How it works correctly:**
+1. `HermesAgentLoop.run()` passes `tools=self.tool_schemas` to `chat_completion()`
+2. ManagedServer passes tools to `tokenizer.apply_chat_template(tools=...)`
+3. Parser registry reconstructs `tool_calls` from raw model output
+4. Tool execution uses hermes-agent's `handle_function_call()` from `model_tools.py`
 
-## Next Steps
-- [ ] Resolve Tinker billing to test full training loop
-- [ ] Run GSM8k agent training for ~20 steps (proof of concept)
-- [ ] Monitor WandB for reward improvement
-- [ ] Graduate to more complex agent envs (SWE tasks with Modal backend)
+### `atropos/` (Our sandbox-optimized code) - PARTIALLY REDUNDANT
+```
+atropos/
+├── agent/atropos_agent.py     ← ICL-based agent (REDUNDANT with agent_loop.py)
+├── envs/agent_env.py          ← Environment with sandbox backends (PARTIALLY REDUNDANT)
+├── envs/swe_smith_oracle_env.py ← SWE env using sandbox (KEEP - port to new base)
+├── backends/                  ← Sandbox backends (KEEP - valuable infrastructure)
+│   ├── modal_backend.py       ← Modal sandbox pool
+│   ├── nomad_backend.py       ← Nomad/Docker/Singularity
+│   └── base.py                ← ToolBackend protocol
+├── slots/                     ← Slot multiplexing (KEEP)
+├── nomad/                     ← Nomad client (KEEP)
+├── tools/                     ← Sandbox tool registry (PARTIALLY REDUNDANT)
+└── sandbox_server.py          ← HTTP server in containers (KEEP)
+```
+
+## Plan: Consolidate into `environments/`
+
+### What to KEEP from `atropos/`:
+- `backends/` - Modal, Nomad, Singularity backends (valuable infrastructure for scale)
+- `slots/` - Slot multiplexing
+- `nomad/` - Nomad client
+- `sandbox_server.py` - Container HTTP server
+- `Dockerfile` - Sandbox container image
+
+### What to REMOVE/REPLACE:
+- `atropos/agent/atropos_agent.py` → replaced by `environments/agent_loop.py`
+- `atropos/envs/agent_env.py` → functionality merged into `environments/hermes_base_env.py`
+- `atropos/tools/` → replaced by `model_tools.py` + `tools/` (hermes-agent's standard tools)
+
+### What to CREATE:
+- `environments/gsm8k_agent_env.py` → GSM8k with tool calling, subclasses `HermesAgentBaseEnv`
+- Update `environments/hermes_base_env.py` to optionally use sandbox backends (Nomad/Modal) for terminal isolation when needed for scale
+
+### Steps:
+1. Install atropos `tool_call_support` branch (PR #366)
+2. Create `environments/gsm8k_agent_env.py` using `HermesAgentBaseEnv`
+3. Port `swe_smith_oracle_env.py` to use `HermesAgentBaseEnv`
+4. Make sandbox backends accessible from `HermesAgentBaseEnv` (terminal_backend config)
+5. Remove redundant `atropos/agent/` and `atropos/envs/agent_env.py`
+6. Clean up `atropos/tools/` (keep only sandbox-specific tools)
+7. Update tinker-atropos gsm8k env to use proper base class
+8. Test everything end-to-end
+
+## Previous Completed Work
+- Modal backend integration (Feb 8) - KEEP backends, update integration point
+- Main branch merge (Feb 9) - completed
+- Singularity/Apptainer (Feb 6) - KEEP
+- Memory Bank initialized (Feb 5)

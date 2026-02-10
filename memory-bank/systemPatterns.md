@@ -148,11 +148,50 @@ The agent validates responses before accepting:
 4. `AIAgent` reads env vars when initializing terminal tool
 5. Terminal tool creates appropriate backend based on `TERMINAL_ENV`
 
-## Atropos Backend Architecture
+## RL Training Architecture (Consolidated)
 
-### Backend Hierarchy
+### Environment System (`environments/`)
+
+The canonical way to build agentic RL environments in Hermes-Agent:
+
 ```
-ToolBackend (Protocol - base.py)
+environments/
+├── agent_loop.py              ← HermesAgentLoop: OpenAI-spec tool calling
+├── hermes_base_env.py         ← HermesAgentBaseEnv: base class for all envs
+├── tool_context.py            ← ToolContext: reward function tool access
+├── tool_call_parsers/         ← 11+ model parsers (hermes, qwen, deepseek, etc.)
+├── terminal_test_env.py       ← Example: file creation tasks
+├── hermes_swe_env.py          ← SWE environment
+└── gsm8k_agent_env.py         ← GSM8k with Python REPL (TODO)
+```
+
+### Two-Phase Operation
+- **Phase 1 (OpenAI server)**: Native tool_calls from VLLM/SGLang/OpenRouter
+  - Good for: SFT data gen, testing, evaluation
+- **Phase 2 (ManagedServer)**: Client-side tool call parser + logprob tracking
+  - Required for: RL training
+  - Parser registry selects per-model parser (hermes, qwen, llama, etc.)
+
+### Key Design: Proper Tool Calling (NOT ICL)
+```python
+# CORRECT: pass tools= to chat_completion()
+response = await server.chat_completion(
+    messages=messages,
+    tools=tool_schemas,  # ← tokenizer.apply_chat_template(tools=...) formats these
+    temperature=1.0,
+)
+# Response has response.choices[0].message.tool_calls (structured objects)
+
+# WRONG (old approach): embed tools in system prompt as XML
+system_prompt = f"<tools>{json.dumps(tools)}</tools>"  # ← ICL, not proper training format
+```
+
+### Sandbox Backends (`atropos/backends/`)
+
+Infrastructure for scaled sandbox execution (separate from the env system):
+
+```
+ToolBackend (Protocol)
     ├── NomadToolBackend → SlotPool → NomadClient + SandboxExecutor (HTTP)
     │   ├── Docker driver (default)
     │   └── Singularity driver (HPC)
@@ -160,32 +199,16 @@ ToolBackend (Protocol - base.py)
         └── _ModalMultiProfileManager (multi-profile support)
 ```
 
-### Slot-Based Multiplexing Pattern
-All backends share the same slot multiplexing concept:
-- **Sandbox/Container**: Long-lived compute unit
-- **Slot**: Isolated workspace directory within a sandbox (e.g., `/data/slot_0`)
-- **Trajectory**: One agent task using one slot
-- Multiple trajectories share a sandbox via different slots
+Accessed via `HermesAgentBaseEnv.terminal_backend` config option:
+- `local` - Direct execution (default, development)
+- `docker` - Docker containers
+- `modal` - Modal cloud sandboxes (production RL)
+- `singularity` - HPC clusters
+- `ssh` - Remote server
 
-### Nomad Backend (HTTP-based)
-- Deploys `sandbox_server.py` inside containers (Docker or Singularity)
-- Uses `SandboxExecutor` for HTTP communication (POST /execute, POST /batch)
-- Nomad manages container lifecycle (scaling, health checks)
-- Tools: bash, bash_stateful, read_file, write_file, tmux
-
-### Modal Backend (exec-based)
-- Creates `modal.Sandbox` instances (long-lived containers)
-- Uses `sandbox.exec("bash", "-c", command)` directly (no HTTP server)
-- Modal manages container lifecycle (idle_timeout, max_lifetime)
-- Multi-profile support: different resource configs (CPU, GPU, memory)
-- Named sandboxes for recovery: `Sandbox.from_name(app_name, sandbox_name)`
-- YAML config via `modal_profiles.yaml`
-
-### Backend Selection
-```python
-# In agent_env.py / create_tool_backend()
-if mode == "nomad":
-    return NomadToolBackend(NomadBackendConfig.from_agent_env_config(cfg))
-if mode == "modal":
-    return ModalToolBackend(ModalSandboxConfig.from_agent_env_config(cfg))
+### Training Pipeline (Tinker + Atropos)
+```
+Terminal 1: run-api (port 8000)              ← Atropos Rollout API
+Terminal 2: launch_training.py (port 8001)   ← Tinker Trainer + inference
+Terminal 3: environment.py serve             ← Environment (rollouts)
 ```

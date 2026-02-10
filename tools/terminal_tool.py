@@ -976,13 +976,37 @@ class _ModalEnvironment:
     
     Wraps mini-swe-agent's SwerexModalEnvironment but adds:
     - SUDO_PASSWORD support via _transform_sudo_command
+    - Automatic async-safety patches (applied once, before first use)
     
-    Note: stdin handling is not needed for Modal since it uses remote async execution.
+    The patches replace SwerexModalEnvironment's asyncio.run() calls with a
+    background thread approach, making it safe to use inside any event loop
+    (e.g., Atropos). Applied here at the point of use rather than relying on
+    import-time side effects, so ALL callers get the fix automatically.
     """
     
+    # Class-level flag: patches only need to be applied once
+    _patches_applied = False
+    
     def __init__(self, image: str, cwd: str = "/root", timeout: int = 60):
+        # Ensure async-safety patches are applied before creating any
+        # SwerexModalEnvironment instance. This is the single authoritative
+        # place -- no other module needs to call apply_patches() for Modal.
+        if not _ModalEnvironment._patches_applied:
+            try:
+                from environments.patches import apply_patches
+                apply_patches()
+            except ImportError:
+                pass  # patches module not available (standalone use)
+            _ModalEnvironment._patches_applied = True
+        
         from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
-        self._inner = SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+        # Generous startup timeout: sandbox creation can take 30-60s for cold images,
+        # and the SWE-ReX runtime needs another 10-30s to boot inside it.
+        self._inner = SwerexModalEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            startup_timeout=180.0,
+            runtime_timeout=3600.0,
+        )
         self.cwd = cwd
         self.timeout = timeout
     
@@ -1033,7 +1057,7 @@ TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 - Run servers/long processes in background
 - Monitor disk usage for large tasks
 - Install whatever tools you need with apt-get or pip
-- Do not be afraid to run pip with --break-system-packages
+- Try to create or use a venv with uv or python -m venv to keep isolation from global system packages.
 
 **Things to avoid:**
 - Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck.
@@ -1432,7 +1456,9 @@ def terminal_tool(
                 env = _active_environments[effective_task_id]
 
         if needs_creation:
-            _check_disk_usage_warning()
+            # Disk usage warning only relevant for local/singularity backends
+            if env_type in ("singularity", "local"):
+                _check_disk_usage_warning()
             if not os.getenv("HERMES_QUIET"):
                 print(f"[Terminal] Creating new {env_type} environment for task {effective_task_id[:8]}...", flush=True)
             try:

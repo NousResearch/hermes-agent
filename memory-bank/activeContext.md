@@ -56,27 +56,30 @@ python environments/swe_smith_oracle_env.py process \
    - Backend integration (ModalSandboxConfig.from_agent_env_config, create_tool_backend)
    - `_use_sandbox_backend()` logic (True when modal+backend set, False otherwise)
 
+6. ✅ **End-to-end test with Qwen 3 8B + Modal sandbox** (THIS SESSION)
+   - RunPod endpoint: `0tx0ruuuo4f10c` (Qwen/Qwen3-8B via SGLang)
+   - 5 terminal tool calls executed IN sandbox: `ls`, `git status`, `git log`, `cat parse.py`, `cat tests/`
+   - In-sandbox verification: install deps + pytest → score=0.0 (model inspected but didn't fix)
+   - Full token tracking with logprobs via Phase 2 ManagedServer
+   - Key finding: Llama-3-8B template silently drops `tools=` param, Qwen 3 has full Hermes format support
+
 ### What Still Needs to Be Done
 
-#### End-to-end test with Modal
-The code is implemented and passes all import/integration checks. Needs a live Modal test:
-```bash
-python environments/swe_smith_oracle_env.py process \
-    --env.use_wandb false \
-    --env.total_steps 2 \
-    --env.group_size 1 \
-    --env.max_items 2 \
-    --env.tool_pool_mode modal \
-    --env.modal_image python:3.11 \
-    --env.modal_slots_per_sandbox 10 \
-    --env.modal_min_sandboxes 1
-```
+#### 1. Replace hermes-agent tools backend with sandbox backend globally
+Per Teknium's feedback: `tools/terminal_tool.py`, `tools/file_tools.py` etc. should be able to use
+the Modal/Nomad sandbox backend not just in atropos envs but also in `batch_runner.py` for scaled
+data generation. This unifies the tool execution path across CLI, batch, and RL environments.
 
-#### Remaining consolidation items (from progress.md)
-- Remove redundant `atropos/agent/` and `atropos/envs/agent_env.py`
-- Clean up redundant `atropos/tools/`
-- Test end-to-end with Tinker trainer (blocked on billing)
-- Test with actual tool calls (model producing tool_calls, not just text)
+#### 2. Clean up redundant code
+- Remove `atropos/agent/` (replaced by `environments/agent_loop.py`)
+- Remove `atropos/envs/agent_env.py` (replaced by `environments/hermes_base_env.py`)
+- Remove `atropos/tools/` (use `model_tools.py` + `tools/` directly)
+
+#### 3. Test with Tinker trainer (blocked on billing)
+Full RL training loop: Tinker API → atropos rollout API → environment → trainer
+
+#### 4. Add more environments
+Teknium mentioned needing "endless-terminals" and "terminalbench 2" envs
 
 ### Architecture Summary
 

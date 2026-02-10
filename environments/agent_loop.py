@@ -119,6 +119,7 @@ class HermesAgentLoop:
         task_id: Optional[str] = None,
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
+        tool_handler=None,
     ):
         """
         Initialize the agent loop.
@@ -132,6 +133,10 @@ class HermesAgentLoop:
             task_id: Unique ID for terminal/browser session isolation
             temperature: Sampling temperature for generation
             max_tokens: Max tokens per generation (None for server default)
+            tool_handler: Optional async callable(tool_name, args, task_id) -> str.
+                         When provided, used INSTEAD of handle_function_call() for
+                         tool dispatch. This allows sandbox backends (Modal, Nomad)
+                         to route tool calls through their slot-based execution.
         """
         self.server = server
         self.tool_schemas = tool_schemas
@@ -140,6 +145,7 @@ class HermesAgentLoop:
         self.task_id = task_id or str(uuid.uuid4())
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.tool_handler = tool_handler
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -267,19 +273,28 @@ class HermesAgentLoop:
                             if tool_name == "terminal":
                                 import os
                                 backend = os.getenv("TERMINAL_ENV", "local")
+                                if self.tool_handler:
+                                    backend = "sandbox"
                                 cmd_preview = args.get("command", "")[:80]
                                 print(f"  🖥️  [{backend}] $ {cmd_preview}")
 
-                            # Run tool calls in a thread pool so backends that use
-                            # asyncio.run() internally (modal, docker) get a clean
-                            # event loop instead of deadlocking inside Atropos's loop.
-                            loop = asyncio.get_event_loop()
-                            tool_result = await loop.run_in_executor(
-                                _tool_executor,
-                                lambda: handle_function_call(
-                                    tool_name, args, task_id=self.task_id
-                                ),
-                            )
+                            if self.tool_handler:
+                                # Use custom tool handler (sandbox backend routing)
+                                tool_result = await self.tool_handler(
+                                    tool_name, args, self.task_id
+                                )
+                            else:
+                                # Default: run via hermes-agent's handle_function_call
+                                # in a thread pool so backends that use asyncio.run()
+                                # internally (modal, docker) get a clean event loop
+                                # instead of deadlocking inside Atropos's loop.
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    _tool_executor,
+                                    lambda: handle_function_call(
+                                        tool_name, args, task_id=self.task_id
+                                    ),
+                                )
                         except Exception as e:
                             tool_result = json.dumps(
                                 {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}

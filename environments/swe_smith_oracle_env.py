@@ -283,7 +283,192 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
         return [nodeids[i : i + max_per_chunk] for i in range(0, len(nodeids), max_per_chunk)]
 
     # =========================================================================
-    # Reward: run pytest in the terminal
+    # Sandbox hooks: setup_trajectory_workspace + verify_and_score_trajectory
+    # =========================================================================
+
+    async def setup_trajectory_workspace(
+        self, item: Item, *, trajectory_id: str, exec_tool
+    ) -> Dict[str, Any]:
+        """
+        Prepare a sandbox workspace: bare repo cache + git worktree.
+
+        Uses flock-serialized bare repo cache under /data/repo_cache so
+        multiple trajectories sharing a sandbox don't clone the same repo
+        in parallel. Each trajectory gets an isolated worktree at the
+        specified base_commit.
+
+        Args:
+            item: Dataset row with repo, base_commit, etc.
+            trajectory_id: Unique trajectory ID
+            exec_tool: async callable(tool_name, args, timeout) -> ExecutionResult
+
+        Returns:
+            Dict with repo_dir, base_commit metadata
+        """
+        import time as _time
+
+        t0 = _time.perf_counter()
+        repo = item.get("repo")
+        base_commit = item.get("base_commit")
+        instance_id = item.get("instance_id") or item.get("id") or item.get("problem_id")
+        if not isinstance(repo, str) or not isinstance(base_commit, str):
+            raise RuntimeError("Invalid dataset row: missing repo/base_commit")
+
+        repo_dir = self._repo_name(item)
+        clone_url = f"{self.config.repo_base_url.rstrip('/')}/{repo}.git"
+        print(
+            f"[SweSmithOracleEnv] tid={trajectory_id} setup_trajectory_workspace(): "
+            f"repo={repo} base_commit={base_commit} instance_id={instance_id} dir=./{repo_dir}",
+            flush=True,
+        )
+
+        # Bare repo cache + worktree strategy (same as atropos/envs/swe_smith_oracle_env.py)
+        repo_slug = repo.replace("/", "__")
+        cache_root = "/data/repo_cache"
+        bare_repo = f"{cache_root}/{repo_slug}.git"
+        lock_file = f"{cache_root}/.locks/{repo_slug}.lock"
+
+        worktree_cmd = (
+            "set -e; "
+            f"rm -rf {repo_dir}; "
+            f"mkdir -p {cache_root}/.locks; "
+            f": > {lock_file}; "
+            f"flock -x {lock_file} sh -lc '"
+            f"set -e; "
+            "export GIT_TERMINAL_PROMPT=0; "
+            "export GIT_LFS_SKIP_SMUDGE=1; "
+            f"if [ ! -d \"{bare_repo}\" ]; then "
+            f"  git init --bare \"{bare_repo}\"; "
+            f"  git -C \"{bare_repo}\" remote add origin \"{clone_url}\"; "
+            "fi; "
+            f"git -C \"{bare_repo}\" remote set-url origin \"{clone_url}\"; "
+            f"git -C \"{bare_repo}\" worktree prune || true; "
+            f"if ! git -C \"{bare_repo}\" cat-file -e \"{base_commit}^{{commit}}\" 2>/dev/null; then "
+            f"  git -C \"{bare_repo}\" fetch --depth 1 origin \"{base_commit}\" || true; "
+            "fi; "
+            f"if ! git -C \"{bare_repo}\" cat-file -e \"{base_commit}^{{commit}}\" 2>/dev/null; then "
+            f"  git -C \"{bare_repo}\" fetch --prune origin; "
+            "fi; "
+            f"git --git-dir=\"{bare_repo}\" worktree add --detach \"{repo_dir}\" \"{base_commit}\"; "
+            "'"
+        )
+
+        print(f"[SweSmithOracleEnv] tid={trajectory_id} preparing worktree from repo cache", flush=True)
+        res = await exec_tool(
+            "bash",
+            {"command": worktree_cmd},
+            timeout=self.config.install_timeout_s,
+        )
+        if not res.success:
+            raise RuntimeError(
+                f"git worktree setup failed "
+                f"(repo={repo}, base_commit={base_commit}, instance_id={instance_id}): "
+                f"{res.error}\n{res.output}"
+            )
+
+        print(
+            f"[SweSmithOracleEnv] tid={trajectory_id} setup_trajectory_workspace(): "
+            f"worktree ready in {_time.perf_counter() - t0:.2f}s",
+            flush=True,
+        )
+        return {"repo_dir": repo_dir, "base_commit": base_commit}
+
+    async def verify_and_score_trajectory(
+        self,
+        item: Item,
+        result: AgentResult,
+        *,
+        trajectory_id: str,
+        exec_tool,
+        workspace_meta: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        In-sandbox verification: install deps + run pytest with dataset nodeids.
+
+        Args:
+            item: Dataset row
+            result: Agent's rollout result
+            trajectory_id: Unique trajectory ID
+            exec_tool: async callable(tool_name, args, timeout) -> ExecutionResult
+            workspace_meta: From setup_trajectory_workspace (has repo_dir)
+
+        Returns:
+            (reward, metadata) tuple
+        """
+        repo_dir = (workspace_meta or {}).get("repo_dir") or self._repo_name(item)
+
+        # Don't reward trajectories that never used tools
+        tool_call_count = sum(
+            len(msg.get("tool_calls", []))
+            for msg in result.messages
+            if msg.get("role") == "assistant"
+        )
+        if tool_call_count == 0:
+            print(
+                f"[SweSmithOracleEnv] tid={trajectory_id} verify: no tool calls; score=0.0",
+                flush=True,
+            )
+            return 0.0, {"error": "No tool calls were made by the agent"}
+
+        nodeids = self._tests_for_item(item)
+        if not nodeids:
+            return 0.0, {"error": "No tests provided"}
+
+        # Install dependencies
+        print(
+            f"[SweSmithOracleEnv] tid={trajectory_id} verify: installing deps + running tests",
+            flush=True,
+        )
+        setup_cmd = (
+            f"cd {repo_dir} && "
+            "python -m venv .venv && "
+            ". .venv/bin/activate && "
+            "python -m pip install -U pip setuptools wheel && "
+            "python -m pip install -e . && "
+            "python -m pip install pytest"
+        )
+        setup_res = await exec_tool(
+            "bash", {"command": setup_cmd}, timeout=self.config.install_timeout_s
+        )
+        if not setup_res.success:
+            print(
+                f"[SweSmithOracleEnv] tid={trajectory_id} install failed; score=0.0",
+                flush=True,
+            )
+            return 0.0, {
+                "phase": "install",
+                "error": setup_res.error,
+                "output": setup_res.output,
+            }
+
+        # Run test chunks
+        chunks = self._chunk_nodeids(nodeids, max_per_chunk=50)
+        for chunk_idx, chunk in enumerate(chunks):
+            joined = " ".join(chunk)
+            cmd = f"cd {repo_dir} && . .venv/bin/activate && python -m pytest -q {joined}"
+            res = await exec_tool(
+                "bash", {"command": cmd}, timeout=self.config.test_timeout_s
+            )
+            if not res.success:
+                print(
+                    f"[SweSmithOracleEnv] tid={trajectory_id} tests failed (chunk {chunk_idx}); score=0.0",
+                    flush=True,
+                )
+                return 0.0, {
+                    "phase": "pytest",
+                    "failed_chunk": chunk_idx,
+                    "error": res.error,
+                    "output": res.output,
+                }
+
+        print(
+            f"[SweSmithOracleEnv] tid={trajectory_id} all tests passed; score=1.0",
+            flush=True,
+        )
+        return 1.0, {"passed": True}
+
+    # =========================================================================
+    # Reward: run pytest in the terminal (local / non-sandbox path)
     # =========================================================================
 
     async def compute_reward(
@@ -294,6 +479,10 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
 
         Uses ToolContext.terminal() to run commands in the same
         terminal session as the agent (same task_id = same sandbox).
+
+        This is used for the local (non-sandbox) path. When tool_pool_mode
+        is set to 'modal' or 'nomad', verify_and_score_trajectory() is
+        used instead (runs in the sandbox slot).
         """
         repo_dir = self._repo_name(item)
 

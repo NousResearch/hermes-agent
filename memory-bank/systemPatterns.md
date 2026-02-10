@@ -168,9 +168,44 @@ environments/
 ### Two-Phase Operation
 - **Phase 1 (OpenAI server)**: Native tool_calls from VLLM/SGLang/OpenRouter
   - Good for: SFT data gen, testing, evaluation
+  - Server handles tool call parsing via `/v1/chat/completions`
 - **Phase 2 (ManagedServer)**: Client-side tool call parser + logprob tracking
-  - Required for: RL training
+  - Required for: RL training (exact token IDs + logprobs for GRPO/PPO)
+  - Uses `/generate` endpoint for raw token output
   - Parser registry selects per-model parser (hermes, qwen, llama, etc.)
+  - **Verified working** with RunPod SGLang endpoint (Feb 10, 2026)
+
+### Phase 2 Call Chain (Verified)
+```
+collect_trajectory()
+  → ServerManager.managed_server(tokenizer, tool_call_parser)
+    → ManagedServer(server=VLLMServer)
+      → ManagedServer.chat_completion(messages, tools, n, max_tokens, temp)
+        → _convert_messages_to_prompt(messages, tools=tools)  [apply_chat_template]
+        → _compute_input_ids(prompt, extending_node)
+        → VLLMServer.tokens_and_logprobs_completion(**kwargs)  [public method]
+          → _tokens_and_logprobs_comp(stat_dict, **kwargs)     [retry decorator, semaphore]
+            → _tokens_and_logprobs_completion_wrapper(**kwargs) [patched for SGLang]
+              → aiohttp POST to /generate
+              → Returns (prompt_tokens, [output_tokens], [output_logprobs], [finish_reasons])
+        → _create_sequence_node(...)  [stores in current_nodes]
+        → tool_call_parser.parse(completion_text)  [if parser configured]
+        → Returns ChatCompletion with tool_calls
+```
+
+### SGLang Compatibility Patch (`environments/patches.py`)
+VLLMServer's `_tokens_and_logprobs_completion_wrapper` is monkey-patched to handle SGLang's
+different request/response format. Applied automatically at import time via `apply_patches()`.
+
+```
+SGLang request:  {"input_ids": [...], "sampling_params": {...}, "return_logprob": true}
+SGLang response: {"meta_info": {"output_token_logprobs": [[logprob, token_id, text], ...]}}
+
+VLLM request:   {"prompt": {"prompt_token_ids": [...]}, "logprobs": 0}
+VLLM response:  {"logprobs": [[{token_id: logprob}]], "finish_reasons": [...]}
+```
+
+Also handles RunPod serverless double-JSON wrapping (response body wrapped in quotes).
 
 ### Key Design: Proper Tool Calling (NOT ICL)
 ```python
@@ -188,7 +223,7 @@ system_prompt = f"<tools>{json.dumps(tools)}</tools>"  # ← ICL, not proper tra
 
 ### Sandbox Backends (`atropos/backends/`)
 
-Infrastructure for scaled sandbox execution (separate from the env system):
+Infrastructure for scaled sandbox execution, integrated into HermesAgentBaseEnv:
 
 ```
 ToolBackend (Protocol)
@@ -199,12 +234,30 @@ ToolBackend (Protocol)
         └── _ModalMultiProfileManager (multi-profile support)
 ```
 
-Accessed via `HermesAgentBaseEnv.terminal_backend` config option:
-- `local` - Direct execution (default, development)
-- `docker` - Docker containers
-- `modal` - Modal cloud sandboxes (production RL)
-- `singularity` - HPC clusters
-- `ssh` - Remote server
+Two execution modes in HermesAgentBaseEnv (controlled by `tool_pool_mode` config):
+- `default` - Local tool execution via handle_function_call() + ToolContext
+- `modal` / `nomad` - Sandbox routing: slot acquire → setup workspace → agent loop → verify → release
+
+Sandbox routing architecture:
+```
+collect_trajectory()
+    ├── tool_pool_mode="default" → _collect_trajectory_local()
+    │   └── _run_agent_loop(tool_handler=None) → compute_reward(ctx)
+    │
+    └── tool_pool_mode="modal"/"nomad" → _collect_trajectory_sandbox()
+        ├── backend.acquire(task_id) → Slot
+        ├── exec_tool = backend.execute_batch wrapper → ExecutionResult
+        ├── setup_trajectory_workspace(item, exec_tool) [subclass hook]
+        ├── _run_agent_loop(tool_handler=sandbox_tool_handler)
+        │   └── terminal → backend.execute_batch → JSON string
+        │   └── other tools → handle_function_call (local)
+        ├── verify_and_score_trajectory(item, result, exec_tool) [subclass hook]
+        └── backend.release(slot, reset_workspace=True) [finally]
+```
+
+Key interfaces:
+- `exec_tool(tool_name, args, timeout)` → `ExecutionResult` (for env hooks)
+- `tool_handler(tool_name, args, task_id)` → JSON string (for agent loop)
 
 ### Training Pipeline (Tinker + Atropos)
 ```

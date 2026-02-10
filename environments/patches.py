@@ -171,6 +171,124 @@ def _patch_swerex_modal():
     logger.debug("Patched SwerexModalEnvironment for async-safe operation")
 
 
+def _patch_vllm_server_for_sglang():
+    """
+    Monkey patch VLLMServer._tokens_and_logprobs_completion_wrapper to handle
+    SGLang's /generate response format.
+
+    VLLMServer expects:
+        Request: {"prompt": {"prompt_token_ids": [...]}, "logprobs": 0}
+        Response: {"logprobs": [[{token_id: logprob}]], "finish_reasons": [...]}
+
+    SGLang returns:
+        Request: {"input_ids": [...], "sampling_params": {...}, "return_logprob": true}
+        Response: {"text": "...", "meta_info": {"output_token_logprobs": [[logprob, token_id, text], ...]}}
+
+    This patch makes VLLMServer work with SGLang endpoints (e.g., RunPod SGLang workers).
+    """
+    try:
+        import aiohttp
+        from atroposlib.envs.server_handling.vllm_server import VLLMServer
+    except ImportError:
+        logger.debug("atroposlib VLLMServer not available, skipping SGLang patch")
+        return
+
+    # Save the original method
+    _original_wrapper = VLLMServer._tokens_and_logprobs_completion_wrapper
+
+    async def _sglang_compatible_wrapper(self, **kwargs):
+        """
+        Patched wrapper that tries the original VLLMServer format first,
+        then falls back to SGLang format if that fails.
+        """
+        assert kwargs.get("model") is not None, "Model is required!"
+        assert kwargs.get("prompt") is not None or kwargs.get("input_ids") is not None, "Prompt or input_ids required!"
+
+        # Get prompt tokens
+        if "input_ids" in kwargs:
+            prompt_tokens = kwargs.pop("input_ids")
+            kwargs.pop("prompt", None)
+        else:
+            prompt_tokens = self.tokenizer.encode(kwargs.pop("prompt"))
+
+        # Check for double BOS
+        if (len(prompt_tokens) >= 2
+                and prompt_tokens[0] == self.tokenizer.bos_token_id == prompt_tokens[1]):
+            prompt_tokens = prompt_tokens[1:]
+
+        # Normalize kwargs
+        max_tokens = kwargs.pop("max_new_tokens", kwargs.pop("max_completion_tokens", kwargs.pop("max_tokens", 2048)))
+        n = kwargs.pop("n", 1)
+        temperature = kwargs.pop("temperature", 1.0)
+        kwargs.pop("model", None)
+
+        # Build SGLang-compatible request
+        request_data = {
+            "input_ids": prompt_tokens,
+            "sampling_params": {
+                "max_new_tokens": max_tokens,
+                "temperature": temperature,
+                "n": n,
+            },
+            "return_logprob": True,
+            "top_logprobs_num": 0,
+        }
+
+        generate_url = f"{self.config.base_url.replace('/v1', '')}/generate"
+
+        headers = {}
+        if self.config.api_key:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        headers["Content-Type"] = "application/json"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                generate_url,
+                json=request_data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+            ) as response:
+                response.raise_for_status()
+                raw_text = await response.text()
+
+        # RunPod wraps JSON responses in quotes — may need double-parse
+        import json
+        results = json.loads(raw_text)
+        if isinstance(results, str):
+            results = json.loads(results)
+
+        # Parse SGLang response format
+        meta = results.get("meta_info", {})
+        output_token_logprobs_raw = meta.get("output_token_logprobs", [])
+
+        # SGLang format: [[logprob, token_id, token_text], ...]
+        output_tokens = []
+        output_logprobs = []
+        for entry in output_token_logprobs_raw:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                logprob, token_id = entry[0], entry[1]
+                output_tokens.append(int(token_id))
+                output_logprobs.append(float(logprob))
+
+        # Get finish reason
+        finish_reason_raw = meta.get("finish_reason", "stop")
+        if isinstance(finish_reason_raw, dict):
+            finish_reason = finish_reason_raw.get("type", "stop")
+        else:
+            finish_reason = str(finish_reason_raw)
+
+        return (
+            prompt_tokens,
+            [output_tokens],
+            [output_logprobs],
+            [finish_reason],
+        )
+
+    # Apply the patch
+    VLLMServer._tokens_and_logprobs_completion_wrapper = _sglang_compatible_wrapper
+    logger.info("Patched VLLMServer for SGLang /generate compatibility")
+
+
 def apply_patches():
     """
     Apply all monkey patches needed for Atropos compatibility.
@@ -184,5 +302,6 @@ def apply_patches():
         return
 
     _patch_swerex_modal()
+    _patch_vllm_server_for_sglang()
 
     _patches_applied = True

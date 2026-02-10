@@ -111,6 +111,12 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
         description="Comma-separated task names to skip (e.g., 'heavy-task,slow-task').",
     )
 
+    # --- Per-task wall-clock timeout ---
+    task_timeout: int = Field(
+        default=1800,
+        description="Maximum wall-clock seconds per task (agent loop + verification). "
+        "Tasks exceeding this are scored as FAIL. Default 30 minutes.",
+    )
 
 
 # =============================================================================
@@ -190,9 +196,13 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
             # Modal backend for per-task cloud-isolated sandboxes
             terminal_backend="modal",
+            terminal_timeout=300,   # 5 min per command (builds, pip install, etc.)
 
             # Test execution timeout (TB2 test scripts can install deps like pytest)
             test_timeout=180,
+
+            # 89 tasks run in parallel, each needs a thread for tool calls
+            tool_pool_size=128,
 
             # --- Eval-only Atropos settings ---
             # These settings make the env work as an eval-only environment:
@@ -230,6 +240,14 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
     async def setup(self):
         """Load the Terminal-Bench 2.0 dataset from HuggingFace."""
         from datasets import load_dataset
+
+        # Auto-set terminal_lifetime to task_timeout + 120s so sandboxes
+        # never get killed during an active task, but still get cleaned up
+        # promptly after the task times out.
+        lifetime = self.config.task_timeout + 120
+        self.config.terminal_lifetime = lifetime
+        os.environ["TERMINAL_LIFETIME_SECONDS"] = str(lifetime)
+        print(f"  Terminal lifetime auto-set to {lifetime}s (task_timeout + 120s)")
 
         print(f"Loading TB2 dataset from: {self.config.dataset_name}")
         ds = load_dataset(self.config.dataset_name, split="train")
@@ -366,6 +384,10 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         task_id = str(uuid.uuid4())
         task_dir = None  # Set if we extract a Dockerfile (needs cleanup)
 
+        from tqdm import tqdm
+        tqdm.write(f"  [START] {task_name} (task_id={task_id[:8]})")
+        task_start = time.time()
+
         try:
             # --- 1. Resolve Docker image ---
             modal_image, task_dir = self._resolve_task_image(eval_item, task_name)
@@ -416,9 +438,16 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 )
                 reward = 0.0
             else:
+                # Run tests in a thread so the blocking ctx.terminal() calls
+                # don't freeze the entire event loop (which would stall all
+                # other tasks, tqdm updates, and timeout timers).
                 ctx = ToolContext(task_id)
                 try:
-                    reward = self._run_tests(eval_item, ctx, task_name)
+                    loop = asyncio.get_event_loop()
+                    reward = await loop.run_in_executor(
+                        None,  # default thread pool
+                        self._run_tests, eval_item, ctx, task_name,
+                    )
                 except Exception as e:
                     logger.error("Task %s: test verification failed: %s", task_name, e)
                     reward = 0.0
@@ -427,7 +456,8 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
             passed = reward == 1.0
             status = "PASS" if passed else "FAIL"
-            print(f"  [{status}] {task_name} (turns={result.turns_used})")
+            elapsed = time.time() - task_start
+            tqdm.write(f"  [{status}] {task_name} (turns={result.turns_used}, {elapsed:.0f}s)")
             logger.info(
                 "Task %s: reward=%.1f, turns=%d, finished=%s",
                 task_name, reward, result.turns_used, result.finished_naturally,
@@ -443,8 +473,9 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             }
 
         except Exception as e:
+            elapsed = time.time() - task_start
             logger.error("Task %s: rollout failed: %s", task_name, e, exc_info=True)
-            print(f"  [ERROR] {task_name}: {e}")
+            tqdm.write(f"  [ERROR] {task_name}: {e} ({elapsed:.0f}s)")
             return {
                 "passed": False, "reward": 0.0,
                 "task_name": task_name, "category": category,
@@ -586,6 +617,31 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
     # Evaluate -- main entry point for the eval subcommand
     # =========================================================================
 
+    async def _eval_with_timeout(self, item: Dict[str, Any]) -> Dict:
+        """
+        Wrap rollout_and_score_eval with a per-task wall-clock timeout.
+
+        If the task exceeds task_timeout seconds, it's automatically scored
+        as FAIL. This prevents any single task from hanging indefinitely.
+        """
+        task_name = item.get("task_name", "unknown")
+        category = item.get("category", "unknown")
+        try:
+            return await asyncio.wait_for(
+                self.rollout_and_score_eval(item),
+                timeout=self.config.task_timeout,
+            )
+        except asyncio.TimeoutError:
+            from tqdm import tqdm
+            elapsed = self.config.task_timeout
+            tqdm.write(f"  [TIMEOUT] {task_name} (exceeded {elapsed}s wall-clock limit)")
+            logger.error("Task %s: wall-clock timeout after %ds", task_name, elapsed)
+            return {
+                "passed": False, "reward": 0.0,
+                "task_name": task_name, "category": category,
+                "error": f"timeout ({elapsed}s)",
+            }
+
     async def evaluate(self, *args, **kwargs) -> None:
         """
         Run Terminal-Bench 2.0 evaluation over all tasks.
@@ -594,11 +650,39 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             python environments/terminalbench2_env.py evaluate
 
         Runs all tasks through rollout_and_score_eval() via asyncio.gather()
-        (same pattern as GPQA and other Atropos eval envs). Aggregates
-        per-task, per-category, and overall pass rates, then logs to wandb
-        and evaluate_log().
+        (same pattern as GPQA and other Atropos eval envs). Each task is
+        wrapped with a wall-clock timeout so hung tasks auto-fail.
+
+        Suppresses noisy Modal/terminal output (HERMES_QUIET) so the tqdm
+        bar stays visible.
         """
         start_time = time.time()
+
+        # Route all logging through tqdm.write() so the progress bar stays
+        # pinned at the bottom while log lines scroll above it.
+        from tqdm import tqdm
+
+        class _TqdmHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    tqdm.write(self.format(record))
+                except Exception:
+                    self.handleError(record)
+
+        handler = _TqdmHandler()
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        root = logging.getLogger()
+        root.handlers = [handler]  # Replace any existing handlers
+        root.setLevel(logging.INFO)
+
+        # Silence noisy third-party loggers that flood the output
+        logging.getLogger("httpx").setLevel(logging.WARNING)      # Every HTTP request
+        logging.getLogger("openai").setLevel(logging.WARNING)     # OpenAI client retries
+        logging.getLogger("rex-deploy").setLevel(logging.WARNING) # Swerex deployment
+        logging.getLogger("rex_image_builder").setLevel(logging.WARNING)  # Image builds
 
         print(f"\n{'='*60}")
         print("Starting Terminal-Bench 2.0 Evaluation")
@@ -606,15 +690,48 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         print(f"  Dataset: {self.config.dataset_name}")
         print(f"  Total tasks: {len(self.all_eval_items)}")
         print(f"  Max agent turns: {self.config.max_agent_turns}")
+        print(f"  Task timeout: {self.config.task_timeout}s")
         print(f"  Terminal backend: {self.config.terminal_backend}")
+        print(f"  Tool thread pool: {self.config.tool_pool_size}")
+        print(f"  Terminal timeout: {self.config.terminal_timeout}s/cmd")
+        print(f"  Terminal lifetime: {self.config.terminal_lifetime}s (auto: task_timeout + 120)")
         print(f"{'='*60}\n")
 
-        # Fire all tasks -- Atropos / Modal handle scheduling
-        from tqdm.asyncio import tqdm_asyncio
+        # Fire all tasks with wall-clock timeout, track live accuracy on the bar
+        total_tasks = len(self.all_eval_items)
         eval_tasks = [
-            self.rollout_and_score_eval(item) for item in self.all_eval_items
+            asyncio.ensure_future(self._eval_with_timeout(item))
+            for item in self.all_eval_items
         ]
-        results = await tqdm_asyncio.gather(*eval_tasks, desc="Evaluating TB2")
+
+        results = []
+        passed_count = 0
+        pbar = tqdm(total=total_tasks, desc="Evaluating TB2", dynamic_ncols=True)
+        try:
+            for coro in asyncio.as_completed(eval_tasks):
+                result = await coro
+                results.append(result)
+                if result and result.get("passed"):
+                    passed_count += 1
+                done = len(results)
+                pct = (passed_count / done * 100) if done else 0
+                pbar.set_postfix_str(f"pass={passed_count}/{done} ({pct:.1f}%)")
+                pbar.update(1)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pbar.close()
+            print(f"\n\nInterrupted! Cleaning up {len(eval_tasks)} tasks...")
+            # Cancel all pending tasks
+            for task in eval_tasks:
+                task.cancel()
+            # Let cancellations propagate (finally blocks run cleanup_vm)
+            await asyncio.gather(*eval_tasks, return_exceptions=True)
+            # Belt-and-suspenders: clean up any remaining sandboxes
+            from tools.terminal_tool import cleanup_all_environments
+            cleanup_all_environments()
+            print("All sandboxes cleaned up.")
+            return
+        finally:
+            pbar.close()
 
         end_time = time.time()
 

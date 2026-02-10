@@ -1545,6 +1545,311 @@ class _ModalSandboxEnvironment:
             pass
 
 
+# =============================================================================
+# Slot Pool Environment — routes through atropos/backends/ for multiplexed
+# sandbox execution. Supports Modal, Nomad (Docker + Singularity/Apptainer).
+#
+# Usage: TERMINAL_ENV=slot_pool  TERMINAL_SLOT_BACKEND=modal
+# =============================================================================
+
+class _SlotPoolAsyncWorker:
+    """Background thread with its own event loop for running async backend ops."""
+
+    def __init__(self):
+        self._loop = None
+        self._thread = None
+
+    def start(self):
+        import asyncio as _aio
+        self._loop = _aio.new_event_loop()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import asyncio as _aio
+        _aio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def run(self, coro, timeout=300):
+        """Run an async coroutine synchronously on the worker thread."""
+        import asyncio as _aio
+        if self._loop is None or self._thread is None:
+            raise RuntimeError("SlotPoolAsyncWorker not started")
+        future = _aio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    def stop(self):
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
+class _SlotPoolManager:
+    """
+    Singleton manager for the slot-pool sandbox backend.
+
+    Wraps atropos/backends/ (ModalToolBackend or NomadToolBackend) and provides
+    synchronous acquire/execute/release operations via a background async worker.
+
+    Config via environment variables:
+        TERMINAL_SLOT_BACKEND     = modal | nomad  (default: modal)
+        # Modal settings (reuses TERMINAL_MODAL_* vars):
+        TERMINAL_MODAL_IMAGE      = python:3.11
+        TERMINAL_MODAL_SLOTS      = 10
+        TERMINAL_MODAL_MIN        = 1
+        TERMINAL_MODAL_MAX        = 5
+        # Nomad settings:
+        TERMINAL_NOMAD_ADDRESS    = http://localhost:4646
+        TERMINAL_NOMAD_DRIVER     = docker | singularity
+        TERMINAL_NOMAD_IMAGE      = atropos-sandbox:local
+    """
+
+    _instance: Optional["_SlotPoolManager"] = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls) -> "_SlotPoolManager":
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+                    cls._instance._start()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls):
+        with cls._lock:
+            if cls._instance is not None:
+                cls._instance._stop()
+                cls._instance = None
+
+    def __init__(self):
+        self._backend = None
+        self._worker = _SlotPoolAsyncWorker()
+        self._slots: Dict[str, Any] = {}  # task_id → Slot
+        self._slot_lock = threading.Lock()
+        self._started = False
+
+    def _start(self):
+        """Initialize the backend and async worker."""
+        self._worker.start()
+
+        backend_type = os.getenv("TERMINAL_SLOT_BACKEND", "modal").strip().lower()
+        print(f"[SlotPool] Starting {backend_type} backend...")
+
+        if backend_type == "modal":
+            self._backend = self._create_modal_backend()
+        elif backend_type == "nomad":
+            self._backend = self._create_nomad_backend()
+        else:
+            raise ValueError(
+                f"Unknown TERMINAL_SLOT_BACKEND: {backend_type}. Use 'modal' or 'nomad'."
+            )
+
+        self._worker.run(self._backend.start(), timeout=120)
+        self._started = True
+        print(f"[SlotPool] {backend_type} backend started")
+
+    def _create_modal_backend(self):
+        from atropos.backends.modal_backend import ModalSandboxConfig, ModalToolBackend
+
+        config = ModalSandboxConfig(
+            name="default",
+            app_name=os.getenv("TERMINAL_SLOT_APP_NAME", "hermes-slot-pool"),
+            image=os.getenv("TERMINAL_MODAL_IMAGE") or os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11"),
+            gpu=os.getenv("TERMINAL_MODAL_GPU") or None,
+            cpu=float(os.getenv("TERMINAL_MODAL_CPU", "1.0")),
+            memory=int(os.getenv("TERMINAL_MODAL_MEMORY", "2048")),
+            slots_per_sandbox=int(os.getenv("TERMINAL_MODAL_SLOTS", "10")),
+            min_sandboxes=int(os.getenv("TERMINAL_MODAL_MIN", "1")),
+            max_sandboxes=int(os.getenv("TERMINAL_MODAL_MAX", "5")),
+            idle_timeout=int(os.getenv("TERMINAL_MODAL_IDLE_TIMEOUT", "120")),
+            max_lifetime=int(os.getenv("TERMINAL_MODAL_MAX_LIFETIME", "3600")),
+            acquire_timeout_s=float(os.getenv("TERMINAL_MODAL_ACQUIRE_TIMEOUT", "60.0")),
+            execution_timeout_s=float(os.getenv("TERMINAL_MODAL_EXEC_TIMEOUT", "300.0")),
+            workspace_base=os.getenv("TERMINAL_MODAL_WORKSPACE", "/data"),
+        )
+        return ModalToolBackend(config)
+
+    def _create_nomad_backend(self):
+        from atropos.backends.nomad_backend import NomadBackendConfig, NomadToolBackend
+
+        config = NomadBackendConfig(
+            nomad_address=os.getenv("TERMINAL_NOMAD_ADDRESS", "http://localhost:4646"),
+            job_id=os.getenv("TERMINAL_NOMAD_JOB_ID", "hermes-slot-pool"),
+            image=os.getenv("TERMINAL_NOMAD_IMAGE") or os.getenv("TERMINAL_DOCKER_IMAGE", "atropos-sandbox:local"),
+            driver=os.getenv("TERMINAL_NOMAD_DRIVER", "docker"),
+            slots_per_container=int(os.getenv("TERMINAL_NOMAD_SLOTS", "10")),
+            min_containers=int(os.getenv("TERMINAL_NOMAD_MIN", "1")),
+            max_containers=int(os.getenv("TERMINAL_NOMAD_MAX", "10")),
+        )
+        return NomadToolBackend(config)
+
+    def _stop(self):
+        """Shut down the backend and worker."""
+        if self._started and self._backend:
+            try:
+                # Release all held slots
+                with self._slot_lock:
+                    for task_id, slot in list(self._slots.items()):
+                        try:
+                            self._worker.run(
+                                self._backend.release(slot, reset_workspace=True),
+                                timeout=10,
+                            )
+                        except Exception:
+                            pass
+                    self._slots.clear()
+
+                self._worker.run(self._backend.stop(purge=False), timeout=30)
+            except Exception as e:
+                print(f"[SlotPool] Warning: shutdown error: {e}")
+            finally:
+                self._started = False
+
+        self._worker.stop()
+        print("[SlotPool] Backend stopped")
+
+    def acquire(self, task_id: str, timeout: float = 60.0):
+        """Acquire a slot for a task_id. Returns the Slot object."""
+        with self._slot_lock:
+            if task_id in self._slots:
+                return self._slots[task_id]
+
+        slot = self._worker.run(
+            self._backend.acquire(task_id), timeout=timeout
+        )
+
+        with self._slot_lock:
+            self._slots[task_id] = slot
+
+        return slot
+
+    def execute(self, task_id: str, command: str, cwd: str = "", timeout: float = 300.0) -> dict:
+        """Execute a command in the task's slot. Returns {"output": ..., "returncode": ...}."""
+        with self._slot_lock:
+            slot = self._slots.get(task_id)
+        if slot is None:
+            return {"output": "Error: no slot acquired for this task", "returncode": 1}
+
+        # Build command with cwd prefix if needed
+        full_command = f"cd {cwd} && {command}" if cwd else command
+
+        results = self._worker.run(
+            self._backend.execute_batch(
+                [(slot, "bash", {"command": full_command})],
+                timeout_s=timeout,
+            ),
+            timeout=timeout + 30,  # Extra margin for network
+        )
+
+        r = results[0]
+        output = r.output if r.success else (
+            f"{r.output}\n{r.error}" if r.output else r.error
+        )
+        returncode = r.metadata.get("returncode", 0 if r.success else 1)
+        return {"output": output, "returncode": returncode}
+
+    def release(self, task_id: str, reset_workspace: bool = True):
+        """Release a task's slot back to the pool."""
+        with self._slot_lock:
+            slot = self._slots.pop(task_id, None)
+        if slot is None:
+            return
+
+        try:
+            self._worker.run(
+                self._backend.release(slot, reset_workspace=reset_workspace),
+                timeout=30,
+            )
+        except Exception as e:
+            print(f"[SlotPool] Warning: release failed for {task_id}: {e}")
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get pool status."""
+        if not self._started or not self._backend:
+            return {"status": "not started"}
+        return self._backend.get_status()
+
+
+class _SlotPoolEnvironment:
+    """
+    Slot-pool based execution environment.
+
+    Routes terminal commands through atropos/backends/ (Modal, Nomad/Docker,
+    Nomad/Singularity) with N:M slot multiplexing. Multiple tasks share a
+    smaller number of sandboxes via slot assignment.
+
+    Usage:
+        TERMINAL_ENV=slot_pool
+        TERMINAL_SLOT_BACKEND=modal    # or nomad
+        TERMINAL_MODAL_IMAGE=python:3.11
+        TERMINAL_MODAL_SLOTS=10
+    """
+
+    def __init__(
+        self,
+        cwd: str = "/data",
+        timeout: int = 300,
+        task_id: str = "",
+    ):
+        self.cwd = cwd
+        self.timeout = timeout
+        self.task_id = task_id or str(uuid.uuid4())
+        self._released = False
+
+        # Acquire a slot from the pool
+        manager = _SlotPoolManager.get_instance()
+        manager.acquire(self.task_id, timeout=60.0)
+
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+        """Execute a command in the slot's workspace."""
+        exec_command = _transform_sudo_command(command)
+        work_dir = cwd or self.cwd
+
+        try:
+            return _SlotPoolManager.get_instance().execute(
+                self.task_id,
+                exec_command,
+                cwd=work_dir,
+                timeout=float(timeout or self.timeout),
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "timeout" in error_msg.lower():
+                return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
+            return {"output": f"SlotPool execution error: {error_msg}", "returncode": 1}
+
+    def cleanup(self):
+        """Release slot back to the pool (workspace reset for reuse)."""
+        if not self._released:
+            self._released = True
+            _SlotPoolManager.get_instance().release(self.task_id, reset_workspace=True)
+
+    def stop(self):
+        """Same as cleanup for slot pool."""
+        self.cleanup()
+
+    def __del__(self):
+        try:
+            self.cleanup()
+        except:
+            pass
+
+
+def _shutdown_slot_pool():
+    """Shutdown the slot pool manager (called at process exit)."""
+    try:
+        _SlotPoolManager.reset_instance()
+    except Exception:
+        pass
+
+# Register slot pool shutdown alongside modal pool shutdown
+import atexit as _atexit_slot
+_atexit_slot.register(_shutdown_slot_pool)
+
+
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 
@@ -1664,8 +1969,21 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
             timeout=timeout
         )
     
+    elif env_type == "slot_pool":
+        # Multiplexed sandbox pool via atropos/backends/ (Modal, Nomad/Docker, Nomad/Singularity)
+        # N:M slot multiplexing for high-throughput parallel execution
+        workspace = os.getenv("TERMINAL_MODAL_WORKSPACE", "/data")
+        return _SlotPoolEnvironment(
+            cwd=cwd or workspace,
+            timeout=timeout,
+            task_id=task_id if 'task_id' in dir() else "",
+        )
+    
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', or 'ssh'")
+        raise ValueError(
+            f"Unknown environment type: {env_type}. "
+            "Use 'local', 'docker', 'singularity', 'modal', 'ssh', or 'slot_pool'"
+        )
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):

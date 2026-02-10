@@ -63,23 +63,39 @@ python environments/swe_smith_oracle_env.py process \
    - Full token tracking with logprobs via Phase 2 ManagedServer
    - Key finding: Llama-3-8B template silently drops `tools=` param, Qwen 3 has full Hermes format support
 
-### What Still Needs to Be Done
+### Current Task: Integrate Slot Pool Backend into tools/terminal_tool.py
 
-#### 1. Replace hermes-agent tools backend with sandbox backend globally
-Per Teknium's feedback: `tools/terminal_tool.py`, `tools/file_tools.py` etc. should be able to use
-the Modal/Nomad sandbox backend not just in atropos envs but also in `batch_runner.py` for scaled
-data generation. This unifies the tool execution path across CLI, batch, and RL environments.
+#### Step 1: Add `_SlotPoolEnvironment` to `tools/terminal_tool.py`
+- New class alongside existing `_LocalEnvironment`, `_DockerEnvironment`, etc.
+- Routes through `atropos/backends/` (ModalToolBackend or NomadToolBackend)
+- N:M slot multiplexing: 5-10 sandboxes × 10 slots each = 50-100 concurrent
+- Singleton `_SlotPoolManager` (like `_ModalPoolManager`) manages backend lifecycle
+- `execute()` acquires slot → `backend.execute_batch([(slot, "bash", ...)])` → returns `{"output": ..., "returncode": ...}`
+- `cleanup()` releases slot back to pool
 
-#### 2. Clean up redundant code
-- Remove `atropos/agent/` (replaced by `environments/agent_loop.py`)
-- Remove `atropos/envs/agent_env.py` (replaced by `environments/hermes_base_env.py`)
-- Remove `atropos/tools/` (use `model_tools.py` + `tools/` directly)
+#### Step 2: Wire into `_create_environment()`
+- `TERMINAL_ENV=slot_pool` → `_SlotPoolEnvironment(...)`
+- Sub-config: `TERMINAL_SLOT_BACKEND=modal` or `TERMINAL_SLOT_BACKEND=nomad`
+- Reuse existing `TERMINAL_MODAL_*` and Nomad env vars for configuration
 
-#### 3. Test with Tinker trainer (blocked on billing)
-Full RL training loop: Tinker API → atropos rollout API → environment → trainer
+#### Step 3: Remove redundant `atropos/tools/` files
+- DELETE: `hermes_external_tools.py`, `build_registry.py`, `sandbox_stubs.py`, `toolset_resolver.py`
+- KEEP: `base.py` (ToolCall/ToolResult types), `tool_executor.py` (batched queue), `terminal_stateful_tool.py`, `tmux_tool.py`
 
-#### 4. Add more environments
-Teknium mentioned needing "endless-terminals" and "terminalbench 2" envs
+#### Step 4: Clean up `atropos/envs/` and `atropos/agent/` (defer)
+- Remove `atropos/envs/agent_env.py` → replaced by `environments/hermes_base_env.py`
+- Remove `atropos/agent/atropos_agent.py` → replaced by `environments/agent_loop.py`
+
+#### Later
+- Test with Tinker trainer (blocked on billing)
+- Add more environments (endless-terminals, terminalbench 2)
+
+### Key Architecture Insight
+Two separate sandbox integration points:
+1. **`tools/terminal_tool.py` with `TERMINAL_ENV=slot_pool`** — for hermes CLI, batch_runner, any code using `handle_function_call("terminal", ...)`. Uses `_SlotPoolEnvironment` which wraps `atropos/backends/`.
+2. **`environments/hermes_base_env.py` with `tool_pool_mode=modal/nomad`** — for RL environments. Uses `_collect_trajectory_sandbox()` which directly acquires slots and creates `sandbox_tool_handler`.
+
+Both use the same underlying `atropos/backends/` (ModalToolBackend, NomadToolBackend) with the same slot pool.
 
 ### Architecture Summary
 

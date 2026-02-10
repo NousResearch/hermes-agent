@@ -21,11 +21,19 @@ Test results:
 - [x] Test Phase 1 (OpenAI server type) with Nous API — WORKS
 - [x] Test Phase 2 (ManagedServer) with RunPod SGLang — WORKS
 - [x] Port SWE env to `HermesAgentBaseEnv` with multiplexed sandboxing
-- [ ] End-to-end test with Modal sandbox (needs live Modal)
-- [ ] Remove redundant `atropos/agent/` and `atropos/envs/agent_env.py`
-- [ ] Clean up redundant `atropos/tools/`
+- [x] End-to-end test: Qwen 3 8B + Modal sandbox + tool calls in sandbox + pytest verification
+- [x] Add `_SlotPoolEnvironment` to `tools/terminal_tool.py` (TERMINAL_ENV=slot_pool)
+- [x] Remove redundant `atropos/tools/` files (4 of 8)
+- [ ] Remove redundant `atropos/agent/` and `atropos/envs/agent_env.py` (deferred)
 - [ ] Test end-to-end with Tinker trainer (blocked on billing)
-- [ ] Test with actual tool calls (model producing tool_calls, not just text)
+
+### ✅ End-to-End SWE + Modal Sandbox Verified (Feb 10, 2026)
+- Qwen 3 8B on RunPod SGLang (endpoint `0tx0ruuuo4f10c`)
+- Phase 2 ManagedServer with hermes tool call parser
+- 5 terminal commands executed in Modal sandbox: ls, git status, git log, cat parse.py, cat tests/
+- In-sandbox verification: install deps + pytest → score 0.0 (model inspected but didn't fix)
+- Full token tracking with logprobs via /generate endpoint
+- Key finding: Llama-3-8B template drops tools= silently; Qwen 3 has full Hermes tool format
 
 ## Completed Features
 

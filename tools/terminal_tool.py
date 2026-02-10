@@ -637,15 +637,21 @@ class _LocalEnvironment:
 
 class _SingularityEnvironment:
     """
-    Custom Singularity/Apptainer environment with better space management.
+    Persistent Singularity/Apptainer container environment.
     
-    - Automatically builds/caches SIF images from docker:// URLs
-    - Builds sandbox in /scratch (if available) or configurable location
-    - Binds a large working directory into the container
-    - Keeps container isolated from host filesystem
+    Uses `apptainer instance` to create a long-running container that persists
+    state (files, installs, env changes) across all commands within a task.
+    The model experiences this as a real Linux VM.
+    
+    Features:
+    - Persistent filesystem: files created in one command are visible in the next
+    - Package installs persist: pip/apt installs survive across tool calls
+    - Full isolation: --containall gives PID, IPC, and environment isolation
+    - Writable tmpfs overlay: full root filesystem is writable (RAM-backed)
+    - Automatic SIF caching: docker:// images converted to SIF once, reused forever
     """
     
-    def __init__(self, image: str, cwd: str = "/workspace", timeout: int = 60):
+    def __init__(self, image: str, cwd: str = "/root", timeout: int = 60):
         self.cwd = cwd
         self.timeout = timeout
         
@@ -655,48 +661,60 @@ class _SingularityEnvironment:
         # Get or build SIF from docker:// URL (fast if already cached)
         self.image = _get_or_build_sif(image, self.executable)
         
-        # Get scratch directory for working files
-        self.scratch_dir = _get_scratch_dir()
+        # Create unique instance name (must be alphanumeric + underscores)
+        self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
+        self._instance_started = False
         
-        # Create unique ID for this environment
-        self.sandbox_id = f"hermes-{uuid.uuid4().hex[:12]}"
+        # Start the persistent instance
+        self._start_instance()
+    
+    def _start_instance(self):
+        """Start a persistent apptainer instance.
         
-        # Create a working directory that will be bound into the container
-        # This persists files across commands within the same task
-        self.work_dir = self.scratch_dir / f"{self.sandbox_id}-work"
-        self.work_dir.mkdir(parents=True, exist_ok=True)
+        The instance runs as a background process. All subsequent execute() calls
+        run commands inside this same instance, so state persists across calls.
+        """
+        cmd = [
+            self.executable, "instance", "start",
+            "--writable-tmpfs",  # RAM-backed writable overlay on read-only SIF
+            "--containall",      # Full isolation: PID, IPC, environment, filesystem
+            str(self.image),
+            self.instance_id,
+        ]
         
-        # No sandbox build needed! We use --writable-tmpfs which runs directly
-        # from the read-only SIF with an in-memory writable overlay.
-        # This is instant (vs minutes for sandbox build) and scales to any
-        # number of concurrent workers since they all share the same SIF.
-        print(f"[Singularity] Environment {self.sandbox_id} ready (tmpfs overlay, no build needed)", flush=True)
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 min for instance startup
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to start instance: {result.stderr}")
+            
+            self._instance_started = True
+            print(f"[Singularity] Instance {self.instance_id} started (persistent container)", flush=True)
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Instance start timed out")
     
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
-        """Execute a command in the Singularity container."""
+        """Execute a command in the persistent Singularity instance.
+        
+        All commands run in the same container, so files, installs, and
+        environment changes persist between calls.
+        """
+        if not self._instance_started:
+            return {"output": "Instance not started", "returncode": -1}
+        
         cmd = [self.executable, "exec"]
-        
-        # Isolation flags - contain filesystem, clean env, isolate PID namespace
-        # --contain: isolate filesystem (no host mounts except explicit binds)
-        # --cleanenv: don't inherit host environment variables
-        # --pid: isolate PID namespace (ps aux only shows container processes)
-        # --writable-tmpfs: RAM-backed writable overlay on top of read-only SIF
-        #   (instant startup, no sandbox build, scales to 250+ concurrent workers)
-        cmd.extend(["--contain", "--cleanenv", "--pid", "--writable-tmpfs"])
-        
-        # Bind the working directory into the container at /workspace
-        # This gives the container access to a large writable space on disk
-        cmd.extend(["--bind", f"{self.work_dir}:/workspace"])
-        
-        # Also bind it to /tmp inside container for pip cache etc.
-        cmd.extend(["--bind", f"{self.work_dir}:/tmp"])
         
         # Set working directory
         work_dir = cwd or self.cwd
         cmd.extend(["--pwd", work_dir])
         
-        # Use the SIF directly (read-only, shared by all workers)
-        cmd.append(str(self.image))
+        # Connect to the running instance
+        cmd.append(f"instance://{self.instance_id}")
         
         # Transform sudo commands if SUDO_PASSWORD is available
         exec_command = _transform_sudo_command(command)
@@ -720,8 +738,19 @@ class _SingularityEnvironment:
             return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
     
     def cleanup(self):
-        """Clean up working directory (no sandbox to remove with tmpfs overlay)."""
-        shutil.rmtree(self.work_dir, ignore_errors=True)
+        """Stop the persistent instance and clean up."""
+        if self._instance_started:
+            try:
+                subprocess.run(
+                    [self.executable, "instance", "stop", self.instance_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                print(f"[Singularity] Instance {self.instance_id} stopped", flush=True)
+            except Exception as e:
+                print(f"[Singularity] Warning: failed to stop instance {self.instance_id}: {e}", flush=True)
+            self._instance_started = False
     
     def stop(self):
         """Alias for cleanup."""
@@ -729,7 +758,10 @@ class _SingularityEnvironment:
     
     def __del__(self):
         """Cleanup on destruction."""
-        self.cleanup()
+        try:
+            self.cleanup()
+        except:
+            pass
 
 
 class _SSHEnvironment:
@@ -1016,6 +1048,44 @@ _env_lock = threading.Lock()
 _cleanup_thread = None
 _cleanup_running = False
 
+# Per-task environment overrides registry.
+# Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
+# image for a specific task_id BEFORE the agent loop starts. When the terminal or
+# file tools create a new sandbox for that task_id, they check this registry first
+# and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
+#
+# This is never exposed to the model -- only infrastructure code calls it.
+# Thread-safe because each task_id is unique per rollout.
+_task_env_overrides: Dict[str, Dict[str, Any]] = {}
+
+
+def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+    """
+    Register environment overrides for a specific task/rollout.
+
+    Called by Atropos environments before the agent loop to configure
+    per-task sandbox settings (e.g., a custom Dockerfile for the Modal image).
+
+    Supported override keys:
+        - modal_image: str -- Path to Dockerfile or Docker Hub image name
+        - docker_image: str -- Docker image name
+        - cwd: str -- Working directory inside the sandbox
+
+    Args:
+        task_id: The rollout's unique task identifier
+        overrides: Dict of config keys to override
+    """
+    _task_env_overrides[task_id] = overrides
+
+
+def clear_task_env_overrides(task_id: str):
+    """
+    Clear environment overrides for a task after rollout completes.
+
+    Called during cleanup to avoid stale entries accumulating.
+    """
+    _task_env_overrides.pop(task_id, None)
+
 # Configuration from environment variables
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
@@ -1027,10 +1097,10 @@ def _get_env_config() -> Dict[str, Any]:
     #   - local/ssh: current working directory (CLI resolves "." before we get here)
     #   - docker/singularity: /tmp inside the container (singularity bind-mounts /scratch there)
     #   - modal: /root (ephemeral cloud container, full filesystem access)
-    if env_type == "modal":
+    if env_type in ("modal", "singularity"):
         default_cwd = "/root"
-    elif env_type in ("docker", "singularity"):
-        default_cwd = "/tmp"
+    elif env_type == "docker":
+        default_cwd = "/"
     else:
         default_cwd = os.getcwd()
     
@@ -1313,23 +1383,27 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
-        
-        # Select image based on env type
-        if env_type == "docker":
-            image = config["docker_image"]
-        elif env_type == "singularity":
-            image = config["singularity_image"]
-        elif env_type == "modal":
-            image = config["modal_image"]
-        else:
-            image = ""
-        
-        cwd = config["cwd"]
-        default_timeout = config["timeout"]
-        effective_timeout = timeout or default_timeout
 
         # Use task_id for environment isolation
         effective_task_id = task_id or "default"
+
+        # Check per-task overrides (set by environments like TerminalBench2Env)
+        # before falling back to global env var config
+        overrides = _task_env_overrides.get(effective_task_id, {})
+        
+        # Select image based on env type, with per-task override support
+        if env_type == "docker":
+            image = overrides.get("docker_image") or config["docker_image"]
+        elif env_type == "singularity":
+            image = overrides.get("singularity_image") or config["singularity_image"]
+        elif env_type == "modal":
+            image = overrides.get("modal_image") or config["modal_image"]
+        else:
+            image = ""
+        
+        cwd = overrides.get("cwd") or config["cwd"]
+        default_timeout = config["timeout"]
+        effective_timeout = timeout or default_timeout
 
         # For local environment in batch mode, create a unique subdirectory per task
         # This prevents parallel tasks from overwriting each other's files

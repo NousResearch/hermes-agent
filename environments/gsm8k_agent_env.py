@@ -173,8 +173,8 @@ class GSM8kAgentEnv(HermesAgentBaseEnv):
         )
 
         env_config = GSM8kAgentEnvConfig(
-            # Terminal tool only -- model uses `python3 -c "..."` for math
-            enabled_toolsets=["terminal"],
+            # Terminal + file toolsets (same as terminal_test_env.py)
+            enabled_toolsets=["terminal", "file"],
             disabled_toolsets=None,
             distribution=None,
             # Agent settings

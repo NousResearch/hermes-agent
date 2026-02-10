@@ -134,8 +134,7 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
             steps_per_eval=1,
             max_token_length=8192,
             wandb_name="swe_smith_oracle",
-            # Terminal tool for the agent
-            enabled_toolsets=["terminal"],
+            enabled_toolsets=["terminal", "file"],
             terminal_backend=os.getenv("TERMINAL_ENV", "local"),
             # Longer agent turns for SWE tasks
             max_agent_turns=50,

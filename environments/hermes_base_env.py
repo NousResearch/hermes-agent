@@ -292,23 +292,58 @@ class HermesAgentBaseEnv(BaseEnv):
     # =========================================================================
 
     async def _start_sandbox_backend(self) -> None:
-        """Start the sandbox pool backend if tool_pool_mode is not 'default'."""
+        """
+        Configure the slot pool backend if tool_pool_mode is not 'default'.
+
+        Sets TERMINAL_ENV=slot_pool and configures env vars so that ALL hermes
+        tools (terminal, file, etc.) automatically route through the sandbox
+        pool via _SlotPoolEnvironment in terminal_tool.py.
+        """
         if self.config.tool_pool_mode == "default":
             return
 
-        from atropos.backends import create_tool_backend
-        logger.info("Starting sandbox backend (mode=%s)", self.config.tool_pool_mode)
-        self._sandbox_backend = create_tool_backend(self.config)
-        await self._sandbox_backend.start()
-        logger.info("Sandbox backend started")
+        mode = self.config.tool_pool_mode
+        logger.info("Configuring slot pool backend (mode=%s)", mode)
+
+        # Set TERMINAL_ENV=slot_pool so terminal_tool.py uses _SlotPoolEnvironment
+        os.environ["TERMINAL_ENV"] = "slot_pool"
+
+        # Set the backend type (modal or nomad)
+        if mode == "modal":
+            os.environ["TERMINAL_SLOT_BACKEND"] = "modal"
+            # Forward modal config from env config to slot pool env vars
+            os.environ.setdefault("TERMINAL_MODAL_IMAGE", self.config.modal_image)
+            os.environ.setdefault("TERMINAL_MODAL_SLOTS", str(self.config.modal_slots_per_sandbox))
+            os.environ.setdefault("TERMINAL_MODAL_MIN", str(self.config.modal_min_sandboxes))
+            os.environ.setdefault("TERMINAL_MODAL_MAX", str(self.config.modal_max_sandboxes))
+            os.environ.setdefault("TERMINAL_MODAL_IDLE_TIMEOUT", str(self.config.modal_idle_timeout))
+            os.environ.setdefault("TERMINAL_MODAL_MAX_LIFETIME", str(self.config.modal_max_lifetime))
+            os.environ.setdefault("TERMINAL_MODAL_ACQUIRE_TIMEOUT", str(self.config.modal_acquire_timeout))
+            os.environ.setdefault("TERMINAL_MODAL_EXEC_TIMEOUT", str(self.config.modal_execution_timeout))
+            os.environ.setdefault("TERMINAL_MODAL_WORKSPACE", self.config.modal_workspace_base)
+            if self.config.modal_gpu:
+                os.environ.setdefault("TERMINAL_MODAL_GPU", self.config.modal_gpu)
+        elif mode == "nomad":
+            os.environ["TERMINAL_SLOT_BACKEND"] = "nomad"
+            os.environ.setdefault("TERMINAL_NOMAD_ADDRESS", self.config.nomad_address)
+            os.environ.setdefault("TERMINAL_NOMAD_IMAGE", self.config.sandbox_image)
+            os.environ.setdefault("TERMINAL_NOMAD_DRIVER", self.config.driver)
+            os.environ.setdefault("TERMINAL_NOMAD_SLOTS", str(self.config.slots_per_container))
+            os.environ.setdefault("TERMINAL_NOMAD_MIN", str(self.config.min_containers))
+            os.environ.setdefault("TERMINAL_NOMAD_MAX", str(self.config.max_containers))
+
+        self._sandbox_backend = True  # Flag that sandbox mode is active
+        print(f"🔧 Slot pool configured: TERMINAL_ENV=slot_pool, backend={mode}")
 
     async def _stop_sandbox_backend(self) -> None:
-        """Stop the sandbox pool backend."""
-        if self._sandbox_backend is not None:
-            logger.info("Stopping sandbox backend")
-            await self._sandbox_backend.stop(
-                purge=bool(self.config.purge_job_on_shutdown)
-            )
+        """Stop the slot pool backend."""
+        if self._sandbox_backend:
+            logger.info("Stopping slot pool backend")
+            try:
+                from tools.terminal_tool import _SlotPoolManager
+                _SlotPoolManager.reset_instance()
+            except Exception as e:
+                logger.warning("Slot pool shutdown: %s", e)
             self._sandbox_backend = None
 
     # =========================================================================
@@ -637,70 +672,73 @@ class HermesAgentBaseEnv(BaseEnv):
         """
         Sandbox trajectory collection path (Modal, Nomad).
 
-        Acquires a slot, sets up the workspace, runs the agent loop with
-        terminal calls routed through the sandbox backend, then verifies
-        and scores in-sandbox before releasing the slot.
+        Uses TERMINAL_ENV=slot_pool so ALL hermes tools (terminal, file, web)
+        automatically route through the sandbox pool via _SlotPoolEnvironment.
+        No per-tool routing needed — the slot pool is the terminal backend.
+
+        Flow:
+        1. Pre-warm terminal env (acquires a slot in the pool)
+        2. Setup workspace via subclass hook (e.g., git clone + worktree)
+        3. Run agent loop with tool_handler=None (all tools use handle_function_call)
+        4. Verify and score in-sandbox via subclass hook (e.g., pytest)
+        5. Release the slot via cleanup_vm()
         """
-        from atropos.slots.executor import ExecutionResult
+        from tools.terminal_tool import _SlotPoolManager, cleanup_vm
+        from dataclasses import dataclass
 
-        backend = self._sandbox_backend
-        slot = None
+        @dataclass
+        class _ExecResult:
+            """Lightweight result for exec_tool compatibility with env hooks."""
+            success: bool
+            output: str = ""
+            error: str = ""
+            metadata: Dict[str, Any] = None
+            def __post_init__(self):
+                if self.metadata is None:
+                    self.metadata = {}
+
         try:
-            # 1. Acquire a slot from the sandbox pool
-            logger.info("Acquiring sandbox slot for task %s", task_id)
-            slot = await backend.acquire(task_id)
-            logger.info(
-                "Acquired slot %s (sandbox %s) for task %s",
-                slot.slot_id, slot.alloc_id, task_id,
+            # 1. Pre-warm: trigger terminal env creation → acquires slot
+            logger.info("Pre-warming sandbox slot for task %s", task_id)
+            loop = asyncio.get_event_loop()
+            warmup = await loop.run_in_executor(
+                None,
+                lambda: handle_function_call(
+                    "terminal", {"command": "echo slot_ready"}, task_id=task_id
+                ),
             )
+            logger.info("Sandbox slot acquired for task %s", task_id)
 
-            # 2. Create exec_tool callable for setup/verify hooks
-            #    Returns ExecutionResult (structured) for env hook consumption
-            async def exec_tool(tool_name: str, args: Dict[str, Any], timeout: float = 300) -> ExecutionResult:
-                results = await backend.execute_batch(
-                    [(slot, tool_name, args)], timeout_s=timeout
+            # 2. Create exec_tool for setup/verify hooks
+            #    Routes through _SlotPoolManager (same slot as terminal_tool)
+            async def exec_tool(tool_name: str, args: Dict[str, Any], timeout: float = 300) -> _ExecResult:
+                command = args.get("command", "")
+                result_dict = _SlotPoolManager.get_instance().execute(
+                    task_id, command, timeout=timeout
                 )
-                return results[0]
+                returncode = result_dict.get("returncode", 1)
+                output = result_dict.get("output", "")
+                return _ExecResult(
+                    success=(returncode == 0),
+                    output=output,
+                    error="" if returncode == 0 else f"Exit code: {returncode}",
+                    metadata={"returncode": returncode},
+                )
 
             # 3. Setup workspace (subclass hook: git clone, worktree, etc.)
             workspace_meta = await self.setup_trajectory_workspace(
                 item, trajectory_id=task_id, exec_tool=exec_tool
             )
 
-            # 4. Create tool_handler for agent loop
-            #    Returns JSON string (same format as hermes terminal tool)
-            async def sandbox_tool_handler(
-                tool_name: str, args: Dict[str, Any], handler_task_id: str
-            ) -> str:
-                if tool_name == "terminal":
-                    timeout_val = min(float(args.get("timeout", 300)), 600)
-                    result = await backend.execute_batch(
-                        [(slot, "bash", {"command": args.get("command", "")})],
-                        timeout_s=timeout_val,
-                    )
-                    r = result[0]
-                    output = r.output if r.success else f"{r.output}\n{r.error}" if r.output else r.error
-                    return json.dumps({
-                        "output": output,
-                        "exit_code": r.metadata.get("returncode", 0 if r.success else 1),
-                    })
-                else:
-                    # Non-terminal tools run locally via hermes-agent
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        None,
-                        lambda: handle_function_call(
-                            tool_name, args, task_id=handler_task_id
-                        ),
-                    )
-
-            # 5. Run agent loop with sandbox routing
+            # 4. Run agent loop — tool_handler=None means ALL tools go through
+            #    handle_function_call() → terminal_tool() → _SlotPoolEnvironment
+            #    → same sandbox slot. File tools also route through same env.
             result = await self._run_agent_loop(
                 task_id, tools, valid_names, messages,
-                tool_handler=sandbox_tool_handler,
+                tool_handler=None,
             )
 
-            # 6. Skip verification if no meaningful work
+            # 5. Skip verification if no meaningful work
             only_system_and_user = all(
                 msg.get("role") in ("system", "user") for msg in result.messages
             )
@@ -711,7 +749,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 )
                 reward = 0.0
             else:
-                # 7. Verify and score in-sandbox (subclass hook: pytest, etc.)
+                # 6. Verify and score in-sandbox (subclass hook: pytest, etc.)
                 reward, score_meta = await self.verify_and_score_trajectory(
                     item, result,
                     trajectory_id=task_id,
@@ -724,19 +762,18 @@ class HermesAgentBaseEnv(BaseEnv):
 
         except Exception as e:
             logger.error("Sandbox trajectory failed for task %s: %s", task_id, e, exc_info=True)
-            # Return a zero-reward placeholder so the pipeline doesn't break
             dummy_result = AgentResult(
                 messages=messages, turns_used=0, finished_naturally=False
             )
             return self._build_scored_item(item, dummy_result, 0.0)
 
         finally:
-            if slot is not None:
-                try:
-                    await backend.release(slot, reset_workspace=True)
-                    logger.info("Released slot %s for task %s", slot.slot_id, task_id)
-                except Exception as e:
-                    logger.error("Failed to release slot %s: %s", slot.slot_id, e)
+            # Release the slot back to the pool
+            try:
+                cleanup_vm(task_id)
+                logger.info("Released sandbox slot for task %s", task_id)
+            except Exception as e:
+                logger.error("Failed to release slot for task %s: %s", task_id, e)
 
     async def _run_agent_loop(
         self,

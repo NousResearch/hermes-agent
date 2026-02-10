@@ -28,18 +28,13 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 import yaml
 
 # prompt_toolkit for fixed input area TUI
-from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.application import Application, get_app
-from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
-from prompt_toolkit.layout.processors import BeforeInput
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
-import asyncio
 import threading
 import queue
 
@@ -498,6 +493,8 @@ COMMANDS = {
     "/clear": "Clear screen and reset conversation (fresh start)",
     "/history": "Show conversation history",
     "/reset": "Reset conversation only (keep screen)",
+    "/retry": "Retry the last message (resend to agent)",
+    "/undo": "Remove the last user/assistant exchange",
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
     "/cron": "Manage scheduled tasks (list, add, remove)",
@@ -508,7 +505,11 @@ COMMANDS = {
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to cli-config.yaml at the specified key path.
+    Save a value to the active config file at the specified key path.
+    
+    Respects the same lookup order as load_cli_config():
+    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
+    2. ./cli-config.yaml (project config - fallback)
     
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
@@ -517,9 +518,15 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    config_path = Path(__file__).parent / 'cli-config.yaml'
+    # Use the same precedence as load_cli_config: user config first, then project config
+    user_config_path = Path.home() / '.hermes' / 'config.yaml'
+    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    config_path = user_config_path if user_config_path.exists() else project_config_path
     
     try:
+        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        
         # Load existing config
         if config_path.exists():
             with open(config_path, 'r') as f:
@@ -631,26 +638,8 @@ class HermesCLI:
         short_uuid = uuid.uuid4().hex[:6]
         self.session_id = f"{timestamp_str}_{short_uuid}"
         
-        # Setup prompt_toolkit session with history
-        self._setup_prompt_session()
-    
-    def _setup_prompt_session(self):
-        """Setup prompt_toolkit session with history and styling."""
-        history_file = Path.home() / ".hermes_history"
-        
-        # Custom style for the prompt
-        self.prompt_style = PTStyle.from_dict({
-            'prompt': '#FFD700 bold',
-            'input': '#FFF8DC',
-        })
-        
-        # Create prompt session with file history
-        # Note: multiline disabled - Enter submits, use \ at end of line for continuation
-        self.prompt_session = PromptSession(
-            history=FileHistory(str(history_file)),
-            style=self.prompt_style,
-            enable_history_search=True,
-        )
+        # History file for persistent input recall across sessions
+        self._history_file = Path.home() / ".hermes_history"
     
     def _init_agent(self) -> bool:
         """
@@ -930,6 +919,67 @@ class HermesCLI:
             print(f"(^_^)v Conversation saved to: {filename}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
+    
+    def retry_last(self):
+        """Retry the last user message by removing the last exchange and re-sending.
+        
+        Removes the last assistant response (and any tool-call messages) and
+        the last user message, then re-sends that user message to the agent.
+        Returns the message to re-send, or None if there's nothing to retry.
+        """
+        if not self.conversation_history:
+            print("(._.) No messages to retry.")
+            return None
+        
+        # Walk backwards to find the last user message
+        last_user_idx = None
+        for i in range(len(self.conversation_history) - 1, -1, -1):
+            if self.conversation_history[i].get("role") == "user":
+                last_user_idx = i
+                break
+        
+        if last_user_idx is None:
+            print("(._.) No user message found to retry.")
+            return None
+        
+        # Extract the message text and remove everything from that point forward
+        last_message = self.conversation_history[last_user_idx].get("content", "")
+        self.conversation_history = self.conversation_history[:last_user_idx]
+        
+        print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
+        return last_message
+    
+    def undo_last(self):
+        """Remove the last user/assistant exchange from conversation history.
+        
+        Walks backwards and removes all messages from the last user message
+        onward (including assistant responses, tool calls, etc.).
+        """
+        if not self.conversation_history:
+            print("(._.) No messages to undo.")
+            return
+        
+        # Walk backwards to find the last user message
+        last_user_idx = None
+        for i in range(len(self.conversation_history) - 1, -1, -1):
+            if self.conversation_history[i].get("role") == "user":
+                last_user_idx = i
+                break
+        
+        if last_user_idx is None:
+            print("(._.) No user message found to undo.")
+            return
+        
+        # Count how many messages we're removing
+        removed_count = len(self.conversation_history) - last_user_idx
+        removed_msg = self.conversation_history[last_user_idx].get("content", "")
+        
+        # Truncate history to before the last user message
+        self.conversation_history = self.conversation_history[:last_user_idx]
+        
+        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
+        remaining = len(self.conversation_history)
+        print(f"  {remaining} message(s) remaining in history.")
     
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
@@ -1268,6 +1318,13 @@ class HermesCLI:
         elif cmd_lower.startswith("/personality"):
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif cmd_lower == "/retry":
+            retry_msg = self.retry_last()
+            if retry_msg and hasattr(self, '_pending_input'):
+                # Re-queue the message so process_loop sends it to the agent
+                self._pending_input.put(retry_msg)
+        elif cmd_lower == "/undo":
+            self.undo_last()
         elif cmd_lower == "/save":
             self.save_conversation()
         elif cmd_lower.startswith("/cron"):
@@ -1302,8 +1359,9 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        # Visual separator after user input
-        print("─" * 60, flush=True)
+        # Visual separator after user input (adapt to terminal width, capped for readability)
+        term_width = min(self.console.width, 120)
+        print("─" * term_width, flush=True)
         
         try:
             # Run the conversation with interrupt monitoring
@@ -1361,14 +1419,20 @@ class HermesCLI:
             
             if response:
                 # Use simple print for compatibility with prompt_toolkit's patch_stdout
+                # Adapt box width to terminal (cap at 120 for readability)
+                box_width = min(self.console.width, 120)
+                inner = box_width - 2  # account for border chars ╭/╰ and ╮/╯
+                label = "⚕ Hermes"
+                padding = inner - len(label) - 1  # -1 for the leading space
+                
                 print()
-                print("╭" + "─" * 58 + "╮")
-                print("│ ⚕ Hermes" + " " * 49 + "│")
-                print("╰" + "─" * 58 + "╯")
+                print("╭" + "─" * inner + "╮")
+                print("│ " + label + " " * max(padding, 0) + "│")
+                print("╰" + "─" * inner + "╯")
                 print()
                 print(response)
                 print()
-                print("─" * 60)
+                print("─" * box_width)
             
             # If we have a pending message from interrupt, re-queue it for process_loop
             # instead of recursing (avoids unbounded recursion from rapid interrupts)
@@ -1380,37 +1444,6 @@ class HermesCLI:
             
         except Exception as e:
             print(f"Error: {e}")
-            return None
-    
-    def get_input(self) -> Optional[str]:
-        """
-        Get user input using prompt_toolkit.
-        
-        Enter submits. For multiline, end line with \\ to continue.
-        
-        Returns:
-            The user's input, or None if EOF/interrupt
-        """
-        try:
-            # Get first line
-            line = self.prompt_session.prompt(
-                HTML('<prompt>❯ </prompt>'),
-                style=self.prompt_style,
-            )
-            
-            # Handle multi-line input (lines ending with \)
-            lines = [line]
-            while line.endswith("\\"):
-                lines[-1] = line[:-1]  # Remove trailing backslash
-                line = self.prompt_session.prompt(
-                    HTML('<prompt>  </prompt>'),  # Continuation prompt
-                    style=self.prompt_style,
-                )
-                lines.append(line)
-            
-            return "\n".join(lines).strip()
-            
-        except (EOFError, KeyboardInterrupt):
             return None
     
     def run(self):
@@ -1425,9 +1458,6 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
-        
-        # Create a persistent input area using prompt_toolkit Application
-        input_buffer = Buffer()
         
         # Key bindings for the input area
         kb = KeyBindings()
@@ -1486,13 +1516,14 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
         
-        # Create the input area widget
+        # Create the input area widget with persistent history across sessions
         input_area = TextArea(
             height=1,
             prompt='❯ ',
             style='class:input-area',
             multiline=False,
             wrap_lines=False,
+            history=FileHistory(str(self._history_file)),
         )
         
         # Create a status line that shows when agent is working

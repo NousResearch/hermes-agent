@@ -16,22 +16,16 @@
 env:
   enabled_toolsets: ["terminal", "file"]
   max_agent_turns: 60
-  max_token_length: 16000
-  agent_temperature: 0.6
+  max_token_length: 32000
+  agent_temperature: 0.8
   terminal_backend: "modal"
   dataset_name: "NousResearch/terminal-bench-2"
-  test_timeout: 180
+  test_timeout: 600
   tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
   use_wandb: true
   wandb_name: "terminal-bench-2"
   ensure_scores_are_not_same: false
-  data_dir_to_save_evals: "evals/terminal-bench-2"
-  system_prompt: >
-    You are a skilled software engineer and system administrator with
-    access to a terminal and file tools. You are working inside a Linux
-    container environment. Complete the user's task by using the available
-    tools. Be methodical: explore the environment first, plan your approach,
-    then execute step by step. Verify your work before finishing.
+  data_dir_to_save_evals: "environments/benchmarks/evals/terminal-bench-2"
 
 openai:
   base_url: "https://openrouter.ai/api/v1"

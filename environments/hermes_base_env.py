@@ -140,6 +140,48 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Options: hermes, mistral, llama3_json, qwen, deepseek_v3, etc.",
     )
 
+    # --- Sandbox pool mode (optional, for scaled environments) ---
+    tool_pool_mode: str = Field(
+        default="default",
+        description="Tool execution mode: 'default' (terminal tool per task_id), "
+        "'nomad' (slot pool via Nomad/Docker/Singularity), or 'modal' (Modal sandbox pool).",
+    )
+
+    # Sandbox pool: shared settings
+    allow_network: bool = Field(default=True, description="Whether sandbox bash commands may access the network.")
+    require_sandbox: bool = Field(default=False, description="Fail closed if bubblewrap is unavailable.")
+    purge_job_on_start: bool = Field(default=False, description="Purge existing sandbox job on startup.")
+    purge_job_on_shutdown: bool = Field(default=True, description="Purge sandbox job on shutdown.")
+    acquire_timeout_s: float = Field(default=30.0, description="Slot acquisition timeout (seconds).")
+
+    # Sandbox pool: Nomad settings
+    nomad_address: str = Field(default="http://localhost:4646", description="Nomad API address.")
+    sandbox_job_id: str = Field(default="atropos-sandbox", description="Nomad job id for sandbox containers.")
+    sandbox_image: str = Field(default="atropos-sandbox:local", description="Docker image for sandbox containers.")
+    slots_per_container: int = Field(default=10, description="Nomad: slots per container.")
+    min_containers: int = Field(default=1, description="Nomad: minimum containers.")
+    max_containers: int = Field(default=10, description="Nomad: maximum containers.")
+    privileged: bool = Field(default=False, description="Nomad: run container privileged.")
+    driver: str = Field(default="docker", description="Nomad task driver: 'docker' or 'singularity'.")
+    singularity_image: Optional[str] = Field(default=None, description="Path to .sif file for Singularity driver.")
+
+    # Sandbox pool: Modal settings
+    modal_app_name: str = Field(default="atropos-sandbox", description="Modal app name prefix.")
+    modal_image: str = Field(default="python:3.11", description="Modal: container image.")
+    modal_gpu: Optional[str] = Field(default=None, description="Modal: GPU type (None, 'T4', 'A10G', 'A100', 'H100').")
+    modal_cpu: float = Field(default=1.0, description="Modal: CPU cores.")
+    modal_memory: int = Field(default=2048, description="Modal: memory in MB.")
+    modal_slots_per_sandbox: int = Field(default=10, description="Modal: slots per sandbox.")
+    modal_min_sandboxes: int = Field(default=1, description="Modal: minimum sandboxes.")
+    modal_max_sandboxes: int = Field(default=5, description="Modal: maximum sandboxes.")
+    modal_idle_timeout: int = Field(default=120, description="Modal: idle timeout (seconds).")
+    modal_max_lifetime: int = Field(default=3600, description="Modal: max sandbox lifetime (seconds).")
+    modal_acquire_timeout: float = Field(default=60.0, description="Modal: slot acquisition timeout (seconds).")
+    modal_execution_timeout: float = Field(default=30.0, description="Modal: command execution timeout (seconds).")
+    modal_secrets: str = Field(default="", description="Modal: comma-separated Modal Secret names.")
+    modal_env_vars: str = Field(default="", description="Modal: semicolon-separated KEY=VALUE pairs.")
+    modal_workspace_base: str = Field(default="/data", description="Modal: workspace base directory.")
+
 
 class HermesAgentBaseEnv(BaseEnv):
     """
@@ -185,6 +227,9 @@ class HermesAgentBaseEnv(BaseEnv):
 
         # Tool error tracking for wandb logging
         self._tool_error_buffer: List[Dict[str, Any]] = []
+
+        # Sandbox pool backend (only used when tool_pool_mode != "default")
+        self._sandbox_backend = None
 
     # =========================================================================
     # Toolset resolution (per-group)
@@ -241,6 +286,114 @@ class HermesAgentBaseEnv(BaseEnv):
         # If the server is an OpenAI server (not VLLM/SGLang), use direct mode
         from atroposlib.envs.server_handling.openai_server import OpenAIServer
         return not isinstance(server, OpenAIServer)
+
+    # =========================================================================
+    # Sandbox pool backend (tool_pool_mode != "default")
+    # =========================================================================
+
+    async def _start_sandbox_backend(self) -> None:
+        """Start the sandbox pool backend if tool_pool_mode is not 'default'."""
+        if self.config.tool_pool_mode == "default":
+            return
+
+        from atropos.backends import create_tool_backend
+        logger.info("Starting sandbox backend (mode=%s)", self.config.tool_pool_mode)
+        self._sandbox_backend = create_tool_backend(self.config)
+        await self._sandbox_backend.start()
+        logger.info("Sandbox backend started")
+
+    async def _stop_sandbox_backend(self) -> None:
+        """Stop the sandbox pool backend."""
+        if self._sandbox_backend is not None:
+            logger.info("Stopping sandbox backend")
+            await self._sandbox_backend.stop(
+                purge=bool(self.config.purge_job_on_shutdown)
+            )
+            self._sandbox_backend = None
+
+    # =========================================================================
+    # Optional hooks for sandbox environments
+    # =========================================================================
+
+    async def setup_trajectory_workspace(
+        self,
+        item: Item,
+        *,
+        trajectory_id: str,
+        exec_tool,
+    ) -> Dict[str, Any]:
+        """
+        Optional hook: prepare the sandbox workspace before the agent starts.
+
+        Override in subclasses for environments that need workspace setup
+        (e.g., git clone, worktree creation, dependency installation).
+
+        Args:
+            item: The dataset item being rolled out
+            trajectory_id: Unique ID for this trajectory
+            exec_tool: Callable to execute tool calls in the sandbox
+
+        Returns:
+            Dict of workspace metadata (passed to verify_and_score_trajectory)
+        """
+        return {}
+
+    async def verify_and_score_trajectory(
+        self,
+        item: Item,
+        result: AgentResult,
+        *,
+        trajectory_id: str,
+        exec_tool,
+        workspace_meta: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Optional hook: run in-sandbox verification before scoring.
+
+        Override in subclasses for environments that need to verify results
+        inside the sandbox (e.g., run pytest, check file contents).
+
+        Default: calls compute_reward() with ToolContext.
+
+        Args:
+            item: The dataset item
+            result: The agent's rollout result
+            trajectory_id: Unique ID for this trajectory
+            exec_tool: Callable to execute tool calls in the sandbox
+            workspace_meta: Metadata from setup_trajectory_workspace
+
+        Returns:
+            Tuple of (reward, metadata_dict)
+        """
+        ctx = ToolContext(trajectory_id)
+        try:
+            reward = await self.compute_reward(item, result, ctx)
+        except Exception as e:
+            logger.error("compute_reward failed: %s", e)
+            reward = 0.0
+        finally:
+            ctx.cleanup()
+        return reward, {}
+
+    # =========================================================================
+    # Lifecycle hooks for env_manager/process_manager cleanup
+    # =========================================================================
+
+    async def env_manager(self):
+        """Start sandbox backend, run env, then clean up."""
+        await self._start_sandbox_backend()
+        try:
+            return await super().env_manager()
+        finally:
+            await self._stop_sandbox_backend()
+
+    async def process_manager(self):
+        """Start sandbox backend, run process, then clean up."""
+        await self._start_sandbox_backend()
+        try:
+            return await super().process_manager()
+        finally:
+            await self._stop_sandbox_backend()
 
     # =========================================================================
     # Core Atropos integration

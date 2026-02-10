@@ -826,6 +826,13 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         except Exception as e:
             print(f"Error logging evaluation results: {e}")
 
+        # Kill all remaining sandboxes. Timed-out tasks leave orphaned thread
+        # pool workers still executing commands -- cleanup_all stops them.
+        from tools.terminal_tool import cleanup_all_environments
+        print("\nCleaning up all sandboxes...")
+        cleanup_all_environments()
+        print("Done.")
+
     # =========================================================================
     # Wandb logging
     # =========================================================================

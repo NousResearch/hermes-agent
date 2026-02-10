@@ -2411,17 +2411,14 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
             return True
         elif env_type == "docker":
-            from minisweagent.environments.docker import DockerEnvironment
-            # Check if docker is available
+            # check actually available..
             import subprocess
             result = subprocess.run(["docker", "version"], capture_output=True, timeout=5)
             return result.returncode == 0
         elif env_type == "singularity":
-            from minisweagent.environments.singularity import SingularityEnvironment
-            # Check if singularity/apptainer is available
+            # Check if singularity/apptainer is available (doesn't work on mac)
             import subprocess
             import shutil
             executable = shutil.which("apptainer") or shutil.which("singularity")
@@ -2430,9 +2427,11 @@ def check_terminal_requirements() -> bool:
                 return result.returncode == 0
             return False
         elif env_type == "modal":
-            from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
-            # Check for modal token
+            # check modal is actually configured
             return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+        elif env_type == "slot_pool":
+            # Slot pool uses atropos/backends/ & always available if modal/nomad is configured
+            return True
         else:
             return False
     except Exception as e:

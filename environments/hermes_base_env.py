@@ -332,8 +332,13 @@ class HermesAgentBaseEnv(BaseEnv):
             os.environ.setdefault("TERMINAL_NOMAD_MIN", str(self.config.min_containers))
             os.environ.setdefault("TERMINAL_NOMAD_MAX", str(self.config.max_containers))
 
+        # Eagerly start the _SlotPoolManager so the backend is ready
+        # before any trajectories try to use it
+        from tools.terminal_tool import _SlotPoolManager
+        _SlotPoolManager.get_instance()  # Triggers _start() which creates sandboxes
+
         self._sandbox_backend = True  # Flag that sandbox mode is active
-        print(f"🔧 Slot pool configured: TERMINAL_ENV=slot_pool, backend={mode}")
+        print(f"🔧 Slot pool started: TERMINAL_ENV=slot_pool, backend={mode}")
 
     async def _stop_sandbox_backend(self) -> None:
         """Stop the slot pool backend."""
@@ -710,18 +715,27 @@ class HermesAgentBaseEnv(BaseEnv):
             logger.info("Sandbox slot acquired for task %s", task_id)
 
             # 2. Create exec_tool for setup/verify hooks
-            #    Routes through _SlotPoolManager (same slot as terminal_tool)
+            #    Routes through handle_function_call → terminal_tool → same _SlotPoolEnvironment
             async def exec_tool(tool_name: str, args: Dict[str, Any], timeout: float = 300) -> _ExecResult:
                 command = args.get("command", "")
-                result_dict = _SlotPoolManager.get_instance().execute(
-                    task_id, command, timeout=timeout
+                result_json = await loop.run_in_executor(
+                    None,
+                    lambda: handle_function_call(
+                        "terminal",
+                        {"command": command, "timeout": int(timeout)},
+                        task_id=task_id,
+                    ),
                 )
-                returncode = result_dict.get("returncode", 1)
+                try:
+                    result_dict = json.loads(result_json)
+                except (json.JSONDecodeError, TypeError):
+                    result_dict = {"output": str(result_json), "exit_code": 1}
+                returncode = result_dict.get("exit_code", result_dict.get("returncode", 1))
                 output = result_dict.get("output", "")
                 return _ExecResult(
                     success=(returncode == 0),
                     output=output,
-                    error="" if returncode == 0 else f"Exit code: {returncode}",
+                    error=result_dict.get("error", "") if returncode != 0 else "",
                     metadata={"returncode": returncode},
                 )
 

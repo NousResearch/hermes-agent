@@ -31,8 +31,11 @@ def _require_atroposlib() -> None:
 _require_atroposlib()
 
 # Re-export the most commonly used pieces for convenience.
+# Agent imports are eager (always available).
 from .agent import AgentConfig, AgentResult, AgentStep, AtroposAgent, SequenceData  # noqa: E402
-from .envs import AgentEnv, AgentEnvConfig  # noqa: E402
+
+# Env imports are lazy to avoid pulling in deleted atropos.tools dependencies.
+# Use: from atropos.envs import AgentEnv, AgentEnvConfig  (if needed)
 
 __all__ = [
     "AtroposAgent",
@@ -40,7 +43,5 @@ __all__ = [
     "AgentResult",
     "AgentStep",
     "SequenceData",
-    "AgentEnv",
-    "AgentEnvConfig",
 ]
 

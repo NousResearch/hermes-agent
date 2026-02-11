@@ -169,6 +169,8 @@ TOOLSETS = {
             "web_search", "web_extract",
             # Vision - analyze images sent by users
             "vision_analyze",
+            # Image generation
+            "image_generate",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
@@ -188,6 +190,8 @@ TOOLSETS = {
             "web_search", "web_extract",
             # Vision - analyze images sent by users
             "vision_analyze",
+            # Image generation
+            "image_generate",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
@@ -207,6 +211,8 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search",
             # Vision
             "vision_analyze",
+            # Image generation
+            "image_generate",
             # Skills
             "skills_list", "skill_view",
             # Cronjob management

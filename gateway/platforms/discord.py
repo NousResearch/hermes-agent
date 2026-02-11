@@ -8,6 +8,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import os
 from typing import Dict, List, Optional, Any
 
 try:
@@ -173,6 +174,61 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
     
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send an image natively as a Discord file attachment."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        
+        try:
+            import aiohttp
+            
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            
+            # Download the image and send as a Discord file attachment
+            # (Discord renders attachments inline, unlike plain URLs)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"Failed to download image: HTTP {resp.status}")
+                    
+                    image_data = await resp.read()
+                    
+                    # Determine filename from URL or content type
+                    content_type = resp.headers.get("content-type", "image/png")
+                    ext = "png"
+                    if "jpeg" in content_type or "jpg" in content_type:
+                        ext = "jpg"
+                    elif "gif" in content_type:
+                        ext = "gif"
+                    elif "webp" in content_type:
+                        ext = "webp"
+                    
+                    import io
+                    file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
+                    
+                    msg = await channel.send(
+                        content=caption if caption else None,
+                        file=file,
+                    )
+                    return SendResult(success=True, message_id=str(msg.id))
+        
+        except ImportError:
+            print(f"[{self.name}] aiohttp not installed, falling back to URL. Run: pip install aiohttp")
+            return await super().send_image(chat_id, image_url, caption, reply_to)
+        except Exception as e:
+            print(f"[{self.name}] Failed to send image attachment, falling back to URL: {e}")
+            return await super().send_image(chat_id, image_url, caption, reply_to)
+    
     async def send_typing(self, chat_id: str) -> None:
         """Send typing indicator."""
         if self._client:
@@ -232,6 +288,36 @@ class DiscordAdapter(BasePlatformAdapter):
     
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
+        # In server channels (not DMs), require the bot to be @mentioned
+        # UNLESS the channel is in the free-response list.
+        #
+        # Config:
+        #   DISCORD_FREE_RESPONSE_CHANNELS: Comma-separated channel IDs where the
+        #       bot responds to every message without needing a mention.
+        #   DISCORD_REQUIRE_MENTION: Set to "false" to disable mention requirement
+        #       globally (all channels become free-response). Default: "true".
+        
+        if not isinstance(message.channel, discord.DMChannel):
+            # Check if this channel is in the free-response list
+            free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            channel_id = str(message.channel.id)
+            
+            # Global override: if DISCORD_REQUIRE_MENTION=false, all channels are free
+            require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            
+            is_free_channel = channel_id in free_channels
+            
+            if require_mention and not is_free_channel:
+                # Must be @mentioned to respond
+                if self._client.user not in message.mentions:
+                    return  # Silently ignore messages that don't mention the bot
+            
+            # Strip the bot mention from the message text so the agent sees clean input
+            if self._client.user and self._client.user in message.mentions:
+                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
+                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+        
         # Determine message type
         msg_type = MessageType.TEXT
         if message.content.startswith("/"):

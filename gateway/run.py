@@ -493,14 +493,36 @@ class GatewayRunner:
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             
-            # Convert transcript history to agent format
-            # Transcript has timestamps; agent expects {"role": ..., "content": ...}
+            # Convert history to agent format.
+            # Two cases:
+            #   1. Normal path (from transcript): simple {role, content, timestamp} dicts
+            #      - Strip timestamps, keep role+content
+            #   2. Interrupt path (from agent result["messages"]): full agent messages
+            #      that may include tool_calls, tool_call_id, reasoning, etc.
+            #      - These must be passed through intact so the API sees valid
+            #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             agent_history = []
             for msg in history:
                 role = msg.get("role")
-                content = msg.get("content")
-                if role and content:
-                    agent_history.append({"role": role, "content": content})
+                if not role:
+                    continue
+                
+                # Check if this is a rich agent message (has tool_calls or tool_call_id)
+                # If so, pass it through with full structure intact
+                has_tool_calls = "tool_calls" in msg
+                has_tool_call_id = "tool_call_id" in msg
+                is_tool_message = role == "tool"
+                
+                if has_tool_calls or has_tool_call_id or is_tool_message:
+                    # Preserve full message structure (tool_calls, tool_call_id, etc.)
+                    # Only strip fields that are purely internal (e.g. timestamp)
+                    clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
+                    agent_history.append(clean_msg)
+                else:
+                    # Simple text message - just need role and content
+                    content = msg.get("content")
+                    if content:
+                        agent_history.append({"role": role, "content": content})
             
             result = agent.run_conversation(message, conversation_history=agent_history)
             result_holder[0] = result

@@ -59,7 +59,6 @@ from .image_generation_tool import (
 )
 
 from .skills_tool import (
-    skills_categories,
     skills_list,
     skill_view,
     check_skills_requirements,
@@ -158,7 +157,6 @@ __all__ = [
     'image_generate_tool',
     'check_image_generation_requirements',
     # Skills tools
-    'skills_categories',
     'skills_list',
     'skill_view',
     'check_skills_requirements',

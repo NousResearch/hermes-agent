@@ -601,13 +601,9 @@ class GatewayRunner:
                 if adapter and hasattr(adapter, '_active_sessions') and source.chat_id in adapter._active_sessions:
                     adapter._active_sessions[source.chat_id].clear()
                 
-                # Add an indicator to the response
-                if response:
-                    response = response + "\n\n---\n_[Interrupted - processing your new message]_"
-                
-                # Send the interrupted response first
-                if adapter and response:
-                    await adapter.send(chat_id=source.chat_id, content=response)
+                # Don't send the interrupted response to the user — it's just noise
+                # like "Operation interrupted." They already know they sent a new
+                # message, so go straight to processing it.
                 
                 # Now process the pending message with updated history
                 updated_history = result.get("messages", history)

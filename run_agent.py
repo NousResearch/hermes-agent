@@ -49,7 +49,7 @@ elif not os.getenv("HERMES_QUIET"):
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
-from tools.terminal_tool import cleanup_vm
+from tools.terminal_tool import cleanup_vm, set_interrupt_event as _set_terminal_interrupt
 from tools.browser_tool import cleanup_browser
 
 import requests
@@ -1549,6 +1549,9 @@ class AIAgent:
         Call this from another thread (e.g., input handler, message receiver)
         to gracefully stop the agent and process a new message.
         
+        Also signals long-running tool executions (e.g. terminal commands)
+        to terminate early, so the agent can respond immediately.
+        
         Args:
             message: Optional new message that triggered the interrupt.
                      If provided, the agent will include this in its response context.
@@ -1565,6 +1568,8 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        # Signal the terminal tool to kill any running subprocess immediately
+        _set_terminal_interrupt(True)
         if not self.quiet_mode:
             print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
@@ -1572,6 +1577,7 @@ class AIAgent:
         """Clear any pending interrupt request."""
         self._interrupt_requested = False
         self._interrupt_message = None
+        _set_terminal_interrupt(False)
     
     @property
     def is_interrupted(self) -> bool:
@@ -2308,6 +2314,21 @@ class AIAgent:
                         if not self.quiet_mode:
                             response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                             print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                        
+                        # Check for interrupt between tool calls - skip remaining
+                        # tools so the agent can respond to the user immediately
+                        if self._interrupt_requested and i < len(assistant_message.tool_calls):
+                            remaining = len(assistant_message.tool_calls) - i
+                            print(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)")
+                            # Add placeholder results for skipped tool calls so the
+                            # message sequence stays valid (assistant tool_calls need matching tool results)
+                            for skipped_tc in assistant_message.tool_calls[i:]:
+                                messages.append({
+                                    "role": "tool",
+                                    "content": "[Tool execution skipped - user sent a new message]",
+                                    "tool_call_id": skipped_tc.id
+                                })
+                            break
                         
                         # Delay between tool calls
                         if self.tool_delay > 0 and i < len(assistant_message.tool_calls):

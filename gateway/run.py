@@ -572,6 +572,13 @@ class GatewayRunner:
             
             if pending:
                 print(f"[gateway] 📨 Processing interrupted message: '{pending[:40]}...'")
+                
+                # Clear the adapter's interrupt event so the next _run_agent call
+                # doesn't immediately re-trigger the interrupt before the new agent
+                # even makes its first API call (this was causing an infinite loop).
+                if adapter and hasattr(adapter, '_active_sessions') and source.chat_id in adapter._active_sessions:
+                    adapter._active_sessions[source.chat_id].clear()
+                
                 # Add an indicator to the response
                 if response:
                     response = response + "\n\n---\n_[Interrupted - processing your new message]_"

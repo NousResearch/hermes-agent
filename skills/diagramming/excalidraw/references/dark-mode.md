@@ -39,17 +39,30 @@ Use the standard Primary Colors from the main color palette -- they're bright en
 
 For subtle shape borders, use `#555555`.
 
-## Example: Dark mode rectangle
+## Example: Dark mode labeled rectangle
+
+Use container binding (NOT the `"label"` property, which doesn't work). On dark backgrounds, set text `strokeColor` to `"#e5e5e5"` so it's visible:
 
 ```json
-{
-  "type": "rectangle", "id": "r1",
-  "x": 100, "y": 100, "width": 200, "height": 80,
-  "backgroundColor": "#1e3a5f", "fillStyle": "solid",
-  "strokeColor": "#4a9eed", "strokeWidth": 2,
-  "roundness": { "type": 3 },
-  "label": { "text": "Dark Node", "fontSize": 20 }
-}
+[
+  {
+    "type": "rectangle", "id": "r1",
+    "x": 100, "y": 100, "width": 200, "height": 80,
+    "backgroundColor": "#1e3a5f", "fillStyle": "solid",
+    "strokeColor": "#4a9eed", "strokeWidth": 2,
+    "roundness": { "type": 3 },
+    "boundElements": [{ "id": "t_r1", "type": "text" }]
+  },
+  {
+    "type": "text", "id": "t_r1",
+    "x": 105, "y": 120, "width": 190, "height": 25,
+    "text": "Dark Node", "fontSize": 20, "fontFamily": 1,
+    "strokeColor": "#e5e5e5",
+    "textAlign": "center", "verticalAlign": "middle",
+    "containerId": "r1", "originalText": "Dark Node", "autoResize": true
+  }
+]
 ```
 
-Note: the label text color will default to `#1e1e1e` which is invisible on dark. If using labels on dark-filled shapes, the Excalidraw renderer handles text color automatically based on the background. For standalone text elements, explicitly set `"strokeColor": "#e5e5e5"`.
+Note: For standalone text elements on dark backgrounds, always set `"strokeColor": "#e5e5e5"` explicitly. The default `#1e1e1e` is invisible on dark.
+

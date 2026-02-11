@@ -66,3 +66,7 @@ test_*.py
 
 # Nomad data
 /tmp/NomadClient*/
+
+*.egg-info*
+wandb
+logs

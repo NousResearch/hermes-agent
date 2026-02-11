@@ -173,6 +173,8 @@ def _patch_swerex_modal():
 
 def _patch_vllm_server_for_sglang():
     """
+    (Mainly for Runpod serverless compat)
+    
     Monkey patch VLLMServer._tokens_and_logprobs_completion_wrapper to handle
     SGLang's /generate response format.
 
@@ -302,6 +304,6 @@ def apply_patches():
         return
 
     _patch_swerex_modal()
-    _patch_vllm_server_for_sglang()
+    # _patch_vllm_server_for_sglang()
 
     _patches_applied = True

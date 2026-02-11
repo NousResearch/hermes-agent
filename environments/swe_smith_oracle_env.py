@@ -156,7 +156,7 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
                 model_name=model,
                 base_url=base_url,
                 api_key=api_key,
-                server_type="openai",
+                server_type="vllm",
                 health_check=False,
                 timeout=int(os.getenv("ATROPOS_SERVER_TIMEOUT_S") or "300"),
             ),

@@ -45,7 +45,7 @@ if _env_path.exists():
 # This patches SwerexModalEnvironment to use a background thread instead of
 # asyncio.run(), which would deadlock inside Atropos. Safe for normal CLI too.
 from environments.patches import apply_patches
-apply_patches()
+# apply_patches()  # DISABLED: sglang patch breaks native vLLM /generate
 
 from atroposlib.envs.base import (
     BaseEnv,
@@ -270,6 +270,12 @@ class HermesAgentBaseEnv(BaseEnv):
     # =========================================================================
 
     def _use_managed_server(self) -> bool:
+        import sys
+        result = self._use_managed_server_inner()
+        print(f"HERMES_DEBUG _use_managed_server={result}, servers={len(self.server.servers) if hasattr(self.server, 'servers') else 'N/A'}, type={type(self.server.servers[0]).__name__ if hasattr(self.server, 'servers') and self.server.servers else 'N/A'}", file=sys.stderr, flush=True)
+        return result
+
+    def _use_managed_server_inner(self) -> bool:
         """
         Determine if we should use ManagedServer (Phase 2) or direct server (Phase 1).
 

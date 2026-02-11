@@ -69,7 +69,7 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access skill documents with specialized instructions and knowledge",
-        "tools": ["skills_categories", "skills_list", "skill_view"],
+        "tools": ["skills_list", "skill_view"],
         "includes": []
     },
     
@@ -142,7 +142,7 @@ TOOLSETS = {
             # MoA
             "mixture_of_agents",
             # Skills
-            "skills_categories", "skills_list", "skill_view",
+            "skills_list", "skill_view",
             # Browser
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
@@ -170,7 +170,7 @@ TOOLSETS = {
             # Vision - analyze images sent by users
             "vision_analyze",
             # Skills - access knowledge base
-            "skills_categories", "skills_list", "skill_view",
+            "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -185,7 +185,7 @@ TOOLSETS = {
             # Vision - analyze images
             "vision_analyze",
             # Skills - access knowledge base
-            "skills_categories", "skills_list", "skill_view",
+            "skills_list", "skill_view",
             # Cronjob - let users schedule reminders
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -204,7 +204,7 @@ TOOLSETS = {
             # Vision
             "vision_analyze",
             # Skills
-            "skills_categories", "skills_list", "skill_view",
+            "skills_list", "skill_view",
             # Cronjob management
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],

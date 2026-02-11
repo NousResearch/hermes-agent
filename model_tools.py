@@ -41,7 +41,7 @@ from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirement
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
-from tools.skills_tool import skills_categories, skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
+from tools.skills_tool import skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
 # RL Training tools (Tinker-Atropos)
 from tools.rl_training_tool import (
     rl_list_environments,
@@ -143,7 +143,7 @@ TOOLSET_REQUIREMENTS = {
         "env_vars": [],  # Just needs skills directory
         "check_fn": check_skills_requirements,
         "setup_url": None,
-        "tools": ["skills_categories", "skills_list", "skill_view"],
+        "tools": ["skills_list", "skill_view"],
     },
     "rl": {
         "name": "RL Training (Tinker-Atropos)",
@@ -432,24 +432,7 @@ def get_skills_tool_definitions() -> List[Dict[str, Any]]:
                     "properties": {
                         "category": {
                             "type": "string",
-                            "description": "Optional category filter (from skills_categories)"
-                        }
-                    },
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "skills_categories",
-                "description": "List available skill categories. Call this first to discover what skill categories exist, then use skills_list(category) to see skills in a category.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "verbose": {
-                            "type": "boolean",
-                            "description": "If true, include skill counts per category. Default: false."
+                            "description": "Optional category filter to narrow results"
                         }
                     },
                     "required": []
@@ -910,7 +893,7 @@ def get_all_tool_names() -> List[str]:
     
     # Skills tools
     if check_skills_requirements():
-        tool_names.extend(["skills_categories", "skills_list", "skill_view"])
+        tool_names.extend(["skills_list", "skill_view"])
     
     # Browser automation tools
     if check_browser_requirements():
@@ -957,7 +940,6 @@ TOOL_TO_TOOLSET_MAP = {
     "mixture_of_agents": "moa_tools",
     "image_generate": "image_tools",
     # Skills tools
-    "skills_categories": "skills_tools",
     "skills_list": "skills_tools",
     "skill_view": "skills_tools",
     # Browser automation tools
@@ -1109,7 +1091,7 @@ def get_tool_definitions(
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
-                        "skills_tools": ["skills_categories", "skills_list", "skill_view"],
+                        "skills_tools": ["skills_list", "skill_view"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -1162,7 +1144,7 @@ def get_tool_definitions(
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
-                        "skills_tools": ["skills_categories", "skills_list", "skill_view"],
+                        "skills_tools": ["skills_list", "skill_view"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -1391,11 +1373,7 @@ def handle_skills_function_call(function_name: str, function_args: Dict[str, Any
     Returns:
         str: Function result as JSON string
     """
-    if function_name == "skills_categories":
-        verbose = function_args.get("verbose", False)
-        return skills_categories(verbose=verbose)
-    
-    elif function_name == "skills_list":
+    if function_name == "skills_list":
         category = function_args.get("category")
         return skills_list(category=category)
     
@@ -1686,7 +1664,7 @@ def handle_function_call(
             return handle_image_function_call(function_name, function_args)
 
         # Route skills tools
-        elif function_name in ["skills_categories", "skills_list", "skill_view"]:
+        elif function_name in ["skills_list", "skill_view"]:
             return handle_skills_function_call(function_name, function_args)
 
         # Route browser automation tools
@@ -1767,7 +1745,7 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
         },
         "skills_tools": {
             "available": check_skills_requirements(),
-            "tools": ["skills_categories", "skills_list", "skill_view"],
+            "tools": ["skills_list", "skill_view"],
             "description": "Access skill documents that provide specialized instructions, guidelines, or knowledge the agent can load on demand",
             "requirements": ["skills/ directory in repo root"]
         },

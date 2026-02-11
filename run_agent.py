@@ -550,14 +550,79 @@ def apply_anthropic_cache_control(
 # Default System Prompt Components
 # =============================================================================
 
-# Skills guidance - instructs the model to check skills before technical tasks
-SKILLS_SYSTEM_PROMPT = """## Skills
-Before answering technical questions about tools, frameworks, or workflows:
-1. Check skills_categories to see if a relevant category exists
-2. If a category matches your task, use skills_list with that category
-3. If a skill matches, load it with skill_view and follow its instructions
-
-Skills contain vetted, up-to-date instructions for specific tools and workflows."""
+# Skills guidance - embeds a compact skill index in the system prompt so
+# the model can match skills at a glance without extra tool calls.
+def build_skills_system_prompt() -> str:
+    """
+    Build a dynamic skills system prompt by scanning the skills/ directory.
+    
+    Returns a prompt section that lists all skill categories (with descriptions
+    from DESCRIPTION.md) and their skill names inline, so the model can
+    immediately see if a relevant skill exists and load it with a single
+    skill_view(name) call -- no discovery tool calls needed.
+    
+    Returns:
+        str: The skills system prompt section, or empty string if no skills found.
+    """
+    import re
+    from pathlib import Path
+    
+    skills_dir = Path(__file__).parent / "skills"
+    if not skills_dir.exists():
+        return ""
+    
+    # Scan for SKILL.md files grouped by category
+    skills_by_category = {}
+    for skill_file in skills_dir.rglob("SKILL.md"):
+        rel_path = skill_file.relative_to(skills_dir)
+        parts = rel_path.parts
+        if len(parts) >= 2:
+            category = parts[0]
+            skill_name = parts[-2]  # Folder containing SKILL.md
+        else:
+            category = "general"
+            skill_name = skill_file.parent.name
+        skills_by_category.setdefault(category, []).append(skill_name)
+    
+    if not skills_by_category:
+        return ""
+    
+    # Load category descriptions from DESCRIPTION.md files (YAML frontmatter)
+    category_descriptions = {}
+    for category in skills_by_category:
+        desc_file = skills_dir / category / "DESCRIPTION.md"
+        if desc_file.exists():
+            try:
+                content = desc_file.read_text(encoding="utf-8")
+                # Parse description from YAML frontmatter: ---\ndescription: ...\n---
+                match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
+                if match:
+                    category_descriptions[category] = match.group(1).strip()
+            except Exception:
+                pass
+    
+    # Build compact index: category with description + skill names
+    index_lines = []
+    for category in sorted(skills_by_category.keys()):
+        desc = category_descriptions.get(category, "")
+        names = ", ".join(sorted(skills_by_category[category]))
+        if desc:
+            index_lines.append(f"  {category}: {desc}")
+        else:
+            index_lines.append(f"  {category}:")
+        index_lines.append(f"    skills: {names}")
+    
+    return (
+        "## Skills (mandatory)\n"
+        "Before replying, scan the skills below. If one clearly matches your task, "
+        "load it with skill_view(name) and follow its instructions.\n"
+        "\n"
+        "<available_skills>\n"
+        + "\n".join(index_lines) + "\n"
+        "</available_skills>\n"
+        "\n"
+        "If none match, proceed normally without loading a skill."
+    )
 
 
 class KawaiiSpinner:
@@ -1054,10 +1119,6 @@ class AIAgent:
             return f"{face} 🎨 creating '{prompt}'... {time_str}"
         
         # Skills - use large pool for variety
-        elif tool_name == "skills_categories":
-            face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📚 listing categories... {time_str}"
-        
         elif tool_name == "skills_list":
             category = args.get("category", "skills")
             face = random.choice(self.KAWAII_SKILL)
@@ -1635,12 +1696,15 @@ class AIAgent:
         base_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
         
         # Auto-include skills guidance if skills tools are available
-        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skills_categories', 'skill_view'])
-        if has_skills_tools:
+        # Embeds a compact category:names index so the model can match skills
+        # at a glance and load with a single skill_view(name) call.
+        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view'])
+        skills_prompt = build_skills_system_prompt() if has_skills_tools else ""
+        if skills_prompt:
             if base_system_prompt:
-                active_system_prompt = f"{base_system_prompt}\n\n{SKILLS_SYSTEM_PROMPT}"
+                active_system_prompt = f"{base_system_prompt}\n\n{skills_prompt}"
             else:
-                active_system_prompt = SKILLS_SYSTEM_PROMPT
+                active_system_prompt = skills_prompt
         else:
             active_system_prompt = base_system_prompt
         
@@ -2277,7 +2341,6 @@ class AIAgent:
                                 'image_generate': ('sparkle', ['🎨', '✨', '🖼️', '🌟']),
                                 'skill_view': ('star', ['📚', '📖', '🎓', '✨']),
                                 'skills_list': ('pulse', ['📋', '📝', '📑', '📜']),
-                                'skills_categories': ('pulse', ['📂', '🗂️', '📁', '🏷️']),
                                 'moa_query': ('brain', ['🧠', '💭', '🤔', '💡']),
                                 'analyze_image': ('sparkle', ['👁️', '🔍', '📷', '✨']),
                             }

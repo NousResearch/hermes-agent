@@ -178,15 +178,19 @@ TOOLSETS = {
     },
     
     "hermes-discord": {
-        "description": "Discord bot toolset - limited for public server safety (no terminal, no file access)",
+        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
         "tools": [
-            # Web tools - safe for messaging
-            "web_search",
-            # Vision - analyze images
+            # Terminal - enabled with dangerous command approval system
+            "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
+            # Web tools
+            "web_search", "web_extract",
+            # Vision - analyze images sent by users
             "vision_analyze",
             # Skills - access knowledge base
             "skills_list", "skill_view",
-            # Cronjob - let users schedule reminders
+            # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
         "includes": []

@@ -28,6 +28,7 @@ Usage:
 
 import json
 import os
+import signal
 import sys
 import time
 import threading
@@ -38,6 +39,28 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+
+# ---------------------------------------------------------------------------
+# Global interrupt event: set by the agent when a user interrupt arrives.
+# The terminal tool polls this during command execution so it can kill
+# long-running subprocesses immediately instead of blocking until timeout.
+# ---------------------------------------------------------------------------
+_interrupt_event = threading.Event()
+
+
+def set_interrupt_event(active: bool) -> None:
+    """Called by the agent to signal or clear the interrupt."""
+    if active:
+        _interrupt_event.set()
+    else:
+        _interrupt_event.clear()
+
+
+def is_interrupted() -> bool:
+    """Check if an interrupt has been requested."""
+    return _interrupt_event.is_set()
+
 
 # Add mini-swe-agent to path if not installed
 mini_swe_path = Path(__file__).parent.parent / "mini-swe-agent" / "src"
@@ -599,7 +622,13 @@ class _LocalEnvironment:
         self.env = env or {}
     
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
-        """Execute a command locally with sudo support."""
+        """
+        Execute a command locally with sudo support.
+        
+        Uses Popen + polling so the global interrupt event can kill the
+        process early when the user sends a new message, instead of
+        blocking for the full timeout.
+        """
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
         
@@ -607,22 +636,56 @@ class _LocalEnvironment:
         exec_command = _transform_sudo_command(command)
         
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 exec_command,
                 shell=True,
                 text=True,
                 cwd=work_dir,
                 env=os.environ | self.env,
-                timeout=effective_timeout,
                 encoding="utf-8",
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
+                # Start in a new process group so we can kill the whole tree
+                preexec_fn=os.setsid,
             )
-            return {"output": result.stdout, "returncode": result.returncode}
-        except subprocess.TimeoutExpired:
-            return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
+            
+            deadline = time.monotonic() + effective_timeout
+            
+            # Poll every 200ms so we notice interrupts quickly
+            while proc.poll() is None:
+                if _interrupt_event.is_set():
+                    # User sent a new message — kill the process tree and return
+                    # what we have so far
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        proc.kill()
+                    # Grab any partial output
+                    partial, _ = proc.communicate(timeout=2)
+                    output = partial or ""
+                    return {
+                        "output": output + "\n[Command interrupted — user sent a new message]",
+                        "returncode": 130  # Standard interrupted exit code
+                    }
+                
+                if time.monotonic() > deadline:
+                    # Timeout — kill process tree
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        proc.kill()
+                    proc.communicate(timeout=2)
+                    return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
+                
+                # Short sleep to avoid busy-waiting
+                time.sleep(0.2)
+            
+            # Process finished normally — read all output
+            stdout, _ = proc.communicate()
+            return {"output": stdout or "", "returncode": proc.returncode}
+            
         except Exception as e:
             return {"output": f"Execution error: {str(e)}", "returncode": 1}
     

@@ -392,7 +392,7 @@ def get_image_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "image_generate",
-                "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL that can be displayed using <img src=\"{URL}\"></img> tags.",
+                "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL. Display it using markdown: ![description](URL)",
                 "parameters": {
                     "type": "object",
                     "properties": {

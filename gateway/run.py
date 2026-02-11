@@ -612,11 +612,13 @@ class GatewayRunner:
         return response
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None) -> None:
+async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     """
     Start the gateway and run until interrupted.
     
     This is the main entry point for running the gateway.
+    Returns True if the gateway ran successfully, False if it failed to start.
+    A False return causes a non-zero exit code so systemd can auto-restart.
     """
     runner = GatewayRunner(config)
     
@@ -635,10 +637,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> None:
     # Start the gateway
     success = await runner.start()
     if not success:
-        return
+        return False
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+    return True
 
 
 def main():
@@ -658,8 +661,11 @@ def main():
             data = json.load(f)
             config = GatewayConfig.from_dict(data)
     
-    # Run the gateway
-    asyncio.run(start_gateway(config))
+    # Run the gateway - exit with code 1 if no platforms connected,
+    # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
+    success = asyncio.run(start_gateway(config))
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

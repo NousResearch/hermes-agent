@@ -84,24 +84,43 @@ Canvas background is white.
 { "type": "diamond", "id": "d1", "x": 100, "y": 100, "width": 150, "height": 150 }
 ```
 
-**Labeled shape (PREFERRED)** -- add `label` to any shape for auto-centered text:
+**Labeled shape (container binding)** -- create a text element bound to the shape:
+
+> **WARNING:** Do NOT use `"label": { "text": "..." }` on shapes. This is NOT a valid
+> Excalidraw property and will be silently ignored, producing blank shapes. You MUST
+> use the container binding approach below.
+
+The shape needs `boundElements` listing the text, and the text needs `containerId` pointing back:
 ```json
 { "type": "rectangle", "id": "r1", "x": 100, "y": 100, "width": 200, "height": 80,
-  "label": { "text": "Hello", "fontSize": 20 } }
+  "roundness": { "type": 3 }, "backgroundColor": "#a5d8ff", "fillStyle": "solid",
+  "boundElements": [{ "id": "t_r1", "type": "text" }] },
+{ "type": "text", "id": "t_r1", "x": 105, "y": 110, "width": 190, "height": 25,
+  "text": "Hello", "fontSize": 20, "fontFamily": 1, "strokeColor": "#1e1e1e",
+  "textAlign": "center", "verticalAlign": "middle",
+  "containerId": "r1", "originalText": "Hello", "autoResize": true }
 ```
 - Works on rectangle, ellipse, diamond
-- Text auto-centers and container auto-resizes to fit
+- Text is auto-centered by Excalidraw when `containerId` is set
+- The text `x`/`y`/`width`/`height` are approximate -- Excalidraw recalculates them on load
+- `originalText` should match `text`
+- Always include `fontFamily: 1` (Virgil/hand-drawn font)
 
-**Labeled arrow** -- add `label` to an arrow:
+**Labeled arrow** -- same container binding approach:
 ```json
 { "type": "arrow", "id": "a1", "x": 300, "y": 150, "width": 200, "height": 0,
   "points": [[0,0],[200,0]], "endArrowhead": "arrow",
-  "label": { "text": "connects" } }
+  "boundElements": [{ "id": "t_a1", "type": "text" }] },
+{ "type": "text", "id": "t_a1", "x": 370, "y": 130, "width": 60, "height": 20,
+  "text": "connects", "fontSize": 16, "fontFamily": 1, "strokeColor": "#1e1e1e",
+  "textAlign": "center", "verticalAlign": "middle",
+  "containerId": "a1", "originalText": "connects", "autoResize": true }
 ```
 
-**Standalone text** (titles and annotations only):
+**Standalone text** (titles and annotations only -- no container):
 ```json
-{ "type": "text", "id": "t1", "x": 150, "y": 138, "text": "Hello", "fontSize": 20 }
+{ "type": "text", "id": "t1", "x": 150, "y": 138, "text": "Hello", "fontSize": 20,
+  "fontFamily": 1, "strokeColor": "#1e1e1e", "originalText": "Hello", "autoResize": true }
 ```
 - `x` is the LEFT edge. To center at position `cx`: `x = cx - (text.length * fontSize * 0.5) / 2`
 - Do NOT rely on `textAlign` or `width` for positioning
@@ -130,9 +149,10 @@ Canvas background is white.
 
 ### Drawing Order (z-order)
 - Array order = z-order (first = back, last = front)
-- Emit progressively: background zones → shape → its label → its arrows → next shape
+- Emit progressively: background zones → shape → its bound text → its arrows → next shape
 - BAD: all rectangles, then all texts, then all arrows
-- GOOD: bg_zone → shape1 → label1 → arrow1 → shape2 → label2 → ...
+- GOOD: bg_zone → shape1 → text_for_shape1 → arrow1 → arrow_label_text → shape2 → text_for_shape2 → ...
+- Always place the bound text element immediately after its container shape
 
 ### Sizing Guidelines
 
@@ -167,3 +187,5 @@ See `references/colors.md` for full color tables. Quick reference:
 - Do NOT use emoji in text -- they don't render in Excalidraw's font
 - For dark mode diagrams, see `references/dark-mode.md`
 - For larger examples, see `references/examples.md`
+
+

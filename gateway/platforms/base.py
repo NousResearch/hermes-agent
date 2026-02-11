@@ -286,7 +286,7 @@ class BasePlatformAdapter(ABC):
     
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
-        return self._pending_messages.get(session_key)
+        return self._pending_messages.pop(session_key, None)
     
     def build_source(
         self,

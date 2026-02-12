@@ -30,62 +30,63 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         if task_id in _file_ops_cache:
             return _file_ops_cache[task_id]
     
-    # Check if we need to create a new environment
+    # Check if we need to create a new environment.
+    # Uses the same per-task creation locks as terminal_tool to prevent
+    # duplicate sandbox creation from concurrent tool calls.
+    from tools.terminal_tool import _creation_locks, _creation_locks_lock
+    
     needs_creation = False
     with _env_lock:
         if task_id not in _active_environments:
             needs_creation = True
     
-    # Create environment OUTSIDE locks so we don't block other rollouts
-    # during slow Modal/Docker startup (~10s)
     if needs_creation:
-        from tools.terminal_tool import _task_env_overrides
-        
-        config = _get_env_config()
-        env_type = config["env_type"]
-        
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        overrides = _task_env_overrides.get(task_id, {})
-        
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        else:
-            image = ""
-        
-        cwd = overrides.get("cwd") or config["cwd"]
-        _check_disk_usage_warning()
-        if not os.getenv("HERMES_QUIET"):
-            print(f"[FileTools] Creating new {env_type} environment for task {task_id[:8]}...", flush=True)
-        
-        new_env = _create_environment(
-            env_type=env_type,
-            image=image,
-            cwd=cwd,
-            timeout=config["timeout"],
-        )
-        
-        # Store under lock (brief) -- do NOT call _start_cleanup_thread inside
-        # the lock because it also acquires _env_lock (non-reentrant = deadlock)
-        created = False
-        with _env_lock:
-            if task_id not in _active_environments:
-                _active_environments[task_id] = new_env
-                created = True
-            else:
-                try:
-                    if hasattr(new_env, 'stop'):
-                        new_env.stop()
-                except Exception:
-                    pass
-        
-        if created:
-            _start_cleanup_thread()
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[FileTools] {env_type} environment ready for task {task_id[:8]}", flush=True)
+        # Per-task lock: only one thread creates the sandbox, others wait
+        with _creation_locks_lock:
+            if task_id not in _creation_locks:
+                _creation_locks[task_id] = __import__("threading").Lock()
+            task_lock = _creation_locks[task_id]
+
+        with task_lock:
+            # Double-check after acquiring the per-task lock
+            with _env_lock:
+                if task_id in _active_environments:
+                    needs_creation = False
+
+            if needs_creation:
+                from tools.terminal_tool import _task_env_overrides
+                
+                config = _get_env_config()
+                env_type = config["env_type"]
+                overrides = _task_env_overrides.get(task_id, {})
+                
+                if env_type == "docker":
+                    image = overrides.get("docker_image") or config["docker_image"]
+                elif env_type == "singularity":
+                    image = overrides.get("singularity_image") or config["singularity_image"]
+                elif env_type == "modal":
+                    image = overrides.get("modal_image") or config["modal_image"]
+                else:
+                    image = ""
+                
+                cwd = overrides.get("cwd") or config["cwd"]
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[FileTools] Creating new {env_type} environment for task {task_id[:8]}...", flush=True)
+                
+                new_env = _create_environment(
+                    env_type=env_type,
+                    image=image,
+                    cwd=cwd,
+                    timeout=config["timeout"],
+                )
+                
+                with _env_lock:
+                    _active_environments[task_id] = new_env
+                    _last_activity[task_id] = __import__("time").time()
+                
+                _start_cleanup_thread()
+                if not os.getenv("HERMES_QUIET"):
+                    print(f"[FileTools] {env_type} environment ready for task {task_id[:8]}", flush=True)
     
     # Now get the environment and build file_ops
     with _env_lock:

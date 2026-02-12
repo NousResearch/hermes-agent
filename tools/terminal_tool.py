@@ -1132,6 +1132,8 @@ _active_environments: Dict[str, Any] = {}
 _task_workdirs: Dict[str, str] = {}  # Maps task_id to working directory
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
+_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
+_creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
@@ -1515,64 +1517,69 @@ def terminal_tool(
         # Start cleanup thread
         _start_cleanup_thread()
 
-        # Get or create environment
-        # Check under lock, but create OUTSIDE lock so we don't block
-        # other concurrent rollouts during slow Modal/Docker startup
-        needs_creation = False
+        # Get or create environment.
+        # Use a per-task creation lock so concurrent tool calls for the same
+        # task_id wait for the first one to finish creating the sandbox,
+        # instead of each creating their own (wasting Modal resources).
         with _env_lock:
-            if effective_task_id not in _active_environments:
-                needs_creation = True
-            else:
+            if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
                 env = _active_environments[effective_task_id]
+                needs_creation = False
+            else:
+                needs_creation = True
 
         if needs_creation:
-            # Disk usage warning only relevant for local/singularity backends
-            if env_type in ("singularity", "local"):
-                _check_disk_usage_warning()
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[Terminal] Creating new {env_type} environment for task {effective_task_id[:8]}...", flush=True)
-            try:
-                ssh_config = None
-                if env_type == "ssh":
-                    ssh_config = {
-                        "host": config.get("ssh_host", ""),
-                        "user": config.get("ssh_user", ""),
-                        "port": config.get("ssh_port", 22),
-                        "key": config.get("ssh_key", ""),
-                    }
+            # Per-task lock: only one thread creates the sandbox, others wait
+            with _creation_locks_lock:
+                if effective_task_id not in _creation_locks:
+                    _creation_locks[effective_task_id] = threading.Lock()
+                task_lock = _creation_locks[effective_task_id]
 
-                new_env = _create_environment(
-                    env_type=env_type,
-                    image=image,
-                    cwd=cwd,
-                    timeout=effective_timeout,
-                    ssh_config=ssh_config
-                )
-            except ImportError as e:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
-                    "status": "disabled"
-                }, ensure_ascii=False)
+            with task_lock:
+                # Double-check after acquiring the per-task lock
+                with _env_lock:
+                    if effective_task_id in _active_environments:
+                        _last_activity[effective_task_id] = time.time()
+                        env = _active_environments[effective_task_id]
+                        needs_creation = False
 
-            # Store under lock (brief)
-            with _env_lock:
-                if effective_task_id not in _active_environments:
-                    _active_environments[effective_task_id] = new_env
-                else:
-                    # Another thread created it while we were building -- clean up ours
+                if needs_creation:
+                    if env_type in ("singularity", "local"):
+                        _check_disk_usage_warning()
+                    if not os.getenv("HERMES_QUIET"):
+                        print(f"[Terminal] Creating new {env_type} environment for task {effective_task_id[:8]}...", flush=True)
                     try:
-                        if hasattr(new_env, 'stop'):
-                            new_env.stop()
-                    except Exception:
-                        pass
+                        ssh_config = None
+                        if env_type == "ssh":
+                            ssh_config = {
+                                "host": config.get("ssh_host", ""),
+                                "user": config.get("ssh_user", ""),
+                                "port": config.get("ssh_port", 22),
+                                "key": config.get("ssh_key", ""),
+                            }
 
-                _last_activity[effective_task_id] = time.time()
-                env = _active_environments[effective_task_id]
-                if not os.getenv("HERMES_QUIET"):
-                    print(f"[Terminal] {env_type} environment ready for task {effective_task_id[:8]}", flush=True)
+                        new_env = _create_environment(
+                            env_type=env_type,
+                            image=image,
+                            cwd=cwd,
+                            timeout=effective_timeout,
+                            ssh_config=ssh_config
+                        )
+                    except ImportError as e:
+                        return json.dumps({
+                            "output": "",
+                            "exit_code": -1,
+                            "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                            "status": "disabled"
+                        }, ensure_ascii=False)
+
+                    with _env_lock:
+                        _active_environments[effective_task_id] = new_env
+                        _last_activity[effective_task_id] = time.time()
+                        env = new_env
+                    if not os.getenv("HERMES_QUIET"):
+                        print(f"[Terminal] {env_type} environment ready for task {effective_task_id[:8]}", flush=True)
 
         # Check for dangerous commands (only for local/ssh in interactive modes)
         # Skip check if force=True (user has confirmed they want to run it)

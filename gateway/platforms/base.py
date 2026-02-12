@@ -6,10 +6,11 @@ and implement the required methods.
 """
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Callable, Awaitable
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
 import sys
@@ -177,6 +178,68 @@ class BasePlatformAdapter(ABC):
         """
         pass
     
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send an image natively via the platform API.
+        
+        Override in subclasses to send images as proper attachments
+        instead of plain-text URLs. Default falls back to sending the
+        URL as a text message.
+        """
+        # Fallback: send URL as text (subclasses override for native images)
+        text = f"{caption}\n{image_url}" if caption else image_url
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+    
+    @staticmethod
+    def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
+        """
+        Extract image URLs from markdown and HTML image tags in a response.
+        
+        Finds patterns like:
+        - ![alt text](https://example.com/image.png)
+        - <img src="https://example.com/image.png">
+        - <img src="https://example.com/image.png"></img>
+        
+        Args:
+            content: The response text to scan.
+        
+        Returns:
+            Tuple of (list of (url, alt_text) pairs, cleaned content with image tags removed).
+        """
+        images = []
+        cleaned = content
+        
+        # Match markdown images: ![alt](url)
+        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+        for match in re.finditer(md_pattern, content):
+            alt_text = match.group(1)
+            url = match.group(2)
+            # Only extract URLs that look like actual images
+            if any(url.lower().endswith(ext) or ext in url.lower() for ext in
+                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
+                images.append((url, alt_text))
+        
+        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
+        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
+        for match in re.finditer(html_pattern, content):
+            url = match.group(1)
+            images.append((url, ""))
+        
+        # Remove matched image tags from content if we found images
+        if images:
+            cleaned = re.sub(md_pattern, '', cleaned)
+            cleaned = re.sub(html_pattern, '', cleaned)
+            # Clean up leftover blank lines
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        
+        return images, cleaned
+    
     async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -231,23 +294,41 @@ class BasePlatformAdapter(ABC):
             
             # Send response if any
             if response:
-                result = await self.send(
-                    chat_id=event.source.chat_id,
-                    content=response,
-                    reply_to=event.message_id
-                )
+                # Extract image URLs and send them as native platform attachments
+                images, text_content = self.extract_images(response)
                 
-                # Log send failures (don't raise - user already saw tool progress)
-                if not result.success:
-                    print(f"[{self.name}] Failed to send response: {result.error}")
-                    # Try sending without markdown as fallback
-                    fallback_result = await self.send(
+                # Send the text portion first (if any remains after extracting images)
+                if text_content:
+                    result = await self.send(
                         chat_id=event.source.chat_id,
-                        content=f"(Response formatting failed, plain text:)\n\n{response[:3500]}",
+                        content=text_content,
                         reply_to=event.message_id
                     )
-                    if not fallback_result.success:
-                        print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+                    
+                    # Log send failures (don't raise - user already saw tool progress)
+                    if not result.success:
+                        print(f"[{self.name}] Failed to send response: {result.error}")
+                        # Try sending without markdown as fallback
+                        fallback_result = await self.send(
+                            chat_id=event.source.chat_id,
+                            content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
+                            reply_to=event.message_id
+                        )
+                        if not fallback_result.success:
+                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+                
+                # Send extracted images as native attachments
+                for image_url, alt_text in images:
+                    try:
+                        img_result = await self.send_image(
+                            chat_id=event.source.chat_id,
+                            image_url=image_url,
+                            caption=alt_text if alt_text else None,
+                        )
+                        if not img_result.success:
+                            print(f"[{self.name}] Failed to send image: {img_result.error}")
+                    except Exception as img_err:
+                        print(f"[{self.name}] Error sending image: {img_err}")
             
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:

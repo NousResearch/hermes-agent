@@ -1576,6 +1576,7 @@ class HermesCLI:
                     
                     # Check for commands
                     if user_input.startswith("/"):
+                        print(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit
@@ -1586,6 +1587,9 @@ class HermesCLI:
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
+                    
+                    # Echo the user's input so it stays visible in scrollback
+                    print(f"\n💬 You: {user_input}")
                     
                     try:
                         self.chat(user_input)

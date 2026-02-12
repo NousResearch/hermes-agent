@@ -237,6 +237,10 @@ _cached_sudo_password: str = ""
 # Session-cached dangerous command approvals (pattern -> approved)
 _session_approved_patterns: set = set()
 
+# Last approval-required command (for gateway to pick up)
+# Set by _check_dangerous_command when in ask mode, read by gateway
+_last_pending_approval: dict = {}
+
 # Dangerous command patterns (regex, description)
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -408,12 +412,22 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
         # Programmatic use - allow (user opted into local backend)
         return {"approved": True, "message": None}
     
-    if is_gateway:
-        # Messaging context - return informative denial, agent should ask user
+    if is_gateway or os.getenv("HERMES_EXEC_ASK"):
+        # Messaging context - return approval_required so the gateway can
+        # prompt the user interactively instead of just blocking
+        global _last_pending_approval
+        _last_pending_approval = {
+            "command": command,
+            "pattern_key": pattern_key,
+            "description": description,
+        }
         return {
             "approved": False,
             "pattern_key": pattern_key,
-            "message": f"BLOCKED: This command is potentially dangerous ({description}). Tell the user and ask if they want to add this command pattern to their allowlist. They can do this via 'hermes config edit' or by running the command directly on their machine."
+            "status": "approval_required",
+            "command": command,
+            "description": description,
+            "message": f"⚠️ This command is potentially dangerous ({description}). Asking the user for approval..."
         }
     
     # CLI context - prompt user
@@ -1586,6 +1600,17 @@ def terminal_tool(
         if not force:
             approval = _check_dangerous_command(command, env_type)
             if not approval["approved"]:
+                # Check if this is an approval_required (gateway ask mode)
+                if approval.get("status") == "approval_required":
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": approval.get("message", "Waiting for user approval"),
+                        "status": "approval_required",
+                        "command": approval.get("command", command),
+                        "description": approval.get("description", "dangerous command"),
+                        "pattern_key": approval.get("pattern_key", ""),
+                    }, ensure_ascii=False)
                 # Command was blocked - return informative message
                 return json.dumps({
                     "output": "",

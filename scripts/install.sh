@@ -413,6 +413,45 @@ check_ripgrep() {
     # Don't exit - ripgrep is optional (grep fallback exists)
 }
 
+check_ffmpeg() {
+    log_info "Checking ffmpeg (optional, for TTS voice messages)..."
+    
+    if command -v ffmpeg &> /dev/null; then
+        local ffmpeg_version=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+        log_success "ffmpeg found: $ffmpeg_version"
+        HAS_FFMPEG=true
+        return
+    fi
+    
+    log_warn "ffmpeg not found (TTS voice bubbles on Telegram will send as audio files instead)"
+    log_info "To install ffmpeg (optional):"
+    
+    case "$OS" in
+        linux)
+            case "$DISTRO" in
+                ubuntu|debian)
+                    log_info "  sudo apt install ffmpeg"
+                    ;;
+                fedora)
+                    log_info "  sudo dnf install ffmpeg"
+                    ;;
+                arch)
+                    log_info "  sudo pacman -S ffmpeg"
+                    ;;
+                *)
+                    log_info "  https://ffmpeg.org/download.html"
+                    ;;
+            esac
+            ;;
+        macos)
+            log_info "  brew install ffmpeg"
+            ;;
+    esac
+    
+    HAS_FFMPEG=false
+    # Don't exit - ffmpeg is optional
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -707,6 +746,7 @@ main() {
     check_git
     check_node
     check_ripgrep
+    check_ffmpeg
     
     clone_repo
     setup_venv

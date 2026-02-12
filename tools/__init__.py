@@ -122,6 +122,12 @@ from .file_tools import (
     clear_file_ops_cache,
 )
 
+# Text-to-speech tools (Edge TTS / ElevenLabs / OpenAI)
+from .tts_tool import (
+    text_to_speech_tool,
+    check_tts_requirements,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -207,5 +213,8 @@ __all__ = [
     'get_file_tools',
     'clear_file_ops_cache',
     'check_file_requirements',
+    # Text-to-speech tools
+    'text_to_speech_tool',
+    'check_tts_requirements',
 ]
 

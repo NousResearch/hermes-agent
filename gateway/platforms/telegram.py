@@ -174,6 +174,44 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
     
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send audio as a native Telegram voice message or audio file."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        
+        try:
+            import os
+            if not os.path.exists(audio_path):
+                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+            
+            with open(audio_path, "rb") as audio_file:
+                # .ogg files -> send as voice (round playable bubble)
+                if audio_path.endswith(".ogg") or audio_path.endswith(".opus"):
+                    msg = await self._bot.send_voice(
+                        chat_id=int(chat_id),
+                        voice=audio_file,
+                        caption=caption[:1024] if caption else None,
+                        reply_to_message_id=int(reply_to) if reply_to else None,
+                    )
+                else:
+                    # .mp3 and others -> send as audio file
+                    msg = await self._bot.send_audio(
+                        chat_id=int(chat_id),
+                        audio=audio_file,
+                        caption=caption[:1024] if caption else None,
+                        reply_to_message_id=int(reply_to) if reply_to else None,
+                    )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send voice/audio: {e}")
+            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+    
     async def send_image(
         self,
         chat_id: str,

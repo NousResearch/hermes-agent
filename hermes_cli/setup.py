@@ -186,6 +186,11 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
     
+    # TTS (always available via Edge TTS; ElevenLabs/OpenAI are optional)
+    tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+    if get_env_value('ELEVENLABS_API_KEY'):
+        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
+    
     # Tinker + WandB (RL training)
     if get_env_value('TINKER_API_KEY') and get_env_value('WANDB_API_KEY'):
         tool_status.append(("RL Training (Tinker)", True, None))
@@ -988,6 +993,28 @@ def run_setup_wizard(args):
             api_key = prompt("    API key", password=True)
             if api_key:
                 save_env_value("FAL_KEY", api_key)
+                print_success("    Configured ✓")
+    print()
+    
+    # ElevenLabs - Premium TTS
+    print_info("─" * 50)
+    print(color("  Text-to-Speech - ElevenLabs (Premium)", Colors.CYAN))
+    print_info("  Enables: Premium TTS voices (Edge TTS is free and works without a key)")
+    print_info("  Use case: High-quality, customizable voice synthesis")
+    if get_env_value('ELEVENLABS_API_KEY'):
+        print_success("  Status: Configured ✓")
+        if prompt_yes_no("  Update ElevenLabs API key?", False):
+            api_key = prompt("    API key", password=True)
+            if api_key:
+                save_env_value("ELEVENLABS_API_KEY", api_key)
+                print_success("    Updated")
+    else:
+        print_warning("  Status: Not configured (free Edge TTS will be used by default)")
+        if prompt_yes_no("  Set up ElevenLabs?", False):
+            print_info("    Get your API key at: https://elevenlabs.io/")
+            api_key = prompt("    API key", password=True)
+            if api_key:
+                save_env_value("ELEVENLABS_API_KEY", api_key)
                 print_success("    Configured ✓")
     print()
     

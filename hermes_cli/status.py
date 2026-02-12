@@ -76,6 +76,7 @@ def show_status(args):
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
+        "ElevenLabs": "ELEVENLABS_API_KEY",
     }
     
     for name, env_var in keys.items():

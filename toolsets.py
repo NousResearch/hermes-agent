@@ -108,6 +108,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "tts": {
+        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, or OpenAI",
+        "tools": ["text_to_speech"],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {
@@ -148,6 +154,8 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision",
+            # Text-to-speech
+            "text_to_speech",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -171,6 +179,8 @@ TOOLSETS = {
             "vision_analyze",
             # Image generation
             "image_generate",
+            # Text-to-speech
+            "text_to_speech",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
@@ -192,6 +202,8 @@ TOOLSETS = {
             "vision_analyze",
             # Image generation
             "image_generate",
+            # Text-to-speech
+            "text_to_speech",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
@@ -213,6 +225,8 @@ TOOLSETS = {
             "vision_analyze",
             # Image generation
             "image_generate",
+            # Text-to-speech
+            "text_to_speech",
             # Skills
             "skills_list", "skill_view",
             # Cronjob management

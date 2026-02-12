@@ -37,8 +37,9 @@ All your settings are stored in `~/.hermes/` for easy access:
 
 ```
 ~/.hermes/
-├── config.yaml     # Settings (model, terminal, compression, etc.)
+├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
+├── SOUL.md         # Optional: global persona (agent embodies this personality)
 ├── cron/           # Scheduled jobs
 ├── sessions/       # Gateway sessions
 └── logs/           # Logs
@@ -76,6 +77,8 @@ You need at least one LLM provider:
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
+| Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
+| OpenAI TTS voices | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
 
@@ -128,7 +131,58 @@ hermes --toolsets "web,terminal"
 hermes --list-tools
 ```
 
-**Available toolsets:** `web`, `terminal`, `browser`, `vision`, `creative`, `reasoning`, `skills`, `cronjob`, and more.
+**Available toolsets:** `web`, `terminal`, `browser`, `vision`, `creative`, `reasoning`, `skills`, `tts`, `cronjob`, and more.
+
+### 🔊 Text-to-Speech
+
+Convert text to speech with three providers:
+
+| Provider | Quality | Cost | API Key |
+|----------|---------|------|---------|
+| **Edge TTS** (default) | Good | Free | None needed |
+| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
+| **OpenAI TTS** | Good | Paid | `OPENAI_API_KEY` |
+
+On Telegram, audio plays as native voice bubbles. On Discord/WhatsApp, sent as audio files. In CLI mode, saved to `~/voice-memos/`.
+
+**Configure in `~/.hermes/config.yaml`:**
+```yaml
+tts:
+  provider: "edge"              # "edge" | "elevenlabs" | "openai"
+  edge:
+    voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+  elevenlabs:
+    voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
+    model_id: "eleven_multilingual_v2"
+  openai:
+    model: "gpt-4o-mini-tts"
+    voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+```
+
+> **Note:** Telegram voice bubbles require `ffmpeg` for Opus conversion (Edge TTS only outputs MP3). Install with `apt install ffmpeg` or `brew install ffmpeg`. Without ffmpeg, audio is sent as a file instead of a voice bubble.
+
+### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
+
+Drop these files in your project directory and the agent automatically picks them up:
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Project-specific instructions, coding conventions, tool usage guidelines |
+| `SOUL.md` | Persona definition -- the agent embodies this personality and tone |
+| `.cursorrules` | Cursor IDE rules (also detected) |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) |
+
+- **AGENTS.md** is hierarchical: if subdirectories also have `AGENTS.md`, all are combined (like Codex/Cline).
+- **SOUL.md** checks cwd first, then `~/.hermes/SOUL.md` as a global fallback.
+- All context files are capped at 20,000 characters with smart truncation.
+
+### 🛡️ Exec Approval (Messaging Platforms)
+
+When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
+
+> ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
+
+Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
 
 ### 🖥️ Terminal Backend
 

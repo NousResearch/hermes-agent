@@ -1,6 +1,6 @@
 # Project Notes
 
-*Maintained by Hermes — last updated February 2025*
+*Maintained by Hermes — last updated June 2025*
 
 ---
 
@@ -58,13 +58,17 @@
 ## 5. Grailed Embedding Search
 - **Repo:** https://github.com/samherring99/grailed-embedding-search
 - **Local path:** `~/Desktop/Projects/grailed-embedding-search`
-- **Description:** Embedding-based semantic search over Grailed fashion listings. Uses vector similarity to find related items.
-- **Status:** Very early — has a basic similarity search implementation. Previously had a more complex version that's being reworked.
+- **Description:** Semantic similarity search over Grailed fashion listings using CLIP embeddings and FAISS. Search by image URL or text description to find visually similar products.
+- **Status:** Functional core pipeline. CLIP ViT-B/32 embeds product cover photos into 512-dim vectors, indexed with FAISS cosine similarity. Has CLI, batch embedding, persistent index save/load, and logging.
+- **Recent work (June 2025):**
+  - PR #1 — Initial cleanup: docstrings, type hints, `.gitignore`, `requirements.txt`, README rewrite
+  - PR #2 — Feature improvements: persistent FAISS save/load, batch embedding, CLI (`cli.py`), proper logging throughout, lazy Grailed client, `fetch_details` toggle
 - **TODO:**
-  - Build out the search pipeline
-  - Add scraping/indexing for listings
-  - Improve embedding approach
-  - Add UI or CLI for exploring results
+  - Embedding cache (avoid re-embedding known product URLs)
+  - Async/threaded image downloads for faster batch indexing
+  - Search result visualization (matplotlib grid of cover photos)
+  - Filter by category, designer, price range before search
+  - Web UI (Gradio or Streamlit)
 
 ---
 
@@ -133,4 +137,6 @@
 | VST Builder | Concept | 🔵 Future |
 | Gov Auction Scraper | Concept | 🔵 Future |
 | Stable Audio Explorer | Dead | ⚫ None |
+
+
 

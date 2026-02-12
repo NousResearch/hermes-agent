@@ -29,6 +29,12 @@ platformdirs
 # Optional: For Modal backend (cloud execution)
 # swe-rex[modal]>=1.4.0  # Includes modal + boto3 + swe-rex runtime
 
+# Text-to-speech (Edge TTS is free, no API key needed)
+edge-tts
+
+# Optional: Premium TTS providers
+# elevenlabs  # Uncomment if using ElevenLabs TTS (needs ELEVENLABS_API_KEY)
+
 # Optional: For cron expression parsing (cronjob scheduling)
 croniter
 

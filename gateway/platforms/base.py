@@ -240,6 +240,61 @@ class BasePlatformAdapter(ABC):
         
         return images, cleaned
     
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send an audio file as a native voice message via the platform API.
+        
+        Override in subclasses to send audio as voice bubbles (Telegram)
+        or file attachments (Discord). Default falls back to sending the
+        file path as text.
+        """
+        text = f"🔊 Audio: {audio_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+    
+    @staticmethod
+    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
+        """
+        Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
+        
+        The TTS tool returns responses like:
+            [[audio_as_voice]]
+            MEDIA:/path/to/audio.ogg
+        
+        Args:
+            content: The response text to scan.
+        
+        Returns:
+            Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
+        """
+        media = []
+        cleaned = content
+        
+        # Check for [[audio_as_voice]] directive
+        has_voice_tag = "[[audio_as_voice]]" in content
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        
+        # Extract MEDIA:<path> tags (path may contain spaces)
+        media_pattern = r'MEDIA:(\S+)'
+        for match in re.finditer(media_pattern, content):
+            path = match.group(1).strip()
+            if path:
+                media.append((path, has_voice_tag))
+        
+        # Remove MEDIA tags from content
+        if media:
+            cleaned = re.sub(media_pattern, '', cleaned)
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        
+        return media, cleaned
+    
     async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
         """
         Continuously send typing indicator until cancelled.
@@ -294,10 +349,13 @@ class BasePlatformAdapter(ABC):
             
             # Send response if any
             if response:
+                # Extract MEDIA:<path> tags (from TTS tool) before other processing
+                media_files, response = self.extract_media(response)
+                
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 
-                # Send the text portion first (if any remains after extracting images)
+                # Send the text portion first (if any remains after extractions)
                 if text_content:
                     result = await self.send(
                         chat_id=event.source.chat_id,
@@ -329,6 +387,18 @@ class BasePlatformAdapter(ABC):
                             print(f"[{self.name}] Failed to send image: {img_result.error}")
                     except Exception as img_err:
                         print(f"[{self.name}] Error sending image: {img_err}")
+                
+                # Send extracted audio/voice files as native attachments
+                for audio_path, is_voice in media_files:
+                    try:
+                        voice_result = await self.send_voice(
+                            chat_id=event.source.chat_id,
+                            audio_path=audio_path,
+                        )
+                        if not voice_result.success:
+                            print(f"[{self.name}] Failed to send voice: {voice_result.error}")
+                    except Exception as voice_err:
+                        print(f"[{self.name}] Error sending voice: {voice_err}")
             
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:

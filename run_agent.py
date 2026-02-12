@@ -625,6 +625,224 @@ def build_skills_system_prompt() -> str:
     )
 
 
+# =============================================================================
+# Context File Injection (SOUL.md, AGENTS.md, .cursorrules)
+# =============================================================================
+
+# Maximum characters per context file before truncation
+CONTEXT_FILE_MAX_CHARS = 20_000
+# Truncation strategy: keep 70% from the head, 20% from the tail
+CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
+CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+
+
+def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
+    """
+    Truncate content if it exceeds max_chars using a head/tail strategy.
+    
+    Keeps 70% from the start and 20% from the end, with a truncation
+    marker in the middle so the model knows content was cut.
+    """
+    if len(content) <= max_chars:
+        return content
+    
+    head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
+    tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
+    head = content[:head_chars]
+    tail = content[-tail_chars:]
+    
+    marker = f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. Use file tools to read the full file.]\n\n"
+    return head + marker + tail
+
+
+def build_context_files_prompt(cwd: str = None) -> str:
+    """
+    Discover and load context files (SOUL.md, AGENTS.md, .cursorrules)
+    for injection into the system prompt.
+    
+    Discovery rules:
+    - AGENTS.md: Recursively search from cwd (only if top-level exists).
+                 Each file becomes a ## section with its relative path.
+    - .cursorrules: Check cwd for .cursorrules file and .cursor/rules/*.mdc
+    - SOUL.md: Check cwd first, then ~/.hermes/SOUL.md as global fallback
+    
+    Args:
+        cwd: Working directory to search from. Defaults to os.getcwd().
+    
+    Returns:
+        str: The context files prompt section, or empty string if none found.
+    """
+    import os
+    import glob as glob_mod
+    from pathlib import Path
+    
+    if cwd is None:
+        cwd = os.getcwd()
+    
+    cwd_path = Path(cwd).resolve()
+    sections = []
+    
+    # ----- AGENTS.md (hierarchical, recursive) -----
+    top_level_agents = None
+    for name in ["AGENTS.md", "agents.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            top_level_agents = candidate
+            break
+    
+    if top_level_agents:
+        # Recursively find all AGENTS.md files (case-insensitive)
+        agents_files = []
+        for root, dirs, files in os.walk(cwd_path):
+            # Skip hidden directories and common non-project dirs
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
+            for f in files:
+                if f.lower() == "agents.md":
+                    agents_files.append(Path(root) / f)
+        
+        # Sort by path depth (top-level first, then deeper)
+        agents_files.sort(key=lambda p: len(p.parts))
+        
+        total_agents_content = ""
+        for agents_path in agents_files:
+            try:
+                content = agents_path.read_text(encoding="utf-8").strip()
+                if content:
+                    rel_path = agents_path.relative_to(cwd_path)
+                    total_agents_content += f"## {rel_path}\n\n{content}\n\n"
+            except Exception:
+                pass
+        
+        if total_agents_content:
+            total_agents_content = _truncate_content(total_agents_content, "AGENTS.md")
+            sections.append(total_agents_content)
+    
+    # ----- .cursorrules -----
+    cursorrules_content = ""
+    
+    # Check for .cursorrules file
+    cursorrules_file = cwd_path / ".cursorrules"
+    if cursorrules_file.exists():
+        try:
+            content = cursorrules_file.read_text(encoding="utf-8").strip()
+            if content:
+                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
+        except Exception:
+            pass
+    
+    # Check for .cursor/rules/*.mdc files
+    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
+        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
+        for mdc_file in mdc_files:
+            try:
+                content = mdc_file.read_text(encoding="utf-8").strip()
+                if content:
+                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+            except Exception:
+                pass
+    
+    if cursorrules_content:
+        cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
+        sections.append(cursorrules_content)
+    
+    # ----- SOUL.md (cwd first, then ~/.hermes/ fallback) -----
+    soul_content = ""
+    soul_path = None
+    
+    for name in ["SOUL.md", "soul.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            soul_path = candidate
+            break
+    
+    if not soul_path:
+        # Global fallback
+        global_soul = Path.home() / ".hermes" / "SOUL.md"
+        if global_soul.exists():
+            soul_path = global_soul
+    
+    if soul_path:
+        try:
+            content = soul_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _truncate_content(content, "SOUL.md")
+                soul_content = f"## SOUL.md\n\nIf SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n{content}"
+                sections.append(soul_content)
+        except Exception:
+            pass
+    
+    # ----- Assemble -----
+    if not sections:
+        return ""
+    
+    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
+    """
+    Build a short preview of a tool call's primary argument for display.
+    
+    Returns a truncated string showing the most informative argument,
+    or None if no meaningful preview is available.
+    
+    Args:
+        tool_name: Name of the tool being called
+        args: The tool call arguments dict
+        max_len: Maximum preview length before truncation
+    
+    Returns:
+        str or None: Short preview string, or None
+    """
+    # Map tool names to their primary argument key(s)
+    primary_args = {
+        "terminal": "command",
+        "web_search": "query",
+        "web_extract": "urls",
+        "read_file": "path",
+        "write_file": "path",
+        "patch": "path",
+        "search": "pattern",
+        "browser_navigate": "url",
+        "browser_click": "ref",
+        "browser_type": "text",
+        "image_generate": "prompt",
+        "text_to_speech": "text",
+        "vision_analyze": "question",
+        "mixture_of_agents": "user_prompt",
+        "skill_view": "name",
+        "skills_list": "category",
+        "schedule_cronjob": "name",
+    }
+    
+    key = primary_args.get(tool_name)
+    if not key:
+        # Try common arg names as fallback
+        for fallback_key in ("query", "text", "command", "path", "name", "prompt"):
+            if fallback_key in args:
+                key = fallback_key
+                break
+    
+    if not key or key not in args:
+        return None
+    
+    value = args[key]
+    
+    # Handle list values (e.g., urls)
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    
+    preview = str(value).strip()
+    if not preview:
+        return None
+    
+    # Truncate
+    if len(preview) > max_len:
+        preview = preview[:max_len - 3] + "..."
+    
+    return preview
+
+
 class KawaiiSpinner:
     """
     Animated spinner with kawaii faces for CLI feedback during tool execution.
@@ -1129,19 +1347,65 @@ class AIAgent:
             face = random.choice(self.KAWAII_SKILL)
             return f"{face} 📖 loading {name}... {time_str}"
         
+        # File tools
+        elif tool_name == "read_file":
+            path = args.get("path", "file")
+            if len(path) > 30:
+                path = "..." + path[-27:]
+            face = random.choice(self.KAWAII_READ)
+            return f"{face} 📖 reading \"{path}\" {time_str}"
+        
+        elif tool_name == "write_file":
+            path = args.get("path", "file")
+            if len(path) > 30:
+                path = "..." + path[-27:]
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} ✍️ writing \"{path}\" {time_str}"
+        
+        elif tool_name == "patch":
+            path = args.get("path", "file")
+            if path and len(path) > 30:
+                path = "..." + path[-27:]
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} 🔧 patching \"{path}\" {time_str}"
+        
+        elif tool_name == "search":
+            pattern = args.get("pattern", "")
+            if len(pattern) > 25:
+                pattern = pattern[:22] + "..."
+            face = random.choice(self.KAWAII_SEARCH)
+            return f"{face} 🔎 searching \"{pattern}\" {time_str}"
+        
+        # TTS
+        elif tool_name == "text_to_speech":
+            text = args.get("text", "")
+            if len(text) > 25:
+                text = text[:22] + "..."
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} 🔊 speaking \"{text}\" {time_str}"
+        
         # Vision tools
         elif tool_name == "vision_analyze":
+            question = args.get("question", "")
+            if len(question) > 25:
+                question = question[:22] + "..."
             face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👁️✨ analyzing image... {time_str}"
+            return f"{face} 👁️✨ analyzing \"{question}\" {time_str}"
         
         # Mixture of agents
         elif tool_name == "mixture_of_agents":
+            prompt = args.get("user_prompt", "")
+            if len(prompt) > 25:
+                prompt = prompt[:22] + "..."
             face = random.choice(self.KAWAII_THINK)
-            return f"{face} 🧠💭 thinking REALLY hard... {time_str}"
+            return f"{face} 🧠💭 deep thinking \"{prompt}\" {time_str}"
         
-        # Default fallback - random generic kawaii
+        # Default fallback - random generic kawaii with primary arg preview
         else:
             face = random.choice(self.KAWAII_GENERIC)
+            preview = _build_tool_preview(tool_name, args)
+            if preview:
+                return f"{face} ⚡ {tool_name}... \"{preview}\" {time_str}"
             return f"{face} ⚡ {tool_name}... {time_str}"
     
     def _has_content_after_think_block(self, content: str) -> bool:
@@ -1707,6 +1971,15 @@ class AIAgent:
                 active_system_prompt = skills_prompt
         else:
             active_system_prompt = base_system_prompt
+        
+        # Auto-include context files (SOUL.md, AGENTS.md, .cursorrules)
+        # Discovered from cwd and injected as # Project Context sections.
+        context_files_prompt = build_context_files_prompt()
+        if context_files_prompt:
+            if active_system_prompt:
+                active_system_prompt = f"{active_system_prompt}\n\n{context_files_prompt}"
+            else:
+                active_system_prompt = context_files_prompt
         
         # Main conversation loop
         api_call_count = 0
@@ -2314,12 +2587,8 @@ class AIAgent:
                         # Fire progress callback if registered (for messaging platforms)
                         if self.tool_progress_callback:
                             try:
-                                # Build preview for terminal commands
-                                if function_name == "terminal":
-                                    cmd = function_args.get("command", "")
-                                    preview = cmd[:50] + "..." if len(cmd) > 50 else cmd
-                                else:
-                                    preview = None
+                                # Build a short preview of the primary argument
+                                preview = _build_tool_preview(function_name, function_args)
                                 self.tool_progress_callback(function_name, preview)
                             except Exception as cb_err:
                                 logging.debug(f"Tool progress callback error: {cb_err}")

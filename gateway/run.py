@@ -35,6 +35,9 @@ load_dotenv()
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
 
+# Enable interactive exec approval for dangerous commands on messaging platforms
+os.environ["HERMES_EXEC_ASK"] = "1"
+
 # Set terminal working directory for messaging platforms
 # Uses MESSAGING_CWD if set, otherwise defaults to home directory
 # This is separate from CLI which uses the directory where `hermes` is run
@@ -77,6 +80,10 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        
+        # Track pending exec approvals per session
+        # Key: session_key, Value: {"command": str, "pattern_key": str}
+        self._pending_approvals: Dict[str, Dict[str, str]] = {}
     
     async def start(self) -> bool:
         """
@@ -246,6 +253,25 @@ class GatewayRunner:
         if command == "stop":
             return await self._handle_stop_command(event)
         
+        # Check for pending exec approval responses
+        session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
+        if session_key_preview in self._pending_approvals:
+            user_text = event.text.strip().lower()
+            if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
+                approval = self._pending_approvals.pop(session_key_preview)
+                cmd = approval["command"]
+                pattern_key = approval.get("pattern_key", "")
+                print(f"[gateway] ✅ User approved dangerous command: {cmd[:60]}...")
+                # Approve for session and re-run via terminal_tool with force=True
+                from tools.terminal_tool import terminal_tool, _session_approved_patterns
+                _session_approved_patterns.add(pattern_key)
+                result = terminal_tool(command=cmd, force=True)
+                return f"✅ Command approved and executed.\n\n```\n{result[:3500]}\n```"
+            elif user_text in ("no", "n", "deny", "cancel", "nope"):
+                self._pending_approvals.pop(session_key_preview)
+                return "❌ Command denied."
+            # If it's not clearly an approval/denial, fall through to normal processing
+        
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -281,6 +307,17 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key
             )
+            
+            # Check if the agent encountered a dangerous command needing approval
+            # The terminal tool stores the last pending approval globally
+            try:
+                from tools.terminal_tool import _last_pending_approval
+                if _last_pending_approval:
+                    self._pending_approvals[session_key] = _last_pending_approval.copy()
+                    # Clear the global so it doesn't leak to other sessions
+                    _last_pending_approval.clear()
+            except Exception:
+                pass
             
             # Append to transcript
             self.session_store.append_to_transcript(
@@ -418,23 +455,35 @@ class GatewayRunner:
                 return
             last_tool[0] = tool_name
             
-            # Build progress message
+            # Build progress message with primary argument preview
             tool_emojis = {
                 "terminal": "💻",
                 "web_search": "🔍",
                 "web_extract": "📄",
                 "read_file": "📖",
                 "write_file": "✍️",
+                "patch": "🔧",
+                "search": "🔎",
                 "list_directory": "📂",
                 "image_generate": "🎨",
+                "text_to_speech": "🔊",
                 "browser_navigate": "🌐",
                 "browser_click": "👆",
+                "browser_type": "⌨️",
+                "browser_snapshot": "📸",
                 "moa_query": "🧠",
+                "mixture_of_agents": "🧠",
+                "vision_analyze": "👁️",
+                "skill_view": "📚",
+                "skills_list": "📋",
             }
             emoji = tool_emojis.get(tool_name, "⚙️")
             
-            if tool_name == "terminal" and preview:
-                msg = f"{emoji} `{preview}`..."
+            if preview:
+                # Truncate preview to keep messages clean
+                if len(preview) > 40:
+                    preview = preview[:37] + "..."
+                msg = f"{emoji} {tool_name}... \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
             

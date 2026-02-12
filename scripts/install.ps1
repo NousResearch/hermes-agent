@@ -262,6 +262,25 @@ function Test-Ripgrep {
     return $true  # Don't fail - ripgrep is optional
 }
 
+function Test-Ffmpeg {
+    Write-Info "Checking ffmpeg (optional, for TTS voice messages)..."
+    
+    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+        $version = ffmpeg -version 2>&1 | Select-Object -First 1
+        Write-Success "ffmpeg found"
+        $script:HasFfmpeg = $true
+        return $true
+    }
+    
+    Write-Warn "ffmpeg not found (TTS voice bubbles on Telegram will send as audio files instead)"
+    Write-Info "  Install with: winget install ffmpeg"
+    Write-Info "  Or: choco install ffmpeg"
+    Write-Info "  Or download from: https://ffmpeg.org/download.html"
+    
+    $script:HasFfmpeg = $false
+    return $true  # Don't fail - ffmpeg is optional
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -567,6 +586,7 @@ function Main {
     if (-not (Test-Git)) { exit 1 }
     Test-Node      # Optional, doesn't fail
     Test-Ripgrep   # Optional, doesn't fail
+    Test-Ffmpeg    # Optional, doesn't fail
     
     Install-Repository
     Install-Venv

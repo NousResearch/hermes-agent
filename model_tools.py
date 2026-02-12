@@ -83,6 +83,8 @@ from tools.browser_tool import (
     check_browser_requirements,
     BROWSER_TOOL_SCHEMAS
 )
+# Text-to-speech tool (Edge TTS / ElevenLabs / OpenAI)
+from tools.tts_tool import text_to_speech_tool, check_tts_requirements
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -164,6 +166,13 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_file_requirements,
         "setup_url": None,
         "tools": ["read_file", "write_file", "patch", "search"],
+    },
+    "tts": {
+        "name": "Text-to-Speech",
+        "env_vars": [],  # Edge TTS needs no key; premium providers checked at runtime
+        "check_fn": check_tts_requirements,
+        "setup_url": None,
+        "tools": ["text_to_speech"],
     },
 }
 
@@ -862,6 +871,38 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_tts_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for text-to-speech tools in OpenAI's expected format.
+    
+    Returns:
+        List[Dict]: List of TTS tool definitions compatible with OpenAI API
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "text_to_speech",
+                "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The text to convert to speech. Keep under 4000 characters."
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Optional custom file path to save the audio. Defaults to ~/voice-memos/<timestamp>.mp3"
+                        }
+                    },
+                    "required": ["text"]
+                }
+            }
+        }
+    ]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -926,6 +967,10 @@ def get_all_tool_names() -> List[str]:
             "read_file", "write_file", "patch", "search"
         ])
     
+    # Text-to-speech tools
+    if check_tts_requirements():
+        tool_names.extend(["text_to_speech"])
+    
     return tool_names
 
 
@@ -967,6 +1012,8 @@ TOOL_TO_TOOLSET_MAP = {
     "rl_stop_training": "rl_tools",
     "rl_get_results": "rl_tools",
     "rl_list_runs": "rl_tools",
+    # Text-to-speech tools
+    "text_to_speech": "tts_tools",
     # File manipulation tools
     "read_file": "file_tools",
     "write_file": "file_tools",
@@ -1070,6 +1117,11 @@ def get_tool_definitions(
         for tool in get_file_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
+    # Text-to-speech tools
+    if check_tts_requirements():
+        for tool in get_tts_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
     # Determine which tools to include based on toolsets
     tools_to_include = set()
     
@@ -1106,7 +1158,8 @@ def get_tool_definitions(
                             "rl_stop_training", "rl_get_results",
                             "rl_list_runs", "rl_test_inference"
                         ],
-                        "file_tools": ["read_file", "write_file", "patch", "search"]
+                        "file_tools": ["read_file", "write_file", "patch", "search"],
+                        "tts_tools": ["text_to_speech"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.update(legacy_tools)
@@ -1159,7 +1212,8 @@ def get_tool_definitions(
                             "rl_stop_training", "rl_get_results",
                             "rl_list_runs", "rl_test_inference"
                         ],
-                        "file_tools": ["read_file", "write_file", "patch", "search"]
+                        "file_tools": ["read_file", "write_file", "patch", "search"],
+                        "tts_tools": ["text_to_speech"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
                     tools_to_include.difference_update(legacy_tools)
@@ -1617,6 +1671,28 @@ def handle_file_function_call(
     return json.dumps({"error": f"Unknown file function: {function_name}"}, ensure_ascii=False)
 
 
+def handle_tts_function_call(
+    function_name: str,
+    function_args: Dict[str, Any]
+) -> str:
+    """
+    Handle function calls for text-to-speech tools.
+    
+    Args:
+        function_name (str): Name of the TTS function to call
+        function_args (Dict): Arguments for the function
+    
+    Returns:
+        str: Function result as JSON string
+    """
+    if function_name == "text_to_speech":
+        text = function_args.get("text", "")
+        output_path = function_args.get("output_path")
+        return text_to_speech_tool(text=text, output_path=output_path)
+    
+    return json.dumps({"error": f"Unknown TTS function: {function_name}"}, ensure_ascii=False)
+
+
 def handle_function_call(
     function_name: str, 
     function_args: Dict[str, Any], 
@@ -1693,6 +1769,10 @@ def handle_function_call(
         # Route file manipulation tools
         elif function_name in ["read_file", "write_file", "patch", "search"]:
             return handle_file_function_call(function_name, function_args, task_id)
+
+        # Route text-to-speech tools
+        elif function_name in ["text_to_speech"]:
+            return handle_tts_function_call(function_name, function_args)
 
         else:
             error_msg = f"Unknown function: {function_name}"
@@ -1771,6 +1851,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["read_file", "write_file", "patch", "search"],
             "description": "File manipulation tools: read/write files, search content/files, patch with fuzzy matching",
             "requirements": ["Terminal backend available (local/docker/ssh/singularity/modal)"]
+        },
+        "tts_tools": {
+            "available": check_tts_requirements(),
+            "tools": ["text_to_speech"],
+            "description": "Text-to-speech: convert text to audio (Edge TTS free, ElevenLabs, OpenAI)",
+            "requirements": ["edge-tts package (free) or ELEVENLABS_API_KEY or OPENAI_API_KEY"]
         }
     }
     
@@ -1792,7 +1878,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "skills_tools": check_skills_requirements(),
         "browser_tools": check_browser_requirements(),
         "cronjob_tools": check_cronjob_requirements(),
-        "file_tools": check_file_requirements()
+        "file_tools": check_file_requirements(),
+        "tts_tools": check_tts_requirements()
     }
 
 if __name__ == "__main__":

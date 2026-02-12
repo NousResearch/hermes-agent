@@ -99,6 +99,24 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
     },
     
+    # Text-to-speech configuration
+    "tts": {
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai"
+        "edge": {
+            "voice": "en-US-AriaNeural",
+            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
+        },
+        "elevenlabs": {
+            "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
+            "model_id": "eleven_multilingual_v2",
+        },
+        "openai": {
+            "model": "gpt-4o-mini-tts",
+            "voice": "alloy",
+            # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+    },
+    
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
@@ -201,6 +219,13 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Allowed Discord user IDs (comma-separated)",
         "url": None,
         "password": False,
+    },
+    # Text-to-speech (premium providers)
+    "ELEVENLABS_API_KEY": {
+        "description": "ElevenLabs API key for premium text-to-speech voices",
+        "prompt": "ElevenLabs API key",
+        "url": "https://elevenlabs.io/",
+        "password": True,
     },
     # Terminal configuration
     "MESSAGING_CWD": {

@@ -45,10 +45,32 @@ sys.path.insert(0, ENDLESS_TERMINALS_PATH)
 class EndlessTerminalsEnvConfig(AgentEnvConfig):
     """Configuration for Endless Terminals environment."""
 
-    # Task generation
+    # Dataset settings (primary mode)
+    use_dataset: bool = Field(
+        default=True,
+        description="Load tasks from HuggingFace dataset (recommended). If False, generate procedurally."
+    )
+    dataset_name: str = Field(
+        default="obiwan96/endless-terminals-train",
+        description="HuggingFace dataset name (if use_dataset=True)"
+    )
+    dataset_split: str = Field(
+        default="train",
+        description="Dataset split to use"
+    )
+    dataset_cache_dir: str = Field(
+        default="~/.cache/huggingface/datasets",
+        description="HuggingFace datasets cache directory"
+    )
+    tasks_base_dir: str = Field(
+        default="",
+        description="Base directory containing task_* folders. If empty, uses paths from dataset directly."
+    )
+
+    # Task generation settings (fallback mode if use_dataset=False)
     task_gen_model: str = Field(
         default="Qwen/Qwen3-32B",
-        description="Model for task generation (via vLLM)"
+        description="Model for task generation (via vLLM, only if use_dataset=False)"
     )
     task_gen_temperature: float = Field(default=1.0, description="Temperature for task generation")
     task_gen_max_tokens: int = Field(default=2048, description="Max tokens for task generation")
@@ -114,6 +136,11 @@ class EndlessTerminalsEnv(AgentEnv[EndlessTerminalsEnvConfig]):
         self._workspace_dir = Path(config.workspace_dir)
         self._workspace_dir.mkdir(parents=True, exist_ok=True)
 
+        # Dataset mode variables
+        self._dataset = None
+        self._dataset_indices = []
+        self._current_index = 0
+
     @classmethod
     def config_init(cls) -> Tuple[EndlessTerminalsEnvConfig, List[APIServerConfig]]:
         """Initialize config from environment variables."""
@@ -149,7 +176,11 @@ class EndlessTerminalsEnv(AgentEnv[EndlessTerminalsEnvConfig]):
             agent_max_steps=32,  # Increased for long traces
             agent_temperature=0.7,
 
-            # Task generation
+            # Dataset (primary mode)
+            use_dataset=os.getenv("USE_DATASET", "true").lower() == "true",
+            dataset_name=os.getenv("ENDLESS_DATASET", "obiwan96/endless-terminals-train"),
+
+            # Task generation (fallback)
             task_gen_model=os.getenv("TASK_GEN_MODEL", "Qwen/Qwen3-32B"),
 
             # Sandbox config
@@ -172,19 +203,117 @@ class EndlessTerminalsEnv(AgentEnv[EndlessTerminalsEnvConfig]):
         return env_config, server_configs
 
     async def setup_agent_env(self) -> None:
-        """Environment-specific setup (no-op for now)."""
-        print("[EndlessTerminalsEnv] setup_agent_env(): ready", flush=True)
+        """Environment-specific setup. Load dataset if use_dataset=True."""
+        if self.config.use_dataset:
+            print(f"[EndlessTerminalsEnv] Loading dataset: {self.config.dataset_name}", flush=True)
+            try:
+                from datasets import load_dataset
+                import random
+
+                loop = asyncio.get_event_loop()
+                self._dataset = await loop.run_in_executor(
+                    None,
+                    lambda: load_dataset(
+                        self.config.dataset_name,
+                        split=self.config.dataset_split,
+                        cache_dir=os.path.expanduser(self.config.dataset_cache_dir)
+                    )
+                )
+
+                # Create shuffled indices for sampling
+                self._dataset_indices = list(range(len(self._dataset)))
+                random.shuffle(self._dataset_indices)
+                self._current_index = 0
+
+                print(f"[EndlessTerminalsEnv] Loaded {len(self._dataset)} tasks from dataset", flush=True)
+
+            except Exception as e:
+                print(f"[EndlessTerminalsEnv] ERROR loading dataset: {e}", flush=True)
+                print("[EndlessTerminalsEnv] Falling back to procedural generation", flush=True)
+                self.config.use_dataset = False
+        else:
+            print("[EndlessTerminalsEnv] Using procedural task generation", flush=True)
 
     async def get_next_item(self) -> Item:
         """
-        Generate a new task on-demand.
+        Get next task - either from dataset or generate procedurally.
 
-        This is the core of procedural generation:
-        1. Call Endless Terminals task generation LLM
-        2. Build Apptainer container with tests
-        3. Return task item with workspace info
+        If use_dataset=True: Sample from HuggingFace dataset
+        If use_dataset=False: Generate on-demand via LLM
         """
         self._iteration += 1
+
+        if self.config.use_dataset and self._dataset is not None:
+            return await self._get_next_item_from_dataset()
+        else:
+            return await self._get_next_item_procedural()
+
+    async def _get_next_item_from_dataset(self) -> Item:
+        """Sample a task from the pre-generated HuggingFace dataset."""
+        if self._dataset is None:
+            raise RuntimeError("Dataset not loaded")
+
+        # Get next task (with wraparound)
+        idx = self._dataset_indices[self._current_index]
+        task = self._dataset[idx]
+
+        # Advance to next task
+        self._current_index += 1
+        if self._current_index >= len(self._dataset_indices):
+            # Reshuffle for next epoch
+            import random
+            random.shuffle(self._dataset_indices)
+            self._current_index = 0
+            print("[EndlessTerminalsEnv] Reshuffled dataset (completed one epoch)", flush=True)
+
+        # Extract task info from dataset format
+        # The dataset contains task directories with names like "task_000000_0033979a"
+        # Option 1: Use task_dir from dataset metadata
+        # Option 2: Use tasks_base_dir + extract task name from path
+
+        task_dir = task.get("extra_info", {}).get("task_dir")
+        if not task_dir:
+            task_dir = task.get("reward_spec", {}).get("ground_truth")
+
+        # If tasks_base_dir is configured, reconstruct path
+        if self.config.tasks_base_dir:
+            # Extract task directory name (e.g., "task_000000_0033979a")
+            original_path = Path(task_dir)
+            task_name = original_path.name
+            task_dir_path = Path(self.config.tasks_base_dir) / task_name
+        else:
+            task_dir_path = Path(task_dir)
+
+        # Verify directory exists
+        if not task_dir_path.exists():
+            print(f"[EndlessTerminalsEnv] WARNING: Task dir not found: {task_dir_path}", flush=True)
+            print(f"[EndlessTerminalsEnv] Hint: Set tasks_base_dir to directory containing task_* folders", flush=True)
+            print(f"[EndlessTerminalsEnv] Trying next task...", flush=True)
+            return await self._get_next_item_from_dataset()  # Recursive retry
+
+        container_sif = task_dir_path / "container.sif"
+        final_test = task_dir_path / "test_final_state.py"
+
+        # Verify files exist
+        if not container_sif.exists() or not final_test.exists():
+            print(f"[EndlessTerminalsEnv] WARNING: Missing files in {task_dir_path}", flush=True)
+            print(f"[EndlessTerminalsEnv] Expected: {container_sif} and {final_test}", flush=True)
+            print(f"[EndlessTerminalsEnv] Trying next task...", flush=True)
+            return await self._get_next_item_from_dataset()
+
+        return {
+            "task_id": f"dataset_{self._iteration:06d}_{task_dir_path.name}",
+            "description": task.get("description", ""),
+            "task_dir": str(task_dir_path),
+            "container_sif": str(container_sif),
+            "initial_test": str(task_dir_path / "test_initial_state.py"),
+            "final_test": str(final_test),
+            "dataset_index": idx,
+            "from_dataset": True,
+        }
+
+    async def _get_next_item_procedural(self) -> Item:
+        """Generate a new task on-demand via LLM (original procedural mode)."""
         task_id = f"task_{self._iteration:06d}_{uuid.uuid4().hex[:8]}"
 
         print(f"[EndlessTerminalsEnv] Generating task {task_id}...", flush=True)
@@ -228,11 +357,11 @@ class EndlessTerminalsEnv(AgentEnv[EndlessTerminalsEnvConfig]):
                 "container_sif": str(container_sif_path),
                 "initial_test": str(initial_test_path),
                 "final_test": str(final_test_path),
+                "from_dataset": False,
             }
 
         except Exception as e:
             print(f"[EndlessTerminalsEnv] Failed to generate task {task_id}: {e}", flush=True)
-            # Return a simple fallback task
             return self._get_fallback_task(task_id)
 
     def build_task(self, item: Item) -> str:

@@ -1,7 +1,8 @@
 # Endless Terminals Environment Configuration
 #
-# This config enables procedural terminal task generation for RL training.
-# Tasks are generated on-demand using Endless Terminals LLM pipeline.
+# Two modes:
+#   1. Dataset mode (default): Load pre-generated tasks from HuggingFace
+#   2. Procedural mode: Generate tasks on-demand via LLM
 #
 # Usage:
 #   python -m atropos.envs.endless_terminals_env process \
@@ -9,8 +10,16 @@
 
 # Environment settings
 env:
-  # Task generation
-  task_gen_model: "Qwen/Qwen3-32B"  # vLLM model for task generation
+  # Dataset mode (primary - recommended)
+  use_dataset: true  # Load from HuggingFace (fast, no vLLM needed)
+  dataset_name: "obiwan96/endless-terminals-train"
+  dataset_split: "train"
+  dataset_cache_dir: "~/.cache/huggingface/datasets"
+  tasks_base_dir: ""  # Set to dir containing task_* folders if not using default paths
+                      # Example: "/path/to/endless-terminals-train"
+
+  # Task generation (fallback if use_dataset=false)
+  task_gen_model: "Qwen/Qwen3-32B"  # Only needed if use_dataset=false
   task_gen_temperature: 1.0
   task_gen_max_tokens: 2048
 

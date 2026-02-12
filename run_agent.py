@@ -1981,6 +1981,15 @@ class AIAgent:
             else:
                 active_system_prompt = context_files_prompt
         
+        # Append the current local date and time so the model knows what
+        # day/time it is (LLM training cutoffs can otherwise mislead it).
+        now = datetime.now()
+        timestamp_line = f"Current local date and time: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        if active_system_prompt:
+            active_system_prompt = f"{active_system_prompt}\n\n{timestamp_line}"
+        else:
+            active_system_prompt = timestamp_line
+
         # Main conversation loop
         api_call_count = 0
         final_response = None

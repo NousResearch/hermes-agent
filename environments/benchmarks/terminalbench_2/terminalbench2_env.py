@@ -103,12 +103,12 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
     # --- Task filtering (comma-separated from CLI) ---
     task_filter: Optional[str] = Field(
         default=None,
-        description="Comma-separated task names to run (e.g., 'fix-git,broken-pipe'). "
+        description="Comma-separated task names to run (e.g., 'fix-git,git-multibranch'). "
         "If not set, all tasks are run.",
     )
     skip_tasks: Optional[str] = Field(
         default=None,
-        description="Comma-separated task names to skip (e.g., 'heavy-task,slow-task').",
+        description="Comma-separated task names to skip on top of the default skip list.",
     )
 
     # --- Per-task wall-clock timeout ---
@@ -117,6 +117,14 @@ class TerminalBench2EvalConfig(HermesAgentEnvConfig):
         description="Maximum wall-clock seconds per task (agent loop + verification). "
         "Tasks exceeding this are scored as FAIL. Default 30 minutes.",
     )
+
+
+# Tasks that cannot run properly on Modal and are excluded from scoring.
+MODAL_INCOMPATIBLE_TASKS = {
+    "qemu-startup",        # Needs KVM/hardware virtualization
+    "qemu-alpine-ssh",     # Needs KVM/hardware virtualization
+    "crack-7z-hash",       # Password brute-force -- too slow for cloud sandbox timeouts
+}
 
 
 # =============================================================================
@@ -186,13 +194,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             max_agent_turns=60,
             max_token_length=16000,
             agent_temperature=0.6,
-            system_prompt=(
-                "You are a skilled software engineer and system administrator with "
-                "access to a terminal and file tools. You are working inside a Linux "
-                "container environment. Complete the user's task by using the available "
-                "tools. Be methodical: explore the environment first, plan your approach, "
-                "then execute step by step. Verify your work before finishing."
-            ),
+            system_prompt=None,
 
             # Modal backend for per-task cloud-isolated sandboxes
             terminal_backend="modal",
@@ -258,10 +260,18 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             allowed = {name.strip() for name in self.config.task_filter.split(",")}
             tasks = [t for t in tasks if t["task_name"] in allowed]
             print(f"  Filtered to {len(tasks)} tasks: {sorted(allowed)}")
+
+        # Skip tasks incompatible with the current backend (e.g., QEMU on Modal)
+        # plus any user-specified skip_tasks
+        skip = set(MODAL_INCOMPATIBLE_TASKS) if self.config.terminal_backend == "modal" else set()
         if self.config.skip_tasks:
-            skip = {name.strip() for name in self.config.skip_tasks.split(",")}
+            skip |= {name.strip() for name in self.config.skip_tasks.split(",")}
+        if skip:
+            before = len(tasks)
             tasks = [t for t in tasks if t["task_name"] not in skip]
-            print(f"  After skip_tasks: {len(tasks)} tasks (skipped: {sorted(skip)})")
+            skipped = before - len(tasks)
+            if skipped > 0:
+                print(f"  Skipped {skipped} incompatible tasks: {sorted(skip & {t['task_name'] for t in ds})}")
 
         self.all_eval_items = tasks
         self.iter = 0
@@ -274,9 +284,29 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         # Reward tracking for wandb logging
         self.eval_metrics: List[Tuple[str, float]] = []
 
+        # Streaming JSONL writer -- saves each task's full conversation
+        # immediately on completion so data is preserved even on Ctrl+C.
+        # Timestamped filename so each run produces a unique file.
+        import datetime
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
+        self._streaming_file = open(self._streaming_path, "w")
+        self._streaming_lock = __import__("threading").Lock()
+        print(f"  Streaming results to: {self._streaming_path}")
+
         print(f"TB2 ready: {len(self.all_eval_items)} tasks across {len(self.category_index)} categories")
         for cat, indices in sorted(self.category_index.items()):
             print(f"  {cat}: {len(indices)} tasks")
+
+    def _save_result(self, result: Dict[str, Any]):
+        """Write a single task result to the streaming JSONL file immediately."""
+        if not hasattr(self, "_streaming_file") or self._streaming_file.closed:
+            return
+        with self._streaming_lock:
+            self._streaming_file.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
+            self._streaming_file.flush()
 
     # =========================================================================
     # Training pipeline stubs -- NOT used in eval-only mode
@@ -423,6 +453,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 task_id=task_id,
                 temperature=self.config.agent_temperature,
                 max_tokens=self.config.max_token_length,
+                extra_body=self.config.extra_body,
             )
             result = await agent.run(messages)
 
@@ -463,24 +494,29 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 task_name, reward, result.turns_used, result.finished_naturally,
             )
 
-            return {
+            out = {
                 "passed": passed,
                 "reward": reward,
                 "task_name": task_name,
                 "category": category,
                 "turns_used": result.turns_used,
                 "finished_naturally": result.finished_naturally,
+                "messages": result.messages,
             }
+            self._save_result(out)
+            return out
 
         except Exception as e:
             elapsed = time.time() - task_start
             logger.error("Task %s: rollout failed: %s", task_name, e, exc_info=True)
             tqdm.write(f"  [ERROR] {task_name}: {e} ({elapsed:.0f}s)")
-            return {
+            out = {
                 "passed": False, "reward": 0.0,
                 "task_name": task_name, "category": category,
                 "error": str(e),
             }
+            self._save_result(out)
+            return out
 
         finally:
             # --- Cleanup: clear overrides, sandbox, and temp files ---
@@ -636,11 +672,13 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             elapsed = self.config.task_timeout
             tqdm.write(f"  [TIMEOUT] {task_name} (exceeded {elapsed}s wall-clock limit)")
             logger.error("Task %s: wall-clock timeout after %ds", task_name, elapsed)
-            return {
+            out = {
                 "passed": False, "reward": 0.0,
                 "task_name": task_name, "category": category,
                 "error": f"timeout ({elapsed}s)",
             }
+            self._save_result(out)
+            return out
 
     async def evaluate(self, *args, **kwargs) -> None:
         """
@@ -796,7 +834,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
 
         print(f"{'='*60}\n")
 
-        # Build sample records for evaluate_log
+        # Build sample records for evaluate_log (includes full conversations)
         samples = [
             {
                 "task_name": r.get("task_name"),
@@ -805,6 +843,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                 "reward": r.get("reward"),
                 "turns_used": r.get("turns_used"),
                 "error": r.get("error"),
+                "messages": r.get("messages"),
             }
             for r in valid_results
         ]
@@ -826,11 +865,22 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         except Exception as e:
             print(f"Error logging evaluation results: {e}")
 
+        # Close streaming file
+        if hasattr(self, "_streaming_file") and not self._streaming_file.closed:
+            self._streaming_file.close()
+            print(f"  Live results saved to: {self._streaming_path}")
+
         # Kill all remaining sandboxes. Timed-out tasks leave orphaned thread
         # pool workers still executing commands -- cleanup_all stops them.
         from tools.terminal_tool import cleanup_all_environments
         print("\nCleaning up all sandboxes...")
         cleanup_all_environments()
+
+        # Shut down the tool thread pool so orphaned workers from timed-out
+        # tasks are killed immediately instead of retrying against dead
+        # sandboxes and spamming the console with TimeoutError warnings.
+        from environments.agent_loop import _tool_executor
+        _tool_executor.shutdown(wait=False, cancel_futures=True)
         print("Done.")
 
     # =========================================================================

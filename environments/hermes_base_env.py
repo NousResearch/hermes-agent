@@ -160,6 +160,22 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Options: hermes, mistral, llama3_json, qwen, deepseek_v3, etc.",
     )
 
+    # --- Provider-specific parameters ---
+    # Passed as extra_body to the OpenAI client's chat.completions.create() call.
+    # Useful for OpenRouter provider preferences, transforms, route settings, etc.
+    # Example YAML:
+    #   extra_body:
+    #     provider:
+    #       ignore: ["DeepInfra", "Fireworks"]
+    #       order: ["Together"]
+    #     transforms: ["middle-out"]
+    extra_body: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Extra body parameters passed to the OpenAI client's "
+        "chat.completions.create(). Used for OpenRouter provider preferences, "
+        "transforms, and other provider-specific settings.",
+    )
+
 
 class HermesAgentBaseEnv(BaseEnv):
     """
@@ -470,6 +486,7 @@ class HermesAgentBaseEnv(BaseEnv):
                         task_id=task_id,
                         temperature=self.config.agent_temperature,
                         max_tokens=self.config.max_token_length,
+                        extra_body=self.config.extra_body,
                     )
                     result = await agent.run(messages)
             except NotImplementedError:
@@ -486,6 +503,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     task_id=task_id,
                     temperature=self.config.agent_temperature,
                     max_tokens=self.config.max_token_length,
+                    extra_body=self.config.extra_body,
                 )
                 result = await agent.run(messages)
         else:
@@ -498,6 +516,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 task_id=task_id,
                 temperature=self.config.agent_temperature,
                 max_tokens=self.config.max_token_length,
+                extra_body=self.config.extra_body,
             )
             result = await agent.run(messages)
 

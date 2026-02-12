@@ -135,6 +135,7 @@ class HermesAgentLoop:
         task_id: Optional[str] = None,
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the agent loop.
@@ -148,6 +149,9 @@ class HermesAgentLoop:
             task_id: Unique ID for terminal/browser session isolation
             temperature: Sampling temperature for generation
             max_tokens: Max tokens per generation (None for server default)
+            extra_body: Extra parameters passed to the OpenAI client's create() call.
+                        Used for OpenRouter provider preferences, transforms, etc.
+                        e.g. {"provider": {"ignore": ["DeepInfra"]}}
         """
         self.server = server
         self.tool_schemas = tool_schemas
@@ -156,6 +160,7 @@ class HermesAgentLoop:
         self.task_id = task_id or str(uuid.uuid4())
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.extra_body = extra_body
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -190,6 +195,11 @@ class HermesAgentLoop:
             # Only pass max_tokens if explicitly set
             if self.max_tokens is not None:
                 chat_kwargs["max_tokens"] = self.max_tokens
+
+            # Inject extra_body for provider-specific params (e.g., OpenRouter
+            # provider preferences like banned/preferred providers, transforms)
+            if self.extra_body:
+                chat_kwargs["extra_body"] = self.extra_body
 
             # Make the API call -- standard OpenAI spec
             api_start = _time.monotonic()

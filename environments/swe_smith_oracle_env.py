@@ -488,27 +488,34 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
         """
         repo_dir = self._repo_name(item)
 
-        # Count tool calls. Prefer the agent-loop metrics if present:
-        # - attempted: model called a known tool name
-        # - schema_valid: args were a dict (no coercion/double-decoding)
-        fallback_count = sum(
+        # Count tool calls (assistant messages that have tool_calls).
+        # NOTE: we keep scoring policy here intentionally simple and env-specific.
+        # The agent loop exposes additional tool-call metrics (attempted/schema_valid/
+        # executed_ok/exec_error) that other environments may choose to use for
+        # reward shaping, but we don't hard-require any particular calling format here.
+        tool_call_count = sum(
             len(msg.get("tool_calls", []))
             for msg in result.messages
             if msg.get("role") == "assistant"
         )
 
-        attempted = getattr(result, "tool_calls_attempted", fallback_count)
-        schema_valid = getattr(result, "tool_calls_schema_valid", fallback_count)
-
-        if attempted == 0:
+        if tool_call_count == 0:
             print(f"[SweSmithOracleEnv] No tool calls made; score=0.0", flush=True)
             return 0.0
 
-        # Shaping: reward attempting tool use a little, but reward schema-valid calls more.
-        # Full credit per call is still 0.05 when schema_valid.
-        attempt_reward = min(attempted * 0.02, 0.10)
-        schema_reward = min(schema_valid * 0.03, 0.20)
-        tool_call_reward = min(attempt_reward + schema_reward, 0.30)
+        # Partial reward: 0.05 per tool call, capped at 0.3
+        tool_call_reward = min(tool_call_count * 0.05, 0.3)
+
+        # Debug: log tool-call quality metrics if present
+        attempted = getattr(result, "tool_calls_attempted", None)
+        schema_valid = getattr(result, "tool_calls_schema_valid", None)
+        executed_ok = getattr(result, "tool_calls_executed_ok", None)
+        exec_error = getattr(result, "tool_calls_exec_error", None)
+        if attempted is not None:
+            print(
+                f"[SweSmithOracleEnv] Tool calls: total={tool_call_count}, attempted={attempted}, schema_valid={schema_valid}, ok={executed_ok}, err={exec_error}",
+                flush=True,
+            )
 
         nodeids = self._tests_for_item(item)
         if not nodeids:

@@ -190,7 +190,7 @@ class HermesAgentLoop:
         # Phase 1: Truncate tool result content in middle messages
         # Keep first 2 and last 6 messages untouched
         protect_head = 2
-        protect_tail = min(6, len(messages) - protect_head)
+        protect_tail = max(0, min(6, len(messages) - protect_head))
         middle_start = protect_head
         middle_end = len(messages) - protect_tail
 

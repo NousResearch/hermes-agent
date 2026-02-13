@@ -825,6 +825,13 @@ class HermesAgentBaseEnv(BaseEnv):
                     tokenizer=self.tokenizer,
                     tool_call_parser=tc_parser,
                 ) as managed:
+                    # Calculate max prompt tokens
+                    # Context budget = max_token_length (prompt can be as long as generation budget)
+                    # This ensures prompt + generation stays under typical model context limits
+                    # E.g., max_token_length=16384 → 16384 prompt + 16384 gen = 32K < 40960 model limit
+                    _max_ctx = None
+                    if self.config.max_token_length and self.config.max_token_length > 0:
+                        _max_ctx = self.config.max_token_length
                     agent = HermesAgentLoop(
                         server=managed,
                         tool_schemas=tools,
@@ -834,6 +841,7 @@ class HermesAgentBaseEnv(BaseEnv):
                         temperature=self.config.agent_temperature,
                         max_tokens=self.config.max_token_length,
                         tool_handler=tool_handler,
+                        max_context_tokens=_max_ctx,
                     )
                     return await agent.run(messages)
             except NotImplementedError:
@@ -841,6 +849,9 @@ class HermesAgentBaseEnv(BaseEnv):
                     "ManagedServer not available (OpenAI server?). "
                     "Falling back to direct server mode."
                 )
+                _max_ctx = None
+                if self.config.max_token_length and self.config.max_token_length > 0:
+                    _max_ctx = self.config.max_token_length
                 agent = HermesAgentLoop(
                     server=self.server,
                     tool_schemas=tools,
@@ -850,9 +861,13 @@ class HermesAgentBaseEnv(BaseEnv):
                     temperature=self.config.agent_temperature,
                     max_tokens=self.config.max_token_length,
                     tool_handler=tool_handler,
+                    max_context_tokens=_max_ctx,
                 )
                 return await agent.run(messages)
         else:
+            _max_ctx = None
+            if self.config.max_token_length and self.config.max_token_length > 0:
+                _max_ctx = self.config.max_token_length
             agent = HermesAgentLoop(
                 server=self.server,
                 tool_schemas=tools,
@@ -862,6 +877,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 temperature=self.config.agent_temperature,
                 max_tokens=self.config.max_token_length,
                 tool_handler=tool_handler,
+                max_context_tokens=_max_ctx,
             )
             return await agent.run(messages)
 

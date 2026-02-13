@@ -120,6 +120,7 @@ class HermesAgentLoop:
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
         tool_handler=None,
+        max_context_tokens: Optional[int] = None,
     ):
         """
         Initialize the agent loop.
@@ -137,6 +138,9 @@ class HermesAgentLoop:
                          When provided, used INSTEAD of handle_function_call() for
                          tool dispatch. This allows sandbox backends (Modal, Nomad)
                          to route tool calls through their slot-based execution.
+            max_context_tokens: Maximum prompt tokens before truncation.
+                               If None, no truncation is applied.
+                               Recommended: set to max_model_len - max_tokens - 512 (safety margin).
         """
         self.server = server
         self.tool_schemas = tool_schemas
@@ -146,6 +150,80 @@ class HermesAgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tool_handler = tool_handler
+        self.max_context_tokens = max_context_tokens
+
+
+    def _truncate_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Truncate conversation history to fit within max_context_tokens.
+
+        Strategy:
+        - Keep system message (index 0) and initial user message (index 1) always
+        - Keep last 6 messages (recent context) always
+        - For everything in between, progressively truncate tool result content
+        - If still too long, drop oldest middle messages entirely
+
+        Uses rough char/4 token estimate (fast, no tokenizer needed).
+        """
+        if self.max_context_tokens is None:
+            return messages
+
+        def estimate_tokens(msgs):
+            total = 0
+            for m in msgs:
+                content = m.get("content", "") or ""
+                total += len(content) // 4 + 10  # ~4 chars per token + overhead
+                if "tool_calls" in m:
+                    total += 50 * len(m["tool_calls"])  # tool call overhead
+            return total
+
+        est = estimate_tokens(messages)
+        if est <= self.max_context_tokens:
+            return messages
+
+        # Phase 1: Truncate tool result content in middle messages
+        # Keep first 2 and last 6 messages untouched
+        protect_head = 2
+        protect_tail = min(6, len(messages) - protect_head)
+        middle_start = protect_head
+        middle_end = len(messages) - protect_tail
+
+        if middle_start < middle_end:
+            # Truncate tool results from oldest first
+            for i in range(middle_start, middle_end):
+                if messages[i].get("role") == "tool":
+                    content = messages[i].get("content", "") or ""
+                    if len(content) > 200:
+                        messages[i] = dict(messages[i])  # copy
+                        messages[i]["content"] = content[:100] + "\n...[truncated]...\n" + content[-50:]
+
+            est = estimate_tokens(messages)
+            if est <= self.max_context_tokens:
+                logger.debug("Context truncated (phase 1: tool results): %d tokens", est)
+                return messages
+
+        # Phase 2: Drop oldest middle messages entirely
+        while middle_start < middle_end and estimate_tokens(messages) > self.max_context_tokens:
+            # Remove the oldest middle message
+            # But keep assistant+tool pairs together
+            msg = messages[middle_start]
+            messages.pop(middle_start)
+            middle_end -= 1
+            # If we removed an assistant with tool_calls, also remove matching tool responses
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tool_ids = {tc.get("id") or tc.get("tool_call_id", "") for tc in msg.get("tool_calls", []) if isinstance(tc, dict)}
+                # Remove tool responses for those IDs
+                i = middle_start
+                while i < middle_end:
+                    if messages[i].get("role") == "tool" and messages[i].get("tool_call_id", "") in tool_ids:
+                        messages.pop(i)
+                        middle_end -= 1
+                    else:
+                        i += 1
+
+        est = estimate_tokens(messages)
+        logger.info("Context truncated (phase 2: dropped messages): %d estimated tokens, %d messages remaining", est, len(messages))
+        return messages
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -162,6 +240,9 @@ class HermesAgentLoop:
         tool_errors: List[ToolError] = []
 
         for turn in range(self.max_turns):
+            # Truncate context if approaching limit
+            messages = self._truncate_context(messages)
+
             # Build the chat_completion kwargs
             chat_kwargs = {
                 "messages": messages,
@@ -262,6 +343,32 @@ class HermesAgentLoop:
                         # Parse arguments and dispatch
                         try:
                             args = json.loads(tool_args_raw)
+                            # Guard against double-encoded JSON strings
+                            # Model sometimes outputs '{"command": "ls"}' as a JSON string
+                            # so json.loads produces the string '{"command": "ls"}' not a dict
+                            if isinstance(args, str):
+                                try:
+                                    args2 = json.loads(args)
+                                    if isinstance(args2, dict):
+                                        args = args2
+                                    elif isinstance(args2, str):
+                                        # Triple-encoded... just wrap it
+                                        if tool_name == "terminal":
+                                            args = {"command": args2}
+                                        else:
+                                            args = {"input": args2}
+                                    else:
+                                        args = {"input": args2}
+                                except (json.JSONDecodeError, TypeError):
+                                    # Plain string, not JSON - wrap it
+                                    if tool_name == "terminal":
+                                        args = {"command": args}
+                                    else:
+                                        args = {"input": args}
+                                logger.debug(
+                                    "Tool args for '%s' decoded from string: %s",
+                                    tool_name, tool_args_raw[:200],
+                                )
                         except json.JSONDecodeError:
                             args = {}
                             logger.warning(

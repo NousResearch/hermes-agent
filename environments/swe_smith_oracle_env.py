@@ -476,28 +476,37 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
         """
         Verify by running pytest with the dataset's nodeids.
 
-        Uses ToolContext.terminal() to run commands in the same
-        terminal session as the agent (same task_id = same sandbox).
+        Reward structure (shaped to give training signal even when model can't solve tasks):
+          - 0.0:  No tool calls at all
+          - 0.05: Per valid tool call (up to 0.3 max for tool-call shaping)
+          - 0.4:  Successfully installed deps
+          - 1.0:  All tests pass
 
-        This is used for the local (non-sandbox) path. When tool_pool_mode
-        is set to 'modal' or 'nomad', verify_and_score_trajectory() is
-        used instead (runs in the sandbox slot).
+        The partial rewards for tool calls help the model learn to USE tools
+        before it can learn to use them CORRECTLY. This is critical for cold-start
+        training where the base model barely makes any tool calls.
         """
         repo_dir = self._repo_name(item)
 
-        # Don't reward trajectories that never used tools
+        # Count valid tool calls (assistant messages that have tool_calls)
         tool_call_count = sum(
             len(msg.get("tool_calls", []))
             for msg in result.messages
             if msg.get("role") == "assistant"
         )
+
         if tool_call_count == 0:
             print(f"[SweSmithOracleEnv] No tool calls made; score=0.0", flush=True)
             return 0.0
 
+        # Partial reward: 0.05 per tool call, capped at 0.3
+        tool_call_reward = min(tool_call_count * 0.05, 0.3)
+
         nodeids = self._tests_for_item(item)
         if not nodeids:
-            return 0.0
+            # No tests defined — just reward tool usage
+            print(f"[SweSmithOracleEnv] No tests defined; score={tool_call_reward:.2f} (tool calls)", flush=True)
+            return tool_call_reward
 
         # Install deps + run tests
         print(f"[SweSmithOracleEnv] Verifying: installing deps + running tests", flush=True)
@@ -511,8 +520,11 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
             timeout=int(self.config.install_timeout_s),
         )
         if setup_result.get("exit_code", 1) != 0:
-            print(f"[SweSmithOracleEnv] Install failed; score=0.0", flush=True)
-            return 0.0
+            print(f"[SweSmithOracleEnv] Install failed; score={tool_call_reward:.2f} (tool calls only)", flush=True)
+            return tool_call_reward
+
+        # Partial reward for successful install
+        install_reward = 0.4
 
         # Run test chunks
         chunks = self._chunk_nodeids(nodeids, max_per_chunk=50)
@@ -523,11 +535,56 @@ class SweSmithOracleEnv(HermesAgentBaseEnv):
                 timeout=int(self.config.test_timeout_s),
             )
             if test_result.get("exit_code", 1) != 0:
-                print(f"[SweSmithOracleEnv] Tests failed (chunk {chunk_idx}); score=0.0", flush=True)
-                return 0.0
+                print(f"[SweSmithOracleEnv] Tests failed (chunk {chunk_idx}); score={install_reward:.2f} (install ok)", flush=True)
+                return install_reward
 
         print(f"[SweSmithOracleEnv] All tests passed; score=1.0", flush=True)
         return 1.0
+
+    # =========================================================================
+    # Token truncation — keep start of trajectory, truncate from end
+    # =========================================================================
+
+    def _build_scored_item(self, item, result, reward):
+        """
+        Override to truncate tokens/masks from the END to fit within max_token_len.
+
+        Intuition (from NeurIPS finding): the start of the trajectory is most important
+        for shifting the model distribution. Truncating from the end only costs ~2-3%
+        vs handling the full sequence, but avoids the "Token length is too long" discard
+        that throws away entire groups including valid training signal.
+        """
+        scored_item, remaining = super()._build_scored_item(item, result, reward)
+        if scored_item is None:
+            return scored_item, remaining
+
+        # Use config.max_token_length as the truncation limit.
+        # self.max_token_len comes from the trainer via /info, but may be -1
+        # if the trainer hasn't registered yet (race condition).
+        max_len = self.max_token_len
+        if max_len <= 0:
+            # Fallback to config value
+            max_len = getattr(self.config, 'max_token_length', 0)
+        if max_len <= 0:
+            return scored_item, remaining
+
+        # Leave some margin (64 tokens) to avoid edge cases with padding alignment
+        truncate_to = max_len - 64
+
+        tokens = scored_item.get("tokens")
+        masks = scored_item.get("masks")
+
+        if tokens is not None and len(tokens) >= max_len:
+            orig_len = len(tokens)
+            scored_item["tokens"] = tokens[:truncate_to]
+            if masks is not None and len(masks) >= max_len:
+                scored_item["masks"] = masks[:truncate_to]
+            logger.info(
+                "Truncated trajectory from %d to %d tokens (max_token_len=%d)",
+                orig_len, truncate_to, max_len,
+            )
+
+        return scored_item, remaining
 
     # =========================================================================
     # Evaluation (minimal for now)

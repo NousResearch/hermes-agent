@@ -246,7 +246,11 @@ class HermesAgentLoop:
         try:
             decoded = json.loads(tool_args_raw)
         except json.JSONDecodeError:
-            return {}, False
+            # Not valid JSON at all. Be robust: treat it as a plain string.
+            # (Some parsers/providers may pass through non-JSON strings.)
+            if tool_name == "terminal":
+                return {"command": tool_args_raw}, False
+            return {"input": tool_args_raw}, False
 
         # Canonical case: decoded is already a dict
         if isinstance(decoded, dict):

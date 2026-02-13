@@ -52,7 +52,8 @@ class HermesToolCallParser(ToolCallParser):
                 # Handle arguments: could be dict or already a JSON string
                 raw_args = tc_data.get("arguments", {})
                 if isinstance(raw_args, str):
-                    # Already a string — use as-is (it's already JSON)
+                    # Already a string — pass through as-is.
+                    # It may be a JSON string ("{...}") or a plain string ("ls").
                     args_str = raw_args
                 else:
                     # Dict — serialize to JSON

@@ -295,7 +295,12 @@ class HermesAgentLoop:
 
         Args:
             messages: Initial conversation messages (system + user).
-                      Modified in-place as the conversation progresses.
+                      This list is treated as the FULL trajectory and is
+                      appended to as the conversation progresses.
+
+                      Prompt truncation (to avoid context overflow) is applied
+                      on a copy of this list per turn, so we do not lose
+                      earlier messages for reward computation/debugging.
 
         Returns:
             AgentResult with full conversation history, managed state, and metadata
@@ -310,12 +315,14 @@ class HermesAgentLoop:
         tool_calls_exec_error = 0
 
         for turn in range(self.max_turns):
-            # Truncate context if approaching limit
-            messages = self._truncate_context(messages)
+            # Truncate context if approaching limit.
+            # IMPORTANT: do this on a copy so we keep the full trajectory in `messages`
+            # for reward computation + debugging, while only trimming the prompt view.
+            prompt_messages = self._truncate_context(list(messages))
 
             # Build the chat_completion kwargs
             chat_kwargs = {
-                "messages": messages,
+                "messages": prompt_messages,
                 "n": 1,
                 "temperature": self.temperature,
             }

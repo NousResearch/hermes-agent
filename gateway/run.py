@@ -529,6 +529,10 @@ class GatewayRunner:
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "60"))
             
+            # Map platform enum to the platform hint key the agent understands.
+            # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
+            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
+            
             agent = AIAgent(
                 model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
                 max_iterations=max_iterations,
@@ -537,6 +541,7 @@ class GatewayRunner:
                 ephemeral_system_prompt=context_prompt,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                platform=platform_key,  # Tells the agent which interface to format for
             )
             
             # Store agent reference for interrupt support

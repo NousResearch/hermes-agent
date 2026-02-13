@@ -662,6 +662,7 @@ class HermesCLI:
                 quiet_mode=True,  # Suppress verbose output for clean CLI
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 session_id=self.session_id,  # Pass CLI's session ID to agent
+                platform="cli",  # CLI interface — agent uses terminal-friendly formatting
             )
             return True
         except Exception as e:

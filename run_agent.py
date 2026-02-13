@@ -55,6 +55,41 @@ from tools.browser_tool import cleanup_browser
 import requests
 
 # =============================================================================
+# Default Agent Identity & Platform Hints
+# =============================================================================
+
+# The default identity prompt is prepended to every conversation so the agent
+# knows who it is and behaves consistently across platforms.
+DEFAULT_AGENT_IDENTITY = (
+    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
+    "You are helpful, knowledgeable, and direct. You assist users with a wide "
+    "range of tasks including answering questions, writing and editing code, "
+    "analyzing information, creative work, and executing actions via your tools. "
+    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+    "being genuinely useful over being verbose unless otherwise directed below."
+)
+
+# Platform-specific formatting hints appended to the system prompt.
+# These tell the agent how to format its output for the current interface.
+PLATFORM_HINTS = {
+    "whatsapp": (
+        "You are on a text messaging communication platform, WhatsApp. "
+        "Please do not use markdown as it does not render."
+    ),
+    "telegram": (
+        "You are on a text messaging communication platform, Telegram. "
+        "Please do not use markdown as it does not render."
+    ),
+    "discord": (
+        "You are in a Discord server or group chat communicating with your user."
+    ),
+    "cli": (
+        "You are a CLI AI Agent. Try not to use markdown but simple text "
+        "renderable inside a terminal."
+    ),
+}
+
+# =============================================================================
 # Model Context Management
 # =============================================================================
 
@@ -977,6 +1012,7 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
+        platform: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -1007,6 +1043,8 @@ class AIAgent:
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
+            platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
+                Used to inject platform-specific formatting hints into the system prompt.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -1015,6 +1053,7 @@ class AIAgent:
         self.verbose_logging = verbose_logging
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
+        self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1955,40 +1994,45 @@ class AIAgent:
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
-        # Determine which system prompt to use for API calls (ephemeral)
-        # Priority: explicit system_message > ephemeral_system_prompt > None
-        base_system_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
-        
-        # Auto-include skills guidance if skills tools are available
-        # Embeds a compact category:names index so the model can match skills
-        # at a glance and load with a single skill_view(name) call.
+        # ── Build the full system prompt ──
+        # Layers (in order):
+        #   1. Default agent identity (always present)
+        #   2. User / gateway system prompt (if provided)
+        #   3. Skills guidance (if skills tools are loaded)
+        #   4. Context files (SOUL.md, AGENTS.md, .cursorrules)
+        #   5. Current date & time
+        #   6. Platform-specific formatting hint
+        prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        # Layer in the caller-supplied system prompt (explicit > ephemeral).
+        caller_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
+        if caller_prompt:
+            prompt_parts.append(caller_prompt)
+
+        # Auto-include skills guidance if skills tools are available.
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view'])
         skills_prompt = build_skills_system_prompt() if has_skills_tools else ""
         if skills_prompt:
-            if base_system_prompt:
-                active_system_prompt = f"{base_system_prompt}\n\n{skills_prompt}"
-            else:
-                active_system_prompt = skills_prompt
-        else:
-            active_system_prompt = base_system_prompt
-        
-        # Auto-include context files (SOUL.md, AGENTS.md, .cursorrules)
-        # Discovered from cwd and injected as # Project Context sections.
+            prompt_parts.append(skills_prompt)
+
+        # Auto-include context files (SOUL.md, AGENTS.md, .cursorrules).
         context_files_prompt = build_context_files_prompt()
         if context_files_prompt:
-            if active_system_prompt:
-                active_system_prompt = f"{active_system_prompt}\n\n{context_files_prompt}"
-            else:
-                active_system_prompt = context_files_prompt
-        
-        # Append the current local date and time so the model knows what
-        # day/time it is (LLM training cutoffs can otherwise mislead it).
+            prompt_parts.append(context_files_prompt)
+
+        # Current local date and time so the model is never confused about
+        # what day/time it is (LLM training cutoffs can otherwise mislead it).
         now = datetime.now()
-        timestamp_line = f"Current local date and time: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        if active_system_prompt:
-            active_system_prompt = f"{active_system_prompt}\n\n{timestamp_line}"
-        else:
-            active_system_prompt = timestamp_line
+        prompt_parts.append(
+            f"Current local date and time: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        )
+
+        # Platform-specific formatting hint (no markdown on WhatsApp, etc.).
+        platform_key = (self.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            prompt_parts.append(PLATFORM_HINTS[platform_key])
+
+        active_system_prompt = "\n\n".join(prompt_parts)
 
         # Main conversation loop
         api_call_count = 0

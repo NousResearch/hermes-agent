@@ -1223,7 +1223,7 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_config: dict = None):
+def _create_environment(env_type: str, image: str, cwd: str, timeout: int, task_id: str = "", ssh_config: dict = None):
     """
     Create an execution environment from mini-swe-agent.
     
@@ -1250,7 +1250,27 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
         return _SingularityEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "modal":
-        # Use custom Modal wrapper with sudo support
+        # Use Modal backend.
+        # Default is a dedicated Modal sandbox per task.
+        # Optional: set TERMINAL_MODAL_MODE=pool to reuse a pool of warm sandboxes.
+        mode = os.getenv("TERMINAL_MODAL_MODE", "default")
+        if mode == "pool":
+            # Lazy import to avoid overhead when not using the pool
+            from tools.modal_pool import ModalPooledTaskEnvironment, get_global_pool
+
+            pool = get_global_pool()
+
+            def _create_inner():
+                # Create a fresh Modal environment (expensive)
+                return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+
+            return ModalPooledTaskEnvironment.acquire(
+                image=image,
+                base_cwd=cwd,
+                timeout=timeout,
+                task_id=task_id or str(uuid.uuid4()),
+                create_modal_env_fn=_create_inner,
+            )
         return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
     
     elif env_type == "ssh":
@@ -1578,6 +1598,7 @@ def terminal_tool(
                             image=image,
                             cwd=cwd,
                             timeout=effective_timeout,
+                            task_id=effective_task_id,
                             ssh_config=ssh_config
                         )
                     except ImportError as e:

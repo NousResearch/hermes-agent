@@ -240,6 +240,19 @@ modal setup                    # Authenticate with Modal
 hermes config set terminal.backend modal
 ```
 
+**Modal pooling (optional):** reuse warm Modal sandboxes across tasks.
+
+This is opt-in and does not change the default Modal behavior.
+
+```bash
+# Enable pooled mode
+export TERMINAL_ENV=modal
+export TERMINAL_MODAL_MODE=pool
+
+# Pool size (default: 4)
+export TERMINAL_MODAL_POOL_MAX=4
+```
+
 **Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.
 
 ### 📱 Messaging Gateway

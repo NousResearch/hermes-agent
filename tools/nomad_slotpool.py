@@ -173,8 +173,62 @@ def create_sandbox_job(
     memory: int,
     port: int = 8080,
     datacenter: str = "dc1",
+    driver: str = "docker",
 ) -> Dict[str, Any]:
-    """Create a basic sandbox-server Nomad job spec (docker driver)."""
+    """Create a sandbox-server Nomad job spec.
+
+    driver:
+      - docker: runs tools/sandbox_server.py inside a Docker container image.
+      - raw_exec: runs Apptainer/Singularity via raw_exec on the host.
+
+    raw_exec is provided as a draft option for HPC-like hosts without Docker.
+    """
+
+    if driver == "raw_exec":
+        # For raw_exec, we bind to a fixed port. This is intended for dev/testing
+        # on a single host. Scaling to multiple allocations requires more robust
+        # service discovery.
+        apptainer_image = os.getenv("TERMINAL_NOMAD_APPTAINER_IMAGE", "")
+        if not apptainer_image:
+            raise RuntimeError(
+                "TERMINAL_NOMAD_APPTAINER_IMAGE is required for raw_exec driver"
+            )
+
+        cmd = (
+            "apptainer exec "
+            "--bind \"$NOMAD_ALLOC_DIR/data:/data\" "
+            f"{apptainer_image} "
+            f"python /sandbox_server.py --port {port} --slots {slots_per_container} --data-dir /data"
+        )
+
+        return {
+            "ID": job_id,
+            "Name": job_id,
+            "Type": "service",
+            "Datacenters": [datacenter],
+            "TaskGroups": [
+                {
+                    "Name": "sandbox",
+                    "Count": count,
+                    "Update": {"HealthCheck": "task_states", "MinHealthyTime": 0},
+                    "Networks": [{"Mode": "host"}],
+                    "Tasks": [
+                        {
+                            "Name": "sandbox-server",
+                            "Driver": "raw_exec",
+                            "Config": {
+                                "command": "bash",
+                                "args": ["-lc", cmd],
+                            },
+                            "Env": {"PYTHONUNBUFFERED": "1", "NOMAD_ALLOC_DIR": "${NOMAD_ALLOC_DIR}"},
+                            "Resources": {"CPU": cpu, "MemoryMB": memory},
+                        }
+                    ],
+                }
+            ],
+        }
+
+    # Default: docker
     return {
         "ID": job_id,
         "Name": job_id,
@@ -328,6 +382,10 @@ class SlotPoolConfig:
     job_id: str = "hermes-sandbox"
     datacenter: str = "dc1"
     image: str = "hermes-sandbox:local"
+
+    # Driver selection: docker (default) or raw_exec (for Apptainer/Singularity)
+    driver: str = "docker"  # docker | raw_exec
+
     slots_per_container: int = 10
     privileged: bool = False
     cpu: int = 500
@@ -335,6 +393,9 @@ class SlotPoolConfig:
     min_containers: int = 1
     max_containers: int = 10
     acquire_timeout: float = 30.0
+
+    # raw_exec: fixed port (dynamic ports are harder to discover reliably)
+    raw_exec_port: int = 8080
 
 
 class SlotPool:
@@ -365,6 +426,8 @@ class SlotPool:
                 cpu=self.cfg.cpu,
                 memory=self.cfg.memory,
                 datacenter=self.cfg.datacenter,
+                driver=self.cfg.driver,
+                port=self.cfg.raw_exec_port,
             )
             res = await self.nomad.submit_job(spec)
             if "error" in res:
@@ -387,16 +450,29 @@ class SlotPool:
             net = (detail.get("Resources") or {}).get("Networks") or []
             address = None
             port = None
-            if net and isinstance(net, list):
-                n0 = net[0]
-                address = n0.get("IP")
-                ports = n0.get("DynamicPorts") or []
-                for p in ports:
-                    if p.get("Label") == "http":
-                        port = p.get("Value")
-            if not address or not port:
-                # Fall back: allocation has an Address field
-                address = detail.get("NodeName") or detail.get("NodeID")
+
+            if self.cfg.driver == "raw_exec":
+                # raw_exec: use fixed port and best-effort node address discovery
+                port = self.cfg.raw_exec_port
+                address = (
+                    detail.get("NodeAddress")
+                    or detail.get("NodeName")
+                    or detail.get("NodeID")
+                )
+            else:
+                # docker: discover dynamic port mapping
+                if net and isinstance(net, list):
+                    n0 = net[0]
+                    address = n0.get("IP")
+                    ports = n0.get("DynamicPorts") or []
+                    for p in ports:
+                        if p.get("Label") == "http":
+                            port = p.get("Value")
+
+                if not address or not port:
+                    # Fall back: allocation node identity
+                    address = detail.get("NodeAddress") or detail.get("NodeName") or detail.get("NodeID")
+
             if not address or not port:
                 # Can't use this alloc
                 continue

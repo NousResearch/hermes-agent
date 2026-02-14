@@ -248,7 +248,11 @@ This backend is under active development and must be explicitly enabled.
 uv pip install "hermes-agent[nomad]"
 
 # Start Nomad (dev mode)
+# Docker driver:
 nomad agent -dev -config=nomad-dev.hcl
+
+# Apptainer/raw_exec driver (draft):
+# nomad agent -dev -config=nomad-singularity.hcl
 
 # Build sandbox-server image
 docker build -t hermes-sandbox:local -f tools/sandbox/Dockerfile .
@@ -258,9 +262,14 @@ export TERMINAL_ENV=nomad
 export TERMINAL_NOMAD_ADDRESS=http://localhost:4646
 export TERMINAL_NOMAD_JOB_ID=hermes-sandbox
 export TERMINAL_NOMAD_IMAGE=hermes-sandbox:local
+export TERMINAL_NOMAD_DRIVER=docker        # or: raw_exec (Apptainer draft)
 export TERMINAL_NOMAD_SLOTS=10
 export TERMINAL_NOMAD_MIN=1
 export TERMINAL_NOMAD_MAX=10
+
+# raw_exec only:
+# export TERMINAL_NOMAD_APPTAINER_IMAGE=/path/to/hermes-sandbox.sif
+# export TERMINAL_NOMAD_RAW_EXEC_PORT=8080
 ```
 
 **Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.

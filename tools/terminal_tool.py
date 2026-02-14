@@ -1273,6 +1273,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, task_
             nomad_address=os.getenv("TERMINAL_NOMAD_ADDRESS", "http://localhost:4646"),
             job_id=os.getenv("TERMINAL_NOMAD_JOB_ID", "hermes-sandbox"),
             image=os.getenv("TERMINAL_NOMAD_IMAGE", "hermes-sandbox:local"),
+            driver=os.getenv("TERMINAL_NOMAD_DRIVER", "docker"),
+            raw_exec_port=int(os.getenv("TERMINAL_NOMAD_RAW_EXEC_PORT", "8080")),
             slots_per_container=int(os.getenv("TERMINAL_NOMAD_SLOTS", "10")),
             min_containers=int(os.getenv("TERMINAL_NOMAD_MIN", "1")),
             max_containers=int(os.getenv("TERMINAL_NOMAD_MAX", "10")),

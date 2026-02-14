@@ -478,6 +478,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     tokenizer=self.tokenizer,
                     tool_call_parser=tc_parser,
                 ) as managed:
+                    _max_ctx = self.config.max_token_length if (self.config.max_token_length and self.config.max_token_length > 0) else None
                     agent = HermesAgentLoop(
                         server=managed,
                         tool_schemas=tools,
@@ -487,6 +488,7 @@ class HermesAgentBaseEnv(BaseEnv):
                         temperature=self.config.agent_temperature,
                         max_tokens=self.config.max_token_length,
                         extra_body=self.config.extra_body,
+                        max_context_tokens=_max_ctx,
                     )
                     result = await agent.run(messages)
             except NotImplementedError:
@@ -495,6 +497,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     "ManagedServer not available (OpenAI server?). "
                     "Falling back to direct server mode."
                 )
+                _max_ctx = self.config.max_token_length if (self.config.max_token_length and self.config.max_token_length > 0) else None
                 agent = HermesAgentLoop(
                     server=self.server,
                     tool_schemas=tools,
@@ -504,10 +507,12 @@ class HermesAgentBaseEnv(BaseEnv):
                     temperature=self.config.agent_temperature,
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
+                    max_context_tokens=_max_ctx,
                 )
                 result = await agent.run(messages)
         else:
             # Phase 1: OpenAI server -- native tool_calls, placeholder tokens
+            _max_ctx = self.config.max_token_length if (self.config.max_token_length and self.config.max_token_length > 0) else None
             agent = HermesAgentLoop(
                 server=self.server,
                 tool_schemas=tools,
@@ -517,6 +522,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 temperature=self.config.agent_temperature,
                 max_tokens=self.config.max_token_length,
                 extra_body=self.config.extra_body,
+                max_context_tokens=_max_ctx,
             )
             result = await agent.run(messages)
 

@@ -49,15 +49,22 @@ class HermesToolCallParser(ToolCallParser):
                     continue
 
                 tc_data = json.loads(raw_json)
+                # Handle arguments: could be dict or already a JSON string
+                raw_args = tc_data.get("arguments", {})
+                if isinstance(raw_args, str):
+                    # Already a string — pass through as-is.
+                    # It may be a JSON string ("{...}") or a plain string ("ls").
+                    args_str = raw_args
+                else:
+                    # Dict — serialize to JSON
+                    args_str = json.dumps(raw_args, ensure_ascii=False)
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
                         id=f"call_{uuid.uuid4().hex[:8]}",
                         type="function",
                         function=Function(
                             name=tc_data["name"],
-                            arguments=json.dumps(
-                                tc_data.get("arguments", {}), ensure_ascii=False
-                            ),
+                            arguments=args_str,
                         ),
                     )
                 )

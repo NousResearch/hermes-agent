@@ -199,7 +199,7 @@ The terminal tool can execute commands in different environments:
 **Configure in `~/.hermes/config.yaml`:**
 ```yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal
+  backend: local    # or: docker, ssh, singularity, modal, nomad
   cwd: "."          # Working directory ("." = current dir)
   timeout: 180      # Command timeout in seconds
 ```
@@ -238,6 +238,29 @@ hermes config set terminal.singularity_image ~/python.sif
 uv pip install "swe-rex[modal]"   # Installs swe-rex + modal + boto3
 modal setup                    # Authenticate with Modal
 hermes config set terminal.backend modal
+```
+
+**Nomad SlotPool (optional, draft):** local Nomad dev agent + docker sandbox-server.
+
+This backend is under active development and must be explicitly enabled.
+
+```bash
+uv pip install "hermes-agent[nomad]"
+
+# Start Nomad (dev mode)
+nomad agent -dev -config=nomad-dev.hcl
+
+# Build sandbox-server image
+docker build -t hermes-sandbox:local -f tools/sandbox/Dockerfile .
+
+# Enable Nomad backend
+export TERMINAL_ENV=nomad
+export TERMINAL_NOMAD_ADDRESS=http://localhost:4646
+export TERMINAL_NOMAD_JOB_ID=hermes-sandbox
+export TERMINAL_NOMAD_IMAGE=hermes-sandbox:local
+export TERMINAL_NOMAD_SLOTS=10
+export TERMINAL_NOMAD_MIN=1
+export TERMINAL_NOMAD_MAX=10
 ```
 
 **Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.

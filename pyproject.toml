@@ -35,12 +35,16 @@ dependencies = [
 
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
+# Nomad SlotPool sandbox backend (local Nomad dev agent + Docker/Apptainer)
+# Uses aiohttp for the Nomad HTTP API and sandbox-server execution.
+nomad = ["aiohttp>=3.9.0"]
 dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
 cron = ["croniter"]
 cli = ["simple-term-menu"]
 all = [
   "hermes-agent[modal]",
+  "hermes-agent[nomad]",
   "hermes-agent[messaging]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",

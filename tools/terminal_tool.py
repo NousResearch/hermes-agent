@@ -1215,6 +1215,16 @@ def _get_env_config() -> Dict[str, Any]:
         "cwd": os.getenv("TERMINAL_CWD", default_cwd),
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
+
+        # Nomad sandbox backend (slot pool)
+        "nomad_address": os.getenv("TERMINAL_NOMAD_ADDRESS", "http://localhost:4646"),
+        "nomad_job_id": os.getenv("TERMINAL_NOMAD_JOB_ID", "hermes-sandbox"),
+        "nomad_image": os.getenv("TERMINAL_NOMAD_IMAGE", "hermes-sandbox:local"),
+        "nomad_slots": int(os.getenv("TERMINAL_NOMAD_SLOTS", "10")),
+        "nomad_min": int(os.getenv("TERMINAL_NOMAD_MIN", "1")),
+        "nomad_max": int(os.getenv("TERMINAL_NOMAD_MAX", "10")),
+        "nomad_privileged": os.getenv("TERMINAL_NOMAD_PRIVILEGED", "").lower() in ("1", "true", "yes"),
+
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -1223,15 +1233,16 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_config: dict = None):
+def _create_environment(env_type: str, image: str, cwd: str, timeout: int, task_id: str = "", ssh_config: dict = None):
     """
     Create an execution environment from mini-swe-agent.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh)
+        env_type: One of "local", "docker", "singularity", "modal", "ssh", "nomad"
+        image: Docker/Singularity/Modal image name (ignored for local/ssh/nomad)
         cwd: Working directory
         timeout: Default command timeout
+        task_id: Used for per-task sandbox isolation (nomad/modal pooling)
         ssh_config: SSH connection config (for env_type="ssh")
         
     Returns:
@@ -1252,7 +1263,46 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
     elif env_type == "modal":
         # Use custom Modal wrapper with sudo support
         return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
-    
+
+    elif env_type == "nomad":
+        # Slot-based sandbox backend via local Nomad dev agent.
+        # Requires: pip install "hermes-agent[nomad]" and a running Nomad agent.
+        from tools.nomad_slotpool import SlotPoolConfig, get_global_manager
+
+        cfg = SlotPoolConfig(
+            nomad_address=os.getenv("TERMINAL_NOMAD_ADDRESS", "http://localhost:4646"),
+            job_id=os.getenv("TERMINAL_NOMAD_JOB_ID", "hermes-sandbox"),
+            image=os.getenv("TERMINAL_NOMAD_IMAGE", "hermes-sandbox:local"),
+            slots_per_container=int(os.getenv("TERMINAL_NOMAD_SLOTS", "10")),
+            min_containers=int(os.getenv("TERMINAL_NOMAD_MIN", "1")),
+            max_containers=int(os.getenv("TERMINAL_NOMAD_MAX", "10")),
+            privileged=os.getenv("TERMINAL_NOMAD_PRIVILEGED", "").lower() in ("1", "true", "yes"),
+        )
+        manager = get_global_manager(cfg)
+        slot = manager.acquire(task_id or str(uuid.uuid4()))
+
+        class _NomadSlotEnvironment:
+            def __init__(self, _slot):
+                self._slot = _slot
+
+            def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+                # cwd ignored: sandbox_server executes within slot workspace.
+                timeout_s = float(timeout if timeout is not None else 60)
+                res = manager.execute_bash(self._slot, command, timeout_s=timeout_s)
+                exit_code = int(res.metadata.get("exit_code", 0)) if isinstance(res.metadata, dict) else 0
+                return {"output": res.output, "returncode": exit_code}
+
+            def cleanup(self):
+                try:
+                    manager.release(self._slot, reset_workspace=True)
+                except Exception:
+                    pass
+
+            def stop(self):
+                self.cleanup()
+
+        return _NomadSlotEnvironment(slot)
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1578,6 +1628,7 @@ def terminal_tool(
                             image=image,
                             cwd=cwd,
                             timeout=effective_timeout,
+                            task_id=effective_task_id,
                             ssh_config=ssh_config
                         )
                     except ImportError as e:

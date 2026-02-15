@@ -40,11 +40,15 @@ async def web_search(query: str) -> dict:
 |----------|--------|-------|
 | **Web** | `web_tools.py` | `web_search`, `web_extract`, `web_crawl` |
 | **Terminal** | `terminal_tool.py` | `terminal` (local/docker/singularity/modal/ssh backends) |
+| **File** | `file_tools.py` | `read_file`, `write_file`, `patch`, `search` |
 | **Browser** | `browser_tool.py` | `browser_navigate`, `browser_click`, `browser_type`, etc. |
 | **Vision** | `vision_tools.py` | `vision_analyze` |
 | **Image Gen** | `image_generation_tool.py` | `image_generate` |
+| **TTS** | `tts_tool.py` | `text_to_speech` (Edge TTS free / ElevenLabs / OpenAI) |
 | **Reasoning** | `mixture_of_agents_tool.py` | `mixture_of_agents` |
-| **Skills** | `skills_tool.py` | `skills_categories`, `skills_list`, `skill_view` |
+| **Skills** | `skills_tool.py` | `skills_list`, `skill_view` |
+| **Cronjob** | `cronjob_tools.py` | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` |
+| **RL Training** | `rl_training_tool.py` | `rl_list_environments`, `rl_start_training`, `rl_check_status`, etc. |
 
 ## Tool Registration
 

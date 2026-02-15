@@ -143,7 +143,7 @@ Convert text to speech with three providers:
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `OPENAI_API_KEY` |
 
-On Telegram, audio plays as native voice bubbles. On Discord/WhatsApp, sent as audio files. In CLI mode, saved to `~/voice-memos/`.
+On Telegram, audio plays as native voice bubbles (the round, inline-playable kind). On Discord/WhatsApp, sent as audio file attachments. In CLI mode, saved to `~/voice-memos/`.
 
 **Configure in `~/.hermes/config.yaml`:**
 ```yaml
@@ -159,7 +159,22 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
 ```
 
-> **Note:** Telegram voice bubbles require `ffmpeg` for Opus conversion (Edge TTS only outputs MP3). Install with `apt install ffmpeg` or `brew install ffmpeg`. Without ffmpeg, audio is sent as a file instead of a voice bubble.
+**Telegram voice bubbles & ffmpeg:**
+
+Telegram voice bubbles require Opus/OGG audio format. OpenAI and ElevenLabs produce Opus natively — no extra dependencies needed. Edge TTS (the default free provider) outputs MP3 and needs **ffmpeg** to convert to Opus:
+
+```bash
+# Ubuntu/Debian
+sudo apt install ffmpeg
+
+# macOS
+brew install ffmpeg
+
+# Fedora
+sudo dnf install ffmpeg
+```
+
+Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but shows as a rectangular player instead of a voice bubble). If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
 
 ### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
 

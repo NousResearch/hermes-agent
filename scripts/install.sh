@@ -423,8 +423,12 @@ check_ffmpeg() {
         return
     fi
     
-    log_warn "ffmpeg not found (TTS voice bubbles on Telegram will send as audio files instead)"
-    log_info "To install ffmpeg (optional):"
+    log_warn "ffmpeg not found"
+    log_info "ffmpeg is needed for Telegram voice bubbles when using the default Edge TTS provider."
+    log_info "Without it, Edge TTS audio is sent as a file instead of a voice bubble."
+    log_info "(OpenAI and ElevenLabs TTS produce Opus natively and don't need ffmpeg.)"
+    log_info ""
+    log_info "To install ffmpeg:"
     
     case "$OS" in
         linux)

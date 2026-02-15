@@ -27,6 +27,8 @@ dependencies = [
   # Tools
   "firecrawl-py",
   "fal-client",
+  # Text-to-speech (Edge TTS is free, no API key needed)
+  "edge-tts",
   # mini-swe-agent deps (terminal tool)
   "litellm>=1.75.5",
   "typer",
@@ -39,12 +41,14 @@ dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
 cron = ["croniter"]
 cli = ["simple-term-menu"]
+tts-premium = ["elevenlabs"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
+  "hermes-agent[tts-premium]",
 ]
 
 [project.scripts]

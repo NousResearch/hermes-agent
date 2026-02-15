@@ -307,6 +307,28 @@ This is intentional: CLI users are in a terminal and expect the agent to work in
 
 If the agent hits the max iteration limit while working, instead of a generic error, it asks the model to summarize what it found so far. This gives you a useful response even when the task couldn't be fully completed.
 
+## Voice Messages (TTS)
+
+The `text_to_speech` tool generates audio that the gateway delivers as native voice messages on each platform:
+
+| Platform | Delivery | Format |
+|----------|----------|--------|
+| Telegram | Voice bubble (plays inline) | Opus `.ogg` (converted from MP3 via ffmpeg) |
+| Discord | Audio file attachment | MP3 |
+| WhatsApp | Audio file attachment | MP3 |
+| CLI | Saved to `~/voice-memos/` | MP3 (or Opus if ffmpeg available) |
+
+**Providers:**
+- **Edge TTS** (default) — Free, no API key, 322 voices in 74 languages
+- **ElevenLabs** — Premium quality, requires `ELEVENLABS_API_KEY`
+- **OpenAI TTS** — Good quality, requires `OPENAI_API_KEY`
+
+Voice and provider are configured by the user in `~/.hermes/config.yaml` under the `tts:` key. The model only sends text; it does not choose the voice.
+
+The tool returns a `MEDIA:<path>` tag that the gateway send pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
+
+> **Note:** Telegram voice bubbles require `ffmpeg` for Opus conversion (Edge TTS outputs MP3). Install with `apt install ffmpeg` or `brew install ffmpeg`. Without ffmpeg, audio is sent as a regular file.
+
 ## Cron Job Delivery
 
 When scheduling cron jobs, you can specify where the output should be delivered:

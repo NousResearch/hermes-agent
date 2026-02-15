@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import os
+import re
 import sys
 import signal
 from pathlib import Path
@@ -583,13 +584,37 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
-            if final_response:
-                return final_response
-            elif result.get("error"):
-                # Agent couldn't recover - show the error
-                return f"⚠️ {result['error']}"
-            else:
+            if not final_response:
+                if result.get("error"):
+                    return f"⚠️ {result['error']}"
                 return "(No response generated)"
+            
+            # Scan tool results in the conversation for MEDIA:<path> tags.
+            # The TTS tool (and potentially other media-producing tools) embed
+            # MEDIA: tags in their JSON responses, but the model's final reply
+            # typically doesn't include them -- it just says "here you go".
+            # We collect those tags and append them to the final response so
+            # the adapter's extract_media() can find and deliver the files.
+            media_tags = []
+            for msg in result.get("messages", []):
+                if msg.get("role") == "tool" or (msg.get("role") == "function"):
+                    content = msg.get("content", "")
+                    if "MEDIA:" in content:
+                        # Extract MEDIA: tags from tool result (may be inside JSON).
+                        # Strip trailing JSON artifacts like quotes and commas that
+                        # get caught by the \S+ when the tag is inside a JSON string.
+                        for match in re.finditer(r'MEDIA:(\S+)', content):
+                            path = match.group(1).strip().rstrip('",}')
+                            if path:
+                                media_tags.append(f"MEDIA:{path}")
+                        # Also capture the [[audio_as_voice]] directive
+                        if "[[audio_as_voice]]" in content:
+                            media_tags.insert(0, "[[audio_as_voice]]")
+            
+            if media_tags:
+                final_response = final_response + "\n" + "\n".join(media_tags)
+            
+            return final_response
         
         # Start progress message sender if enabled
         progress_task = None

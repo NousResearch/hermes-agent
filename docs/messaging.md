@@ -313,10 +313,10 @@ The `text_to_speech` tool generates audio that the gateway delivers as native vo
 
 | Platform | Delivery | Format |
 |----------|----------|--------|
-| Telegram | Voice bubble (plays inline) | Opus `.ogg` (converted from MP3 via ffmpeg) |
+| Telegram | Voice bubble (plays inline) | Opus `.ogg` — native from OpenAI/ElevenLabs, converted via ffmpeg for Edge TTS |
 | Discord | Audio file attachment | MP3 |
 | WhatsApp | Audio file attachment | MP3 |
-| CLI | Saved to `~/voice-memos/` | MP3 (or Opus if ffmpeg available) |
+| CLI | Saved to `~/voice-memos/` | MP3 |
 
 **Providers:**
 - **Edge TTS** (default) — Free, no API key, 322 voices in 74 languages
@@ -327,7 +327,17 @@ Voice and provider are configured by the user in `~/.hermes/config.yaml` under t
 
 The tool returns a `MEDIA:<path>` tag that the gateway send pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
 
-> **Note:** Telegram voice bubbles require `ffmpeg` for Opus conversion (Edge TTS outputs MP3). Install with `apt install ffmpeg` or `brew install ffmpeg`. Without ffmpeg, audio is sent as a regular file.
+**Telegram voice bubbles & ffmpeg:**
+
+Telegram requires Opus/OGG format for native voice bubbles (the round, inline-playable kind). **OpenAI and ElevenLabs** produce Opus natively when on Telegram — no extra setup needed. **Edge TTS** (the default free provider) outputs MP3 and needs `ffmpeg` to convert:
+
+```bash
+sudo apt install ffmpeg    # Ubuntu/Debian
+brew install ffmpeg         # macOS
+sudo dnf install ffmpeg     # Fedora
+```
+
+Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, but shows as a rectangular music player instead of a voice bubble).
 
 ## Cron Job Delivery
 

@@ -589,30 +589,37 @@ class GatewayRunner:
                     return f"⚠️ {result['error']}"
                 return "(No response generated)"
             
-            # Scan tool results in the conversation for MEDIA:<path> tags.
-            # The TTS tool (and potentially other media-producing tools) embed
-            # MEDIA: tags in their JSON responses, but the model's final reply
-            # typically doesn't include them -- it just says "here you go".
-            # We collect those tags and append them to the final response so
-            # the adapter's extract_media() can find and deliver the files.
-            media_tags = []
-            for msg in result.get("messages", []):
-                if msg.get("role") == "tool" or (msg.get("role") == "function"):
-                    content = msg.get("content", "")
-                    if "MEDIA:" in content:
-                        # Extract MEDIA: tags from tool result (may be inside JSON).
-                        # Strip trailing JSON artifacts like quotes and commas that
-                        # get caught by the \S+ when the tag is inside a JSON string.
-                        for match in re.finditer(r'MEDIA:(\S+)', content):
-                            path = match.group(1).strip().rstrip('",}')
-                            if path:
-                                media_tags.append(f"MEDIA:{path}")
-                        # Also capture the [[audio_as_voice]] directive
-                        if "[[audio_as_voice]]" in content:
-                            media_tags.insert(0, "[[audio_as_voice]]")
-            
-            if media_tags:
-                final_response = final_response + "\n" + "\n".join(media_tags)
+            # Scan tool results for MEDIA:<path> tags that need to be delivered
+            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
+            # in its JSON response, but the model's final text reply usually
+            # doesn't include them.  We collect unique tags from tool results and
+            # append any that aren't already present in the final response, so the
+            # adapter's extract_media() can find and deliver the files exactly once.
+            if "MEDIA:" not in final_response:
+                media_tags = []
+                has_voice_directive = False
+                for msg in result.get("messages", []):
+                    if msg.get("role") == "tool" or msg.get("role") == "function":
+                        content = msg.get("content", "")
+                        if "MEDIA:" in content:
+                            for match in re.finditer(r'MEDIA:(\S+)', content):
+                                path = match.group(1).strip().rstrip('",}')
+                                if path:
+                                    media_tags.append(f"MEDIA:{path}")
+                            if "[[audio_as_voice]]" in content:
+                                has_voice_directive = True
+                
+                if media_tags:
+                    # Deduplicate while preserving order
+                    seen = set()
+                    unique_tags = []
+                    for tag in media_tags:
+                        if tag not in seen:
+                            seen.add(tag)
+                            unique_tags.append(tag)
+                    if has_voice_directive:
+                        unique_tags.insert(0, "[[audio_as_voice]]")
+                    final_response = final_response + "\n" + "\n".join(unique_tags)
             
             return final_response
         

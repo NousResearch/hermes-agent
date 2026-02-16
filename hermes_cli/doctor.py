@@ -103,7 +103,6 @@ def run_doctor(args):
     
     optional_packages = [
         ("croniter", "Croniter (cron expressions)"),
-        ("browserbase", "Browserbase SDK"),
         ("telegram", "python-telegram-bot"),
         ("discord", "discord.py"),
     ]
@@ -254,6 +253,18 @@ def run_doctor(args):
         else:
             check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
             issues.append("Set TERMINAL_SSH_HOST in .env")
+    
+    # Node.js + agent-browser (for browser automation tools)
+    if shutil.which("node"):
+        check_ok("Node.js")
+        # Check if agent-browser is installed
+        agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
+        if agent_browser_path.exists():
+            check_ok("agent-browser (Node.js)", "(browser automation)")
+        else:
+            check_warn("agent-browser not installed", "(run: npm install)")
+    else:
+        check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # =========================================================================
     # Check: API connectivity

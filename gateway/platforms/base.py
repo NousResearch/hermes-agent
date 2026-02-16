@@ -6,10 +6,13 @@ and implement the required methods.
 """
 
 import asyncio
+import os
 import re
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
@@ -18,6 +21,91 @@ sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource
+
+
+# ---------------------------------------------------------------------------
+# Image cache utilities
+#
+# When users send images on messaging platforms, we download them to a local
+# cache directory so they can be analyzed by the vision tool (which accepts
+# local file paths). This avoids issues with ephemeral platform URLs
+# (e.g. Telegram file URLs expire after ~1 hour).
+# ---------------------------------------------------------------------------
+
+# Default location: ~/.hermes/image_cache/
+IMAGE_CACHE_DIR = Path(os.path.expanduser("~/.hermes/image_cache"))
+
+
+def get_image_cache_dir() -> Path:
+    """Return the image cache directory, creating it if it doesn't exist."""
+    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return IMAGE_CACHE_DIR
+
+
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+    """
+    Save raw image bytes to the cache and return the absolute file path.
+
+    Args:
+        data: Raw image bytes.
+        ext:  File extension including the dot (e.g. ".jpg", ".png").
+
+    Returns:
+        Absolute path to the cached image file as a string.
+    """
+    cache_dir = get_image_cache_dir()
+    filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+async def cache_image_from_url(url: str, ext: str = ".jpg") -> str:
+    """
+    Download an image from a URL and save it to the local cache.
+
+    Uses httpx for async download with a reasonable timeout.
+
+    Args:
+        url: The HTTP/HTTPS URL to download from.
+        ext: File extension including the dot (e.g. ".jpg", ".png").
+
+    Returns:
+        Absolute path to the cached image file as a string.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                "Accept": "image/*,*/*;q=0.8",
+            },
+        )
+        response.raise_for_status()
+        return cache_image_from_bytes(response.content, ext)
+
+
+def cleanup_image_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached images older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_image_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 class MessageType(Enum):

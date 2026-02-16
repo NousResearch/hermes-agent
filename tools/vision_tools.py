@@ -248,18 +248,19 @@ async def vision_analyze_tool(
     model: str = DEFAULT_VISION_MODEL
 ) -> str:
     """
-    Analyze an image from a URL using vision AI.
+    Analyze an image from a URL or local file path using vision AI.
     
-    This tool downloads images from URLs, converts them to base64, and processes
-    them using Gemini 3 Flash Preview via OpenRouter API. The image is downloaded to a
-    temporary location and automatically cleaned up after processing.
+    This tool accepts either an HTTP/HTTPS URL or a local file path. For URLs,
+    it downloads the image first. In both cases, the image is converted to base64
+    and processed using Gemini 3 Flash Preview via OpenRouter API.
     
     The user_prompt parameter is expected to be pre-formatted by the calling
     function (typically model_tools.py) to include both full description
     requests and specific questions.
     
     Args:
-        image_url (str): The URL of the image to analyze (must be http:// or https://)
+        image_url (str): The URL or local file path of the image to analyze.
+                         Accepts http://, https:// URLs or absolute/relative file paths.
         user_prompt (str): The pre-formatted prompt for the vision model
         model (str): The vision model to use (default: google/gemini-3-flash-preview)
     
@@ -274,8 +275,8 @@ async def vision_analyze_tool(
         Exception: If download fails, analysis fails, or API key is not set
         
     Note:
-        - Temporary images are stored in ./temp_vision_images/
-        - Images are automatically deleted after processing
+        - For URLs, temporary images are stored in ./temp_vision_images/ and cleaned up
+        - For local file paths, the file is used directly and NOT deleted
         - Supports common image formats (JPEG, PNG, GIF, WebP, etc.)
     """
     debug_call_data = {
@@ -292,30 +293,41 @@ async def vision_analyze_tool(
     }
     
     temp_image_path = None
+    # Track whether we should clean up the file after processing.
+    # Local files (e.g. from the image cache) should NOT be deleted.
+    should_cleanup = True
     
     try:
-        print(f"🔍 Analyzing image from URL: {image_url[:60]}{'...' if len(image_url) > 60 else ''}", flush=True)
+        print(f"🔍 Analyzing image: {image_url[:60]}{'...' if len(image_url) > 60 else ''}", flush=True)
         print(f"📝 User prompt: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}", flush=True)
-        
-        # Validate image URL
-        if not _validate_image_url(image_url):
-            raise ValueError("Invalid image URL format. Must start with http:// or https://")
         
         # Check API key availability
         if not os.getenv("OPENROUTER_API_KEY"):
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
         
-        # Download the image to a temporary location
-        print(f"⬇️  Downloading image from URL...", flush=True)
-        temp_dir = Path("./temp_vision_images")
-        temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
-        
-        await _download_image(image_url, temp_image_path)
+        # Determine if this is a local file path or a remote URL
+        local_path = Path(image_url)
+        if local_path.is_file():
+            # Local file path (e.g. from platform image cache) -- skip download
+            print(f"📁 Using local image file: {image_url}", flush=True)
+            temp_image_path = local_path
+            should_cleanup = False  # Don't delete cached/local files
+        elif _validate_image_url(image_url):
+            # Remote URL -- download to a temporary location
+            print(f"⬇️  Downloading image from URL...", flush=True)
+            temp_dir = Path("./temp_vision_images")
+            temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
+            await _download_image(image_url, temp_image_path)
+            should_cleanup = True
+        else:
+            raise ValueError(
+                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
+            )
         
         # Get image file size for logging
         image_size_bytes = temp_image_path.stat().st_size
         image_size_kb = image_size_bytes / 1024
-        print(f"✅ Image downloaded successfully ({image_size_kb:.1f} KB)", flush=True)
+        print(f"✅ Image ready ({image_size_kb:.1f} KB)", flush=True)
         
         # Convert image to base64 data URL
         print(f"🔄 Converting image to base64...", flush=True)
@@ -402,8 +414,8 @@ async def vision_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
     
     finally:
-        # Clean up temporary image file
-        if temp_image_path and temp_image_path.exists():
+        # Clean up temporary image file (but NOT local/cached files)
+        if should_cleanup and temp_image_path and temp_image_path.exists():
             try:
                 temp_image_path.unlink()
                 print(f"🧹 Cleaned up temporary image file", flush=True)

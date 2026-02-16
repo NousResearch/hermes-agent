@@ -341,13 +341,13 @@ def get_vision_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "vision_analyze",
-                "description": "Analyze images from URLs using AI vision. Provides comprehensive image description and answers specific questions about the image content. Perfect for understanding visual content, reading text in images, identifying objects, analyzing scenes, and extracting visual information.",
+                "description": "Analyze images using AI vision. Accepts HTTP/HTTPS URLs or local file paths (e.g. from the image cache). Provides comprehensive image description and answers specific questions about the image content. Perfect for understanding visual content, reading text in images, identifying objects, analyzing scenes, and extracting visual information.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "image_url": {
                             "type": "string",
-                            "description": "The URL of the image to analyze (must be publicly accessible HTTP/HTTPS URL)"
+                            "description": "The URL or local file path of the image to analyze. Accepts publicly accessible HTTP/HTTPS URLs or local file paths (e.g. /home/user/.hermes/image_cache/abc123.jpg)."
                         },
                         "question": {
                             "type": "string",

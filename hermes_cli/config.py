@@ -195,15 +195,16 @@ OPTIONAL_ENV_VARS = {
         "password": True,
     },
     "OPENAI_BASE_URL": {
-        "description": "Custom OpenAI-compatible API endpoint URL",
-        "prompt": "API base URL (e.g., https://api.example.com/v1)",
+        "description": "Custom OpenAI-compatible API endpoint (for VLLM/SGLang/etc.)",
+        "prompt": "OpenAI-compatible base URL (Enter to skip, only needed for custom endpoints)",
         "url": None,
         "password": False,
     },
     "OPENAI_API_KEY": {
-        "description": "API key for custom OpenAI-compatible endpoint",
-        "prompt": "API key for custom endpoint",
-        "url": None,
+        "description": "OpenAI API key (voice transcription + custom endpoint)",
+        "prompt": "OpenAI API Key",
+        "url": "https://platform.openai.com/api-keys",
+        "tools": ["voice_transcription"],
         "password": True,
     },
     "SLACK_BOT_TOKEN": {

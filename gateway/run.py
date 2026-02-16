@@ -411,7 +411,7 @@ class GatewayRunner:
             await self.hooks.emit("agent:start", hook_ctx)
             
             # Run the agent
-            response = await self._run_agent(
+            agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
                 history=history,
@@ -419,6 +419,9 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key
             )
+            
+            response = agent_result.get("final_response", "")
+            agent_messages = agent_result.get("messages", [])
             
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -437,15 +440,53 @@ class GatewayRunner:
             except Exception:
                 pass
             
-            # Append to transcript (use the enriched message so vision context is preserved)
-            self.session_store.append_to_transcript(
-                session_entry.session_id,
-                {"role": "user", "content": message_text, "timestamp": datetime.now().isoformat()}
-            )
-            self.session_store.append_to_transcript(
-                session_entry.session_id,
-                {"role": "assistant", "content": response, "timestamp": datetime.now().isoformat()}
-            )
+            # Save the full conversation to the transcript, including tool calls.
+            # This preserves the complete agent loop (tool_calls, tool results,
+            # intermediate reasoning) so sessions can be resumed with full context
+            # and transcripts are useful for debugging and training data.
+            ts = datetime.now().isoformat()
+            
+            # If this is a fresh session (no history), write the full tool
+            # definitions as the first entry so the transcript is self-describing
+            # -- the same list of dicts sent as tools=[...] in the API request.
+            if not history:
+                tool_defs = tools_holder[0]
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {
+                        "role": "session_meta",
+                        "tools": tool_defs or [],
+                        "model": os.getenv("HERMES_MODEL", ""),
+                        "platform": source.platform.value if source.platform else "",
+                        "timestamp": ts,
+                    }
+                )
+            
+            # Find only the NEW messages from this turn (skip history we loaded)
+            history_len = len(history)
+            new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else agent_messages
+            
+            # If no new messages found (edge case), fall back to simple user/assistant
+            if not new_messages:
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {"role": "user", "content": message_text, "timestamp": ts}
+                )
+                if response:
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        {"role": "assistant", "content": response, "timestamp": ts}
+                    )
+            else:
+                for msg in new_messages:
+                    # Skip system messages (they're rebuilt each run)
+                    if msg.get("role") == "system":
+                        continue
+                    # Add timestamp to each message for debugging
+                    entry = {**msg, "timestamp": ts}
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id, entry
+                    )
             
             # Update session
             self.session_store.update_session(session_entry.session_key)
@@ -668,9 +709,15 @@ class GatewayRunner:
         source: SessionSource,
         session_id: str,
         session_key: str = None
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
+        
+        Returns the full result dict from run_conversation, including:
+          - "final_response": str (the text to send back)
+          - "messages": list (full conversation including tool calls)
+          - "api_calls": int
+          - "completed": bool
         
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
@@ -774,6 +821,7 @@ class GatewayRunner:
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
+        tools_holder = [None]   # Mutable container for the tool definitions
         
         def run_sync():
             # Read from env var or use default (same as CLI)
@@ -796,6 +844,8 @@ class GatewayRunner:
             
             # Store agent reference for interrupt support
             agent_holder[0] = agent
+            # Capture the full tool definitions for transcript logging
+            tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
             # Convert history to agent format.
             # Two cases:
@@ -811,15 +861,22 @@ class GatewayRunner:
                 if not role:
                     continue
                 
-                # Check if this is a rich agent message (has tool_calls or tool_call_id)
-                # If so, pass it through with full structure intact
+                # Skip metadata entries (tool definitions, session info)
+                # -- these are for transcript logging, not for the LLM
+                if role in ("session_meta",):
+                    continue
+                
+                # Skip system messages -- the agent rebuilds its own system prompt
+                if role == "system":
+                    continue
+                
+                # Rich agent messages (tool_calls, tool results) must be passed
+                # through intact so the API sees valid assistant→tool sequences
                 has_tool_calls = "tool_calls" in msg
                 has_tool_call_id = "tool_call_id" in msg
                 is_tool_message = role == "tool"
                 
                 if has_tool_calls or has_tool_call_id or is_tool_message:
-                    # Preserve full message structure (tool_calls, tool_call_id, etc.)
-                    # Only strip fields that are purely internal (e.g. timestamp)
                     clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
                     agent_history.append(clean_msg)
                 else:
@@ -834,9 +891,12 @@ class GatewayRunner:
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
             if not final_response:
-                if result.get("error"):
-                    return f"⚠️ {result['error']}"
-                return "(No response generated)"
+                error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
+                return {
+                    "final_response": error_msg,
+                    "messages": result.get("messages", []),
+                    "api_calls": result.get("api_calls", 0),
+                }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
@@ -870,7 +930,11 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
-            return final_response
+            return {
+                "final_response": final_response,
+                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
+                "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+            }
         
         # Start progress message sender if enabled
         progress_task = None

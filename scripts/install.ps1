@@ -443,6 +443,10 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\pairing" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\hooks" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\image_cache" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     
     # Create .env
     $envPath = "$HermesHome\.env"

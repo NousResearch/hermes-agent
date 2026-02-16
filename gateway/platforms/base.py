@@ -108,6 +108,65 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Audio cache utilities
+#
+# Same pattern as image cache -- voice messages from platforms are downloaded
+# here so the STT tool (OpenAI Whisper) can transcribe them from local files.
+# ---------------------------------------------------------------------------
+
+AUDIO_CACHE_DIR = Path(os.path.expanduser("~/.hermes/audio_cache"))
+
+
+def get_audio_cache_dir() -> Path:
+    """Return the audio cache directory, creating it if it doesn't exist."""
+    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return AUDIO_CACHE_DIR
+
+
+def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
+    """
+    Save raw audio bytes to the cache and return the absolute file path.
+
+    Args:
+        data: Raw audio bytes.
+        ext:  File extension including the dot (e.g. ".ogg", ".mp3").
+
+    Returns:
+        Absolute path to the cached audio file as a string.
+    """
+    cache_dir = get_audio_cache_dir()
+    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
+    """
+    Download an audio file from a URL and save it to the local cache.
+
+    Args:
+        url: The HTTP/HTTPS URL to download from.
+        ext: File extension including the dot (e.g. ".ogg", ".mp3").
+
+    Returns:
+        Absolute path to the cached audio file as a string.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                "Accept": "audio/*,*/*;q=0.8",
+            },
+        )
+        response.raise_for_status()
+        return cache_audio_from_bytes(response.content, ext)
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -422,6 +481,27 @@ class BasePlatformAdapter(ABC):
         # Spawn background task to process this message
         asyncio.create_task(self._process_message_background(event, session_key))
     
+    @staticmethod
+    def _get_human_delay() -> float:
+        """
+        Return a random delay in seconds for human-like response pacing.
+
+        Reads from env vars:
+          HERMES_HUMAN_DELAY_MODE: "off" (default) | "natural" | "custom"
+          HERMES_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
+          HERMES_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
+        """
+        import random
+
+        mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
+        if mode == "off":
+            return 0.0
+        min_ms = int(os.getenv("HERMES_HUMAN_DELAY_MIN_MS", "800"))
+        max_ms = int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", "2500"))
+        if mode == "natural":
+            min_ms, max_ms = 800, 2500
+        return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Create interrupt event for this session
@@ -463,8 +543,13 @@ class BasePlatformAdapter(ABC):
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
                 
+                # Human-like pacing delay between text and media
+                human_delay = self._get_human_delay()
+                
                 # Send extracted images as native attachments
                 for image_url, alt_text in images:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
                     try:
                         img_result = await self.send_image(
                             chat_id=event.source.chat_id,
@@ -478,6 +563,8 @@ class BasePlatformAdapter(ABC):
                 
                 # Send extracted audio/voice files as native attachments
                 for audio_path, is_voice in media_files:
+                    if human_delay > 0:
+                        await asyncio.sleep(human_delay)
                     try:
                         voice_result = await self.send_voice(
                             chat_id=event.source.chat_id,

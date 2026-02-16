@@ -38,8 +38,9 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
 dev = ["pytest", "pytest-asyncio"]
-messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0"]
+messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
+slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
 all = [
@@ -49,6 +50,7 @@ all = [
   "hermes-agent[cli]",
   "hermes-agent[dev]",
   "hermes-agent[tts-premium]",
+  "hermes-agent[slack]",
 ]
 
 [project.scripts]

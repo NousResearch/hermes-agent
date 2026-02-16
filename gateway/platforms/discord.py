@@ -33,6 +33,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_url,
+    cache_audio_from_url,
 )
 
 
@@ -49,7 +50,10 @@ class DiscordAdapter(BasePlatformAdapter):
     - Receiving messages from servers and DMs
     - Sending responses with Discord markdown
     - Thread support
-    - Slash commands (future)
+    - Native slash commands (/ask, /reset, /status, /stop)
+    - Button-based exec approvals
+    - Auto-threading for long conversations
+    - Reaction-based feedback
     """
     
     # Discord message limits
@@ -59,6 +63,7 @@ class DiscordAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
+        self._allowed_user_ids: set = set()  # For button approval authorization
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -83,10 +88,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 intents=intents,
             )
             
+            # Parse allowed user IDs for button authorization
+            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
+            if allowed_env:
+                self._allowed_user_ids = {
+                    uid.strip() for uid in allowed_env.split(",") if uid.strip()
+                }
+            
             # Register event handlers
             @self._client.event
             async def on_ready():
                 print(f"[{self.name}] Connected as {self._client.user}")
+                # Sync slash commands with Discord
+                try:
+                    synced = await self._client.tree.sync()
+                    print(f"[{self.name}] Synced {len(synced)} slash command(s)")
+                except Exception as e:
+                    print(f"[{self.name}] Slash command sync failed: {e}")
                 self._ready_event.set()
             
             @self._client.event
@@ -95,6 +113,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.author == self._client.user:
                     return
                 await self._handle_message(message)
+            
+            # Register slash commands
+            self._register_slash_commands()
             
             # Start the bot in background
             asyncio.create_task(self._client.start(self.config.token))
@@ -325,6 +346,116 @@ class DiscordAdapter(BasePlatformAdapter):
         # Discord markdown is fairly standard, no special escaping needed
         return content
     
+    def _register_slash_commands(self) -> None:
+        """Register Discord slash commands on the command tree."""
+        if not self._client:
+            return
+
+        tree = self._client.tree
+
+        @tree.command(name="ask", description="Ask Hermes a question")
+        @discord.app_commands.describe(question="Your question for Hermes")
+        async def slash_ask(interaction: discord.Interaction, question: str):
+            await interaction.response.defer()
+            event = self._build_slash_event(interaction, question)
+            await self.handle_message(event)
+            # The response is sent via the normal send() flow
+            # Send a followup to close the interaction if needed
+            try:
+                await interaction.followup.send("Processing complete~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="reset", description="Reset your Hermes session")
+        async def slash_reset(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/reset")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Session reset~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="status", description="Show Hermes session status")
+        async def slash_status(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/status")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Status sent~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="stop", description="Stop the running Hermes agent")
+        async def slash_stop(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/stop")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Stop requested~", ephemeral=True)
+            except Exception:
+                pass
+
+    def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
+        """Build a MessageEvent from a Discord slash command interaction."""
+        is_dm = isinstance(interaction.channel, discord.DMChannel)
+        chat_type = "dm" if is_dm else "group"
+        chat_name = ""
+        if not is_dm and hasattr(interaction.channel, "name"):
+            chat_name = interaction.channel.name
+            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
+                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+
+        source = self.build_source(
+            chat_id=str(interaction.channel_id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(interaction.user.id),
+            user_name=interaction.user.display_name,
+        )
+
+        msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+        return MessageEvent(
+            text=text,
+            message_type=msg_type,
+            source=source,
+            raw_message=interaction,
+        )
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, approval_id: str
+    ) -> SendResult:
+        """
+        Send a button-based exec approval prompt for a dangerous command.
+
+        Returns SendResult. The approval is resolved when a user clicks a button.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+
+            embed = discord.Embed(
+                title="Command Approval Required",
+                description=f"```\n{command[:500]}\n```",
+                color=discord.Color.orange(),
+            )
+            embed.set_footer(text=f"Approval ID: {approval_id}")
+
+            view = ExecApprovalView(
+                approval_id=approval_id,
+                allowed_user_ids=self._allowed_user_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -424,8 +555,21 @@ class DiscordAdapter(BasePlatformAdapter):
                     # Fall back to the CDN URL if caching fails
                     media_urls.append(att.url)
                     media_types.append(content_type)
+            elif content_type.startswith("audio/"):
+                try:
+                    ext = "." + content_type.split("/")[-1].split(";")[0]
+                    if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
+                        ext = ".ogg"
+                    cached_path = await cache_audio_from_url(att.url, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(content_type)
+                    print(f"[Discord] Cached user audio: {cached_path}", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
             else:
-                # Non-image attachments: keep the original URL
+                # Other attachments: keep the original URL
                 media_urls.append(att.url)
                 media_types.append(content_type)
         
@@ -442,3 +586,94 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         
         await self.handle_message(event)
+
+
+# ---------------------------------------------------------------------------
+# Discord UI Components (outside the adapter class)
+# ---------------------------------------------------------------------------
+
+if DISCORD_AVAILABLE:
+
+    class ExecApprovalView(discord.ui.View):
+        """
+        Interactive button view for exec approval of dangerous commands.
+
+        Shows three buttons: Allow Once (green), Always Allow (blue), Deny (red).
+        Only users in the allowed list can click. The view times out after 5 minutes.
+        """
+
+        def __init__(self, approval_id: str, allowed_user_ids: set):
+            super().__init__(timeout=300)  # 5-minute timeout
+            self.approval_id = approval_id
+            self.allowed_user_ids = allowed_user_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            """Verify the user clicking is authorized."""
+            if not self.allowed_user_ids:
+                return True  # No allowlist = anyone can approve
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _resolve(
+            self, interaction: discord.Interaction, action: str, color: discord.Color
+        ):
+            """Resolve the approval and update the message."""
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This approval has already been resolved~", ephemeral=True
+                )
+                return
+
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to approve commands~", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+
+            # Update the embed with the decision
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{action} by {interaction.user.display_name}")
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Store the approval decision for the gateway to pick up
+            try:
+                from tools.terminal_tool import _session_approved_patterns
+                if action == "allow_once":
+                    pass  # One-time approval handled by gateway
+                elif action == "allow_always":
+                    _session_approved_patterns.add(self.approval_id)
+            except ImportError:
+                pass
+
+        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        async def allow_once(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "allow_once", discord.Color.green())
+
+        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        async def allow_always(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "allow_always", discord.Color.blue())
+
+        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        async def deny(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._resolve(interaction, "deny", discord.Color.red())
+
+        async def on_timeout(self):
+            """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True

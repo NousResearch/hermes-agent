@@ -25,7 +25,13 @@ hermes-agent/
 │   ├── uninstall.py      # Uninstaller
 │   └── cron.py           # Cron job management
 ├── tools/                # Tool implementations
+│   ├── transcription_tools.py  # Speech-to-text (Whisper API)
 ├── gateway/              # Messaging platform adapters
+│   ├── pairing.py        # DM pairing code system
+│   ├── hooks.py          # Event hook system
+│   ├── sticker_cache.py  # Telegram sticker vision cache
+│   ├── platforms/
+│   │   └── slack.py          # Slack adapter (slack-bolt)
 ├── cron/                 # Scheduler implementation
 ├── skills/               # Knowledge documents
 ├── cli.py                # Interactive CLI (Rich UI)
@@ -39,6 +45,11 @@ hermes-agent/
 **User Configuration** (stored in `~/.hermes/`):
 - `~/.hermes/config.yaml` - Settings (model, terminal, toolsets, etc.)
 - `~/.hermes/.env` - API keys and secrets
+- `~/.hermes/pairing/` - DM pairing data
+- `~/.hermes/hooks/` - Custom event hooks
+- `~/.hermes/image_cache/` - Cached user images
+- `~/.hermes/audio_cache/` - Cached user voice messages
+- `~/.hermes/sticker_cache.json` - Telegram sticker descriptions
 
 ## File Dependency Chain
 
@@ -179,6 +190,7 @@ The unified `hermes` command provides all functionality:
 | `hermes gateway` | Start messaging gateway |
 | `hermes cron list` | View scheduled jobs |
 | `hermes version` | Show version info |
+| `hermes pairing list/approve/revoke` | Manage DM pairing codes |
 
 ---
 
@@ -224,6 +236,33 @@ The gateway checks `{PLATFORM}_ALLOWED_USERS` environment variables:
 Users can find their IDs:
 - **Telegram**: Message [@userinfobot](https://t.me/userinfobot)
 - **Discord**: Enable Developer Mode, right-click name → Copy ID
+
+### DM Pairing System
+
+Instead of static allowlists, users can pair via one-time codes:
+1. Unknown user DMs the bot → receives pairing code
+2. Owner runs `hermes pairing approve <platform> <code>`
+3. User is permanently authorized
+
+Security: 8-char codes, 1-hour expiry, rate-limited (1/10min/user), max 3 pending per platform, lockout after 5 failed attempts, `chmod 0600` on data files.
+
+Files: `gateway/pairing.py`, `hermes_cli/pairing.py`
+
+### Event Hooks
+
+Hooks fire at lifecycle points. Place hook directories in `~/.hermes/hooks/`:
+
+```
+~/.hermes/hooks/my-hook/
+├── HOOK.yaml    # name, description, events list
+└── handler.py   # async def handle(event_type, context): ...
+```
+
+Events: `gateway:startup`, `session:start`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, `command:*`
+
+The `agent:step` event fires each iteration of the tool-calling loop with tool names and results.
+
+Files: `gateway/hooks.py`
 
 ### Tool Progress Notifications
 
@@ -336,6 +375,11 @@ Agent behavior (in `~/.hermes/.env`):
 - `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
 - `HERMES_TOOL_PROGRESS` - Enable tool progress messages (`true`/`false`)
 - `HERMES_TOOL_PROGRESS_MODE` - Progress mode: `new` (tool changes) or `all`
+- `OPENAI_API_KEY` - Voice transcription (Whisper STT)
+- `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` - Slack integration (Socket Mode)
+- `SLACK_ALLOWED_USERS` - Comma-separated Slack user IDs
+- `HERMES_HUMAN_DELAY_MODE` - Response pacing: off/natural/custom
+- `HERMES_HUMAN_DELAY_MIN_MS` / `HERMES_HUMAN_DELAY_MAX_MS` - Custom delay range
 
 ### Dangerous Command Approval
 

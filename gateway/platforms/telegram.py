@@ -39,6 +39,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_bytes,
+    cache_audio_from_bytes,
 )
 
 
@@ -91,7 +92,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_command
             ))
             self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL,
+                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
             
@@ -311,7 +312,9 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = update.message
         
         # Determine media type
-        if msg.photo:
+        if msg.sticker:
+            msg_type = MessageType.STICKER
+        elif msg.photo:
             msg_type = MessageType.PHOTO
         elif msg.video:
             msg_type = MessageType.VIDEO
@@ -327,6 +330,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = msg.caption
+        
+        # Handle stickers: describe via vision tool with caching
+        if msg.sticker:
+            await self._handle_sticker(msg, event)
+            await self.handle_message(event)
+            return
         
         # Download photo to local image cache so the vision tool can access it
         # even after Telegram's ephemeral file URLs expire (~1 hour).
@@ -352,8 +361,97 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 print(f"[Telegram] Failed to cache photo: {e}", flush=True)
         
+        # Download voice/audio messages to cache for STT transcription
+        if msg.voice:
+            try:
+                file_obj = await msg.voice.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/ogg"]
+                print(f"[Telegram] Cached user voice: {cached_path}", flush=True)
+            except Exception as e:
+                print(f"[Telegram] Failed to cache voice: {e}", flush=True)
+        elif msg.audio:
+            try:
+                file_obj = await msg.audio.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/mp3"]
+                print(f"[Telegram] Cached user audio: {cached_path}", flush=True)
+            except Exception as e:
+                print(f"[Telegram] Failed to cache audio: {e}", flush=True)
+        
         await self.handle_message(event)
     
+    async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
+        """
+        Describe a Telegram sticker via vision analysis, with caching.
+
+        For static stickers (WEBP), we download, analyze with vision, and cache
+        the description by file_unique_id. For animated/video stickers, we inject
+        a placeholder noting the emoji.
+        """
+        from gateway.sticker_cache import (
+            get_cached_description,
+            cache_sticker_description,
+            build_sticker_injection,
+            build_animated_sticker_injection,
+            STICKER_VISION_PROMPT,
+        )
+
+        sticker = msg.sticker
+        emoji = sticker.emoji or ""
+        set_name = sticker.set_name or ""
+
+        # Animated and video stickers can't be analyzed as static images
+        if sticker.is_animated or sticker.is_video:
+            event.text = build_animated_sticker_injection(emoji)
+            return
+
+        # Check the cache first
+        cached = get_cached_description(sticker.file_unique_id)
+        if cached:
+            event.text = build_sticker_injection(
+                cached["description"], cached.get("emoji", emoji), cached.get("set_name", set_name)
+            )
+            print(f"[Telegram] Sticker cache hit: {sticker.file_unique_id}", flush=True)
+            return
+
+        # Cache miss -- download and analyze
+        try:
+            file_obj = await sticker.get_file()
+            image_bytes = await file_obj.download_as_bytearray()
+            cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
+            print(f"[Telegram] Analyzing sticker: {cached_path}", flush=True)
+
+            from tools.vision_tools import vision_analyze_tool
+            import json as _json
+
+            result_json = await vision_analyze_tool(
+                image_url=cached_path,
+                user_prompt=STICKER_VISION_PROMPT,
+            )
+            result = _json.loads(result_json)
+
+            if result.get("success"):
+                description = result.get("analysis", "a sticker")
+                cache_sticker_description(sticker.file_unique_id, description, emoji, set_name)
+                event.text = build_sticker_injection(description, emoji, set_name)
+            else:
+                # Vision failed -- use emoji as fallback
+                event.text = build_sticker_injection(
+                    f"a sticker with emoji {emoji}" if emoji else "a sticker",
+                    emoji, set_name,
+                )
+        except Exception as e:
+            print(f"[Telegram] Sticker analysis error: {e}", flush=True)
+            event.text = build_sticker_injection(
+                f"a sticker with emoji {emoji}" if emoji else "a sticker",
+                emoji, set_name,
+            )
+
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""
         chat = message.chat

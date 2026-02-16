@@ -903,6 +903,33 @@ def get_tts_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_send_message_tool_definitions():
+    """Tool definitions for cross-channel messaging."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "send_message",
+                "description": "Send a message to a user or channel on any connected messaging platform. Use this when the user asks you to send something to a different platform, or when delivering notifications/alerts to a specific destination.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Delivery target. Format: 'platform' (uses home channel) or 'platform:chat_id' (specific chat). Examples: 'telegram', 'discord:123456789', 'slack:C01234ABCDE'"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "The message text to send"
+                        }
+                    },
+                    "required": ["target", "message"]
+                }
+            }
+        }
+    ]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -971,6 +998,9 @@ def get_all_tool_names() -> List[str]:
     if check_tts_requirements():
         tool_names.extend(["text_to_speech"])
     
+    # Cross-channel messaging (always available on messaging platforms)
+    tool_names.extend(["send_message"])
+    
     return tool_names
 
 
@@ -1019,6 +1049,8 @@ TOOL_TO_TOOLSET_MAP = {
     "write_file": "file_tools",
     "patch": "file_tools",
     "search": "file_tools",
+    # Cross-channel messaging
+    "send_message": "messaging_tools",
 }
 
 
@@ -1121,6 +1153,10 @@ def get_tool_definitions(
     if check_tts_requirements():
         for tool in get_tts_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Cross-channel messaging (always available on messaging platforms)
+    for tool in get_send_message_tool_definitions():
+        all_available_tools_map[tool["function"]["name"]] = tool
     
     # Determine which tools to include based on toolsets
     tools_to_include = set()
@@ -1693,6 +1729,22 @@ def handle_tts_function_call(
     return json.dumps({"error": f"Unknown TTS function: {function_name}"}, ensure_ascii=False)
 
 
+def handle_send_message_function_call(function_name, function_args):
+    """Handle cross-channel send_message tool calls."""
+    import json
+    target = function_args.get("target", "")
+    message = function_args.get("message", "")
+    if not target or not message:
+        return json.dumps({"error": "Both 'target' and 'message' are required"})
+    
+    # Store the pending message for the gateway to deliver
+    # The gateway runner checks this after the agent loop completes
+    import os
+    os.environ["_HERMES_PENDING_SEND_TARGET"] = target
+    os.environ["_HERMES_PENDING_SEND_MESSAGE"] = message
+    return json.dumps({"success": True, "delivered_to": target, "note": "Message queued for delivery"})
+
+
 def handle_function_call(
     function_name: str, 
     function_args: Dict[str, Any], 
@@ -1773,6 +1825,10 @@ def handle_function_call(
         # Route text-to-speech tools
         elif function_name in ["text_to_speech"]:
             return handle_tts_function_call(function_name, function_args)
+
+        # Route cross-channel messaging
+        elif function_name == "send_message":
+            return handle_send_message_function_call(function_name, function_args)
 
         else:
             error_msg = f"Unknown function: {function_name}"

@@ -245,6 +245,24 @@ toolsets:
 #   - safe
 
 # =============================================================================
+# Voice Transcription (Speech-to-Text)
+# =============================================================================
+# Automatically transcribe voice messages on messaging platforms.
+# Requires OPENAI_API_KEY in .env (uses OpenAI Whisper API directly).
+stt:
+  enabled: true
+  model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+
+# =============================================================================
+# Response Pacing (Messaging Platforms)
+# =============================================================================
+# Add human-like delays between message chunks.
+# human_delay:
+#   mode: "off"      # "off" | "natural" | "custom"
+#   min_ms: 800      # Min delay (custom mode only)
+#   max_ms: 2500     # Max delay (custom mode only)
+
+# =============================================================================
 # Session Logging
 # =============================================================================
 # Session trajectories are automatically saved to logs/ directory.

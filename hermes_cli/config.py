@@ -196,9 +196,10 @@ OPTIONAL_ENV_VARS = {
     },
     "OPENAI_BASE_URL": {
         "description": "Custom OpenAI-compatible API endpoint (for VLLM/SGLang/etc.)",
-        "prompt": "OpenAI-compatible base URL (Enter to skip, only needed for custom endpoints)",
+        "prompt": "OpenAI-compatible base URL (only if running your own endpoint)",
         "url": None,
         "password": False,
+        "advanced": True,  # Hide from standard migrate flow
     },
     "OPENAI_API_KEY": {
         "description": "OpenAI API key (voice transcription + custom endpoint)",
@@ -401,21 +402,17 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
     
-    # Check for missing optional env vars and offer to configure
+    # Check for missing optional env vars and offer to configure interactively
+    # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
     missing_optional = get_missing_env_vars(required_only=False)
-    # Filter to only truly optional ones (not already handled as required above)
     required_names = {v["name"] for v in missing_env} if missing_env else set()
-    missing_optional = [v for v in missing_optional if v["name"] not in required_names]
-    
-    if missing_optional and not quiet:
-        print(f"\n  ℹ️  {len(missing_optional)} optional API key(s) not configured:")
-        for var in missing_optional:
-            tools = var.get("tools", [])
-            tools_str = f" → enables: {', '.join(tools)}" if tools else ""
-            print(f"     • {var['name']}: {var['description']}{tools_str}")
+    missing_optional = [
+        v for v in missing_optional
+        if v["name"] not in required_names and not v.get("advanced")
+    ]
     
     if interactive and missing_optional:
-        print("\n  Would you like to configure any optional keys now?")
+        print("  Would you like to configure any optional keys now?")
         try:
             answer = input("  Configure optional keys? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -424,8 +421,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if answer in ("y", "yes"):
             print()
             for var in missing_optional:
+                desc = var.get("description", "")
                 if var.get("url"):
+                    print(f"  {desc}")
                     print(f"  Get your key at: {var['url']}")
+                else:
+                    print(f"  {desc}")
                 
                 if var.get("password"):
                     import getpass
@@ -792,7 +793,10 @@ def config_command(args):
             print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
         
         required_missing = [v for v in missing_env if v.get("is_required")]
-        optional_missing = [v for v in missing_env if not v.get("is_required")]
+        optional_missing = [
+            v for v in missing_env
+            if not v.get("is_required") and not v.get("advanced")
+        ]
         
         if required_missing:
             print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")

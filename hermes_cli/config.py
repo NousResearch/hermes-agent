@@ -117,11 +117,22 @@ DEFAULT_CONFIG = {
         },
     },
     
+    "stt": {
+        "enabled": True,
+        "model": "whisper-1",
+    },
+    
+    "human_delay": {
+        "mode": "off",
+        "min_ms": 800,
+        "max_ms": 2500,
+    },
+    
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 1,
+    "_config_version": 2,
 }
 
 # =============================================================================
@@ -193,6 +204,20 @@ OPTIONAL_ENV_VARS = {
         "description": "API key for custom OpenAI-compatible endpoint",
         "prompt": "API key for custom endpoint",
         "url": None,
+        "password": True,
+    },
+    "SLACK_BOT_TOKEN": {
+        "description": "Slack bot integration",
+        "prompt": "Slack Bot Token (xoxb-...)",
+        "url": "https://api.slack.com/apps",
+        "tools": ["slack"],
+        "password": True,
+    },
+    "SLACK_APP_TOKEN": {
+        "description": "Slack Socket Mode connection",
+        "prompt": "Slack App Token (xapp-...)",
+        "url": "https://api.slack.com/apps",
+        "tools": ["slack"],
         "password": True,
     },
     # Messaging platform tokens
@@ -374,6 +399,44 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
+    
+    # Check for missing optional env vars and offer to configure
+    missing_optional = get_missing_env_vars(required_only=False)
+    # Filter to only truly optional ones (not already handled as required above)
+    required_names = {v["name"] for v in missing_env} if missing_env else set()
+    missing_optional = [v for v in missing_optional if v["name"] not in required_names]
+    
+    if missing_optional and not quiet:
+        print(f"\n  ℹ️  {len(missing_optional)} optional API key(s) not configured:")
+        for var in missing_optional:
+            tools = var.get("tools", [])
+            tools_str = f" → enables: {', '.join(tools)}" if tools else ""
+            print(f"     • {var['name']}: {var['description']}{tools_str}")
+    
+    if interactive and missing_optional:
+        print("\n  Would you like to configure any optional keys now?")
+        try:
+            answer = input("  Configure optional keys? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        
+        if answer in ("y", "yes"):
+            print()
+            for var in missing_optional:
+                if var.get("url"):
+                    print(f"  Get your key at: {var['url']}")
+                
+                if var.get("password"):
+                    import getpass
+                    value = getpass.getpass(f"  {var['prompt']} (Enter to skip): ")
+                else:
+                    value = input(f"  {var['prompt']} (Enter to skip): ").strip()
+                
+                if value:
+                    save_env_value(var["name"], value)
+                    results["env_added"].append(var["name"])
+                    print(f"  ✓ Saved {var['name']}")
+                print()
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()

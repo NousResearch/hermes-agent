@@ -80,6 +80,8 @@ You need at least one LLM provider:
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS voices | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
+| Voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
+| Slack integration | [Slack](https://api.slack.com/apps) | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
 | Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
 
 ---
@@ -99,6 +101,7 @@ hermes update             # Update to latest version (prompts for new config)
 hermes uninstall          # Uninstall (can keep configs for later reinstall)
 hermes gateway            # Start messaging gateway
 hermes cron list          # View scheduled jobs
+hermes pairing list       # View/manage DM pairing codes
 hermes version            # Show version info
 ```
 
@@ -175,6 +178,23 @@ sudo dnf install ffmpeg
 ```
 
 Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but shows as a rectangular player instead of a voice bubble). If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
+
+### 🎙️ Voice Message Transcription
+
+Voice messages sent on Telegram, Discord, WhatsApp, or Slack are automatically transcribed using OpenAI's Whisper API and injected as text into the conversation. The agent sees the transcript as normal text -- no special handling needed.
+
+| Provider | Model | Quality | Cost |
+|----------|-------|---------|------|
+| **OpenAI Whisper** | `whisper-1` (default) | Good | Low |
+| **OpenAI GPT-4o** | `gpt-4o-mini-transcribe` | Better | Medium |
+| **OpenAI GPT-4o** | `gpt-4o-transcribe` | Best | Higher |
+
+Requires `OPENAI_API_KEY` in `~/.hermes/.env`. Configure the model in `~/.hermes/config.yaml`:
+```yaml
+stt:
+  enabled: true
+  model: "whisper-1"
+```
 
 ### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
 
@@ -293,6 +313,40 @@ DISCORD_BOT_TOKEN=MTIz...
 DISCORD_ALLOWED_USERS=YOUR_USER_ID
 ```
 
+#### Slack Setup
+
+1. **Create an app:** Go to [Slack API](https://api.slack.com/apps), create a new app
+2. **Enable Socket Mode:** In app settings → Socket Mode → Enable
+3. **Get tokens:**
+   - Bot Token (`xoxb-...`): OAuth & Permissions → Install to Workspace
+   - App Token (`xapp-...`): Basic Information → App-Level Tokens → Generate
+4. **Configure:**
+
+```bash
+# Add to ~/.hermes/.env:
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
+```
+
+5. **Start the gateway:** `hermes gateway`
+
+#### DM Pairing (Alternative to Allowlists)
+
+Instead of manually configuring user IDs in allowlists, you can use the pairing system. When an unknown user DMs your bot, they receive a one-time pairing code:
+
+```bash
+# The user sees: "Pairing code: XKGH5N7P"
+# You approve them with:
+hermes pairing approve telegram XKGH5N7P
+
+# Other pairing commands:
+hermes pairing list          # View pending + approved users
+hermes pairing revoke telegram 123456789  # Remove access
+```
+
+Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
 #### Security (Important!)
 
 **Without an allowlist, anyone who finds your bot can use it!**
@@ -312,6 +366,7 @@ DISCORD_ALLOWED_USERS=123456789012345678
 |---------|-------------|
 | `/new` or `/reset` | Start fresh conversation |
 | `/status` | Show session info |
+| `/hermes` (Discord) | Slash command — ask, reset, status, stop |
 
 #### Working Directory
 

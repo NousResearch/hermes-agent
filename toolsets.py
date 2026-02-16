@@ -184,7 +184,9 @@ TOOLSETS = {
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+            # Cross-channel messaging
+            "send_message"
         ],
         "includes": []
     },
@@ -207,7 +209,9 @@ TOOLSETS = {
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Cronjob management - let users schedule tasks
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+            # Cross-channel messaging
+            "send_message"
         ],
         "includes": []
     },
@@ -230,7 +234,34 @@ TOOLSETS = {
             # Skills
             "skills_list", "skill_view",
             # Cronjob management
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+            # Cross-channel messaging
+            "send_message"
+        ],
+        "includes": []
+    },
+    
+    "hermes-slack": {
+        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
+        "tools": [
+            # Terminal - enabled with dangerous command approval system
+            "terminal",
+            # File manipulation
+            "read_file", "write_file", "patch", "search",
+            # Web tools
+            "web_search", "web_extract",
+            # Vision - analyze images sent by users
+            "vision_analyze",
+            # Image generation
+            "image_generate",
+            # Text-to-speech
+            "text_to_speech",
+            # Skills - access knowledge base
+            "skills_list", "skill_view",
+            # Cronjob management - let users schedule tasks
+            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+            # Cross-channel messaging
+            "send_message"
         ],
         "includes": []
     },
@@ -238,7 +269,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack"]
     }
 }
 

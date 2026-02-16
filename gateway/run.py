@@ -85,6 +85,14 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
+        
+        # DM pairing store for code-based user authorization
+        from gateway.pairing import PairingStore
+        self.pairing_store = PairingStore()
+        
+        # Event hook system
+        from gateway.hooks import HookRegistry
+        self.hooks = HookRegistry()
     
     async def start(self) -> bool:
         """
@@ -94,6 +102,9 @@ class GatewayRunner:
         """
         print("[gateway] Starting Hermes Gateway...")
         print(f"[gateway] Session storage: {self.config.sessions_dir}")
+        
+        # Discover and load event hooks
+        self.hooks.discover_and_load()
         
         connected_count = 0
         
@@ -131,6 +142,15 @@ class GatewayRunner:
         self.delivery_router.adapters = self.adapters
         
         self._running = True
+        
+        # Emit gateway:startup hook
+        hook_count = len(self.hooks.loaded_hooks)
+        if hook_count:
+            print(f"[gateway] {hook_count} hook(s) loaded")
+        await self.hooks.emit("gateway:startup", {
+            "platforms": [p.value for p in self.adapters.keys()],
+        })
+        
         print(f"[gateway] Gateway running with {connected_count} platform(s)")
         print("[gateway] Press Ctrl+C to stop")
         
@@ -183,18 +203,23 @@ class GatewayRunner:
                 return None
             return WhatsAppAdapter(config)
         
+        elif platform == Platform.SLACK:
+            from gateway.platforms.slack import SlackAdapter, check_slack_requirements
+            if not check_slack_requirements():
+                print(f"[gateway] Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
+                return None
+            return SlackAdapter(config)
+        
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
         
-        Authorization is checked via environment variables:
-        - GATEWAY_ALLOWED_USERS: Comma-separated list of user IDs (all platforms)
-        - TELEGRAM_ALLOWED_USERS: Telegram-specific user IDs
-        - DISCORD_ALLOWED_USERS: Discord-specific user IDs
-        
-        If no allowlist is configured, all users are allowed (open access).
+        Checks in order:
+        1. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        2. DM pairing approved list
+        3. If no allowlists AND no pairing approvals exist, allow all (open access)
         """
         user_id = source.user_id
         if not user_id:
@@ -205,12 +230,18 @@ class GatewayRunner:
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
         }
         
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""))
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "")
         
-        # If no allowlists configured, allow all (backward compatible)
+        # Check pairing store (always checked, regardless of allowlists)
+        platform_name = source.platform.value if source.platform else ""
+        if self.pairing_store.is_approved(platform_name, user_id):
+            return True
+        
+        # If no allowlists configured and no pairing approvals, allow all (backward compatible)
         if not platform_allowlist and not global_allowlist:
             return True
         
@@ -241,7 +272,31 @@ class GatewayRunner:
         # Check if user is authorized
         if not self._is_user_authorized(source):
             print(f"[gateway] Unauthorized user: {source.user_id} ({source.user_name}) on {source.platform.value}")
-            return None  # Silently ignore unauthorized users
+            # In DMs: offer pairing code. In groups: silently ignore.
+            if source.chat_type == "dm":
+                platform_name = source.platform.value if source.platform else "unknown"
+                code = self.pairing_store.generate_code(
+                    platform_name, source.user_id, source.user_name or ""
+                )
+                if code:
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        await adapter.send(
+                            source.chat_id,
+                            f"Hi~ I don't recognize you yet!\n\n"
+                            f"Here's your pairing code: `{code}`\n\n"
+                            f"Ask the bot owner to run:\n"
+                            f"`hermes pairing approve {platform_name} {code}`"
+                        )
+                else:
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        await adapter.send(
+                            source.chat_id,
+                            "Too many pairing requests right now~ "
+                            "Please try again later!"
+                        )
+            return None
         
         # Check for commands
         command = event.get_command()
@@ -327,7 +382,34 @@ class GatewayRunner:
                     message_text, image_paths
                 )
         
+        # -----------------------------------------------------------------
+        # Auto-transcribe voice/audio messages sent by the user
+        # -----------------------------------------------------------------
+        if event.media_urls:
+            audio_paths = []
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_audio = (
+                    mtype.startswith("audio/")
+                    or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
+                )
+                if is_audio:
+                    audio_paths.append(path)
+            if audio_paths:
+                message_text = await self._enrich_message_with_transcription(
+                    message_text, audio_paths
+                )
+        
         try:
+            # Emit agent:start hook
+            hook_ctx = {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "message": message_text[:500],
+            }
+            await self.hooks.emit("agent:start", hook_ctx)
+            
             # Run the agent
             response = await self._run_agent(
                 message=message_text,
@@ -337,6 +419,12 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key
             )
+            
+            # Emit agent:end hook
+            await self.hooks.emit("agent:end", {
+                **hook_ctx,
+                "response": (response or "")[:500],
+            })
             
             # Check if the agent encountered a dangerous command needing approval
             # The terminal tool stores the last pending approval globally
@@ -381,6 +469,13 @@ class GatewayRunner:
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
+        
+        # Emit session:reset hook
+        await self.hooks.emit("session:reset", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+        })
         
         if new_entry:
             return "✨ Session reset! I've started fresh with no memory of our previous conversation."
@@ -482,26 +577,82 @@ class GatewayRunner:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     enriched_parts.append(
-                        f"[User sent an image. Vision analysis:\n{description}]\n"
-                        f"[To examine this image further, use vision_analyze with "
-                        f"image_url: {path}]"
+                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {path} ~]"
                     )
                 else:
-                    # Analysis failed -- still tell the model the image exists
                     enriched_parts.append(
-                        f"[User sent an image but automatic analysis failed. "
-                        f"You can try analyzing it with vision_analyze using "
-                        f"image_url: {path}]"
+                        "[The user sent an image but I couldn't quite see it "
+                        "this time (>_<) You can try looking at it yourself "
+                        f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
                 print(f"[gateway] Vision auto-analysis error: {e}", flush=True)
                 enriched_parts.append(
-                    f"[User sent an image but automatic analysis encountered an error. "
-                    f"You can try analyzing it with vision_analyze using "
-                    f"image_url: {path}]"
+                    f"[The user sent an image but something went wrong when I "
+                    f"tried to look at it~ You can try examining it yourself "
+                    f"with vision_analyze using image_url: {path}]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            if user_text:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
+
+    async def _enrich_message_with_transcription(
+        self,
+        user_text: str,
+        audio_paths: List[str],
+    ) -> str:
+        """
+        Auto-transcribe user voice/audio messages using OpenAI Whisper API
+        and prepend the transcript to the message text.
+
+        Args:
+            user_text:   The user's original caption / message text.
+            audio_paths: List of local file paths to cached audio files.
+
+        Returns:
+            The enriched message string with transcriptions prepended.
+        """
+        from tools.transcription_tools import transcribe_audio
+        import asyncio
+
+        enriched_parts = []
+        for path in audio_paths:
+            try:
+                print(f"[gateway] Transcribing user voice: {path}", flush=True)
+                result = await asyncio.to_thread(transcribe_audio, path)
+                if result["success"]:
+                    transcript = result["transcript"]
+                    enriched_parts.append(
+                        f'[The user sent a voice message~ '
+                        f'Here\'s what they said: "{transcript}"]'
+                    )
+                else:
+                    error = result.get("error", "unknown error")
+                    if "OPENAI_API_KEY" in error:
+                        enriched_parts.append(
+                            "[The user sent a voice message but I can't listen "
+                            "to it right now~ OPENAI_API_KEY isn't set up yet "
+                            "(';w;') Let them know!]"
+                        )
+                    else:
+                        enriched_parts.append(
+                            "[The user sent a voice message but I had trouble "
+                            f"transcribing it~ ({error})]"
+                        )
+            except Exception as e:
+                print(f"[gateway] Transcription error: {e}", flush=True)
+                enriched_parts.append(
+                    "[The user sent a voice message but something went wrong "
+                    "when I tried to listen to it~ Let them know!]"
+                )
+
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
             if user_text:

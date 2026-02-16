@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
 )
 
 
@@ -267,7 +268,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         if resp.status == 200:
                             messages = await resp.json()
                             for msg_data in messages:
-                                event = self._build_message_event(msg_data)
+                                event = await self._build_message_event(msg_data)
                                 if event:
                                     await self.handle_message(event)
             except asyncio.CancelledError:
@@ -278,8 +279,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             
             await asyncio.sleep(1)  # Poll interval
     
-    def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data."""
+    async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
+        """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
             # Determine message type
             msg_type = MessageType.TEXT
@@ -307,13 +308,34 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_name=data.get("senderName"),
             )
             
+            # Download image media URLs to the local cache so the vision tool
+            # can access them reliably regardless of URL expiration.
+            raw_urls = data.get("mediaUrls", [])
+            cached_urls = []
+            media_types = []
+            for url in raw_urls:
+                if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
+                    try:
+                        cached_path = await cache_image_from_url(url, ext=".jpg")
+                        cached_urls.append(cached_path)
+                        media_types.append("image/jpeg")
+                        print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
+                    except Exception as e:
+                        print(f"[{self.name}] Failed to cache image: {e}", flush=True)
+                        cached_urls.append(url)  # Fall back to original URL
+                        media_types.append("image/jpeg")
+                else:
+                    cached_urls.append(url)
+                    media_types.append("unknown")
+            
             return MessageEvent(
                 text=data.get("body", ""),
                 message_type=msg_type,
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
-                media_urls=data.get("mediaUrls", []),
+                media_urls=cached_urls,
+                media_types=media_types,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

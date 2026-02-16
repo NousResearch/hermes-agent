@@ -58,7 +58,7 @@ from gateway.session import (
     build_session_context_prompt,
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 
 class GatewayRunner:
@@ -298,10 +298,39 @@ class GatewayRunner:
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         
+        # -----------------------------------------------------------------
+        # Auto-analyze images sent by the user
+        #
+        # If the user attached image(s), we run the vision tool eagerly so
+        # the conversation model always receives a text description.  The
+        # local file path is also included so the model can re-examine the
+        # image later with a more targeted question via vision_analyze.
+        #
+        # We filter to image paths only (by media_type) so that non-image
+        # attachments (documents, audio, etc.) are not sent to the vision
+        # tool even when they appear in the same message.
+        # -----------------------------------------------------------------
+        message_text = event.text or ""
+        if event.media_urls:
+            image_paths = []
+            for i, path in enumerate(event.media_urls):
+                # Check media_types if available; otherwise infer from message type
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_image = (
+                    mtype.startswith("image/")
+                    or event.message_type == MessageType.PHOTO
+                )
+                if is_image:
+                    image_paths.append(path)
+            if image_paths:
+                message_text = await self._enrich_message_with_vision(
+                    message_text, image_paths
+                )
+        
         try:
             # Run the agent
             response = await self._run_agent(
-                message=event.text,
+                message=message_text,
                 context_prompt=context_prompt,
                 history=history,
                 source=source,
@@ -320,10 +349,10 @@ class GatewayRunner:
             except Exception:
                 pass
             
-            # Append to transcript
+            # Append to transcript (use the enriched message so vision context is preserved)
             self.session_store.append_to_transcript(
                 session_entry.session_id,
-                {"role": "user", "content": event.text, "timestamp": datetime.now().isoformat()}
+                {"role": "user", "content": message_text, "timestamp": datetime.now().isoformat()}
             )
             self.session_store.append_to_transcript(
                 session_entry.session_id,
@@ -411,6 +440,75 @@ class GatewayRunner:
             if var in os.environ:
                 del os.environ[var]
     
+    async def _enrich_message_with_vision(
+        self,
+        user_text: str,
+        image_paths: List[str],
+    ) -> str:
+        """
+        Auto-analyze user-attached images with the vision tool and prepend
+        the descriptions to the message text.
+
+        Each image is analyzed with a general-purpose prompt.  The resulting
+        description *and* the local cache path are injected so the model can:
+          1. Immediately understand what the user sent (no extra tool call).
+          2. Re-examine the image with vision_analyze if it needs more detail.
+
+        Args:
+            user_text:   The user's original caption / message text.
+            image_paths: List of local file paths to cached images.
+
+        Returns:
+            The enriched message string with vision descriptions prepended.
+        """
+        from tools.vision_tools import vision_analyze_tool
+        import json as _json
+
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
+
+        enriched_parts = []
+        for path in image_paths:
+            try:
+                print(f"[gateway] Auto-analyzing user image: {path}", flush=True)
+                result_json = await vision_analyze_tool(
+                    image_url=path,
+                    user_prompt=analysis_prompt,
+                )
+                result = _json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    enriched_parts.append(
+                        f"[User sent an image. Vision analysis:\n{description}]\n"
+                        f"[To examine this image further, use vision_analyze with "
+                        f"image_url: {path}]"
+                    )
+                else:
+                    # Analysis failed -- still tell the model the image exists
+                    enriched_parts.append(
+                        f"[User sent an image but automatic analysis failed. "
+                        f"You can try analyzing it with vision_analyze using "
+                        f"image_url: {path}]"
+                    )
+            except Exception as e:
+                print(f"[gateway] Vision auto-analysis error: {e}", flush=True)
+                enriched_parts.append(
+                    f"[User sent an image but automatic analysis encountered an error. "
+                    f"You can try analyzing it with vision_analyze using "
+                    f"image_url: {path}]"
+                )
+
+        # Combine: vision descriptions first, then the user's original text
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            if user_text:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
+
     async def _run_agent(
         self,
         message: str,

@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_bytes,
 )
 
 
@@ -303,7 +304,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self.handle_message(event)
     
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages."""
+        """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
         
@@ -326,6 +327,30 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = msg.caption
+        
+        # Download photo to local image cache so the vision tool can access it
+        # even after Telegram's ephemeral file URLs expire (~1 hour).
+        if msg.photo:
+            try:
+                # msg.photo is a list of PhotoSize sorted by size; take the largest
+                photo = msg.photo[-1]
+                file_obj = await photo.get_file()
+                # Download the image bytes directly into memory
+                image_bytes = await file_obj.download_as_bytearray()
+                # Determine extension from the file path if available
+                ext = ".jpg"
+                if file_obj.file_path:
+                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                # Save to cache and populate media_urls with the local path
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [f"image/{ext.lstrip('.')}"]
+                print(f"[Telegram] Cached user photo: {cached_path}", flush=True)
+            except Exception as e:
+                print(f"[Telegram] Failed to cache photo: {e}", flush=True)
         
         await self.handle_message(event)
     

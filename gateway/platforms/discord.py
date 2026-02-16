@@ -32,6 +32,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_url,
 )
 
 
@@ -402,9 +403,31 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
         
-        # Build media URLs
-        media_urls = [att.url for att in message.attachments]
-        media_types = [att.content_type or "unknown" for att in message.attachments]
+        # Build media URLs -- download image attachments to local cache so the
+        # vision tool can access them reliably (Discord CDN URLs can expire).
+        media_urls = []
+        media_types = []
+        for att in message.attachments:
+            content_type = att.content_type or "unknown"
+            if content_type.startswith("image/"):
+                try:
+                    # Determine extension from content type (image/png -> .png)
+                    ext = "." + content_type.split("/")[-1].split(";")[0]
+                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                        ext = ".jpg"
+                    cached_path = await cache_image_from_url(att.url, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(content_type)
+                    print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                except Exception as e:
+                    print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
+                    # Fall back to the CDN URL if caching fails
+                    media_urls.append(att.url)
+                    media_types.append(content_type)
+            else:
+                # Non-image attachments: keep the original URL
+                media_urls.append(att.url)
+                media_types.append(content_type)
         
         event = MessageEvent(
             text=message.content,

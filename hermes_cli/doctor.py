@@ -10,7 +10,18 @@ import subprocess
 import shutil
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+
+PROJECT_ROOT = get_project_root()
+HERMES_HOME = get_hermes_home()
+
+# Load environment variables from ~/.hermes/.env so API key checks work
+from dotenv import load_dotenv
+_env_path = get_env_path()
+if _env_path.exists():
+    load_dotenv(_env_path)
+# Also try project .env as fallback
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 # ANSI colors
 class Colors:
@@ -118,27 +129,38 @@ def run_doctor(args):
     print()
     print(color("◆ Configuration Files", Colors.CYAN, Colors.BOLD))
     
-    env_path = PROJECT_ROOT / '.env'
+    # Check ~/.hermes/.env (primary location for user config)
+    env_path = HERMES_HOME / '.env'
     if env_path.exists():
-        check_ok(".env file exists")
+        check_ok("~/.hermes/.env file exists")
         
         # Check for common issues
         content = env_path.read_text()
         if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
             check_ok("API key configured")
         else:
-            check_warn("No API key found in .env")
+            check_warn("No API key found in ~/.hermes/.env")
             issues.append("Run 'hermes setup' to configure API keys")
     else:
-        check_fail(".env file missing")
-        check_info("Run 'hermes setup' to create one")
-        issues.append("Run 'hermes setup' to create .env")
+        # Also check project root as fallback
+        fallback_env = PROJECT_ROOT / '.env'
+        if fallback_env.exists():
+            check_ok(".env file exists (in project directory)")
+        else:
+            check_fail("~/.hermes/.env file missing")
+            check_info("Run 'hermes setup' to create one")
+            issues.append("Run 'hermes setup' to create .env")
     
-    config_path = PROJECT_ROOT / 'cli-config.yaml'
+    # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
+    config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
-        check_ok("cli-config.yaml exists")
+        check_ok("~/.hermes/config.yaml exists")
     else:
-        check_warn("cli-config.yaml not found", "(using defaults)")
+        fallback_config = PROJECT_ROOT / 'cli-config.yaml'
+        if fallback_config.exists():
+            check_ok("cli-config.yaml exists (in project directory)")
+        else:
+            check_warn("config.yaml not found", "(using defaults)")
     
     # =========================================================================
     # Check: Directory structure
@@ -151,6 +173,23 @@ def run_doctor(args):
         check_ok("~/.hermes directory exists")
     else:
         check_warn("~/.hermes not found", "(will be created on first use)")
+    
+    # Check for SOUL.md persona file
+    soul_path = hermes_home / "SOUL.md"
+    if soul_path.exists():
+        content = soul_path.read_text(encoding="utf-8").strip()
+        # Check if it's just the template comments (no real content)
+        lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
+        if lines:
+            check_ok("~/.hermes/SOUL.md exists (persona configured)")
+        else:
+            check_info("~/.hermes/SOUL.md exists but is empty — edit it to customize personality")
+    else:
+        check_warn("~/.hermes/SOUL.md not found", "(create it to give Hermes a custom personality)")
+        if should_fix:
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            soul_path.write_text("# Hermes Agent Persona\n\n<!-- Edit this file to customize how Hermes communicates. -->\n", encoding="utf-8")
+            check_ok("Created ~/.hermes/SOUL.md")
     
     logs_dir = PROJECT_ROOT / "logs"
     if logs_dir.exists():

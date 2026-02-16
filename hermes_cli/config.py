@@ -478,16 +478,18 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
+    import copy
     config_path = get_config_path()
     
-    config = DEFAULT_CONFIG.copy()
+    # Deep copy to avoid mutating DEFAULT_CONFIG
+    config = copy.deepcopy(DEFAULT_CONFIG)
     
     if config_path.exists():
         try:
             with open(config_path) as f:
                 user_config = yaml.safe_load(f) or {}
             
-            # Deep merge
+            # Deep merge user values over defaults
             for key, value in user_config.items():
                 if isinstance(value, dict) and key in config and isinstance(config[key], dict):
                     config[key].update(value)
@@ -544,6 +546,9 @@ def save_env_value(key: str, value: str):
             break
     
     if not found:
+        # Ensure there's a newline at the end of the file before appending
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
     
     with open(env_path, 'w') as f:
@@ -702,7 +707,7 @@ def set_config_value(key: str, value: str):
         'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
-        'SUDO_PASSWORD'
+        'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
     ]
     
     if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):
@@ -711,14 +716,23 @@ def set_config_value(key: str, value: str):
         return
     
     # Otherwise it goes to config.yaml
-    config = load_config()
+    # Read the raw user config (not merged with defaults) to avoid
+    # dumping all default values back to the file
+    config_path = get_config_path()
+    user_config = {}
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                user_config = yaml.safe_load(f) or {}
+        except Exception:
+            user_config = {}
     
-    # Handle nested keys (e.g., "terminal.backend")
+    # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')
-    current = config
+    current = user_config
     
     for part in parts[:-1]:
-        if part not in current:
+        if part not in current or not isinstance(current.get(part), dict):
             current[part] = {}
         current = current[part]
     
@@ -733,8 +747,13 @@ def set_config_value(key: str, value: str):
         value = float(value)
     
     current[parts[-1]] = value
-    save_config(config)
-    print(f"✓ Set {key} = {value} in {get_config_path()}")
+    
+    # Write only user config back (not the full merged defaults)
+    ensure_hermes_home()
+    with open(config_path, 'w') as f:
+        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"✓ Set {key} = {value} in {config_path}")
 
 
 # =============================================================================

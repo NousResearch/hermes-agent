@@ -450,7 +450,7 @@ class GatewayRunner:
             # definitions as the first entry so the transcript is self-describing
             # -- the same list of dicts sent as tools=[...] in the API request.
             if not history:
-                tool_defs = tools_holder[0]
+                tool_defs = agent_result.get("tools", [])
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
                     {
@@ -896,6 +896,7 @@ class GatewayRunner:
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
+                    "tools": tools_holder[0] or [],
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -934,6 +935,7 @@ class GatewayRunner:
                 "final_response": final_response,
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+                "tools": tools_holder[0] or [],
             }
         
         # Start progress message sender if enabled

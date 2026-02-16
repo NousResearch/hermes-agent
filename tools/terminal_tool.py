@@ -1406,7 +1406,8 @@ def cleanup_all_environments():
         except:
             pass
     
-    print(f"[Terminal Cleanup] Cleaned {cleaned} environments")
+    if not os.getenv("HERMES_QUIET") and cleaned > 0:
+        print(f"[Terminal Cleanup] Cleaned {cleaned} environments")
     return cleaned
 
 

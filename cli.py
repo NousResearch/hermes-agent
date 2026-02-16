@@ -237,6 +237,24 @@ from cron import create_job, list_jobs, remove_job, get_job, run_daemon as run_c
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
+# Guard to prevent cleanup from running multiple times on exit
+_cleanup_done = False
+
+def _run_cleanup():
+    """Run resource cleanup exactly once."""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    try:
+        _cleanup_all_terminals()
+    except Exception:
+        pass
+    try:
+        _cleanup_all_browsers()
+    except Exception:
+        pass
+
 # ============================================================================
 # ASCII Art & Branding
 # ============================================================================
@@ -1606,9 +1624,7 @@ class HermesCLI:
         process_thread.start()
         
         # Register atexit cleanup so resources are freed even on unexpected exit
-        # (terminal VMs, browser sessions, etc.)
-        atexit.register(_cleanup_all_browsers)
-        atexit.register(_cleanup_all_terminals)
+        atexit.register(_run_cleanup)
         
         # Run the application with patch_stdout for proper output handling
         try:
@@ -1618,15 +1634,7 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
-            # Explicitly clean up resources before exit
-            try:
-                _cleanup_all_terminals()
-            except Exception:
-                pass
-            try:
-                _cleanup_all_browsers()
-            except Exception:
-                pass
+            _run_cleanup()
             print("\nGoodbye! ⚕")
 
 
@@ -1747,8 +1755,7 @@ def main(
         sys.exit(0)
     
     # Register cleanup for single-query mode (interactive mode registers in run())
-    atexit.register(_cleanup_all_browsers)
-    atexit.register(_cleanup_all_terminals)
+    atexit.register(_run_cleanup)
     
     # Handle single query mode
     if query:

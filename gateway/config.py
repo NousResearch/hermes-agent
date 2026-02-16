@@ -22,6 +22,7 @@ class Platform(Enum):
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
+    SLACK = "slack"
 
 
 @dataclass
@@ -307,6 +308,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
         config.platforms[Platform.WHATSAPP].enabled = True
+    
+    # Slack
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    if slack_token:
+        if Platform.SLACK not in config.platforms:
+            config.platforms[Platform.SLACK] = PlatformConfig()
+        config.platforms[Platform.SLACK].enabled = True
+        config.platforms[Platform.SLACK].token = slack_token
+        # Home channel
+        slack_home = os.getenv("SLACK_HOME_CHANNEL")
+        if slack_home:
+            config.platforms[Platform.SLACK].home_channel = HomeChannel(
+                platform=Platform.SLACK,
+                chat_id=slack_home,
+                name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
+            )
     
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

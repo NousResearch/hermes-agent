@@ -31,6 +31,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_url,
+    cache_audio_from_url,
 )
 
 
@@ -322,8 +323,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
                     except Exception as e:
                         print(f"[{self.name}] Failed to cache image: {e}", flush=True)
-                        cached_urls.append(url)  # Fall back to original URL
+                        cached_urls.append(url)
                         media_types.append("image/jpeg")
+                elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
+                    try:
+                        cached_path = await cache_audio_from_url(url, ext=".ogg")
+                        cached_urls.append(cached_path)
+                        media_types.append("audio/ogg")
+                        print(f"[{self.name}] Cached user voice: {cached_path}", flush=True)
+                    except Exception as e:
+                        print(f"[{self.name}] Failed to cache voice: {e}", flush=True)
+                        cached_urls.append(url)
+                        media_types.append("audio/ogg")
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")

@@ -538,10 +538,11 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle
+        # PTY mode -- write through pty handle (expects bytes)
         if hasattr(session, '_pty') and session._pty:
             try:
-                session._pty.write(data)
+                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
                 return {"status": "error", "error": str(e)}

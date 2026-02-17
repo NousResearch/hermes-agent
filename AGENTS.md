@@ -364,7 +364,7 @@ API keys are loaded from `~/.hermes/.env`:
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
 - `terminal.backend` - Backend: local, docker, singularity, modal, or ssh
-- `terminal.cwd` - Working directory for CLI ("." = current directory)
+- `terminal.cwd` - Working directory ("." = host CWD for local only; for remote backends set an absolute path inside the target, or omit to use the backend's default)
 - `terminal.docker_image` - Image for Docker backend
 - `terminal.singularity_image` - Image for Singularity backend
 - `terminal.modal_image` - Image for Modal backend

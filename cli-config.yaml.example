@@ -27,8 +27,8 @@ model:
 #   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
 #   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
 terminal:
-  env_type: "local"
-  cwd: "."  # CLI working directory - "." means current directory
+  backend: "local"
+  cwd: "."  # For local backend: "." = current directory. Ignored for remote backends.
   timeout: 180
   lifetime_seconds: 300
   # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
@@ -39,8 +39,8 @@ terminal:
 # Great for: keeping agent isolated from its own code, using powerful remote hardware
 # -----------------------------------------------------------------------------
 # terminal:
-#   env_type: "ssh"
-#   cwd: "/home/myuser/project"
+#   backend: "ssh"
+#   cwd: "/home/myuser/project"  # Path on the REMOTE server
 #   timeout: 180
 #   lifetime_seconds: 300
 #   ssh_host: "my-server.example.com"
@@ -54,8 +54,8 @@ terminal:
 # Great for: reproducible environments, testing, isolation
 # -----------------------------------------------------------------------------
 # terminal:
-#   env_type: "docker"
-#   cwd: "/workspace"
+#   backend: "docker"
+#   cwd: "/workspace"  # Path INSIDE the container (default: /)
 #   timeout: 180
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
@@ -66,8 +66,8 @@ terminal:
 # Great for: HPC clusters, shared compute environments
 # -----------------------------------------------------------------------------
 # terminal:
-#   env_type: "singularity"
-#   cwd: "/workspace"
+#   backend: "singularity"
+#   cwd: "/workspace"  # Path INSIDE the container (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
 #   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
@@ -78,8 +78,8 @@ terminal:
 # Great for: GPU access, scalable compute, serverless execution
 # -----------------------------------------------------------------------------
 # terminal:
-#   env_type: "modal"
-#   cwd: "/workspace"
+#   backend: "modal"
+#   cwd: "/workspace"  # Path INSIDE the sandbox (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"

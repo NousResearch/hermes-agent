@@ -850,6 +850,21 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "schedule_cronjob": "name",
     }
     
+    # Special handling for the process tool -- show action + session_id
+    if tool_name == "process":
+        action = args.get("action", "")
+        session_id = args.get("session_id", "")
+        data = args.get("data", "")
+        timeout = args.get("timeout")
+        parts = [action]
+        if session_id:
+            parts.append(session_id[:16])
+        if data:
+            parts.append(f'"{data[:20]}"')
+        if timeout and action == "wait":
+            parts.append(f"{timeout}s")
+        return " ".join(parts) if parts else None
+
     key = primary_args.get(tool_name)
     if not key:
         # Try common arg names as fallback

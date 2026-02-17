@@ -1274,49 +1274,56 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     global _active_environments, _last_activity
 
     current_time = time.time()
-    tasks_to_cleanup = []
+
+    # Phase 1: collect stale entries and remove them from tracking dicts while
+    # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
+    # Docker teardown can block for 10-15s, which would stall every concurrent
+    # terminal/file tool call waiting on _env_lock.
+    envs_to_stop = []  # list of (task_id, env) pairs
 
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
             if current_time - last_time > lifetime_seconds:
-                tasks_to_cleanup.append(task_id)
+                env = _active_environments.pop(task_id, None)
+                _last_activity.pop(task_id, None)
+                _task_workdirs.pop(task_id, None)
+                if env is not None:
+                    envs_to_stop.append((task_id, env))
 
-        for task_id in tasks_to_cleanup:
-            try:
-                if task_id in _active_environments:
-                    env = _active_environments[task_id]
-                    # Try various cleanup methods
-                    if hasattr(env, 'cleanup'):
-                        env.cleanup()
-                    elif hasattr(env, 'stop'):
-                        env.stop()
-                    elif hasattr(env, 'terminate'):
-                        env.terminate()
+        # Also purge per-task creation locks for cleaned-up tasks
+        with _creation_locks_lock:
+            for task_id, _ in envs_to_stop:
+                _creation_locks.pop(task_id, None)
 
-                    del _active_environments[task_id]
-                    if not os.getenv("HERMES_QUIET"):
-                        print(f"[Terminal Cleanup] Cleaned up inactive environment for task: {task_id}")
+    # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
+    # are not blocked while Modal/Docker sandboxes shut down.
+    for task_id, env in envs_to_stop:
+        # Invalidate stale file_ops cache entry (Bug fix: prevents
+        # ShellFileOperations from referencing a dead sandbox)
+        try:
+            from tools.file_tools import clear_file_ops_cache
+            clear_file_ops_cache(task_id)
+        except ImportError:
+            pass
 
-                if task_id in _last_activity:
-                    del _last_activity[task_id]
-                if task_id in _task_workdirs:
-                    del _task_workdirs[task_id]
+        try:
+            if hasattr(env, 'cleanup'):
+                env.cleanup()
+            elif hasattr(env, 'stop'):
+                env.stop()
+            elif hasattr(env, 'terminate'):
+                env.terminate()
 
-            except Exception as e:
-                error_str = str(e)
-                if not os.getenv("HERMES_QUIET"):
-                    if "404" in error_str or "not found" in error_str.lower():
-                        print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
-                    else:
-                        print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
-                
-                # Always remove from tracking dicts
-                if task_id in _active_environments:
-                    del _active_environments[task_id]
-                if task_id in _last_activity:
-                    del _last_activity[task_id]
-                if task_id in _task_workdirs:
-                    del _task_workdirs[task_id]
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[Terminal Cleanup] Cleaned up inactive environment for task: {task_id}")
+
+        except Exception as e:
+            error_str = str(e)
+            if not os.getenv("HERMES_QUIET"):
+                if "404" in error_str or "not found" in error_str.lower():
+                    print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
+                else:
+                    print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
 
 
 def _cleanup_thread_worker():
@@ -1415,34 +1422,47 @@ def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
     global _active_environments, _last_activity, _task_workdirs
 
+    # Remove from tracking dicts while holding the lock, but defer the
+    # actual (potentially slow) env.cleanup() call to outside the lock
+    # so other tool calls aren't blocked.
+    env = None
     with _env_lock:
-        try:
-            if task_id in _active_environments:
-                env = _active_environments[task_id]
-                if hasattr(env, 'cleanup'):
-                    env.cleanup()
-                elif hasattr(env, 'stop'):
-                    env.stop()
-                elif hasattr(env, 'terminate'):
-                    env.terminate()
+        env = _active_environments.pop(task_id, None)
+        _task_workdirs.pop(task_id, None)
+        _last_activity.pop(task_id, None)
 
-                del _active_environments[task_id]
-                if not os.getenv("HERMES_QUIET"):
-                    print(f"[Terminal Cleanup] Manually cleaned up environment for task: {task_id}")
+    # Clean up per-task creation lock
+    with _creation_locks_lock:
+        _creation_locks.pop(task_id, None)
 
-            if task_id in _task_workdirs:
-                del _task_workdirs[task_id]
+    # Invalidate stale file_ops cache entry
+    try:
+        from tools.file_tools import clear_file_ops_cache
+        clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
 
-            if task_id in _last_activity:
-                del _last_activity[task_id]
+    if env is None:
+        return
 
-        except Exception as e:
-            if not os.getenv("HERMES_QUIET"):
-                error_str = str(e)
-                if "404" in error_str or "not found" in error_str.lower():
-                    print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
-                else:
-                    print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
+    try:
+        if hasattr(env, 'cleanup'):
+            env.cleanup()
+        elif hasattr(env, 'stop'):
+            env.stop()
+        elif hasattr(env, 'terminate'):
+            env.terminate()
+
+        if not os.getenv("HERMES_QUIET"):
+            print(f"[Terminal Cleanup] Manually cleaned up environment for task: {task_id}")
+
+    except Exception as e:
+        if not os.getenv("HERMES_QUIET"):
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                print(f"[Terminal Cleanup] Environment for task {task_id} already cleaned up")
+            else:
+                print(f"[Terminal Cleanup] Error cleaning up environment for task {task_id}: {e}")
 
 
 def _atexit_cleanup():

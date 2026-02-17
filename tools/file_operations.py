@@ -257,9 +257,12 @@ class ShellFileOperations(FileOperations):
             cwd: Working directory (defaults to env's cwd or current directory)
         """
         self.env = terminal_env
-        # Determine cwd from various possible sources
+        # Determine cwd from various possible sources.
+        # IMPORTANT: do NOT fall back to os.getcwd() -- that's the HOST's local
+        # path which doesn't exist inside container/cloud backends (modal, docker).
+        # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
-                   getattr(getattr(terminal_env, 'config', None), 'cwd', None) or os.getcwd()
+                   getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
         
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}

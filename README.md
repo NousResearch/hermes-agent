@@ -219,9 +219,13 @@ When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, 
 
 Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
 
-### 🖥️ Terminal Backend
+### 🖥️ Terminal & Process Management
 
-The terminal tool can execute commands in different environments:
+The terminal tool can execute commands in different environments, with full background process management via the `process` tool:
+
+**Background processes:** Start with `terminal(command="...", background=true)`, then use `process(action="poll/wait/log/kill/write")` to monitor, wait for completion, read output, terminate, or send input. The `wait` action blocks until the process finishes -- no polling loops needed. PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
+
+**Execution environments:**
 
 | Backend | Description | Use Case |
 |---------|-------------|----------|

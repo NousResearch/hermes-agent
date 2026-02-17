@@ -43,6 +43,7 @@ cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
+pty = ["ptyprocess>=0.7.0"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
@@ -51,6 +52,7 @@ all = [
   "hermes-agent[dev]",
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
+  "hermes-agent[pty]",
 ]
 
 [project.scripts]

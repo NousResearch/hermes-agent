@@ -258,6 +258,11 @@ class HermesAgentBaseEnv(BaseEnv):
             logger.info("Sampled toolsets from '%s': %s", config.distribution, group_toolsets)
         else:
             group_toolsets = config.enabled_toolsets  # None means "all available"
+            if group_toolsets is None:
+                logger.warning(
+                    "enabled_toolsets is None -- loading ALL tools including messaging. "
+                    "Set explicit enabled_toolsets for RL training."
+                )
 
         tools = get_tool_definitions(
             enabled_toolsets=group_toolsets,

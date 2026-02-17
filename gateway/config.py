@@ -65,7 +65,7 @@ class SessionResetPolicy:
     """
     mode: str = "both"  # "daily", "idle", or "both"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
-    idle_minutes: int = 120  # Minutes of inactivity before reset
+    idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -79,7 +79,7 @@ class SessionResetPolicy:
         return cls(
             mode=data.get("mode", "both"),
             at_hour=data.get("at_hour", 4),
-            idle_minutes=data.get("idle_minutes", 120),
+            idle_minutes=data.get("idle_minutes", 1440),
         )
 
 

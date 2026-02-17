@@ -1013,6 +1013,7 @@ class AIAgent:
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        skip_context_files: bool = False,
     ):
         """
         Initialize the AI Agent.
@@ -1045,6 +1046,9 @@ class AIAgent:
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
             platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
                 Used to inject platform-specific formatting hints into the system prompt.
+            skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
+                into the system prompt. Use this for batch processing and data generation to avoid
+                polluting trajectories with user-specific persona or project instructions.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -1054,6 +1058,7 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self.skip_context_files = skip_context_files
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -2016,9 +2021,11 @@ class AIAgent:
             prompt_parts.append(skills_prompt)
 
         # Auto-include context files (SOUL.md, AGENTS.md, .cursorrules).
-        context_files_prompt = build_context_files_prompt()
-        if context_files_prompt:
-            prompt_parts.append(context_files_prompt)
+        # Skipped for batch processing / data generation to avoid polluting trajectories.
+        if not self.skip_context_files:
+            context_files_prompt = build_context_files_prompt()
+            if context_files_prompt:
+                prompt_parts.append(context_files_prompt)
 
         # Current local date and time so the model is never confused about
         # what day/time it is (LLM training cutoffs can otherwise mislead it).

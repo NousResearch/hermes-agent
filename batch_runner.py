@@ -276,6 +276,7 @@ def _process_single_prompt(
             max_tokens=config.get("max_tokens"),
             reasoning_config=config.get("reasoning_config"),
             prefill_messages=config.get("prefill_messages"),
+            skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM

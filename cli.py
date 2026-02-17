@@ -125,12 +125,20 @@ def load_cli_config() -> Dict[str, Any]:
         },
     }
     
+    # Track whether the config file explicitly set terminal config.
+    # When using defaults (no config file / no terminal section), we should NOT
+    # overwrite env vars that were already set by .env -- only a user's config
+    # file should be authoritative.
+    _file_has_terminal_config = False
+
     # Load from file if exists
     if config_path.exists():
         try:
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f) or {}
             
+            _file_has_terminal_config = "terminal" in file_config
+
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
                 if isinstance(file_config["model"], str):
@@ -157,8 +165,13 @@ def load_cli_config() -> Dict[str, Any]:
             print(f"[Warning] Failed to load cli-config.yaml: {e}")
     
     # Apply terminal config to environment variables (so terminal_tool picks them up)
-    # Only set if not already set in environment (env vars take precedence)
     terminal_config = defaults.get("terminal", {})
+    
+    # Normalize config key: the new config system (hermes_cli/config.py) and all
+    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
+    # Accept both, with "backend" taking precedence (it's the documented key).
+    if "backend" in terminal_config:
+        terminal_config["env_type"] = terminal_config["backend"]
     
     # Handle special cwd values: "." or "auto" means use current working directory
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
@@ -182,10 +195,15 @@ def load_cli_config() -> Dict[str, Any]:
         "sudo_password": "SUDO_PASSWORD",
     }
     
-    # CLI config overrides .env for terminal settings
+    # Apply config values to env vars so terminal_tool picks them up.
+    # If the config file explicitly has a [terminal] section, those values are
+    # authoritative and override any .env settings.  When using defaults only
+    # (no config file or no terminal section), don't overwrite env vars that
+    # were already set by .env -- the user's .env is the fallback source.
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
-            os.environ[env_var] = str(terminal_config[config_key])
+            if _file_has_terminal_config or env_var not in os.environ:
+                os.environ[env_var] = str(terminal_config[config_key])
     
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})

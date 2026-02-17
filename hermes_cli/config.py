@@ -201,11 +201,11 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "advanced": True,  # Hide from standard migrate flow
     },
-    "OPENAI_API_KEY": {
-        "description": "OpenAI API key (voice transcription + custom endpoint)",
-        "prompt": "OpenAI API Key",
+    "HERMES_OPENAI_API_KEY": {
+        "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
+        "prompt": "OpenAI API Key (for Whisper STT + TTS)",
         "url": "https://platform.openai.com/api-keys",
-        "tools": ["voice_transcription"],
+        "tools": ["voice_transcription", "openai_tts"],
         "password": True,
     },
     "SLACK_BOT_TOKEN": {
@@ -603,7 +603,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("ANTHROPIC_API_KEY", "Anthropic"),
-        ("OPENAI_API_KEY", "OpenAI"),
+        ("HERMES_OPENAI_API_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("FAL_KEY", "FAL"),
@@ -703,7 +703,7 @@ def set_config_value(key: str, value: str):
     """Set a configuration value."""
     # Check if it's an API key (goes to .env)
     api_keys = [
-        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'HERMES_OPENAI_API_KEY',
         'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',

@@ -91,7 +91,16 @@ def show_status(args):
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
     
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    terminal_env = os.getenv("TERMINAL_ENV", "")
+    if not terminal_env:
+        # Fall back to config file value when env var isn't set
+        # (hermes status doesn't go through cli.py's config loading)
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            terminal_env = _cfg.get("terminal", {}).get("backend", "local")
+        except Exception:
+            terminal_env = "local"
     print(f"  Backend:      {terminal_env}")
     
     if terminal_env == "ssh":

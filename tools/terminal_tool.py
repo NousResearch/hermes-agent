@@ -1197,22 +1197,42 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     # Default cwd depends on backend:
-    #   - local/ssh: current working directory (CLI resolves "." before we get here)
-    #   - docker/singularity: /tmp inside the container (singularity bind-mounts /scratch there)
-    #   - modal: /root (ephemeral cloud container, full filesystem access)
+    #   - local: host's current working directory
+    #   - ssh: remote user's home (agent code is local, execution is remote)
+    #   - docker: / inside the container
+    #   - singularity/modal: /root (ephemeral cloud/container)
     if env_type in ("modal", "singularity"):
         default_cwd = "/root"
     elif env_type == "docker":
         default_cwd = "/"
+    elif env_type == "ssh":
+        default_cwd = "~"
     else:
         default_cwd = os.getcwd()
     
+    # Read TERMINAL_CWD but sanity-check it for non-local backends.
+    # If the CWD looks like a host-local path that can't exist inside a
+    # container/sandbox, fall back to the backend's own default.  This
+    # catches the case where cli.py (or .env) leaked the host's CWD.
+    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    if env_type in ("modal", "docker", "singularity", "ssh") and cwd:
+        # Paths containing common host-only prefixes are clearly wrong
+        # inside a container.  Also catch Windows-style paths (C:\...).
+        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+        if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
+            if not os.getenv("HERMES_QUIET"):
+                print(
+                    f"[Terminal] Ignoring TERMINAL_CWD={cwd!r} for {env_type} backend "
+                    f"(host path won't exist in sandbox). Using {default_cwd!r} instead."
+                )
+            cwd = default_cwd
+
     return {
         "env_type": env_type,
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "cwd": os.getenv("TERMINAL_CWD", default_cwd),
+        "cwd": cwd,
         "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
         # SSH-specific config

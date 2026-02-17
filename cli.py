@@ -173,10 +173,19 @@ def load_cli_config() -> Dict[str, Any]:
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
     
-    # Handle special cwd values: "." or "auto" means use current working directory
+    # Handle special cwd values: "." or "auto" means use current working directory.
+    # Only resolve to the host's CWD for the local backend where the host
+    # filesystem is directly accessible.  For ALL remote/container backends
+    # (ssh, docker, modal, singularity), the host path doesn't exist on the
+    # target -- remove the key so terminal_tool.py uses its per-backend default.
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
-        terminal_config["cwd"] = os.getcwd()
-        defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        effective_backend = terminal_config.get("env_type", "local")
+        if effective_backend == "local":
+            terminal_config["cwd"] = os.getcwd()
+            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+        else:
+            # Remove so TERMINAL_CWD stays unset → tool picks backend default
+            terminal_config.pop("cwd", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",

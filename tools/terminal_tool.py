@@ -1122,22 +1122,33 @@ TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
 
 **Command Execution:**
 - Simple commands: Just provide the 'command' parameter
-- Background processes: Set 'background': True for servers/long-running tasks
+- Background processes: Set 'background': true to get a session_id for monitoring via the 'process' tool
 - Command timeout: Optional 'timeout' parameter in seconds
+- Working directory: Optional 'workdir' parameter for per-command cwd
+- PTY mode: Set 'pty': true for interactive CLI tools (Codex, Claude Code, etc.)
 
 **Examples:**
 - Run command: `{"command": "ls -la"}`
-- Background task: `{"command": "source venv/bin/activate && python server.py", "background": True}`
+- Background task: `{"command": "pytest -v tests/", "background": true}` -- returns session_id, use process tool to poll/wait/kill
+- With workdir: `{"command": "npm install", "workdir": "/home/user/project"}`
 - With timeout: `{"command": "long_task.sh", "timeout": 300}`
+- Interactive CLI: `{"command": "codex exec 'Add tests'", "background": true, "pty": true}`
+
+**Background Process Workflow:**
+1. Start: `terminal(command="...", background=true)` -- returns session_id
+2. Monitor: `process(action="poll", session_id="...")` -- check status + new output
+3. Wait: `process(action="wait", session_id="...", timeout=600)` -- block until done
+4. Interact: `process(action="write/submit", session_id="...", data="y")` -- send stdin
+5. Kill: `process(action="kill", session_id="...")` -- terminate
 
 **Best Practices:**
-- Run servers/long processes in background
-- Monitor disk usage for large tasks
+- Use background mode for long-running tasks, then process(wait) to block until completion
+- Use workdir to run commands in specific project directories
 - Install whatever tools you need with apt-get or pip
-- Try to create or use a venv with uv or python -m venv to keep isolation from global system packages.
+- Try to create or use a venv with uv or python -m venv to keep isolation from global system packages
 
 **Things to avoid:**
-- Do NOT use interactive tools such as tmux, vim, nano, python repl - you will get stuck.
+- Do NOT use interactive tools (vim, nano, python repl) without pty=true -- they will hang without a pseudo-terminal.
 - Even git sometimes becomes interactive if the output is large. If you're not sure, pipe to cat.
 """
 
@@ -1294,6 +1305,16 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     global _active_environments, _last_activity
 
     current_time = time.time()
+
+    # Check the process registry -- skip cleanup for sandboxes with active
+    # background processes (their _last_activity gets refreshed to keep them alive).
+    try:
+        from tools.process_registry import process_registry
+        for task_id in list(_last_activity.keys()):
+            if process_registry.has_active_processes(task_id):
+                _last_activity[task_id] = current_time  # Keep sandbox alive
+    except ImportError:
+        pass
 
     # Phase 1: collect stale entries and remove them from tracking dicts while
     # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
@@ -1501,7 +1522,10 @@ def terminal_tool(
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
-    force: bool = False
+    force: bool = False,
+    workdir: Optional[str] = None,
+    check_interval: Optional[int] = None,
+    pty: bool = False,
 ) -> str:
     """
     Execute a command using mini-swe-agent's execution environments.
@@ -1512,6 +1536,9 @@ def terminal_tool(
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
         force: If True, skip dangerous command check (use after user confirms)
+        workdir: Working directory for this command (optional, uses session cwd if not set)
+        check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
+        pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1662,20 +1689,69 @@ def terminal_tool(
 
         # Prepare command for execution
         if background:
-            # Run in background with nohup and redirect output
-            exec_command = f"nohup {command} > /tmp/bg_output.log 2>&1 &"
+            # Spawn a tracked background process via the process registry.
+            # For local backends: uses subprocess.Popen with output buffering.
+            # For non-local backends: runs inside the sandbox via env.execute().
+            from tools.process_registry import process_registry
+
+            session_key = os.getenv("HERMES_SESSION_KEY", "")
+            effective_cwd = workdir or cwd
             try:
-                result = env.execute(exec_command, timeout=10)
-                return json.dumps({
-                    "output": "Background task started successfully",
+                if env_type == "local":
+                    proc_session = process_registry.spawn_local(
+                        command=command,
+                        cwd=effective_cwd,
+                        task_id=effective_task_id,
+                        session_key=session_key,
+                        env_vars=env.env if hasattr(env, 'env') else None,
+                        use_pty=pty,
+                    )
+                else:
+                    proc_session = process_registry.spawn_via_env(
+                        env=env,
+                        command=command,
+                        cwd=effective_cwd,
+                        task_id=effective_task_id,
+                        session_key=session_key,
+                    )
+
+                result_data = {
+                    "output": "Background process started",
+                    "session_id": proc_session.id,
+                    "pid": proc_session.pid,
                     "exit_code": 0,
-                    "error": None
-                }, ensure_ascii=False)
+                    "error": None,
+                }
+
+                # Transparent timeout clamping note
+                max_timeout = effective_timeout
+                if timeout and timeout > max_timeout:
+                    result_data["timeout_note"] = (
+                        f"Requested timeout {timeout}s was clamped to "
+                        f"configured limit of {max_timeout}s"
+                    )
+
+                # Register check_interval watcher (gateway picks this up after agent run)
+                if check_interval and background:
+                    effective_interval = max(30, check_interval)
+                    if check_interval < 30:
+                        result_data["check_interval_note"] = (
+                            f"Requested {check_interval}s raised to minimum 30s"
+                        )
+                    process_registry.pending_watchers.append({
+                        "session_id": proc_session.id,
+                        "check_interval": effective_interval,
+                        "session_key": session_key,
+                        "platform": os.getenv("HERMES_SESSION_PLATFORM", ""),
+                        "chat_id": os.getenv("HERMES_SESSION_CHAT_ID", ""),
+                    })
+
+                return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": f"Failed to start background task: {str(e)}"
+                    "error": f"Failed to start background process: {str(e)}"
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
@@ -1685,7 +1761,10 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
-                    result = env.execute(command, timeout=effective_timeout)
+                    execute_kwargs = {"timeout": effective_timeout}
+                    if workdir:
+                        execute_kwargs["cwd"] = workdir
+                    result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:

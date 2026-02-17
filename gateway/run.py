@@ -72,7 +72,13 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
-        self.session_store = SessionStore(self.config.sessions_dir, self.config)
+
+        # Wire process registry into session store for reset protection
+        from tools.process_registry import process_registry
+        self.session_store = SessionStore(
+            self.config.sessions_dir, self.config,
+            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+        )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -105,6 +111,15 @@ class GatewayRunner:
         
         # Discover and load event hooks
         self.hooks.discover_and_load()
+        
+        # Recover background processes from checkpoint (crash recovery)
+        try:
+            from tools.process_registry import process_registry
+            recovered = process_registry.recover_from_checkpoint()
+            if recovered:
+                print(f"[gateway] Recovered {recovered} background process(es) from previous run")
+        except Exception as e:
+            print(f"[gateway] Process checkpoint recovery: {e}")
         
         connected_count = 0
         
@@ -429,6 +444,15 @@ class GatewayRunner:
                 "response": (response or "")[:500],
             })
             
+            # Check for pending process watchers (check_interval on background processes)
+            try:
+                from tools.process_registry import process_registry
+                while process_registry.pending_watchers:
+                    watcher = process_registry.pending_watchers.pop(0)
+                    asyncio.create_task(self._run_process_watcher(watcher))
+            except Exception as e:
+                print(f"[gateway] Process watcher setup error: {e}", flush=True)
+
             # Check if the agent encountered a dangerous command needing approval
             # The terminal tool stores the last pending approval globally
             try:
@@ -701,6 +725,75 @@ class GatewayRunner:
             return prefix
         return user_text
 
+    async def _run_process_watcher(self, watcher: dict) -> None:
+        """
+        Periodically check a background process and push updates to the user.
+
+        Runs as an asyncio task. Stays silent when nothing changed.
+        Auto-removes when the process exits or is killed.
+        """
+        from tools.process_registry import process_registry
+
+        session_id = watcher["session_id"]
+        interval = watcher["check_interval"]
+        session_key = watcher.get("session_key", "")
+        platform_name = watcher.get("platform", "")
+        chat_id = watcher.get("chat_id", "")
+
+        print(f"[gateway] Process watcher started: {session_id} (every {interval}s)", flush=True)
+
+        last_output_len = 0
+        while True:
+            await asyncio.sleep(interval)
+
+            session = process_registry.get(session_id)
+            if session is None:
+                break
+
+            current_output_len = len(session.output_buffer)
+            has_new_output = current_output_len > last_output_len
+            last_output_len = current_output_len
+
+            if session.exited:
+                # Process finished -- deliver final update
+                new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                message_text = (
+                    f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                    f"Here's the final output:\n{new_output}]"
+                )
+                # Try to deliver to the originating platform
+                adapter = None
+                for p, a in self.adapters.items():
+                    if p.value == platform_name:
+                        adapter = a
+                        break
+                if adapter and chat_id:
+                    try:
+                        await adapter.send(chat_id, message_text)
+                    except Exception as e:
+                        print(f"[gateway] Watcher delivery error: {e}", flush=True)
+                break
+
+            elif has_new_output:
+                # New output available -- deliver status update
+                new_output = session.output_buffer[-500:] if session.output_buffer else ""
+                message_text = (
+                    f"[Background process {session_id} is still running~ "
+                    f"New output:\n{new_output}]"
+                )
+                adapter = None
+                for p, a in self.adapters.items():
+                    if p.value == platform_name:
+                        adapter = a
+                        break
+                if adapter and chat_id:
+                    try:
+                        await adapter.send(chat_id, message_text)
+                    except Exception as e:
+                        print(f"[gateway] Watcher delivery error: {e}", flush=True)
+
+        print(f"[gateway] Process watcher ended: {session_id}", flush=True)
+
     async def _run_agent(
         self,
         message: str,
@@ -824,6 +917,10 @@ class GatewayRunner:
         tools_holder = [None]   # Mutable container for the tool definitions
         
         def run_sync():
+            # Pass session_key to process registry via env var so background
+            # processes can be mapped back to this gateway session
+            os.environ["HERMES_SESSION_KEY"] = session_key or ""
+
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "60"))
             

@@ -438,11 +438,21 @@ class ToolContext:
 
     def cleanup(self):
         """
-        Release all resources (terminal VMs, browser sessions) for this rollout.
+        Release all resources (terminal VMs, browser sessions, background processes)
+        for this rollout.
 
         Called automatically by the base environment via try/finally after
         compute_reward() completes. You generally don't need to call this yourself.
         """
+        # Kill any background processes from this rollout (safety net)
+        try:
+            from tools.process_registry import process_registry
+            killed = process_registry.kill_all(task_id=self.task_id)
+            if killed:
+                logger.debug("Process cleanup for task %s: killed %d process(es)", self.task_id, killed)
+        except Exception as e:
+            logger.debug("Process cleanup for task %s: %s", self.task_id, e)
+
         try:
             cleanup_vm(self.task_id)
         except Exception as e:

@@ -25,6 +25,7 @@ hermes-agent/
 │   ├── uninstall.py      # Uninstaller
 │   └── cron.py           # Cron job management
 ├── tools/                # Tool implementations
+│   ├── process_registry.py     # Background process management (spawn, poll, wait, kill)
 │   ├── transcription_tools.py  # Speech-to-text (Whisper API)
 ├── gateway/              # Messaging platform adapters
 │   ├── pairing.py        # DM pairing code system
@@ -409,6 +410,37 @@ The terminal tool includes safety checks for potentially destructive commands (e
 
 **Sudo Handling (Messaging):**
 - If sudo fails over messaging, output includes tip to add `SUDO_PASSWORD` to `~/.hermes/.env`
+
+---
+
+## Background Process Management
+
+The `process` tool works alongside `terminal` for managing long-running background processes:
+
+**Starting a background process:**
+```python
+terminal(command="pytest -v tests/", background=true)
+# Returns: {"session_id": "proc_abc123", "pid": 12345, ...}
+```
+
+**Managing it with the process tool:**
+- `process(action="list")` -- show all running/recent processes
+- `process(action="poll", session_id="proc_abc123")` -- check status + new output
+- `process(action="log", session_id="proc_abc123")` -- full output with pagination
+- `process(action="wait", session_id="proc_abc123", timeout=600)` -- block until done
+- `process(action="kill", session_id="proc_abc123")` -- terminate
+- `process(action="write", session_id="proc_abc123", data="y")` -- send stdin
+- `process(action="submit", session_id="proc_abc123", data="yes")` -- send + Enter
+
+**Key behaviors:**
+- Background processes execute through the configured terminal backend (local/Docker/Modal/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
+- The `wait` action blocks the tool call until the process finishes, times out, or is interrupted by a new user message
+- PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex, Claude Code)
+- In RL training, background processes are auto-killed when the episode ends (`tool_context.cleanup()`)
+- In the gateway, sessions with active background processes are exempt from idle reset
+- The process registry checkpoints to `~/.hermes/processes.json` for crash recovery
+
+Files: `tools/process_registry.py` (registry), `model_tools.py` (tool definition + handler), `tools/terminal_tool.py` (spawn integration)
 
 ---
 

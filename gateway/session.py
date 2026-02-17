@@ -270,11 +270,15 @@ class SessionStore:
     - {session_id}.jsonl: Conversation transcripts
     """
     
-    def __init__(self, sessions_dir: Path, config: GatewayConfig):
+    def __init__(self, sessions_dir: Path, config: GatewayConfig,
+                 has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
+        # Optional callback to check if a session has active background processes.
+        # When set, sessions with running processes are exempt from reset.
+        self._has_active_processes_fn = has_active_processes_fn
     
     def _ensure_loaded(self) -> None:
         """Load sessions from disk if not already loaded."""
@@ -320,7 +324,14 @@ class SessionStore:
         Check if a session should be reset based on policy.
         
         Returns True if the session is stale and should start fresh.
+        Sessions with active background processes are never reset.
         """
+        # Don't reset sessions that have active background processes
+        if self._has_active_processes_fn:
+            session_key = self._generate_session_key(source)
+            if self._has_active_processes_fn(session_key):
+                return False
+
         policy = self.config.get_reset_policy(
             platform=source.platform,
             session_type=source.chat_type

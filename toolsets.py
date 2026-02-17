@@ -56,8 +56,8 @@ TOOLSETS = {
     },
     
     "terminal": {
-        "description": "Terminal/command execution tools",
-        "tools": ["terminal"],
+        "description": "Terminal/command execution and process management tools",
+        "tools": ["terminal", "process"],
         "includes": []
     },
     
@@ -118,7 +118,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal"],
+        "tools": ["terminal", "process"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
@@ -137,8 +137,8 @@ TOOLSETS = {
         "tools": [
             # Web tools
             "web_search", "web_extract",
-            # Terminal
-            "terminal",
+            # Terminal + process management
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search",
             # Vision
@@ -169,8 +169,8 @@ TOOLSETS = {
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": [
-            # Terminal - enabled with dangerous command approval system
-            "terminal",
+            # Terminal + process management
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search",
             # Web tools
@@ -194,8 +194,8 @@ TOOLSETS = {
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
         "tools": [
-            # Terminal - enabled with dangerous command approval system
-            "terminal",
+            # Terminal + process management
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search",
             # Web tools
@@ -221,8 +221,8 @@ TOOLSETS = {
         "tools": [
             # Web tools
             "web_search", "web_extract",
-            # Terminal - only for trusted personal accounts
-            "terminal",
+            # Terminal + process management
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search",
             # Vision
@@ -244,8 +244,8 @@ TOOLSETS = {
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
         "tools": [
-            # Terminal - enabled with dangerous command approval system
-            "terminal",
+            # Terminal + process management
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search",
             # Web tools

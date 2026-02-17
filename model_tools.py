@@ -320,6 +320,20 @@ def get_terminal_tool_definitions() -> List[Dict[str, Any]]:
                             "type": "integer",
                             "description": "Command timeout in seconds (optional)",
                             "minimum": 1
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+                        },
+                        "check_interval": {
+                            "type": "integer",
+                            "description": "Seconds between automatic status checks for background processes (gateway/messaging only, minimum 30). When set, I'll proactively report progress.",
+                            "minimum": 30
+                        },
+                        "pty": {
+                            "type": "boolean",
+                            "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                            "default": False
                         }
                     },
                     "required": ["command"]
@@ -930,6 +944,64 @@ def get_send_message_tool_definitions():
     ]
 
 
+def get_process_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the process management tool.
+
+    The process tool manages background processes started with terminal(background=true).
+    Actions: list, poll, log, wait, kill.  Phase 2 adds: write, submit.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "process",
+                "description": (
+                    "Manage background processes started with terminal(background=true). "
+                    "Actions: 'list' (show all), 'poll' (check status + new output), "
+                    "'log' (full output with pagination), 'wait' (block until done or timeout), "
+                    "'kill' (terminate), 'write' (send raw data to stdin), 'submit' (send data + Enter). "
+                    "Use 'wait' when you have nothing else to do and want "
+                    "to block until a background process finishes."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "poll", "log", "wait", "kill", "write", "submit"],
+                            "description": "Action to perform on background processes"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Process session ID (from terminal background output). Required for poll/log/wait/kill."
+                        },
+                        "data": {
+                            "type": "string",
+                            "description": "Text to send to process stdin (for 'write' and 'submit' actions)"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Max seconds to block for 'wait' action. Returns partial output on timeout.",
+                            "minimum": 1
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Line offset for 'log' action (default: last 200 lines)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max lines to return for 'log' action",
+                            "minimum": 1
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
+        }
+    ]
+
+
 def get_all_tool_names() -> List[str]:
     """
     Get the names of all available tools across all toolsets.
@@ -945,7 +1017,7 @@ def get_all_tool_names() -> List[str]:
 
     # Terminal tools (mini-swe-agent backend)
     if check_terminal_requirements():
-        tool_names.extend(["terminal"])
+        tool_names.extend(["terminal", "process"])
 
     # Vision tools
     if check_vision_requirements():
@@ -1011,6 +1083,7 @@ TOOL_TO_TOOLSET_MAP = {
     "web_search": "web_tools",
     "web_extract": "web_tools",
     "terminal": "terminal_tools",
+    "process": "terminal_tools",
     "vision_analyze": "vision_tools",
     "mixture_of_agents": "moa_tools",
     "image_generate": "image_tools",
@@ -1042,6 +1115,7 @@ TOOL_TO_TOOLSET_MAP = {
     "rl_stop_training": "rl_tools",
     "rl_get_results": "rl_tools",
     "rl_list_runs": "rl_tools",
+    "rl_test_inference": "rl_tools",
     # Text-to-speech tools
     "text_to_speech": "tts_tools",
     # File manipulation tools
@@ -1112,6 +1186,9 @@ def get_tool_definitions(
 
     if check_terminal_requirements():
         for tool in get_terminal_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+        # Process management tool (paired with terminal)
+        for tool in get_process_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
 
     if check_vision_requirements():
@@ -1339,13 +1416,68 @@ def handle_terminal_function_call(function_name: str, function_args: Dict[str, A
         command = function_args.get("command")
         background = function_args.get("background", False)
         timeout = function_args.get("timeout")
-        # Note: force parameter exists internally but is NOT exposed to the model
-        # Dangerous command approval is handled via user prompts only
+        workdir = function_args.get("workdir")
+        check_interval = function_args.get("check_interval")
+        pty = function_args.get("pty", False)
 
-        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id)
+        return terminal_tool(command=command, background=background, timeout=timeout, task_id=task_id, workdir=workdir, check_interval=check_interval, pty=pty)
 
     else:
         return json.dumps({"error": f"Unknown terminal function: {function_name}"}, ensure_ascii=False)
+
+
+def handle_process_function_call(function_name: str, function_args: Dict[str, Any], task_id: Optional[str] = None) -> str:
+    """
+    Handle function calls for the process management tool.
+
+    Routes actions (list, poll, log, wait, kill) to the ProcessRegistry.
+    """
+    from tools.process_registry import process_registry
+
+    action = function_args.get("action", "")
+    session_id = function_args.get("session_id", "")
+
+    if action == "list":
+        sessions = process_registry.list_sessions(task_id=task_id)
+        return json.dumps({"processes": sessions}, ensure_ascii=False)
+
+    elif action == "poll":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for poll"}, ensure_ascii=False)
+        return json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+
+    elif action == "log":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for log"}, ensure_ascii=False)
+        offset = function_args.get("offset", 0)
+        limit = function_args.get("limit", 200)
+        return json.dumps(process_registry.read_log(session_id, offset=offset, limit=limit), ensure_ascii=False)
+
+    elif action == "wait":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for wait"}, ensure_ascii=False)
+        timeout = function_args.get("timeout")
+        return json.dumps(process_registry.wait(session_id, timeout=timeout), ensure_ascii=False)
+
+    elif action == "kill":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for kill"}, ensure_ascii=False)
+        return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+
+    elif action == "write":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for write"}, ensure_ascii=False)
+        data = function_args.get("data", "")
+        return json.dumps(process_registry.write_stdin(session_id, data), ensure_ascii=False)
+
+    elif action == "submit":
+        if not session_id:
+            return json.dumps({"error": "session_id is required for submit"}, ensure_ascii=False)
+        data = function_args.get("data", "")
+        return json.dumps(process_registry.submit_stdin(session_id, data), ensure_ascii=False)
+
+    else:
+        return json.dumps({"error": f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit"}, ensure_ascii=False)
 
 
 def handle_vision_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
@@ -1778,6 +1910,10 @@ def handle_function_call(
         # Route terminal tools
         elif function_name in ["terminal"]:
             return handle_terminal_function_call(function_name, function_args, task_id)
+
+        # Route process management tools
+        elif function_name in ["process"]:
+            return handle_process_function_call(function_name, function_args, task_id)
 
         # Route vision tools
         elif function_name in ["vision_analyze"]:

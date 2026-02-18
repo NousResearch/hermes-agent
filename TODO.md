@@ -4,7 +4,7 @@
 
 ## What We Already Have (for reference)
 
-**42+ tools** across 12 toolsets: web (search, extract), terminal + process management, file ops (read, write, patch, search), vision, MoA reasoning, image gen, browser (10 tools via Browserbase), skills (41 skills), cronjobs, RL training (10 tools via Tinker-Atropos), TTS, cross-channel messaging.
+**43+ tools** across 13 toolsets: web (search, extract), terminal + process management, file ops (read, write, patch, search), vision, MoA reasoning, image gen, browser (10 tools via Browserbase), skills (41 skills), **todo (task planning)**, cronjobs, RL training (10 tools via Tinker-Atropos), TTS, cross-channel messaging.
 
 **4 platform adapters**: Telegram, Discord, WhatsApp, Slack -- all with typing indicators, image/voice auto-analysis, dangerous command approval, interrupt support, background process watchers.
 
@@ -41,9 +41,9 @@ The main agent becomes an orchestrator that delegates context-heavy tasks to sub
 
 ---
 
-## 2. Planning & Task Management 📋
+## 2. Planning & Task Management 📋 ✅
 
-**Status:** Not started
+**Status:** Implemented
 **Priority:** High -- every serious agent has this now
 
 A `todo` tool the agent uses to decompose complex tasks, track progress, and recover from failures. Must be **cache-friendly** -- no system prompt mutation, no injected messages that invalidate the KV cache prefix.
@@ -935,7 +935,7 @@ This goes in the tool description:
 **Tier 1 (High impact, foundation for everything else):**
 1. Programmatic Tool Calling (code-mediated tool use) -- #20
 2. Memory System (Phase 1: MEMORY.md + USER.md) -- #5
-3. Planning & Task Management (todo tool) -- #2
+3. ~~Planning & Task Management (todo tool) -- #2~~ **DONE**
 4. Session Transcript Search -- #6
 5. Self-Learning from Errors -- #16
 

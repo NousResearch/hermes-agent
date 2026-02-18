@@ -831,7 +831,7 @@ class HermesCLI:
         
         print()
         print("  Tip: Just type your message to chat with Hermes!")
-        print("  Multi-line: Ctrl+Enter or Alt+Enter for a new line")
+        print("  Multi-line: Alt+Enter for a new line")
         print()
     
     def show_tools(self):

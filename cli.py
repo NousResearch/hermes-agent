@@ -33,10 +33,13 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.completion import Completer, Completion
 import threading
 import queue
+import tempfile
 
 # Load environment variables first
 from dotenv import load_dotenv
@@ -546,6 +549,26 @@ COMMANDS = {
     "/platforms": "Show gateway/messaging platform status",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
+
+
+class SlashCommandCompleter(Completer):
+    """Autocomplete for /commands in the input area."""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        # Only complete at the start of input, after /
+        if not text.startswith("/"):
+            return
+        word = text[1:]  # strip the leading /
+        for cmd, desc in COMMANDS.items():
+            cmd_name = cmd[1:]  # strip leading / from key
+            if cmd_name.startswith(word):
+                yield Completion(
+                    cmd_name,
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=desc,
+                )
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -1521,13 +1544,15 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             if text:
                 if self._agent_running and not text.startswith("/"):
-                    # Agent is working - route to interrupt queue for chat() to pick up
                     self._interrupt_queue.put(text)
                 else:
-                    # Agent idle, or it's a command - route to normal input queue
                     self._pending_input.put(text)
-                # Clear the buffer
                 event.app.current_buffer.reset()
+        
+        @kb.add('s-enter')
+        def handle_shift_enter(event):
+            """Shift+Enter inserts a newline for multi-line input."""
+            event.current_buffer.insert_text('\n')
         
         @kb.add('c-c')
         def handle_ctrl_c(event):
@@ -1570,22 +1595,57 @@ class HermesCLI:
                 return [('class:prompt-working', '⚕ ❯ ')]
             return [('class:prompt', '❯ ')]
 
-        # Create the input area widget with persistent history across sessions
+        # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         input_area = TextArea(
-            height=1,
+            height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
             style='class:input-area',
-            multiline=False,
-            wrap_lines=False,
+            multiline=True,
+            wrap_lines=True,
             history=FileHistory(str(self._history_file)),
+            completer=SlashCommandCompleter(),
+            complete_while_typing=True,
         )
 
-        # Spacer line above input that absorbs spinner output so it
-        # doesn't overlap the prompt_toolkit cursor
-        def get_spacer_height():
+        # Paste collapsing: detect large pastes and save to temp file
+        _paste_counter = [0]
+
+        def _on_text_changed(buf):
+            """Detect large pastes and collapse them to a file reference."""
+            text = buf.text
+            line_count = text.count('\n')
+            # Heuristic: if text jumps to 5+ lines in one change, it's a paste
+            if line_count >= 5 and not text.startswith('/'):
+                _paste_counter[0] += 1
+                # Save to temp file
+                paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
+                paste_dir.mkdir(parents=True, exist_ok=True)
+                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
+                paste_file.write_text(text, encoding="utf-8")
+                # Replace buffer with compact reference
+                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
+                buf.cursor_position = len(buf.text)
+
+        input_area.buffer.on_text_changed += _on_text_changed
+
+        # Hint line above input: shows placeholder when agent is working
+        # and the user hasn't typed anything yet. Disappears when idle
+        # or when the user starts typing.
+        def get_hint_text():
+            if not cli_ref._agent_running:
+                return []
+            buf = input_area.buffer
+            if buf.text:
+                return []
+            return [('class:hint', '  type here to interrupt')]
+
+        def get_hint_height():
             return 1 if cli_ref._agent_running else 0
 
-        spacer = Window(height=get_spacer_height)
+        spacer = Window(
+            content=FormattedTextControl(get_hint_text),
+            height=get_hint_height,
+        )
         
         # Layout with dynamic spacer and input at bottom
         layout = Layout(
@@ -1601,6 +1661,12 @@ class HermesCLI:
             'input-area': '#FFF8DC',
             'prompt': '#FFF8DC',
             'prompt-working': '#888888 italic',
+            'hint': '#555555 italic',
+            'completion-menu': 'bg:#1a1a2e #FFF8DC',
+            'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
+            'completion-menu.completion.current': 'bg:#333355 #FFD700',
+            'completion-menu.meta.completion': 'bg:#1a1a2e #888888',
+            'completion-menu.meta.completion.current': 'bg:#333355 #FFBF00',
         })
         
         # Create the application
@@ -1635,12 +1701,30 @@ class HermesCLI:
                                 app.exit()
                         continue
                     
+                    # Expand paste references back to full content
+                    import re as _re
+                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input)
+                    if paste_match:
+                        paste_path = Path(paste_match.group(1))
+                        if paste_path.exists():
+                            full_text = paste_path.read_text(encoding="utf-8")
+                            line_count = full_text.count('\n') + 1
+                            print(f"\n💬 You: [Pasted text: {line_count} lines]")
+                            user_input = full_text
+                        else:
+                            print(f"\n💬 You: {user_input}")
+                    else:
+                        # Echo multi-line input compactly
+                        if '\n' in user_input:
+                            first_line = user_input.split('\n')[0]
+                            line_count = user_input.count('\n') + 1
+                            print(f"\n💬 You: {first_line} (+{line_count - 1} lines)")
+                        else:
+                            print(f"\n💬 You: {user_input}")
+                    
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
-                    
-                    # Echo the user's input so it stays visible in scrollback
-                    print(f"\n💬 You: {user_input}")
                     
                     try:
                         self.chat(user_input)

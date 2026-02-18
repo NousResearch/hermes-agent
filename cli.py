@@ -1562,32 +1562,28 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
         
+        # Dynamic prompt: changes to show agent status
+        cli_ref = self  # capture for closure
+
+        def get_prompt():
+            if cli_ref._agent_running:
+                return [('class:prompt-working', '⚕ ❯ ')]
+            return [('class:prompt', '❯ ')]
+
         # Create the input area widget with persistent history across sessions
         input_area = TextArea(
             height=1,
-            prompt='❯ ',
+            prompt=get_prompt,
             style='class:input-area',
             multiline=False,
             wrap_lines=False,
             history=FileHistory(str(self._history_file)),
         )
         
-        # Create a status line that shows when agent is working
-        def get_status_text():
-            if self._agent_running:
-                return [('class:status', ' 🔄 Agent working... (type to interrupt) ')]
-            return [('class:status', '')]
-        
-        status_window = Window(
-            content=FormattedTextControl(get_status_text),
-            height=1,
-        )
-        
-        # Layout with status and input at bottom
+        # Layout: just the input area, no extra status line
         layout = Layout(
             HSplit([
                 Window(height=0),  # Spacer that expands
-                status_window,
                 input_area,
             ])
         )
@@ -1595,7 +1591,8 @@ class HermesCLI:
         # Style for the application
         style = PTStyle.from_dict({
             'input-area': '#FFF8DC',
-            'status': 'bg:#333333 #FFD700',
+            'prompt': '#FFF8DC',
+            'prompt-working': '#888888 italic',
         })
         
         # Create the application

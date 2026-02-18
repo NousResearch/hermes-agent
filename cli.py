@@ -42,12 +42,6 @@ import threading
 import queue
 import tempfile
 
-# Patch prompt_toolkit to recognize Shift+Enter as a distinct key.
-# By default, the xterm "disambiguated modified keys" sequence for Shift+Enter
-# (\x1b[27;2;13~) is mapped to ControlM (same as plain Enter). We remap it to
-# a unique key tuple so we can bind Shift+Enter to insert a newline.
-from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
-ANSI_SEQUENCES["\x1b[27;2;13~"] = (Keys.Escape, Keys.ControlJ)  # Shift+Enter
 
 # Load environment variables first
 from dotenv import load_dotenv
@@ -837,7 +831,7 @@ class HermesCLI:
         
         print()
         print("  Tip: Just type your message to chat with Hermes!")
-        print("  Multi-line: Shift+Enter for a new line (Alt+Enter as fallback)")
+        print("  Multi-line: Ctrl+Enter or Alt+Enter for a new line")
         print()
     
     def show_tools(self):
@@ -1557,14 +1551,14 @@ class HermesCLI:
                     self._pending_input.put(text)
                 event.app.current_buffer.reset()
         
-        @kb.add('escape', 'c-j')
-        def handle_shift_enter(event):
-            """Shift+Enter inserts a newline (via patched ANSI sequence)."""
-            event.current_buffer.insert_text('\n')
-
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
-            """Alt+Enter also inserts a newline (fallback for terminals without Shift+Enter)."""
+            """Alt+Enter inserts a newline for multi-line input."""
+            event.current_buffer.insert_text('\n')
+
+        @kb.add('c-j')
+        def handle_ctrl_enter(event):
+            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
         
         @kb.add('c-c')

@@ -1333,35 +1333,16 @@ class AIAgent:
         "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
     ]
     
-    # ANSI escape codes for colored CLI output
-    _DIM = "\033[2m"
-    _CYAN = "\033[36m"
-    _GREEN = "\033[32m"
-    _YELLOW = "\033[33m"
-    _MAGENTA = "\033[35m"
-    _BLUE = "\033[34m"
-    _WHITE = "\033[37m"
-    _RESET = "\033[0m"
-    _BOLD = "\033[1m"
-
     def _get_cute_tool_message(self, tool_name: str, args: dict, duration: float) -> str:
         """
         Generate a clean, aligned tool activity line for CLI quiet mode.
 
-        Format: ┊ {emoji} {verb:9} {detail}  {dim duration}
+        Format: ┊ {emoji} {verb:9} {detail}  {duration}
 
-        Kawaii faces are reserved for the thinking spinner (personality moment).
-        Tool output is a clean activity feed -- scannable, aligned, color-coded.
+        Kawaii faces live in the animated spinner (while the tool runs).
+        This completion message replaces the spinner with a permanent log line.
         """
-        D = self._DIM
-        R = self._RESET
-        C = self._CYAN
-        G = self._GREEN
-        Y = self._YELLOW
-        M = self._MAGENTA
-        B = self._BLUE
-
-        dur = f"{D}{duration:.1f}s{R}"
+        dur = f"{duration:.1f}s"
 
         def _trunc(s, n=40):
             s = str(s)
@@ -1374,7 +1355,7 @@ class AIAgent:
         # ── Web ──
         if tool_name == "web_search":
             q = _trunc(args.get("query", ""), 42)
-            return f"{D}┊{R} 🔍 {C}search{R}    {q}  {dur}"
+            return f"┊ 🔍 search    {q}  {dur}"
 
         if tool_name == "web_extract":
             urls = args.get("urls", [])
@@ -1382,18 +1363,18 @@ class AIAgent:
                 url = urls[0] if isinstance(urls, list) else str(urls)
                 domain = url.replace("https://", "").replace("http://", "").split("/")[0]
                 extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-                return f"{D}┊{R} 📄 {C}fetch{R}     {_trunc(domain, 35)}{extra}  {dur}"
-            return f"{D}┊{R} 📄 {C}fetch{R}     pages  {dur}"
+                return f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}"
+            return f"┊ 📄 fetch     pages  {dur}"
 
         if tool_name == "web_crawl":
             url = args.get("url", "")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            return f"{D}┊{R} 🕸️  {C}crawl{R}     {_trunc(domain, 35)}  {dur}"
+            return f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}"
 
         # ── Terminal & Process ──
         if tool_name == "terminal":
             cmd = _trunc(args.get("command", ""), 42)
-            return f"{D}┊{R} 💻 {G}${R}         {cmd}  {dur}"
+            return f"┊ 💻 $         {cmd}  {dur}"
 
         if tool_name == "process":
             action = args.get("action", "?")
@@ -1405,109 +1386,107 @@ class AIAgent:
                 "submit": f"submit {sid}",
             }
             detail = labels.get(action, f"{action} {sid}")
-            return f"{D}┊{R} ⚙️  {G}proc{R}      {detail}  {dur}"
+            return f"┊ ⚙️  proc      {detail}  {dur}"
 
         # ── Files ──
         if tool_name == "read_file":
-            return f"{D}┊{R} 📖 {Y}read{R}      {_path(args.get('path', ''))}  {dur}"
+            return f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}"
 
         if tool_name == "write_file":
-            return f"{D}┊{R} ✍️  {Y}write{R}     {_path(args.get('path', ''))}  {dur}"
+            return f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}"
 
         if tool_name == "patch":
-            return f"{D}┊{R} 🔧 {Y}patch{R}     {_path(args.get('path', ''))}  {dur}"
+            return f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}"
 
         if tool_name == "search":
             pattern = _trunc(args.get("pattern", ""), 35)
             target = args.get("target", "content")
             verb = "find" if target == "files" else "grep"
-            return f"{D}┊{R} 🔎 {Y}{verb}{R}      {pattern}  {dur}"
+            return f"┊ 🔎 {verb:9} {pattern}  {dur}"
 
         # ── Browser ──
         if tool_name == "browser_navigate":
             url = args.get("url", "")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            return f"{D}┊{R} 🌐 {M}navigate{R}  {_trunc(domain, 35)}  {dur}"
+            return f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}"
 
         if tool_name == "browser_snapshot":
             mode = "full" if args.get("full") else "compact"
-            return f"{D}┊{R} 📸 {M}snapshot{R}  {mode}  {dur}"
+            return f"┊ 📸 snapshot  {mode}  {dur}"
 
         if tool_name == "browser_click":
-            ref = args.get("ref", "?")
-            return f"{D}┊{R} 👆 {M}click{R}     {ref}  {dur}"
+            return f"┊ 👆 click     {args.get('ref', '?')}  {dur}"
 
         if tool_name == "browser_type":
             text = _trunc(args.get("text", ""), 30)
-            return f"{D}┊{R} ⌨️  {M}type{R}      \"{text}\"  {dur}"
+            return f"┊ ⌨️  type      \"{text}\"  {dur}"
 
         if tool_name == "browser_scroll":
             d = args.get("direction", "down")
-            arrow = "↓" if d == "down" else "↑" if d == "up" else "→" if d == "right" else "←"
-            return f"{D}┊{R} {arrow}  {M}scroll{R}    {d}  {dur}"
+            arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
+            return f"┊ {arrow}  scroll    {d}  {dur}"
 
         if tool_name == "browser_back":
-            return f"{D}┊{R} ◀️  {M}back{R}        {dur}"
+            return f"┊ ◀️  back      {dur}"
 
         if tool_name == "browser_press":
-            return f"{D}┊{R} ⌨️  {M}press{R}     {args.get('key', '?')}  {dur}"
+            return f"┊ ⌨️  press     {args.get('key', '?')}  {dur}"
 
         if tool_name == "browser_close":
-            return f"{D}┊{R} 🚪 {M}close{R}     browser  {dur}"
+            return f"┊ 🚪 close     browser  {dur}"
 
         if tool_name == "browser_get_images":
-            return f"{D}┊{R} 🖼️  {M}images{R}    extracting  {dur}"
+            return f"┊ 🖼️  images    extracting  {dur}"
 
         if tool_name == "browser_vision":
-            return f"{D}┊{R} 👁️  {M}vision{R}    analyzing page  {dur}"
+            return f"┊ 👁️  vision    analyzing page  {dur}"
 
         # ── Planning ──
         if tool_name == "todo":
             todos_arg = args.get("todos")
             merge = args.get("merge", False)
             if todos_arg is None:
-                return f"{D}┊{R} 📋 {B}plan{R}      reading tasks  {dur}"
+                return f"┊ 📋 plan      reading tasks  {dur}"
             elif merge:
-                return f"{D}┊{R} 📋 {B}plan{R}      update {len(todos_arg)} task(s)  {dur}"
+                return f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}"
             else:
-                return f"{D}┊{R} 📋 {B}plan{R}      {len(todos_arg)} task(s)  {dur}"
+                return f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}"
 
         # ── Skills ──
         if tool_name == "skills_list":
-            cat = args.get("category", "all")
-            return f"{D}┊{R} 📚 {B}skills{R}    list {cat}  {dur}"
+            return f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}"
 
         if tool_name == "skill_view":
-            return f"{D}┊{R} 📚 {B}skill{R}     {_trunc(args.get('name', ''), 30)}  {dur}"
+            return f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}"
 
         # ── Generation & Media ──
         if tool_name == "image_generate":
-            return f"{D}┊{R} 🎨 {M}create{R}    {_trunc(args.get('prompt', ''), 35)}  {dur}"
+            return f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}"
 
         if tool_name == "text_to_speech":
-            return f"{D}┊{R} 🔊 {M}speak{R}     {_trunc(args.get('text', ''), 30)}  {dur}"
+            return f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}"
 
         if tool_name == "vision_analyze":
-            return f"{D}┊{R} 👁️  {C}vision{R}    {_trunc(args.get('question', ''), 30)}  {dur}"
+            return f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}"
 
         if tool_name == "mixture_of_agents":
-            return f"{D}┊{R} 🧠 {C}reason{R}    {_trunc(args.get('user_prompt', ''), 30)}  {dur}"
+            return f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}"
 
         # ── Messaging & Scheduling ──
         if tool_name == "send_message":
             target = args.get("target", "?")
             msg = _trunc(args.get("message", ""), 25)
-            return f"{D}┊{R} 📨 {B}send{R}      {target}: \"{msg}\"  {dur}"
+            return f"┊ 📨 send      {target}: \"{msg}\"  {dur}"
 
         if tool_name == "schedule_cronjob":
             name = _trunc(args.get("name", args.get("prompt", "task")), 30)
-            return f"{D}┊{R} ⏰ {B}schedule{R}  {name}  {dur}"
+            return f"┊ ⏰ schedule  {name}  {dur}"
 
         if tool_name == "list_cronjobs":
-            return f"{D}┊{R} ⏰ {B}jobs{R}      listing  {dur}"
+            return f"┊ ⏰ jobs      listing  {dur}"
 
         if tool_name == "remove_cronjob":
-            return f"{D}┊{R} ⏰ {B}remove{R}    job {args.get('job_id', '?')}  {dur}"
+            return f"┊ ⏰ remove    job {args.get('job_id', '?')}  {dur}"
 
         # ── RL Training ──
         if tool_name.startswith("rl_"):
@@ -1524,11 +1503,11 @@ class AIAgent:
                 "rl_test_inference": "test inference",
             }
             detail = rl.get(tool_name, tool_name.replace("rl_", ""))
-            return f"{D}┊{R} 🧪 {C}rl{R}        {detail}  {dur}"
+            return f"┊ 🧪 rl        {detail}  {dur}"
 
         # ── Fallback ──
         preview = _build_tool_preview(tool_name, args) or ""
-        return f"{D}┊{R} ⚡ {C}{tool_name[:8]}{R}  {_trunc(preview, 35)}  {dur}"
+        return f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}"
     
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -2814,11 +2793,10 @@ class AIAgent:
                                 'send_message': '📨', 'todo': '📋',
                             }
                             emoji = tool_emoji_map.get(function_name, '⚡')
-                            preview = _build_tool_preview(function_name, function_args) or ""
-                            if preview and len(preview) > 30:
+                            preview = _build_tool_preview(function_name, function_args) or function_name
+                            if len(preview) > 30:
                                 preview = preview[:27] + "..."
-                            spinner_text = f"{face} {emoji} {preview}" if preview else f"{face} {emoji} {function_name}"
-                            spinner = KawaiiSpinner(spinner_text, spinner_type='dots')
+                            spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
                             spinner.start()
                             try:
                                 function_result = handle_function_call(function_name, function_args, effective_task_id)

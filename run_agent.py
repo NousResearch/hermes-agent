@@ -2280,7 +2280,7 @@ class AIAgent:
                             thinking_spinner.stop("")
                         else:
                             face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
-                            thinking_spinner.stop(f"{face} got it! ({api_duration:.1f}s)")
+                            thinking_spinner.stop(f"{face} ⚕ ready ({api_duration:.1f}s)")
                         thinking_spinner = None
                     
                     if not self.quiet_mode:

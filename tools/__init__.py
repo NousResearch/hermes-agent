@@ -128,6 +128,14 @@ from .tts_tool import (
     check_tts_requirements,
 )
 
+# Planning & task management tool
+from .todo_tool import (
+    todo_tool,
+    check_todo_requirements,
+    TODO_SCHEMA,
+    TodoStore,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -216,5 +224,10 @@ __all__ = [
     # Text-to-speech tools
     'text_to_speech_tool',
     'check_tts_requirements',
+    # Planning & task management tool
+    'todo_tool',
+    'check_todo_requirements',
+    'TODO_SCHEMA',
+    'TodoStore',
 ]
 

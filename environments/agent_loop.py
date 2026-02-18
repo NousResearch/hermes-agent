@@ -176,6 +176,19 @@ class HermesAgentLoop:
         reasoning_per_turn = []
         tool_errors: List[ToolError] = []
 
+        # Per-loop TodoStore for the todo tool (ephemeral, dies with the loop)
+        from tools.todo_tool import TodoStore, todo_tool as _todo_tool
+        _todo_store = TodoStore()
+
+        # Extract user task from first user message for browser_snapshot context
+        _user_task = None
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    _user_task = content.strip()[:500]  # Cap to avoid huge strings
+                break
+
         import time as _time
 
         for turn in range(self.max_turns):
@@ -305,18 +318,31 @@ class HermesAgentLoop:
                                     "[%s] $ %s", self.task_id[:8], cmd_preview,
                                 )
 
-                            # Run tool calls in a thread pool so backends that use
-                            # asyncio.run() internally (modal, docker) get a clean
-                            # event loop instead of deadlocking inside Atropos's loop.
                             tool_submit_time = _time.monotonic()
-                            loop = asyncio.get_event_loop()
-                            tool_result = await loop.run_in_executor(
-                                _tool_executor,
-                                lambda: handle_function_call(
-                                    tool_name, args, task_id=self.task_id
-                                ),
-                            )
-                            tool_elapsed = _time.monotonic() - tool_submit_time
+
+                            # Todo tool -- handle locally (needs per-loop TodoStore)
+                            if tool_name == "todo":
+                                tool_result = _todo_tool(
+                                    todos=args.get("todos"),
+                                    merge=args.get("merge", False),
+                                    store=_todo_store,
+                                )
+                                tool_elapsed = _time.monotonic() - tool_submit_time
+                            else:
+                                # Run tool calls in a thread pool so backends that
+                                # use asyncio.run() internally (modal, docker) get
+                                # a clean event loop instead of deadlocking.
+                                loop = asyncio.get_event_loop()
+                                # Capture current tool_name/args for the lambda
+                                _tn, _ta, _tid = tool_name, args, self.task_id
+                                tool_result = await loop.run_in_executor(
+                                    _tool_executor,
+                                    lambda: handle_function_call(
+                                        _tn, _ta, task_id=_tid,
+                                        user_task=_user_task,
+                                    ),
+                                )
+                                tool_elapsed = _time.monotonic() - tool_submit_time
 
                             # Log slow tools and thread pool stats for debugging
                             pool_active = _tool_executor._work_queue.qsize()

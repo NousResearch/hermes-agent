@@ -85,6 +85,8 @@ from tools.browser_tool import (
 )
 # Text-to-speech tool (Edge TTS / ElevenLabs / OpenAI)
 from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+# Planning & task management tool
+from tools.todo_tool import todo_tool, check_todo_requirements, TODO_SCHEMA
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -173,6 +175,13 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_tts_requirements,
         "setup_url": None,
         "tools": ["text_to_speech"],
+    },
+    "todo": {
+        "name": "Planning & Task Management",
+        "env_vars": [],  # Pure in-memory, no external deps
+        "check_fn": check_todo_requirements,
+        "setup_url": None,
+        "tools": ["todo"],
     },
 }
 
@@ -917,6 +926,16 @@ def get_tts_tool_definitions() -> List[Dict[str, Any]]:
     ]
 
 
+def get_todo_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the todo (planning/task management) tool.
+    
+    Returns:
+        List[Dict]: List containing the todo tool definition compatible with OpenAI API
+    """
+    return [{"type": "function", "function": TODO_SCHEMA}]
+
+
 def get_send_message_tool_definitions():
     """Tool definitions for cross-channel messaging."""
     return [
@@ -1070,6 +1089,10 @@ def get_all_tool_names() -> List[str]:
     if check_tts_requirements():
         tool_names.extend(["text_to_speech"])
     
+    # Planning & task management (always available)
+    if check_todo_requirements():
+        tool_names.extend(["todo"])
+    
     # Cross-channel messaging (always available on messaging platforms)
     tool_names.extend(["send_message"])
     
@@ -1125,6 +1148,8 @@ TOOL_TO_TOOLSET_MAP = {
     "search": "file_tools",
     # Cross-channel messaging
     "send_message": "messaging_tools",
+    # Planning & task management
+    "todo": "todo_tools",
 }
 
 
@@ -1229,6 +1254,11 @@ def get_tool_definitions(
     # Text-to-speech tools
     if check_tts_requirements():
         for tool in get_tts_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Planning & task management tool
+    if check_todo_requirements():
+        for tool in get_todo_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
     # Cross-channel messaging (always available on messaging platforms)
@@ -1966,6 +1996,11 @@ def handle_function_call(
         elif function_name == "send_message":
             return handle_send_message_function_call(function_name, function_args)
 
+        # Todo tool -- handled by the agent loop (needs TodoStore instance).
+        # This fallback should never execute in practice; run_agent.py intercepts first.
+        elif function_name == "todo":
+            return json.dumps({"error": "todo must be handled by the agent loop"})
+
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
@@ -2049,6 +2084,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["text_to_speech"],
             "description": "Text-to-speech: convert text to audio (Edge TTS free, ElevenLabs, OpenAI)",
             "requirements": ["edge-tts package (free) or ELEVENLABS_API_KEY or OPENAI_API_KEY"]
+        },
+        "todo_tools": {
+            "available": check_todo_requirements(),
+            "tools": ["todo"],
+            "description": "Planning & task management: in-memory todo list for multi-step work",
+            "requirements": []
         }
     }
     

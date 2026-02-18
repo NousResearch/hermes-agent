@@ -850,7 +850,7 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "schedule_cronjob": "name",
     }
     
-    # Special handling for the process tool -- show action + session_id
+    # Special handling for tools with composite previews
     if tool_name == "process":
         action = args.get("action", "")
         session_id = args.get("session_id", "")
@@ -864,6 +864,38 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         if timeout and action == "wait":
             parts.append(f"{timeout}s")
         return " ".join(parts) if parts else None
+    
+    if tool_name == "todo":
+        todos_arg = args.get("todos")
+        merge = args.get("merge", False)
+        if todos_arg is None:
+            return "reading task list"
+        elif merge:
+            return f"updating {len(todos_arg)} task(s)"
+        else:
+            return f"planning {len(todos_arg)} task(s)"
+    
+    if tool_name == "send_message":
+        target = args.get("target", "?")
+        msg = args.get("message", "")
+        if len(msg) > 20:
+            msg = msg[:17] + "..."
+        return f"to {target}: \"{msg}\""
+    
+    if tool_name.startswith("rl_"):
+        rl_previews = {
+            "rl_list_environments": "listing envs",
+            "rl_select_environment": args.get("name", ""),
+            "rl_get_current_config": "reading config",
+            "rl_edit_config": f"{args.get('field', '')}={args.get('value', '')}",
+            "rl_start_training": "starting",
+            "rl_check_status": args.get("run_id", "")[:16],
+            "rl_stop_training": f"stopping {args.get('run_id', '')[:16]}",
+            "rl_get_results": args.get("run_id", "")[:16],
+            "rl_list_runs": "listing runs",
+            "rl_test_inference": f"{args.get('num_steps', 3)} steps",
+        }
+        return rl_previews.get(tool_name)
 
     key = primary_args.get(tool_name)
     if not key:
@@ -1439,6 +1471,73 @@ class AIAgent:
             face = random.choice(self.KAWAII_SEARCH)
             return f"{face} 🔎 searching \"{pattern}\" {time_str}"
         
+        # Process management
+        elif tool_name == "process":
+            action = args.get("action", "?")
+            session_id = args.get("session_id", "")[:12]
+            face = random.choice(self.KAWAII_TERMINAL)
+            action_labels = {
+                "list": "listing processes",
+                "poll": f"checking {session_id}",
+                "log": f"reading log {session_id}",
+                "wait": f"waiting on {session_id}",
+                "kill": f"stopping {session_id}",
+                "write": f"writing to {session_id}",
+                "submit": f"submitting to {session_id}",
+            }
+            label = action_labels.get(action, f"{action} {session_id}")
+            return f"{face} ⚙️ {label} {time_str}"
+        
+        # Cross-channel messaging
+        elif tool_name == "send_message":
+            target = args.get("target", "?")
+            msg = args.get("message", "")
+            if len(msg) > 20:
+                msg = msg[:17] + "..."
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} 📨 sending to {target}: \"{msg}\" {time_str}"
+        
+        # Cronjob management
+        elif tool_name == "schedule_cronjob":
+            name = args.get("name", args.get("prompt", "task")[:25])
+            face = random.choice(self.KAWAII_CREATE)
+            return f"{face} ⏰ scheduling \"{name}\" {time_str}"
+        
+        elif tool_name == "list_cronjobs":
+            face = random.choice(self.KAWAII_READ)
+            return f"{face} ⏰ listing scheduled jobs {time_str}"
+        
+        elif tool_name == "remove_cronjob":
+            job_id = args.get("job_id", "?")
+            face = random.choice(self.KAWAII_TERMINAL)
+            return f"{face} ⏰ removing job {job_id} {time_str}"
+        
+        # Browser tools missing specific cases
+        elif tool_name == "browser_press":
+            key = args.get("key", "key")
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} ⌨️ pressing {key} {time_str}"
+        
+        elif tool_name == "browser_close":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 🚪 closing browser {time_str}"
+        
+        elif tool_name == "browser_get_images":
+            face = random.choice(self.KAWAII_BROWSER)
+            return f"{face} 🖼️ extracting images {time_str}"
+        
+        # Todo tool
+        elif tool_name == "todo":
+            todos_arg = args.get("todos")
+            merge = args.get("merge", False)
+            face = random.choice(self.KAWAII_SKILL)
+            if todos_arg is None:
+                return f"{face} 📋 reading task list {time_str}"
+            elif merge:
+                return f"{face} 📋 updating {len(todos_arg)} task(s) {time_str}"
+            else:
+                return f"{face} 📋 planning {len(todos_arg)} task(s) {time_str}"
+        
         # TTS
         elif tool_name == "text_to_speech":
             text = args.get("text", "")
@@ -1462,6 +1561,24 @@ class AIAgent:
                 prompt = prompt[:22] + "..."
             face = random.choice(self.KAWAII_THINK)
             return f"{face} 🧠💭 deep thinking \"{prompt}\" {time_str}"
+        
+        # RL training tools
+        elif tool_name.startswith("rl_"):
+            face = random.choice(self.KAWAII_THINK)
+            rl_labels = {
+                "rl_list_environments": "listing RL environments",
+                "rl_select_environment": f"selecting {args.get('name', 'env')}",
+                "rl_get_current_config": "reading config",
+                "rl_edit_config": f"setting {args.get('field', '?')}",
+                "rl_start_training": "starting training run",
+                "rl_check_status": f"checking run {args.get('run_id', '?')[:12]}",
+                "rl_stop_training": f"stopping run {args.get('run_id', '?')[:12]}",
+                "rl_get_results": f"fetching results {args.get('run_id', '?')[:12]}",
+                "rl_list_runs": "listing training runs",
+                "rl_test_inference": "running inference test",
+            }
+            label = rl_labels.get(tool_name, tool_name.replace("rl_", ""))
+            return f"{face} 🧪 {label} {time_str}"
         
         # Default fallback - random generic kawaii with primary arg preview
         else:
@@ -2723,6 +2840,19 @@ class AIAgent:
                                 store=self._todo_store,
                             )
                             tool_duration = time.time() - tool_start_time
+                            # Show descriptive output in quiet mode (no spinner needed -- instant)
+                            if self.quiet_mode:
+                                todos_arg = function_args.get("todos")
+                                merge = function_args.get("merge", False)
+                                face = random.choice(self.KAWAII_SKILL)
+                                if todos_arg is None:
+                                    print(f"  {face} 📋 reading task list ({tool_duration:.1f}s)")
+                                elif merge:
+                                    count = len(todos_arg)
+                                    print(f"  {face} 📋 updating {count} task(s) ({tool_duration:.1f}s)")
+                                else:
+                                    count = len(todos_arg)
+                                    print(f"  {face} 📋 planning {count} task(s) ({tool_duration:.1f}s)")
                         # Execute other tools - with animated spinner in quiet mode
                         elif self.quiet_mode:
                             # Tool-specific spinner animations

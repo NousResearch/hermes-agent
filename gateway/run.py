@@ -848,6 +848,7 @@ class GatewayRunner:
             # Build progress message with primary argument preview
             tool_emojis = {
                 "terminal": "💻",
+                "process": "⚙️",
                 "web_search": "🔍",
                 "web_extract": "📄",
                 "read_file": "📖",
@@ -861,11 +862,22 @@ class GatewayRunner:
                 "browser_click": "👆",
                 "browser_type": "⌨️",
                 "browser_snapshot": "📸",
+                "browser_scroll": "📜",
+                "browser_back": "◀️",
+                "browser_press": "⌨️",
+                "browser_close": "🚪",
+                "browser_get_images": "🖼️",
+                "browser_vision": "👁️",
                 "moa_query": "🧠",
                 "mixture_of_agents": "🧠",
                 "vision_analyze": "👁️",
                 "skill_view": "📚",
                 "skills_list": "📋",
+                "todo": "📋",
+                "send_message": "📨",
+                "schedule_cronjob": "⏰",
+                "list_cronjobs": "⏰",
+                "remove_cronjob": "⏰",
             }
             emoji = tool_emojis.get(tool_name, "⚙️")
             

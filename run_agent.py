@@ -1333,260 +1333,202 @@ class AIAgent:
         "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
     ]
     
+    # ANSI escape codes for colored CLI output
+    _DIM = "\033[2m"
+    _CYAN = "\033[36m"
+    _GREEN = "\033[32m"
+    _YELLOW = "\033[33m"
+    _MAGENTA = "\033[35m"
+    _BLUE = "\033[34m"
+    _WHITE = "\033[37m"
+    _RESET = "\033[0m"
+    _BOLD = "\033[1m"
+
     def _get_cute_tool_message(self, tool_name: str, args: dict, duration: float) -> str:
         """
-        Generate a kawaii ASCII/unicode art message for tool execution in CLI mode.
-        
-        Args:
-            tool_name: Name of the tool being called
-            args: Arguments passed to the tool
-            duration: How long the tool took to execute
-        
-        Returns:
-            A cute ASCII art message about what the tool did
+        Generate a clean, aligned tool activity line for CLI quiet mode.
+
+        Format: ┊ {emoji} {verb:9} {detail}  {dim duration}
+
+        Kawaii faces are reserved for the thinking spinner (personality moment).
+        Tool output is a clean activity feed -- scannable, aligned, color-coded.
         """
-        time_str = f"⏱ {duration:.1f}s"
-        
-        # Web tools - show what we're searching/reading
+        D = self._DIM
+        R = self._RESET
+        C = self._CYAN
+        G = self._GREEN
+        Y = self._YELLOW
+        M = self._MAGENTA
+        B = self._BLUE
+
+        dur = f"{D}{duration:.1f}s{R}"
+
+        def _trunc(s, n=40):
+            s = str(s)
+            return (s[:n-3] + "...") if len(s) > n else s
+
+        def _path(p, n=35):
+            p = str(p)
+            return ("..." + p[-(n-3):]) if len(p) > n else p
+
+        # ── Web ──
         if tool_name == "web_search":
-            query = args.get("query", "the web")
-            if len(query) > 40:
-                query = query[:37] + "..."
-            face = random.choice(self.KAWAII_SEARCH)
-            return f"{face} 🔍 Searching for '{query}'... {time_str}"
-        
-        elif tool_name == "web_extract":
+            q = _trunc(args.get("query", ""), 42)
+            return f"{D}┊{R} 🔍 {C}search{R}    {q}  {dur}"
+
+        if tool_name == "web_extract":
             urls = args.get("urls", [])
-            face = random.choice(self.KAWAII_READ)
             if urls:
                 url = urls[0] if isinstance(urls, list) else str(urls)
                 domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-                if len(domain) > 25:
-                    domain = domain[:22] + "..."
-                if len(urls) > 1:
-                    return f"{face} 📖 Reading {domain} +{len(urls)-1} more... {time_str}"
-                return f"{face} 📖 Reading {domain}... {time_str}"
-            return f"{face} 📖 Reading pages... {time_str}"
-        
-        elif tool_name == "web_crawl":
-            url = args.get("url", "website")
+                extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
+                return f"{D}┊{R} 📄 {C}fetch{R}     {_trunc(domain, 35)}{extra}  {dur}"
+            return f"{D}┊{R} 📄 {C}fetch{R}     pages  {dur}"
+
+        if tool_name == "web_crawl":
+            url = args.get("url", "")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            if len(domain) > 25:
-                domain = domain[:22] + "..."
-            face = random.choice(self.KAWAII_READ)
-            return f"{face} 🕸️ Crawling {domain}... {time_str}"
-        
-        # Terminal tool
-        elif tool_name == "terminal":
-            command = args.get("command", "")
-            if len(command) > 30:
-                command = command[:27] + "..."
-            face = random.choice(self.KAWAII_TERMINAL)
-            return f"{face} 💻 $ {command} {time_str}"
-        
-        # Browser tools
-        elif tool_name == "browser_navigate":
-            url = args.get("url", "page")
-            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            if len(domain) > 25:
-                domain = domain[:22] + "..."
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 🌐 → {domain} {time_str}"
-        
-        elif tool_name == "browser_snapshot":
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 📸 *snap* {time_str}"
-        
-        elif tool_name == "browser_click":
-            element = args.get("ref", "element")
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👆 *click* {element} {time_str}"
-        
-        elif tool_name == "browser_type":
-            text = args.get("text", "")
-            if len(text) > 15:
-                text = text[:12] + "..."
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} ⌨️ typing '{text}' {time_str}"
-        
-        elif tool_name == "browser_scroll":
-            direction = args.get("direction", "down")
-            arrow = "↓" if direction == "down" else "↑"
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} {arrow} scrolling {direction}... {time_str}"
-        
-        elif tool_name == "browser_back":
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} ← going back... {time_str}"
-        
-        elif tool_name == "browser_vision":
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👁️ analyzing visually... {time_str}"
-        
-        # Image generation
-        elif tool_name == "image_generate":
-            prompt = args.get("prompt", "image")
-            if len(prompt) > 20:
-                prompt = prompt[:17] + "..."
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} 🎨 creating '{prompt}'... {time_str}"
-        
-        # Skills - use large pool for variety
-        elif tool_name == "skills_list":
-            category = args.get("category", "skills")
-            face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📋 listing {category} skills... {time_str}"
-        
-        elif tool_name == "skill_view":
-            name = args.get("name", "skill")
-            face = random.choice(self.KAWAII_SKILL)
-            return f"{face} 📖 loading {name}... {time_str}"
-        
-        # File tools
-        elif tool_name == "read_file":
-            path = args.get("path", "file")
-            if len(path) > 30:
-                path = "..." + path[-27:]
-            face = random.choice(self.KAWAII_READ)
-            return f"{face} 📖 reading \"{path}\" {time_str}"
-        
-        elif tool_name == "write_file":
-            path = args.get("path", "file")
-            if len(path) > 30:
-                path = "..." + path[-27:]
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} ✍️ writing \"{path}\" {time_str}"
-        
-        elif tool_name == "patch":
-            path = args.get("path", "file")
-            if path and len(path) > 30:
-                path = "..." + path[-27:]
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} 🔧 patching \"{path}\" {time_str}"
-        
-        elif tool_name == "search":
-            pattern = args.get("pattern", "")
-            if len(pattern) > 25:
-                pattern = pattern[:22] + "..."
-            face = random.choice(self.KAWAII_SEARCH)
-            return f"{face} 🔎 searching \"{pattern}\" {time_str}"
-        
-        # Process management
-        elif tool_name == "process":
+            return f"{D}┊{R} 🕸️  {C}crawl{R}     {_trunc(domain, 35)}  {dur}"
+
+        # ── Terminal & Process ──
+        if tool_name == "terminal":
+            cmd = _trunc(args.get("command", ""), 42)
+            return f"{D}┊{R} 💻 {G}${R}         {cmd}  {dur}"
+
+        if tool_name == "process":
             action = args.get("action", "?")
-            session_id = args.get("session_id", "")[:12]
-            face = random.choice(self.KAWAII_TERMINAL)
-            action_labels = {
-                "list": "listing processes",
-                "poll": f"checking {session_id}",
-                "log": f"reading log {session_id}",
-                "wait": f"waiting on {session_id}",
-                "kill": f"stopping {session_id}",
-                "write": f"writing to {session_id}",
-                "submit": f"submitting to {session_id}",
+            sid = args.get("session_id", "")[:12]
+            labels = {
+                "list": "ls processes", "poll": f"poll {sid}",
+                "log": f"log {sid}", "wait": f"wait {sid}",
+                "kill": f"kill {sid}", "write": f"write {sid}",
+                "submit": f"submit {sid}",
             }
-            label = action_labels.get(action, f"{action} {session_id}")
-            return f"{face} ⚙️ {label} {time_str}"
-        
-        # Cross-channel messaging
-        elif tool_name == "send_message":
-            target = args.get("target", "?")
-            msg = args.get("message", "")
-            if len(msg) > 20:
-                msg = msg[:17] + "..."
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} 📨 sending to {target}: \"{msg}\" {time_str}"
-        
-        # Cronjob management
-        elif tool_name == "schedule_cronjob":
-            name = args.get("name", args.get("prompt", "task")[:25])
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} ⏰ scheduling \"{name}\" {time_str}"
-        
-        elif tool_name == "list_cronjobs":
-            face = random.choice(self.KAWAII_READ)
-            return f"{face} ⏰ listing scheduled jobs {time_str}"
-        
-        elif tool_name == "remove_cronjob":
-            job_id = args.get("job_id", "?")
-            face = random.choice(self.KAWAII_TERMINAL)
-            return f"{face} ⏰ removing job {job_id} {time_str}"
-        
-        # Browser tools missing specific cases
-        elif tool_name == "browser_press":
-            key = args.get("key", "key")
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} ⌨️ pressing {key} {time_str}"
-        
-        elif tool_name == "browser_close":
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 🚪 closing browser {time_str}"
-        
-        elif tool_name == "browser_get_images":
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 🖼️ extracting images {time_str}"
-        
-        # Todo tool
-        elif tool_name == "todo":
+            detail = labels.get(action, f"{action} {sid}")
+            return f"{D}┊{R} ⚙️  {G}proc{R}      {detail}  {dur}"
+
+        # ── Files ──
+        if tool_name == "read_file":
+            return f"{D}┊{R} 📖 {Y}read{R}      {_path(args.get('path', ''))}  {dur}"
+
+        if tool_name == "write_file":
+            return f"{D}┊{R} ✍️  {Y}write{R}     {_path(args.get('path', ''))}  {dur}"
+
+        if tool_name == "patch":
+            return f"{D}┊{R} 🔧 {Y}patch{R}     {_path(args.get('path', ''))}  {dur}"
+
+        if tool_name == "search":
+            pattern = _trunc(args.get("pattern", ""), 35)
+            target = args.get("target", "content")
+            verb = "find" if target == "files" else "grep"
+            return f"{D}┊{R} 🔎 {Y}{verb}{R}      {pattern}  {dur}"
+
+        # ── Browser ──
+        if tool_name == "browser_navigate":
+            url = args.get("url", "")
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            return f"{D}┊{R} 🌐 {M}navigate{R}  {_trunc(domain, 35)}  {dur}"
+
+        if tool_name == "browser_snapshot":
+            mode = "full" if args.get("full") else "compact"
+            return f"{D}┊{R} 📸 {M}snapshot{R}  {mode}  {dur}"
+
+        if tool_name == "browser_click":
+            ref = args.get("ref", "?")
+            return f"{D}┊{R} 👆 {M}click{R}     {ref}  {dur}"
+
+        if tool_name == "browser_type":
+            text = _trunc(args.get("text", ""), 30)
+            return f"{D}┊{R} ⌨️  {M}type{R}      \"{text}\"  {dur}"
+
+        if tool_name == "browser_scroll":
+            d = args.get("direction", "down")
+            arrow = "↓" if d == "down" else "↑" if d == "up" else "→" if d == "right" else "←"
+            return f"{D}┊{R} {arrow}  {M}scroll{R}    {d}  {dur}"
+
+        if tool_name == "browser_back":
+            return f"{D}┊{R} ◀️  {M}back{R}        {dur}"
+
+        if tool_name == "browser_press":
+            return f"{D}┊{R} ⌨️  {M}press{R}     {args.get('key', '?')}  {dur}"
+
+        if tool_name == "browser_close":
+            return f"{D}┊{R} 🚪 {M}close{R}     browser  {dur}"
+
+        if tool_name == "browser_get_images":
+            return f"{D}┊{R} 🖼️  {M}images{R}    extracting  {dur}"
+
+        if tool_name == "browser_vision":
+            return f"{D}┊{R} 👁️  {M}vision{R}    analyzing page  {dur}"
+
+        # ── Planning ──
+        if tool_name == "todo":
             todos_arg = args.get("todos")
             merge = args.get("merge", False)
-            face = random.choice(self.KAWAII_SKILL)
             if todos_arg is None:
-                return f"{face} 📋 reading task list {time_str}"
+                return f"{D}┊{R} 📋 {B}plan{R}      reading tasks  {dur}"
             elif merge:
-                return f"{face} 📋 updating {len(todos_arg)} task(s) {time_str}"
+                return f"{D}┊{R} 📋 {B}plan{R}      update {len(todos_arg)} task(s)  {dur}"
             else:
-                return f"{face} 📋 planning {len(todos_arg)} task(s) {time_str}"
-        
-        # TTS
-        elif tool_name == "text_to_speech":
-            text = args.get("text", "")
-            if len(text) > 25:
-                text = text[:22] + "..."
-            face = random.choice(self.KAWAII_CREATE)
-            return f"{face} 🔊 speaking \"{text}\" {time_str}"
-        
-        # Vision tools
-        elif tool_name == "vision_analyze":
-            question = args.get("question", "")
-            if len(question) > 25:
-                question = question[:22] + "..."
-            face = random.choice(self.KAWAII_BROWSER)
-            return f"{face} 👁️✨ analyzing \"{question}\" {time_str}"
-        
-        # Mixture of agents
-        elif tool_name == "mixture_of_agents":
-            prompt = args.get("user_prompt", "")
-            if len(prompt) > 25:
-                prompt = prompt[:22] + "..."
-            face = random.choice(self.KAWAII_THINK)
-            return f"{face} 🧠💭 deep thinking \"{prompt}\" {time_str}"
-        
-        # RL training tools
-        elif tool_name.startswith("rl_"):
-            face = random.choice(self.KAWAII_THINK)
-            rl_labels = {
-                "rl_list_environments": "listing RL environments",
-                "rl_select_environment": f"selecting {args.get('name', 'env')}",
-                "rl_get_current_config": "reading config",
-                "rl_edit_config": f"setting {args.get('field', '?')}",
-                "rl_start_training": "starting training run",
-                "rl_check_status": f"checking run {args.get('run_id', '?')[:12]}",
-                "rl_stop_training": f"stopping run {args.get('run_id', '?')[:12]}",
-                "rl_get_results": f"fetching results {args.get('run_id', '?')[:12]}",
-                "rl_list_runs": "listing training runs",
-                "rl_test_inference": "running inference test",
+                return f"{D}┊{R} 📋 {B}plan{R}      {len(todos_arg)} task(s)  {dur}"
+
+        # ── Skills ──
+        if tool_name == "skills_list":
+            cat = args.get("category", "all")
+            return f"{D}┊{R} 📚 {B}skills{R}    list {cat}  {dur}"
+
+        if tool_name == "skill_view":
+            return f"{D}┊{R} 📚 {B}skill{R}     {_trunc(args.get('name', ''), 30)}  {dur}"
+
+        # ── Generation & Media ──
+        if tool_name == "image_generate":
+            return f"{D}┊{R} 🎨 {M}create{R}    {_trunc(args.get('prompt', ''), 35)}  {dur}"
+
+        if tool_name == "text_to_speech":
+            return f"{D}┊{R} 🔊 {M}speak{R}     {_trunc(args.get('text', ''), 30)}  {dur}"
+
+        if tool_name == "vision_analyze":
+            return f"{D}┊{R} 👁️  {C}vision{R}    {_trunc(args.get('question', ''), 30)}  {dur}"
+
+        if tool_name == "mixture_of_agents":
+            return f"{D}┊{R} 🧠 {C}reason{R}    {_trunc(args.get('user_prompt', ''), 30)}  {dur}"
+
+        # ── Messaging & Scheduling ──
+        if tool_name == "send_message":
+            target = args.get("target", "?")
+            msg = _trunc(args.get("message", ""), 25)
+            return f"{D}┊{R} 📨 {B}send{R}      {target}: \"{msg}\"  {dur}"
+
+        if tool_name == "schedule_cronjob":
+            name = _trunc(args.get("name", args.get("prompt", "task")), 30)
+            return f"{D}┊{R} ⏰ {B}schedule{R}  {name}  {dur}"
+
+        if tool_name == "list_cronjobs":
+            return f"{D}┊{R} ⏰ {B}jobs{R}      listing  {dur}"
+
+        if tool_name == "remove_cronjob":
+            return f"{D}┊{R} ⏰ {B}remove{R}    job {args.get('job_id', '?')}  {dur}"
+
+        # ── RL Training ──
+        if tool_name.startswith("rl_"):
+            rl = {
+                "rl_list_environments": "list envs",
+                "rl_select_environment": f"select {args.get('name', '')}",
+                "rl_get_current_config": "get config",
+                "rl_edit_config": f"set {args.get('field', '?')}",
+                "rl_start_training": "start training",
+                "rl_check_status": f"status {args.get('run_id', '?')[:12]}",
+                "rl_stop_training": f"stop {args.get('run_id', '?')[:12]}",
+                "rl_get_results": f"results {args.get('run_id', '?')[:12]}",
+                "rl_list_runs": "list runs",
+                "rl_test_inference": "test inference",
             }
-            label = rl_labels.get(tool_name, tool_name.replace("rl_", ""))
-            return f"{face} 🧪 {label} {time_str}"
-        
-        # Default fallback - random generic kawaii with primary arg preview
-        else:
-            face = random.choice(self.KAWAII_GENERIC)
-            preview = _build_tool_preview(tool_name, args)
-            if preview:
-                return f"{face} ⚡ {tool_name}... \"{preview}\" {time_str}"
-            return f"{face} ⚡ {tool_name}... {time_str}"
+            detail = rl.get(tool_name, tool_name.replace("rl_", ""))
+            return f"{D}┊{R} 🧪 {C}rl{R}        {detail}  {dur}"
+
+        # ── Fallback ──
+        preview = _build_tool_preview(tool_name, args) or ""
+        return f"{D}┊{R} ⚡ {C}{tool_name[:8]}{R}  {_trunc(preview, 35)}  {dur}"
     
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -2348,10 +2290,18 @@ class AIAgent:
                     
                     api_duration = time.time() - api_start_time
                     
-                    # Stop thinking spinner with cute completion message
+                    # Stop thinking spinner -- defer "got it!" message for final text responses.
+                    # For tool calls, stop silently since the tool execution messages are more informative.
                     if thinking_spinner:
-                        face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
-                        thinking_spinner.stop(f"{face} got it! ({api_duration:.1f}s)")
+                        has_tool_calls = (
+                            hasattr(response.choices[0].message, 'tool_calls')
+                            and response.choices[0].message.tool_calls
+                        )
+                        if has_tool_calls:
+                            thinking_spinner.stop("")
+                        else:
+                            face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
+                            thinking_spinner.stop(f"{face} got it! ({api_duration:.1f}s)")
                         thinking_spinner = None
                     
                     if not self.quiet_mode:
@@ -2840,42 +2790,35 @@ class AIAgent:
                                 store=self._todo_store,
                             )
                             tool_duration = time.time() - tool_start_time
-                            # Show descriptive output in quiet mode (no spinner needed -- instant)
+                            # Show clean output in quiet mode (no spinner needed -- instant)
                             if self.quiet_mode:
-                                todos_arg = function_args.get("todos")
-                                merge = function_args.get("merge", False)
-                                face = random.choice(self.KAWAII_SKILL)
-                                if todos_arg is None:
-                                    print(f"  {face} 📋 reading task list ({tool_duration:.1f}s)")
-                                elif merge:
-                                    count = len(todos_arg)
-                                    print(f"  {face} 📋 updating {count} task(s) ({tool_duration:.1f}s)")
-                                else:
-                                    count = len(todos_arg)
-                                    print(f"  {face} 📋 planning {count} task(s) ({tool_duration:.1f}s)")
-                        # Execute other tools - with animated spinner in quiet mode
+                                print(f"  {self._get_cute_tool_message('todo', function_args, tool_duration)}")
+                        # Execute other tools - with animated kawaii spinner in quiet mode
+                        # The face is "alive" while the tool works, then vanishes
+                        # and is replaced by the clean result line.
                         elif self.quiet_mode:
-                            # Tool-specific spinner animations
-                            tool_spinners = {
-                                'web_search': ('arrows', ['🔍', '🌐', '📡', '🔎']),
-                                'web_extract': ('grow', ['📄', '📖', '📑', '🗒️']),
-                                'web_crawl': ('arrows', ['🕷️', '🕸️', '🔗', '🌐']),
-                                'terminal': ('dots', ['💻', '⌨️', '🖥️', '📟']),
-                                'browser_navigate': ('moon', ['🌐', '🧭', '🔗', '🚀']),
-                                'browser_click': ('bounce', ['👆', '🖱️', '👇', '✨']),
-                                'browser_type': ('dots', ['⌨️', '✍️', '📝', '💬']),
-                                'browser_screenshot': ('star', ['📸', '🖼️', '📷', '✨']),
-                                'image_generate': ('sparkle', ['🎨', '✨', '🖼️', '🌟']),
-                                'skill_view': ('star', ['📚', '📖', '🎓', '✨']),
-                                'skills_list': ('pulse', ['📋', '📝', '📑', '📜']),
-                                'moa_query': ('brain', ['🧠', '💭', '🤔', '💡']),
-                                'analyze_image': ('sparkle', ['👁️', '🔍', '📷', '✨']),
-                            }
-                            
-                            spinner_type, tool_emojis = tool_spinners.get(function_name, ('dots', ['⚙️', '🔧', '⚡', '✨']))
                             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                            tool_emoji = random.choice(tool_emojis)
-                            spinner = KawaiiSpinner(f"{face} {tool_emoji} {function_name}...", spinner_type=spinner_type)
+                            tool_emoji_map = {
+                                'web_search': '🔍', 'web_extract': '📄', 'web_crawl': '🕸️',
+                                'terminal': '💻', 'process': '⚙️',
+                                'read_file': '📖', 'write_file': '✍️', 'patch': '🔧', 'search': '🔎',
+                                'browser_navigate': '🌐', 'browser_snapshot': '📸',
+                                'browser_click': '👆', 'browser_type': '⌨️',
+                                'browser_scroll': '📜', 'browser_back': '◀️',
+                                'browser_press': '⌨️', 'browser_close': '🚪',
+                                'browser_get_images': '🖼️', 'browser_vision': '👁️',
+                                'image_generate': '🎨', 'text_to_speech': '🔊',
+                                'vision_analyze': '👁️', 'mixture_of_agents': '🧠',
+                                'skills_list': '📚', 'skill_view': '📚',
+                                'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
+                                'send_message': '📨', 'todo': '📋',
+                            }
+                            emoji = tool_emoji_map.get(function_name, '⚡')
+                            preview = _build_tool_preview(function_name, function_args) or ""
+                            if preview and len(preview) > 30:
+                                preview = preview[:27] + "..."
+                            spinner_text = f"{face} {emoji} {preview}" if preview else f"{face} {emoji} {function_name}"
+                            spinner = KawaiiSpinner(spinner_text, spinner_type='dots')
                             spinner.start()
                             try:
                                 function_result = handle_function_call(function_name, function_args, effective_task_id)

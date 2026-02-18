@@ -185,15 +185,20 @@ agent:
 #
 #   web          - Web search and content extraction (web_search, web_extract)
 #   search       - Web search only, no scraping (web_search)
-#   terminal     - Command execution (terminal)
+#   terminal     - Command execution and process management (terminal, process)
+#   file         - File operations: read, write, patch, search
 #   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
-#   skills       - Load skill documents (skills_categories, skills_list, skill_view)
+#   skills       - Load skill documents (skills_list, skill_view)
 #   moa          - Mixture of Agents reasoning (mixture_of_agents)
+#   todo         - Task planning and tracking for multi-step work
+#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI)
+#   cronjob      - Schedule and manage automated tasks (CLI-only)
+#   rl           - RL training tools (Tinker-Atropos)
 #
 # Composite toolsets:
-#   debugging    - terminal + web (for troubleshooting)
+#   debugging    - terminal + web + file (for troubleshooting)
 #   safe         - web + vision + moa (no terminal access)
 
 # -----------------------------------------------------------------------------

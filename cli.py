@@ -1862,8 +1862,12 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Default: use hermes-cli toolset for full CLI functionality including cronjob tools
-        toolsets_list = ["hermes-cli"]
+        # Check config for CLI toolsets, fallback to hermes-cli
+        config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
+        if config_cli_toolsets and isinstance(config_cli_toolsets, list):
+            toolsets_list = config_cli_toolsets
+        else:
+            toolsets_list = ["hermes-cli"]
     
     # Create CLI instance
     cli = HermesCLI(

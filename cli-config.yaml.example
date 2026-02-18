@@ -181,7 +181,87 @@ agent:
 # Control which tools the agent has access to.
 # Use "all" to enable everything, or specify individual toolsets.
 
-# Available toolsets:
+# =============================================================================
+# Platform Toolsets (per-platform tool configuration)
+# =============================================================================
+# Override which toolsets are available on each platform.
+# If a platform isn't listed here, its built-in default is used.
+#
+# You can use EITHER:
+#   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
+#   - A list of individual toolsets to compose your own (see list below)
+#
+# Supported platform keys: cli, telegram, discord, whatsapp, slack
+#
+# Examples:
+#
+#   # Use presets (same as defaults):
+#   platform_toolsets:
+#     cli: [hermes-cli]
+#     telegram: [hermes-telegram]
+#
+#   # Custom: give Telegram only web + terminal + file + planning:
+#   platform_toolsets:
+#     telegram: [web, terminal, file, todo]
+#
+#   # Custom: CLI without browser or image gen:
+#   platform_toolsets:
+#     cli: [web, terminal, file, skills, todo, tts, cronjob]
+#
+#   # Restrictive: Discord gets read-only tools only:
+#   platform_toolsets:
+#     discord: [web, vision, skills, todo]
+#
+# If not set, defaults are:
+#   cli:      hermes-cli      (everything + cronjob management)
+#   telegram: hermes-telegram  (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   discord:  hermes-discord   (same as telegram)
+#   whatsapp: hermes-whatsapp  (same as telegram)
+#   slack:    hermes-slack     (same as telegram)
+#
+platform_toolsets:
+  cli: [hermes-cli]
+  telegram: [hermes-telegram]
+  discord: [hermes-discord]
+  whatsapp: [hermes-whatsapp]
+  slack: [hermes-slack]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Available toolsets (use these names in platform_toolsets or the toolsets list)
+#
+# Run `hermes chat --list-toolsets` to see all toolsets and their tools.
+# Run `hermes chat --list-tools` to see every individual tool with descriptions.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# INDIVIDUAL TOOLSETS (compose your own):
+#   web          - web_search, web_extract
+#   search       - web_search only (no scraping)
+#   terminal     - terminal, process
+#   file         - read_file, write_file, patch, search
+#   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
+#                  browser_scroll, browser_back, browser_press, browser_close,
+#                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
+#   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
+#   image_gen    - image_generate  (requires FAL_KEY)
+#   skills       - skills_list, skill_view
+#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
+#   todo         - todo (in-memory task planning, no deps)
+#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI key)
+#   cronjob      - schedule_cronjob, list_cronjobs, remove_cronjob
+#   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
+#
+# PRESETS (curated bundles):
+#   hermes-cli       - All of the above except rl + send_message
+#   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
+#                      skills, todo, cronjob, send_message
+#   hermes-discord   - Same as hermes-telegram
+#   hermes-whatsapp  - Same as hermes-telegram
+#   hermes-slack     - Same as hermes-telegram
+#
+# COMPOSITE:
+#   debugging    - terminal + web + file
+#   safe         - web + vision + moa (no terminal access)
+#   all          - Everything available
 #
 #   web          - Web search and content extraction (web_search, web_extract)
 #   search       - Web search only, no scraping (web_search)

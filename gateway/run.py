@@ -818,14 +818,44 @@ class GatewayRunner:
         from run_agent import AIAgent
         import queue
         
-        # Determine toolset based on platform
-        toolset_map = {
+        # Determine toolset based on platform.
+        # Check config.yaml for per-platform overrides, fallback to hardcoded defaults.
+        default_toolset_map = {
             Platform.LOCAL: "hermes-cli",
             Platform.TELEGRAM: "hermes-telegram",
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
+            Platform.SLACK: "hermes-slack",
         }
-        toolset = toolset_map.get(source.platform, "hermes-telegram")
+        
+        # Try to load platform_toolsets from config
+        platform_toolsets_config = {}
+        try:
+            config_path = Path.home() / '.hermes' / 'config.yaml'
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r') as f:
+                    user_config = yaml.safe_load(f) or {}
+                platform_toolsets_config = user_config.get("platform_toolsets", {})
+        except Exception:
+            pass
+        
+        # Map platform enum to config key
+        platform_config_key = {
+            Platform.LOCAL: "cli",
+            Platform.TELEGRAM: "telegram",
+            Platform.DISCORD: "discord",
+            Platform.WHATSAPP: "whatsapp",
+            Platform.SLACK: "slack",
+        }.get(source.platform, "telegram")
+        
+        # Use config override if present (list of toolsets), otherwise hardcoded default
+        config_toolsets = platform_toolsets_config.get(platform_config_key)
+        if config_toolsets and isinstance(config_toolsets, list):
+            enabled_toolsets = config_toolsets
+        else:
+            default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+            enabled_toolsets = [default_toolset]
         
         # Check if tool progress notifications are enabled
         tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "").lower() in ("1", "true", "yes")
@@ -944,7 +974,7 @@ class GatewayRunner:
                 model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
                 max_iterations=max_iterations,
                 quiet_mode=True,
-                enabled_toolsets=[toolset],
+                enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=context_prompt,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,

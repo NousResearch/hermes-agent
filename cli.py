@@ -1562,8 +1562,8 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
         
-        # Dynamic prompt: changes to show agent status
-        cli_ref = self  # capture for closure
+        # Dynamic prompt: shows Hermes symbol when agent is working
+        cli_ref = self
 
         def get_prompt():
             if cli_ref._agent_running:
@@ -1579,11 +1579,19 @@ class HermesCLI:
             wrap_lines=False,
             history=FileHistory(str(self._history_file)),
         )
+
+        # Spacer line above input that absorbs spinner output so it
+        # doesn't overlap the prompt_toolkit cursor
+        def get_spacer_height():
+            return 1 if cli_ref._agent_running else 0
+
+        spacer = Window(height=get_spacer_height)
         
-        # Layout: just the input area, no extra status line
+        # Layout with dynamic spacer and input at bottom
         layout = Layout(
             HSplit([
-                Window(height=0),  # Spacer that expands
+                Window(height=0),  # Expands to push everything to bottom
+                spacer,
                 input_area,
             ])
         )

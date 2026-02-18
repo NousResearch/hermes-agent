@@ -1237,6 +1237,10 @@ class AIAgent:
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         
+        # In-memory todo list for task planning (one per agent/session)
+        from tools.todo_tool import TodoStore
+        self._todo_store = TodoStore()
+        
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via environment variables (can be set in .env or cli-config.yaml)
@@ -1961,6 +1965,37 @@ class AIAgent:
         """Clear any pending interrupt request."""
         self._interrupt_requested = False
         self._interrupt_message = None
+    
+    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+        """
+        Recover todo state from conversation history.
+        
+        The gateway creates a fresh AIAgent per message, so the in-memory
+        TodoStore is empty. We scan the history for the most recent todo
+        tool response and replay it to reconstruct the state.
+        """
+        # Walk history backwards to find the most recent todo tool response
+        last_todo_response = None
+        for msg in reversed(history):
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            # Quick check: todo responses contain "todos" key
+            if '"todos"' not in content:
+                continue
+            try:
+                data = json.loads(content)
+                if "todos" in data and isinstance(data["todos"], list):
+                    last_todo_response = data["todos"]
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        
+        if last_todo_response:
+            # Replay the items into the store (replace mode)
+            self._todo_store.write(last_todo_response, merge=False)
+            if not self.quiet_mode:
+                print(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_terminal_interrupt(False)
     
     @property
@@ -1998,6 +2033,12 @@ class AIAgent:
         
         # Initialize conversation
         messages = conversation_history or []
+        
+        # Hydrate todo store from conversation history (gateway creates a fresh
+        # AIAgent per message, so the in-memory store is empty -- we need to
+        # recover the todo state from the most recent todo tool response in history)
+        if conversation_history and not self._todo_store.has_items():
+            self._hydrate_todo_store(conversation_history)
         
         # Inject prefill messages at the start of conversation (before user's actual prompt)
         # This is used for few-shot priming, e.g., a greeting exchange to set response style
@@ -2419,7 +2460,10 @@ class AIAgent:
                         messages = self.context_compressor.compress(messages, current_tokens=approx_tokens)
                         
                         if len(messages) < original_len:
-                            # Compression was possible, retry
+                            # Compression was possible -- re-inject todo state
+                            todo_snapshot = self._todo_store.format_for_injection()
+                            if todo_snapshot:
+                                messages.append({"role": "user", "content": todo_snapshot})
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             continue  # Retry with compressed messages
                         else:
@@ -2670,8 +2714,17 @@ class AIAgent:
 
                         tool_start_time = time.time()
 
-                        # Execute the tool - with animated spinner in quiet mode
-                        if self.quiet_mode:
+                        # Todo tool -- handle directly (needs agent's TodoStore instance)
+                        if function_name == "todo":
+                            from tools.todo_tool import todo_tool as _todo_tool
+                            function_result = _todo_tool(
+                                todos=function_args.get("todos"),
+                                merge=function_args.get("merge", False),
+                                store=self._todo_store,
+                            )
+                            tool_duration = time.time() - tool_start_time
+                        # Execute other tools - with animated spinner in quiet mode
+                        elif self.quiet_mode:
                             # Tool-specific spinner animations
                             tool_spinners = {
                                 'web_search': ('arrows', ['🔍', '🌐', '📡', '🔎']),
@@ -2748,6 +2801,10 @@ class AIAgent:
                             messages, 
                             current_tokens=self.context_compressor.last_prompt_tokens
                         )
+                        # Re-inject todo state after compression (cache already invalidated)
+                        todo_snapshot = self._todo_store.format_for_injection()
+                        if todo_snapshot:
+                            messages.append({"role": "user", "content": todo_snapshot})
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages

@@ -114,6 +114,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "todo": {
+        "description": "Task planning and tracking for multi-step work",
+        "tools": ["todo"],
+        "includes": []
+    },
+    
     # Scenario-specific toolsets
     
     "debugging": {
@@ -156,6 +162,8 @@ TOOLSETS = {
             "browser_vision",
             # Text-to-speech
             "text_to_speech",
+            # Planning & task management
+            "todo",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -183,6 +191,8 @@ TOOLSETS = {
             "text_to_speech",
             # Skills - access knowledge base
             "skills_list", "skill_view",
+            # Planning & task management
+            "todo",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -208,6 +218,8 @@ TOOLSETS = {
             "text_to_speech",
             # Skills - access knowledge base
             "skills_list", "skill_view",
+            # Planning & task management
+            "todo",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -233,6 +245,8 @@ TOOLSETS = {
             "text_to_speech",
             # Skills
             "skills_list", "skill_view",
+            # Planning & task management
+            "todo",
             # Cronjob management
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -258,6 +272,8 @@ TOOLSETS = {
             "text_to_speech",
             # Skills - access knowledge base
             "skills_list", "skill_view",
+            # Planning & task management
+            "todo",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging

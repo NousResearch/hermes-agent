@@ -47,6 +47,7 @@ async def web_search(query: str) -> dict:
 | **TTS** | `tts_tool.py` | `text_to_speech` (Edge TTS free / ElevenLabs / OpenAI) |
 | **Reasoning** | `mixture_of_agents_tool.py` | `mixture_of_agents` |
 | **Skills** | `skills_tool.py` | `skills_list`, `skill_view` |
+| **Todo** | `todo_tool.py` | `todo` (read/write task list for multi-step planning) |
 | **Cronjob** | `cronjob_tools.py` | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` |
 | **RL Training** | `rl_training_tool.py` | `rl_list_environments`, `rl_start_training`, `rl_check_status`, etc. |
 
@@ -83,7 +84,11 @@ TOOLSETS = {
     },
     "terminal": {
         "description": "Command execution",
-        "tools": ["terminal"]
+        "tools": ["terminal", "process"]
+    },
+    "todo": {
+        "description": "Task planning and tracking for multi-step work",
+        "tools": ["todo"]
     },
     # ...
 }

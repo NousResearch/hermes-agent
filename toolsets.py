@@ -189,6 +189,11 @@ TOOLSETS = {
             "image_generate",
             # Text-to-speech
             "text_to_speech",
+            # Browser automation (requires Browserbase API key)
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Planning & task management
@@ -216,6 +221,11 @@ TOOLSETS = {
             "image_generate",
             # Text-to-speech
             "text_to_speech",
+            # Browser automation (requires Browserbase API key)
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Planning & task management
@@ -243,6 +253,11 @@ TOOLSETS = {
             "image_generate",
             # Text-to-speech
             "text_to_speech",
+            # Browser automation (requires Browserbase API key)
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
             # Skills
             "skills_list", "skill_view",
             # Planning & task management
@@ -270,6 +285,11 @@ TOOLSETS = {
             "image_generate",
             # Text-to-speech
             "text_to_speech",
+            # Browser automation (requires Browserbase API key)
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision",
             # Skills - access knowledge base
             "skills_list", "skill_view",
             # Planning & task management

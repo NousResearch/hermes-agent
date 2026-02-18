@@ -107,16 +107,32 @@ hermes version            # Show version info
 
 ### CLI Commands (inside chat)
 
+Type `/` to see an autocomplete dropdown of all commands.
+
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
 | `/tools` | List available tools |
+| `/toolsets` | List available toolsets |
 | `/model [name]` | Show or change model |
+| `/prompt` | View/set custom system prompt |
 | `/personality [name]` | Set personality (kawaii, pirate, etc.) |
-| `/clear` | Clear screen and reset |
-| `/cron` | Manage scheduled tasks |
+| `/clear` | Clear screen and reset conversation |
+| `/history` | Show conversation history |
+| `/reset` | Reset conversation only (keep screen) |
+| `/retry` | Retry the last message |
+| `/undo` | Remove the last exchange |
+| `/save` | Save the current conversation |
 | `/config` | Show current configuration |
-| `/quit` | Exit |
+| `/cron` | Manage scheduled tasks |
+| `/platforms` | Show gateway/messaging platform status |
+| `/quit` | Exit (also: `/exit`, `/q`) |
+
+**Keybindings:**
+- `Enter` — send message
+- `Alt+Enter` or `Ctrl+J` — new line (multi-line input)
+- `Ctrl+C` — interrupt agent (double-press to force exit)
+- `Ctrl+D` — exit
 
 ---
 
@@ -134,7 +150,7 @@ hermes --toolsets "web,terminal"
 hermes --list-tools
 ```
 
-**Available toolsets:** `web`, `terminal`, `browser`, `vision`, `creative`, `reasoning`, `skills`, `tts`, `cronjob`, and more.
+**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `cronjob`, and more.
 
 ### 🔊 Text-to-Speech
 

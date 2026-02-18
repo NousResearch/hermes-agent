@@ -202,6 +202,9 @@ def _print_setup_summary(config: dict, hermes_home):
     # Terminal (always available if system deps met)
     tool_status.append(("Terminal/Commands", True, None))
     
+    # Task planning (always available, in-memory)
+    tool_status.append(("Task Planning (todo)", True, None))
+    
     # Skills (always available if skills dir exists)
     tool_status.append(("Skills Knowledge Base", True, None))
     

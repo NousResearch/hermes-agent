@@ -25,6 +25,7 @@ hermes-agent/
 │   ├── uninstall.py      # Uninstaller
 │   └── cron.py           # Cron job management
 ├── tools/                # Tool implementations
+│   ├── todo_tool.py            # Planning & task management (in-memory TodoStore)
 │   ├── process_registry.py     # Background process management (spawn, poll, wait, kill)
 │   ├── transcription_tools.py  # Speech-to-text (Whisper API)
 ├── gateway/              # Messaging platform adapters
@@ -151,13 +152,23 @@ For models that support chain-of-thought reasoning:
 
 The interactive CLI uses:
 - **Rich** - For the welcome banner and styled panels
-- **prompt_toolkit** - For fixed input area with history and `patch_stdout`
-- **KawaiiSpinner** (in run_agent.py) - Animated feedback during API calls and tool execution
+- **prompt_toolkit** - For fixed input area with history, `patch_stdout`, slash command autocomplete, and floating completion menus
+- **KawaiiSpinner** (in run_agent.py) - Animated kawaii faces during API calls; clean `┊` activity feed for tool execution results
 
 Key components:
 - `HermesCLI` class - Main CLI controller with commands and conversation loop
+- `SlashCommandCompleter` - Autocomplete dropdown for `/commands` (type `/` to see all)
 - `load_cli_config()` - Loads config, sets environment variables for terminal
 - `build_welcome_banner()` - Displays ASCII art logo, tools, and skills summary
+
+CLI UX notes:
+- Thinking spinner (during LLM API call) shows animated kawaii face + verb (`(⌐■_■) deliberating...`)
+- When LLM returns tool calls, the spinner clears silently (no "got it!" noise)
+- Tool execution results appear as a clean activity feed: `┊ {emoji} {verb} {detail} {duration}`
+- "got it!" only appears when the LLM returns a final text response (`⚕ ready`)
+- The prompt shows `⚕ ❯` when the agent is working, `❯` when idle
+- Pasting 5+ lines auto-saves to `~/.hermes/pastes/` and collapses to a reference
+- Multi-line input via Alt+Enter or Ctrl+J
 - `/commands` - Process user commands like `/help`, `/clear`, `/personality`, etc.
 
 CLI uses `quiet_mode=True` when creating AIAgent to suppress verbose logging.
@@ -472,7 +483,12 @@ Follow this strict order to maintain consistency:
    - Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
    - The tool will be auto-disabled if the key is missing
 
-6. Optionally add to `toolset_distributions.py` for batch processing
+6. Add `"todo"` to the relevant platform toolsets (`hermes-cli`, `hermes-telegram`, etc.)
+
+7. Optionally add to `toolset_distributions.py` for batch processing
+
+**Special case: tools that need agent-level state** (like `todo`):
+If your tool needs access to the AIAgent instance (e.g., in-memory state per session), intercept it directly in `run_agent.py`'s tool dispatch loop *before* `handle_function_call()`. Add a fallback error in `handle_function_call()` for safety. See `todo_tool.py` and the `if function_name == "todo":` block in `run_agent.py` for the pattern. For RL environments, add the same intercept in `environments/agent_loop.py`.
 
 ### Tool Implementation Pattern
 

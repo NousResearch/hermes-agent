@@ -889,8 +889,6 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
             return f"~{target}: \"{args.get('old_text', '')[:20]}\""
         elif action == "remove":
             return f"-{target}: \"{args.get('old_text', '')[:20]}\""
-        elif action == "read":
-            return f"read {target}"
         return action
     
     if tool_name == "send_message":
@@ -1531,8 +1529,6 @@ class AIAgent:
             elif action == "remove":
                 snippet = _trunc(args.get("old_text", ""), 20)
                 return f"┊ 🧠 memory    -{target}: \"{snippet}\"  {dur}"
-            elif action == "read":
-                return f"┊ 🧠 memory    read {target}  {dur}"
             elif action == "search_sessions":
                 query = _trunc(args.get("content", ""), 30)
                 return f"┊ 🧠 recall    \"{query}\"  {dur}"

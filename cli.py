@@ -1503,7 +1503,11 @@ class HermesCLI:
                     agent_thread.join(0.1)
             
             agent_thread.join()  # Ensure agent thread completes
-            
+
+            # Drain any remaining agent output still in the StdoutProxy
+            # buffer so tool/status lines render ABOVE our response box.
+            sys.stdout.flush()
+
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
             
@@ -1527,15 +1531,12 @@ class HermesCLI:
                 w = min(self.console.width, 80)
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"╭─{label}{'─' * max(fill - 1, 0)}╮"
-                bot = f"╰{'─' * (w - 2)}╯"
+                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
+                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
 
-                print()
-                _cprint(f"{_GOLD}{top}{_RST}")
-                print()
-                print(response)
-                print()
-                _cprint(f"{_GOLD}{bot}{_RST}")
+                # Render box + response as a single _cprint call so
+                # nothing can interleave between the box borders.
+                _cprint(f"\n{top}\n\n{response}\n\n{bot}")
             
             # If we have a pending message from interrupt, re-queue it for process_loop
             # instead of recursing (avoids unbounded recursion from rapid interrupts)

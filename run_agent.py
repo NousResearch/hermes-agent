@@ -2396,18 +2396,10 @@ class AIAgent:
                     
                     api_duration = time.time() - api_start_time
                     
-                    # Stop thinking spinner -- defer "got it!" message for final text responses.
-                    # For tool calls, stop silently since the tool execution messages are more informative.
+                    # Stop thinking spinner silently -- the response box or tool
+                    # execution messages that follow are more informative.
                     if thinking_spinner:
-                        has_tool_calls = (
-                            hasattr(response.choices[0].message, 'tool_calls')
-                            and response.choices[0].message.tool_calls
-                        )
-                        if has_tool_calls:
-                            thinking_spinner.stop("")
-                        else:
-                            face = random.choice(["(◕‿◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "✧٩(ˊᗜˋ*)و✧", "(*^▽^*)"])
-                            thinking_spinner.stop(f"{face} ⚕ ready ({api_duration:.1f}s)")
+                        thinking_spinner.stop("")
                         thinking_spinner = None
                     
                     if not self.quiet_mode:

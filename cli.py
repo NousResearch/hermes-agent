@@ -39,6 +39,8 @@ from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.keys import Keys
+from prompt_toolkit import print_formatted_text as _pt_print
+from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 import threading
 import queue
 import tempfile
@@ -299,11 +301,20 @@ def _run_cleanup():
 # - Light: #FFF8DC (text)
 # - Dim: #B8860B (muted text)
 
-# ANSI escape codes for conversation display (works reliably with patch_stdout)
+# ANSI building blocks for conversation display
 _GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
+
+def _cprint(text: str):
+    """Print ANSI-colored text through prompt_toolkit's native renderer.
+
+    Raw ANSI escapes written via print() are swallowed by patch_stdout's
+    StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
+    prompt_toolkit parse the escapes and render real colors.
+    """
+    _pt_print(_PT_ANSI(text))
 
 # Version string
 VERSION = "v1.0.0"
@@ -1511,7 +1522,9 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                print(f"\n{_GOLD}⚕ Hermes{_RST}\n")
+                print()
+                _cprint(f"{_GOLD}⚕ Hermes{_RST}")
+                print()
                 print(response)
                 print()
             
@@ -1744,17 +1757,21 @@ class HermesCLI:
                         if paste_path.exists():
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
-                            print(f"\n{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            print()
+                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
                             user_input = full_text
                         else:
-                            print(f"\n{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            print()
+                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     else:
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
-                            print(f"\n{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                            print()
+                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
                         else:
-                            print(f"\n{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            print()
+                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     
                     # Regular chat - run agent
                     self._agent_running = True

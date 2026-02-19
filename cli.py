@@ -35,7 +35,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.keys import Keys
@@ -1704,7 +1704,10 @@ class HermesCLI:
             height=get_hint_height,
         )
         
-        # Layout: spacer + input at bottom, completions rendered inline below input.
+        # Wrap the input in a styled border frame that grows with content
+        framed_input = Frame(input_area, style='class:input-frame')
+
+        # Layout: spacer + framed input at bottom, completions below.
         # Using inline CompletionsMenu (not a Float) so it reliably appears even
         # after agent output has filled the terminal via patch_stdout.  Float-based
         # menus lose their rendering space in non-full-screen mode once scrollback
@@ -1713,7 +1716,7 @@ class HermesCLI:
             HSplit([
                 Window(height=0),
                 spacer,
-                input_area,
+                framed_input,
                 CompletionsMenu(max_height=12, scroll_offset=1),
             ])
         )
@@ -1724,6 +1727,9 @@ class HermesCLI:
             'prompt': '#FFF8DC',
             'prompt-working': '#888888 italic',
             'hint': '#555555 italic',
+            # Bronze frame around the input area
+            'input-frame':        '#CD7F32',
+            'input-frame.border': '#CD7F32',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',

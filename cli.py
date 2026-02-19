@@ -1465,6 +1465,8 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
+        w = min(self.console.width, 80)
+        _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
         try:
@@ -1522,11 +1524,18 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
+                w = min(self.console.width, 80)
+                label = " ⚕ Hermes "
+                fill = w - 2 - len(label)  # 2 for ╭ and ╮
+                top = f"╭─{label}{'─' * max(fill - 1, 0)}╮"
+                bot = f"╰{'─' * (w - 2)}╯"
+
                 print()
-                _cprint(f"{_GOLD}⚕ Hermes{_RST}")
+                _cprint(f"{_GOLD}{top}{_RST}")
                 print()
                 print(response)
                 print()
+                _cprint(f"{_GOLD}{bot}{_RST}")
             
             # If we have a pending message from interrupt, re-queue it for process_loop
             # instead of recursing (avoids unbounded recursion from rapid interrupts)

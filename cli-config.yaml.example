@@ -244,6 +244,7 @@ platform_toolsets:
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
+#   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
 #   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI key)

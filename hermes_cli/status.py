@@ -77,6 +77,7 @@ def show_status(args):
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
+        "GitHub": "GITHUB_TOKEN",
     }
     
     for name, env_var in keys.items():

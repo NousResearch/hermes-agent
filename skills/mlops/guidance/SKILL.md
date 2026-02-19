@@ -4,8 +4,11 @@ description: Control LLM output with regex and grammars, guarantee valid JSON/XM
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Prompt Engineering, Guidance, Constrained Generation, Structured Output, JSON Validation, Grammar, Microsoft Research, Format Enforcement, Multi-Step Workflows]
 dependencies: [guidance, transformers]
+metadata:
+  hermes:
+    tags: [Prompt Engineering, Guidance, Constrained Generation, Structured Output, JSON Validation, Grammar, Microsoft Research, Format Enforcement, Multi-Step Workflows]
+
 ---
 
 # Guidance: Constrained LLM Generation

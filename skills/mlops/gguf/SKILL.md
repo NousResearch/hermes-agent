@@ -4,8 +4,11 @@ description: GGUF format and llama.cpp quantization for efficient CPU/GPU infere
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [GGUF, Quantization, llama.cpp, CPU Inference, Apple Silicon, Model Compression, Optimization]
 dependencies: [llama-cpp-python>=0.2.0]
+metadata:
+  hermes:
+    tags: [GGUF, Quantization, llama.cpp, CPU Inference, Apple Silicon, Model Compression, Optimization]
+
 ---
 
 # GGUF - Quantization Format for llama.cpp

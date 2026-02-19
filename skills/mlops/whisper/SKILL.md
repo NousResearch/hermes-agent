@@ -4,8 +4,11 @@ description: OpenAI's general-purpose speech recognition model. Supports 99 lang
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Whisper, Speech Recognition, ASR, Multimodal, Multilingual, OpenAI, Speech-To-Text, Transcription, Translation, Audio Processing]
 dependencies: [openai-whisper, transformers, torch]
+metadata:
+  hermes:
+    tags: [Whisper, Speech Recognition, ASR, Multimodal, Multilingual, OpenAI, Speech-To-Text, Transcription, Translation, Audio Processing]
+
 ---
 
 # Whisper - Robust Speech Recognition

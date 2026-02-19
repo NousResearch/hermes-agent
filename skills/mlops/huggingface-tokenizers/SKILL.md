@@ -4,8 +4,11 @@ description: Fast tokenizers optimized for research and production. Rust-based i
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Tokenization, HuggingFace, BPE, WordPiece, Unigram, Fast Tokenization, Rust, Custom Tokenizer, Alignment Tracking, Production]
 dependencies: [tokenizers, transformers, datasets]
+metadata:
+  hermes:
+    tags: [Tokenization, HuggingFace, BPE, WordPiece, Unigram, Fast Tokenization, Rust, Custom Tokenizer, Alignment Tracking, Production]
+
 ---
 
 # HuggingFace Tokenizers - Fast Tokenization for NLP

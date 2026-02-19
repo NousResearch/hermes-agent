@@ -4,8 +4,11 @@ description: Serverless GPU cloud platform for running ML workloads. Use when yo
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Infrastructure, Serverless, GPU, Cloud, Deployment, Modal]
 dependencies: [modal>=0.64.0]
+metadata:
+  hermes:
+    tags: [Infrastructure, Serverless, GPU, Cloud, Deployment, Modal]
+
 ---
 
 # Modal Serverless GPU

@@ -286,6 +286,12 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
     },
+    "GITHUB_TOKEN": {
+        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
+        "prompt": "GitHub Token",
+        "url": "https://github.com/settings/tokens",
+        "password": True,
+    },
 }
 
 
@@ -708,6 +714,7 @@ def set_config_value(key: str, value: str):
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
+        'GITHUB_TOKEN',
     ]
     
     if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):

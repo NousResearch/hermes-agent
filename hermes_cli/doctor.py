@@ -196,6 +196,43 @@ def run_doctor(args):
     else:
         check_warn("logs/ not found", "(will be created on first use)")
     
+    # Check memory directory
+    memories_dir = hermes_home / "memories"
+    if memories_dir.exists():
+        check_ok("~/.hermes/memories/ directory exists")
+        memory_file = memories_dir / "MEMORY.md"
+        user_file = memories_dir / "USER.md"
+        if memory_file.exists():
+            size = len(memory_file.read_text(encoding="utf-8").strip())
+            check_ok(f"MEMORY.md exists ({size} chars)")
+        else:
+            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+        if user_file.exists():
+            size = len(user_file.read_text(encoding="utf-8").strip())
+            check_ok(f"USER.md exists ({size} chars)")
+        else:
+            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+    else:
+        check_warn("~/.hermes/memories/ not found", "(will be created on first use)")
+        if should_fix:
+            memories_dir.mkdir(parents=True, exist_ok=True)
+            check_ok("Created ~/.hermes/memories/")
+    
+    # Check SQLite session store
+    state_db_path = hermes_home / "state.db"
+    if state_db_path.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(state_db_path))
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+            count = cursor.fetchone()[0]
+            conn.close()
+            check_ok(f"~/.hermes/state.db exists ({count} sessions)")
+        except Exception as e:
+            check_warn(f"~/.hermes/state.db exists but has issues: {e}")
+    else:
+        check_info("~/.hermes/state.db not created yet (will be created on first session)")
+    
     # =========================================================================
     # Check: External tools
     # =========================================================================

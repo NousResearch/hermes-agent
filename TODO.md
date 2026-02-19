@@ -6,9 +6,31 @@
 
 **43+ tools** across 13 toolsets: web (search, extract), terminal + process management, file ops (read, write, patch, search), vision, MoA reasoning, image gen, browser (10 tools via Browserbase), skills (41 skills), **todo (task planning)**, cronjobs, RL training (10 tools via Tinker-Atropos), TTS, cross-channel messaging.
 
+**Skills Hub**: search/install/inspect/audit/uninstall/publish/snapshot across 4 registries (GitHub, ClawHub, Claude Code marketplaces, LobeHub). Security scanner with trust-aware policy. CLI (`hermes skills ...`) and `/skills` slash command. agentskills.io spec compliant.
+
 **4 platform adapters**: Telegram, Discord, WhatsApp, Slack -- all with typing indicators, image/voice auto-analysis, dangerous command approval, interrupt support, background process watchers.
 
 **Other**: Context compression, context files (SOUL.md, AGENTS.md), session JSONL transcripts, batch runner with toolset distributions, 13 personalities, DM pairing auth, PTY mode, model metadata caching.
+
+---
+
+## The Knowledge System (how Memory, Skills, Sessions, and Subagents interconnect)
+
+These four systems form a continuum of agent intelligence. They should be thought of together:
+
+**Types of agent knowledge:**
+- **Procedural memory (Skills)** -- reusable approaches for specific task types. "How to deploy a Docker container." "How to fine-tune with Axolotl." Created when the agent works through something difficult and succeeds.
+- **Declarative memory (MEMORY.md)** -- facts about the environment, projects, tools, conventions. "This repo uses Poetry, not pip." "The API key is stored in ~/.config/keys."
+- **Identity memory (USER.md / memory_summary.md)** -- who the user is, how they like to work, their preferences, communication style. Persists across all sessions.
+- **Error memory (Learnings)** -- what went wrong and the proven fix. "pip install fails on this system because of X; use conda instead."
+- **Episodic memory (Session summaries)** -- what happened in past sessions. Searchable for when the agent needs to recall prior conversations.
+
+**The feedback loop:** After complex tasks, especially ones involving difficulty or iteration, the agent should:
+1. Ask the user for feedback: "How was that? Did it work out?"
+2. If successful, offer to save: "Would you like me to save that as a skill for next time?"
+3. Update general memory with any durable insights (user preferences, environment facts, lessons learned)
+
+**Storage evolution:** Start with flat files (Phase 1), migrate to SQLite (Phase 2) when the volume of sessions and memories makes file-based storage unwieldy.
 
 ---
 
@@ -27,7 +49,7 @@ The main agent becomes an orchestrator that delegates context-heavy tasks to sub
 
 **What other agents do:**
 - **OpenClaw**: `sessions_spawn` + `subagents` tool with list/kill/steer actions, depth limits, rate limiting. Cross-session agent-to-agent coordination via `sessions_send`.
-- **Codex**: `spawn_agent` / `send_input` / `close_agent` / `wait_for_agent` with configurable timeouts. Thread manager for concurrent agents.
+- **Codex**: `spawn_agent` / `send_input` / `close_agent` / `wait_for_agent` with configurable timeouts. Thread manager for concurrent agents. Also uses subagents for memory consolidation (Phase 2 spawns a dedicated consolidation agent).
 - **Cline**: Up to 5 parallel subagents per invocation. Subagents get restricted tool access (read, list, search, bash, skill, attempt). Progress tracking with stats (tool calls, tokens, cost, context usage).
 - **OpenCode**: `TaskTool` creates subagent sessions with permission inheritance. Resumable tasks via `task_id`. Parent-child session relationships.
 
@@ -36,182 +58,155 @@ The main agent becomes an orchestrator that delegates context-heavy tasks to sub
 - Subagent gets: goal, context excerpt, restricted toolset, fresh conversation
 - Returns: summary string (success/failure + key findings + any file paths created)
 - Track active subagents so parent can reference them; limit concurrency to 3
+- Primary use cases: parallelizing distinct work (research two topics, work on two separate code changes), handling context-heavy tasks that would bloat the parent's context
 - Later: add `send_input` for interactive subagent steering (Codex-style)
 - Later: cross-session coordination for gateway (OpenClaw-style `sessions_send`)
 
 ---
 
-## 2. Planning & Task Management 📋 ✅
-
-**Status:** Implemented
-**Priority:** High -- every serious agent has this now
-
-A `todo` tool the agent uses to decompose complex tasks, track progress, and recover from failures. Must be **cache-friendly** -- no system prompt mutation, no injected messages that invalidate the KV cache prefix.
-
-**What other agents do:**
-- **Cursor (Claude)**: `TodoWrite` tool. Flat list, 4 states, `merge` flag. Todos injected into context every turn. Effective but **cache-hostile** -- mutating the system prompt on every turn invalidates the entire prefix cache for all prior tokens.
-- **OpenCode**: `todowrite` / `todoread` as separate tools. State lives server-side. Agent reads it back when needed. **Cache-friendly** -- no context mutation; the todo state appears only as tool call/response pairs in the normal conversation flow.
-- **Cline**: `focus_chain` tool for task management with sequential focus
-- **OpenClaw**: `/mesh <goal>` command auto-plans and runs multi-step workflows
-
-### The caching problem
-
-With OpenRouter / vLLM / any prefix-caching provider, the prompt is cached from the start of the sequence. If we inject a changing todo list into the system prompt (or anywhere before the most recent messages), we invalidate the cache for the entire conversation. On a 100K-token conversation, this means re-processing the full prefix on every turn instead of just the new tokens. That's a massive cost and latency penalty.
-
-**Rule: Never modify anything before the latest assistant/user turn.** Anything we add must go at the *end* of the conversation (as a tool response or appended to the latest message), or live entirely inside tool call/response pairs that the agent initiated.
-
-### Design: Pure tool-based, no context mutation
-
-**Two tools: `todo_write` and `todo_read`**
-
-`todo_write` -- create or update the task list:
-```
-Parameters:
-  todos: [{id, content, status}]   # the items to write
-  merge: bool (default false)      # false = replace list, true = update by id
-```
-Returns: the full current todo list (so the agent immediately sees the result)
-
-`todo_read` -- retrieve the current task list:
-```
-Parameters: (none)
-```
-Returns: the full current todo list, plus metadata (items completed, items remaining, tool calls since last update)
-
-This is how OpenCode does it and it's the right call. The agent's own tool call history is the "memory" -- the `todo_write` response containing the full list is right there in the conversation. No injection needed.
-
-**Item schema:**
-```
-{
-  "id": "1",           # unique string identifier
-  "content": "...",    # description of the task
-  "status": "pending"  # one of: pending, in_progress, completed, cancelled
-}
-```
-
-**No priority field.** Order in the list is the priority.
-
-**Only 4 states.** No "failed" or "blocked" -- if something fails, cancel it and add a revised item.
-
-### Where the behavior rules live: the tool description
-
-Instead of adding instructions to the system prompt, we put all the usage guidance directly in the tool description. This is part of the tool schema, which is sent once at the start and **is cached perfectly** -- it never changes mid-conversation.
-
-The `todo_write` tool description teaches the agent everything:
-
-```
-Manage your task list for the current session. Use this to plan and track
-multi-step work.
-
-When to use: Complex tasks with 3+ steps, when the user gives multiple tasks,
-or when you need to plan before acting. Skip for simple single-step requests.
-
-Behavior:
-- Set merge=false to create a fresh plan (replaces existing todos)
-- Set merge=true to update status or add follow-up items
-- Mark the first item in_progress immediately and start working on it
-- Only keep ONE item in_progress at a time
-- Mark items completed as soon as you finish them
-- If something fails, mark it cancelled and add a revised item
-- Don't add "test" or "verify" items unless the user asks for them
-- Update todos silently alongside your other work
-
-Returns the full current list after every write.
-```
-
-This is ~150 tokens in the tool schema. It's static, cached, and teaches the agent the same behavioral rules without touching the system prompt.
-
-### How it survives context compression
-
-The state lives server-side on the AIAgent instance (in-memory dict). The conversation history just has the tool call/response pairs as a trail of what happened.
-
-**On context compression, re-inject the current todo state.** Compression already invalidates the cache (the middle of the conversation is being rewritten anyway), so there's zero additional cache cost to appending the todo state once at that moment. When `run_agent.py` runs compression, if `_todo_state` is non-empty, it appends a synthetic tool response at the end of the compressed history:
-
-```
-[System: Your current task list was preserved across context compression]
-- [x] 1. Set up project structure (completed)
-- [>] 2. Implement the search endpoint (in_progress)
-- [ ] 3. Add error handling (pending)
-```
-
-This is the one place we do inject -- but only on compression events, which are rare (once every ~50-100 turns). The cache was already blown by compression itself, so it costs nothing extra.
-
-The agent does NOT need to "know" to call `todo_read` after compression -- it just sees its plan right there in the history. `todo_read` still exists as a tool for any time the agent wants to double-check, but it's not load-bearing for the compression case.
-
-### Progress checkpoints (cache-friendly approach)
-
-Instead of injecting system messages (which mutate the context), we **piggyback on existing tool responses.** When any tool returns its result, and the tool call counter has crossed a threshold, we append a one-line note to that tool's response:
-
-```
-[10+ tool calls since last todo update -- consider calling todo_read to review your plan]
-```
-
-This is a tiny addition to a response that's already at the end of the conversation -- zero cache impact on previous turns. It costs ~20 tokens and only appears once per threshold crossing.
-
-Similarly, on tool errors, we can append to the error response:
-```
-[This error may affect your plan -- call todo_read to review]
-```
-
-These hints go in the tool response, not in a new system message. The agent processes them naturally as part of reading the tool output.
-
-### Server-side state
-
-```python
-# On AIAgent class
-_todo_state: Dict[str, List[dict]]  # session_key -> list of todo items
-_todo_tool_calls_since_update: int  # counter for checkpoint nudges
-```
-
-- `todo_write` updates `_todo_state` and resets the counter
-- `todo_read` reads `_todo_state` and resets the counter
-- Every `handle_function_call` increments the counter
-- When counter > threshold (default 10), the next tool response gets the checkpoint hint appended, then the hint flag is cleared until the next threshold crossing
-
-### Summary: what we took from Cursor, what we changed
-
-| Aspect | Cursor's approach | Our approach |
-|--------|------------------|--------------|
-| State visibility | Injected into context every turn | Tool call/response pairs in normal conversation flow |
-| Behavioral rules | System prompt instructions | Tool description (static, cached) |
-| Checkpoints | Injected system messages | One-line hint appended to tool responses |
-| Cache impact | High (prefix invalidated every turn) | Near-zero (only re-injects on compression, which already blows cache) |
-| State persistence | Context injection survives compression | Server-side dict; re-injected once on compression events |
-| Core UX | Identical | Identical (same flat list, same 4 states, same merge semantics) |
-
-**Files:** `tools/todo_tool.py` (tool implementation), integration in `run_agent.py` (state dict + checkpoint counter)
-
----
-
-## 3. Dynamic Skills Expansion 📚
-
-**Status:** IMPLEMENTED — Skills Hub with search/install/publish/snapshot from 4 registries
-**Priority:** ~~Medium~~ Done
-
-Skills Hub implemented: search/install/inspect/audit/uninstall/publish/snapshot across GitHub repos, ClawHub, Claude Code marketplaces, and LobeHub. Security scanner with trust-aware policy (builtin/trusted/community). CLI (`hermes skills ...`) and `/skills` slash command. agentskills.io spec compliant.
-
-**What other agents do:**
-- **OpenClaw**: ClawHub registry -- bundled, managed, and workspace skills with install gating. Agent can auto-search and pull skills from a remote hub.
-- **OpenCode**: SKILL.md format with URL download support via `Discovery.pull`. Compatible with Claude Code's skill format.
-- **Pi**: Skills as npm-publishable packages. Prompt templates and themes alongside skills.
-- **Cline**: Global + project-level skill directories. `use_skill` tool + `new_rule` tool for creating rules.
-
-**Our approach:**
-- Add `skill_create`, `skill_edit`, `skill_delete` actions to the existing `skill_view` tool (or a new `skill_manage` tool)
-- New skills saved to `~/.hermes/skills/` (user-created, separate from bundled)
-- SKILL.md format stays the same (YAML frontmatter + markdown body)
-- Skill acquisition: after a successful multi-step task, offer to save the approach as a new skill (agent-initiated, user-confirmed)
-- Later: skill chaining with dependency graphs, parameterized templates
-- Later: remote skill registry (like ClawHub) for community-shared skills
-
----
-
-## 4. Interactive Clarifying Questions ❓
+## 2. Agent-Managed Skills (Create / Edit / Delete) 📚
 
 **Status:** Not started
-**Priority:** Medium
+**Priority:** High -- skills are the agent's procedural memory
 
-Allow the agent to present structured choices to the user when it needs clarification. Rich terminal UI in CLI mode, graceful fallback on messaging platforms.
+The Skills Hub (search/install/publish from 4 registries) is done. What's missing is the agent's ability to **create, edit, and delete its own skills** -- turning successful approaches into reusable task-specific knowledge.
+
+**Skills are a form of memory.** General memory (user profile, environment facts, preferences) is broad and declarative. Skills are narrow and procedural -- they capture *how to do a specific type of task* based on proven experience. Together they form the agent's knowledge system.
+
+**What other agents do:**
+- **Cline**: `new_rule` tool for creating rules from context. Global + project-level skill directories.
+- **OpenClaw**: Workspace skills that agents can write into during sessions.
+- **Codex**: Phase 2 consolidation agent automatically creates skills from recurring patterns it detects across rollout summaries. Skills include: triggers, inputs, procedure steps, efficiency plans, pitfalls, verification checklists, and optional scripts/templates/examples.
+
+### Architecture
+
+**New `skill_manage` tool** (separate from read-only `skill_view`):
+- Actions: `create`, `edit`, `delete`
+- User skills stored in `~/.hermes/skills/<name>/SKILL.md` (separate from bundled `skills/` in repo)
+- Same SKILL.md format (YAML frontmatter + markdown body), validated on write
+- Agent sees `source` field (`"bundled"`, `"hub"`, `"user"`) on every skill -- can only edit/delete `"user"` skills
+
+**Discovery merge**: `_find_all_skills()` and `skill_view()` search both `SKILLS_DIR` (bundled) and `USER_SKILLS_DIR` (`~/.hermes/skills/`).
+
+### Proactive skill creation (the feedback loop)
+
+The agent shouldn't just create skills when asked. It should **recognize when a skill is worth creating** and offer proactively. The behavior is taught via the tool description (cache-friendly, same pattern as todo tool):
+
+**When to trigger:**
+- The task involved 5+ tool calls with back-and-forth or iteration
+- The agent hit errors/obstacles and recovered successfully
+- The user corrected the agent's approach and the corrected version worked
+- The task type is likely to recur (deployment, data processing, config setup, etc.)
+
+**The interaction pattern:**
+1. After completing a difficult task successfully, the agent asks: *"That took some figuring out. How did the result turn out for you?"*
+2. If the user confirms success, the agent offers: *"Would you like me to save that approach as a skill so I can do it faster next time?"*
+3. If yes, the agent creates a skill capturing: the trigger conditions, the working procedure, the pitfalls encountered, and the verification steps
+
+This pattern doesn't require the `clarify` tool (#3) -- it works as normal conversational text. But `clarify` would make it cleaner on messaging platforms with structured choices.
+
+### Implementation steps
+
+**Step 1: Update discovery** (`tools/skills_tool.py`)
+- Add `USER_SKILLS_DIR = Path.home() / ".hermes" / "skills"`
+- Update `_find_all_skills()` to scan both dirs, tag each skill with `source`
+- Update `skill_view()` to search `USER_SKILLS_DIR` as fallback
+
+**Step 2: Validation helper** (`tools/skills_tool.py`)
+- `_validate_skill_frontmatter()` -- enforce `name` (required, ≤64 chars, filesystem-safe), `description` (required, ≤1024 chars), valid YAML, non-empty body
+
+**Step 3: `skill_manage()` function** (`tools/skills_tool.py`)
+```
+skill_manage(action, name, description=None, content=None, tags=None)
+```
+- `create`: write `~/.hermes/skills/<name>/SKILL.md`, fail if name collision with any source
+- `edit`: read existing user skill, merge updates, write back (refuse bundled/hub skills)
+- `delete`: remove user skill directory (refuse bundled/hub skills)
+
+**Step 4: Register tool** (`model_tools.py`)
+- Tool definition with description teaching when/how to create skills AND the proactive feedback loop behavior
+- Route in `handle_skills_function_call()`
+- Add to toolset mappings and `TOOLSET_REQUIREMENTS`
+
+**Step 5: CLI commands** (`hermes_cli/skills_hub.py` + `hermes_cli/main.py`)
+- `hermes skills create <name>` -- interactive or `--from-file`
+- `hermes skills edit <name>` -- opens `$EDITOR` or accepts flags
+- `hermes skills delete <name>` -- with confirmation
+- Update `hermes skills list` to show `[user]`/`[builtin]`/`[hub]` tags
+
+**Step 6: Slash command** -- extend `/skills` handler with `create`/`edit`/`delete`
+
+### Tool description (teaches the LLM when and how to use skills)
+```
+Create, edit, or delete user-managed skills. Skills are your procedural memory --
+they capture proven approaches for specific task types so you can do them faster
+and better next time.
+
+Actions:
+- create: Save a new skill to ~/.hermes/skills/. Provide name, description, content.
+- edit: Update an existing user skill. Only works on source="user" skills.
+- delete: Remove a user skill. Only works on source="user" skills.
+
+═══ WHEN TO CREATE A SKILL ═══
+
+Create a skill when ALL of these are true:
+1. The task type is likely to recur (not a one-off)
+2. The approach was non-obvious or required iteration to get right
+3. A future attempt would benefit from having the steps written down
+
+Common triggers:
+- You completed a complex task (5+ tool calls) and it succeeded
+- You hit errors or obstacles during the task and found the fix
+- The user corrected your approach and the corrected version worked
+- You discovered a non-trivial workflow (deployment, data pipeline, config, etc.)
+- The user explicitly asks you to remember how to do something
+
+═══ THE FEEDBACK LOOP ═══
+
+After completing a task that was difficult or iterative (errors encountered,
+multiple attempts, user corrections, or 5+ tool calls with back-and-forth):
+
+1. Ask the user for feedback: "That took some working through. How did the
+   result turn out?"
+2. If they confirm success: "Would you like me to save that approach as a
+   skill so I can do it faster next time?"
+3. If yes: create a skill with the working procedure, including:
+   - When to use this skill (trigger conditions)
+   - The steps that worked (numbered procedure)
+   - Pitfalls encountered and how to avoid them
+   - How to verify success
+
+Do NOT trigger this feedback loop for:
+- Simple tasks (single tool call, obvious approach)
+- Tasks where the user seems impatient or in a hurry
+- Tasks that are clearly one-off (e.g., "what time is it in Tokyo")
+
+═══ SKILL QUALITY ═══
+
+A good skill is specific and actionable, not generic advice. It should contain:
+- Concrete trigger conditions (when does this skill apply?)
+- Exact commands, file paths, or API calls that worked
+- Known failure modes and their fixes
+- Verification steps (how to confirm it worked)
+
+Always confirm with the user before creating a skill.
+```
+
+### Later
+- Skill chaining with dependency graphs, parameterized templates
+- Publishing user skills to remote registries (already have `hermes skills publish`)
+- Periodic skill review: subagent scans session summaries for recurring patterns that should become skills (Codex-style Phase 2 consolidation)
+
+**Files:** `tools/skills_tool.py` (core logic), `model_tools.py` (registration), `hermes_cli/skills_hub.py` + `hermes_cli/main.py` (CLI)
+
+---
+
+## 3. Interactive Clarifying Questions ❓
+
+**Status:** Not started
+**Priority:** Medium-High -- enables the knowledge system feedback loop
+
+Allow the agent to present structured choices to the user when it needs clarification or feedback. Rich terminal UI in CLI mode, graceful fallback on messaging platforms.
 
 **What other agents do:**
 - **Codex**: `request_user_input` tool for open-ended questions
@@ -223,70 +218,271 @@ Allow the agent to present structured choices to the user when it needs clarific
 - CLI mode: Rich-powered selection UI (arrow keys + number shortcuts)
 - Gateway/messaging mode: numbered list with "reply with number or type your answer"
 - Returns the user's selection as a string
-- Agent can use this before starting expensive operations ("Which approach do you prefer?")
+
+**Use cases (beyond simple clarification):**
+- Before starting expensive operations: "Which approach do you prefer?"
+- **Post-task feedback**: "How did that work out?" with choices like [Worked perfectly / Mostly good / Had issues / Didn't work]
+- **Skill creation offer**: "Want me to save that approach as a skill?" with [Yes / Yes, but let me review it first / No]
+- **Memory update prompt**: "I noticed you prefer X. Should I remember that for future sessions?" with [Yes / No / It depends]
+
+This tool is lightweight on its own but becomes critical for the proactive feedback loop in the knowledge system (skills, memory, learnings).
 
 **File:** `tools/clarify_tool.py` -- presentation layer differs per platform, core logic is simple
 
 ---
 
-## 5. Memory System 🧠
+## 4. Memory System 🧠
 
 **Status:** Not started
-**Priority:** High -- biggest gap vs. OpenClaw and Dash
+**Priority:** High -- biggest gap vs. OpenClaw, Dash, and Codex
 
-Persistent memory that survives across sessions. The agent remembers what it learned, who the user is, and what worked before.
+Persistent memory that survives across sessions. The agent remembers what it learned, who the user is, and what worked before. Memory is the general/declarative counterpart to skills (procedural memory) -- together they form the agent's knowledge system.
 
 **What other agents do:**
-- **OpenClaw**: 78+ file memory subsystem. SQLite + sqlite-vec for vector search. Embeddings via OpenAI/Voyage/Gemini. Hybrid search (vector + keyword). MMR for diversity. Temporal decay. File watcher for auto-indexing. Session-scoped memory with citations.
-- **Dash**: 6-layer context system. LearningMachine with agentic mode -- errors get diagnosed, fixed, and saved as learnings that are never repeated. Business rules injection.
-- **Codex**: 2-phase memory pipeline -- extract memories from rollouts with a dedicated model, then consolidate with global locking.
+- **OpenClaw**: SQLite + sqlite-vec for vector search. LRU eviction on embedding cache. Temporal decay on search results (half-life 30 days). Pre-compaction memory flush (model writes durable notes before context eviction).
+- **Dash**: 6-layer context system. LearningMachine with agentic mode -- errors get diagnosed, fixed, and saved as learnings that are never repeated.
+- **Codex**: 2-phase pipeline. Phase 1: dedicated model extracts raw memories from past sessions. Phase 2: consolidation subagent produces `memory_summary.md` (always in prompt), `MEMORY.md` (searchable), `skills/`. Retention cap: keep N most recent, drop rest.
 
-**Our approach (phased):**
+### Our architecture: bounded, curated, always-visible
 
-### Phase 1: File-based memory (MVP)
-- `~/.hermes/MEMORY.md` -- curated long-term memory, agent can read/append/edit
-- `~/.hermes/USER.md` -- user profile the agent maintains (preferences, context, projects, communication style)
-- `memory` tool with actions: `read`, `append`, `search` (simple text search within the file)
-- Both files injected into system prompt (or summarized if too large)
-- Agent prompted to update memory at session end or before context compression
+Two small files, both injected into the system prompt every session. The agent always sees its full memory, so it can make informed decisions about what to update or consolidate without extra reads.
 
-### Phase 2: Learning store (inspired by Dash)
-- `~/.hermes/learnings.jsonl` -- structured error patterns and discovered fixes
-- `save_learning` + `search_learnings` tool actions
-- Each learning: `{pattern, fix, context, tags, created_at, times_used}`
-- Before executing risky operations, agent auto-searches learnings for known pitfalls
-- Learning deduplication and consolidation over time
+**`~/.hermes/memories/MEMORY.md`** -- agent's personal notes and observations (2,200 character limit, ~800 tokens)
+- Environment facts, project conventions, tool quirks, things that took effort to figure out
+- One entry per line: `conda preferred over pip on this machine`
 
-### Phase 3: Semantic search (later)
-- SQLite + sqlite-vec (or ChromaDB) for vector storage
-- Embed session transcripts, memory entries, and learnings
-- Hybrid search: keyword (ripgrep) + vector (embeddings) + temporal decay
-- Auto-index new sessions on write
-- This is the "full OpenClaw" level -- significant infrastructure
+**`~/.hermes/memories/USER.md`** -- what the agent knows about the user (1,375 character limit, ~500 tokens)
+- Preferences, communication style, expectations, workflow habits, corrections
+- One entry per line: `Prefers plans before implementation`
+
+Character limits (not tokens) because character counts are model-independent -- users can switch models without breaking budgets. Conversion: ~2.75 characters per token. Dates are stored internally for eviction tiebreaking but not shown in the system prompt.
+
+### System prompt injection
+
+Both files are injected into the system prompt with clear separators:
+
+```
+══════════════════════════════════════════════
+MEMORY (your personal notes) [68% — 1,496/2,200 chars]
+══════════════════════════════════════════════
+User's name is Teknium, founder of Nous Research
+§
+This machine runs Ubuntu, conda preferred over pip
+§
+When working on Hermes-Agent, always test with run_agent.py before gateway
+§
+User strongly prefers batch approach for RL training over online
+
+══════════════════════════════════════════════
+USER PROFILE (who the user is) [72% — 990/1,375 chars]
+══════════════════════════════════════════════
+Prefers detailed technical discussions, no hand-holding
+§
+Communication style: direct, concise, expects expertise
+§
+Likes to discuss plans before implementation, wants to approve approach first
+§
+Dislikes unnecessary emoji or filler language
+```
+
+Entries are separated by `§` (section sign). The model references entries by quoting their content via the `old_text` parameter for replace/remove operations -- content-based matching, not position-based.
+
+Injected after SOUL.md/AGENTS.md but before skills. Only injected when the respective memory is enabled.
+
+### Bounded memory: how pruning works
+
+**The model does the pruning, but it's cheap because it already sees everything.** Since both files are in the system prompt, the model always knows exactly what's in memory. When at the character limit:
+
+1. Model calls `memory(action="add", target="memory", content="new thing")`
+2. Tool checks: would this exceed the 2,200 char limit?
+3. If yes: tool returns an error with the current usage (e.g., "2,150/2,200 chars used — consolidate or replace entries first")
+4. Model (which already sees all entries + usage % in its system prompt) decides what to consolidate or replace
+5. Model calls `replace` or `remove`, then retries the `add`
+
+This costs one extra tool call when at the limit, but the model makes an **informed decision** (not blindly evicting oldest). The user's name won't get evicted because the model knows it's important. Stale or redundant entries get consolidated.
+
+**Why not auto-evict oldest?** Because some early memories are the most important (user's name, core preferences, critical environment facts). The model, which sees everything, is the right judge of what to prune.
+
+### The `memory` tool
+
+**Actions:**
+- `add(target, content)` -- append a new dated entry. Fails with guidance if over char limit.
+- `replace(target, old_text, new_content)` -- find entry containing `old_text`, replace it. For updates and consolidation.
+- `remove(target, old_text)` -- remove the entry containing `old_text`.
+- `read(target)` -- return current contents. Useful after context compression when system prompt may be stale.
+
+**Tool description (teaches the model everything):**
+```
+Manage your persistent memory. You have two memory stores, both visible in
+your system prompt every session:
+
+MEMORY — your personal notes and observations (2,200 character limit)
+  Things worth remembering: environment facts, project conventions, tool quirks,
+  things that took effort to figure out, recurring patterns.
+
+USER PROFILE — what you know about the user (1,375 character limit)
+  Preferences, communication style, expectations, workflow habits, corrections
+  they've given you.
+
+Actions:
+  add(target, content)                   — append a new entry
+  replace(target, old_text, new_content) — find entry matching old_text,
+                                           replace it
+  remove(target, old_text)               — remove entry matching old_text
+  read(target)                           — return current live contents
+
+For replace/remove, old_text is a short unique substring that identifies the
+target entry — just a few words, not the full text. If your snippet matches
+multiple entries, you'll get an error showing the matches so you can retry
+with something more specific.
+
+Rules:
+- You can always see your current memories in the system prompt, along with
+  a usage indicator showing how close you are to the limit (e.g. [68% — 1,496/2,200 chars]).
+- Each entry is one line.
+- When usage is high (>80%), consolidate or replace entries before adding new
+  ones. Merge related entries. Remove stale or redundant info.
+- Prefer REPLACING over REMOVING — update with better info rather than delete
+  and re-add.
+- Do not store secrets, tokens, or passwords.
+- Only store things that will meaningfully help you in future sessions.
+
+When to write memories:
+- You learned something non-obvious about the environment or a project
+- The user corrected you or expressed a preference
+- You discovered a tool quirk, workaround, or convention
+- The user explicitly asks you to remember something
+- You completed something difficult (consider a skill instead if it's a full
+  reusable procedure)
+
+When NOT to write memories:
+- Trivial or one-off facts that won't matter next session
+- Things already captured in a skill
+- Things you can easily re-discover (file contents, command outputs)
+```
+
+### Config
+
+```yaml
+memory:
+  memory_enabled: true          # MEMORY.md - agent's personal notes
+  user_profile_enabled: true    # USER.md - user preferences/identity
+  memory_char_limit: 2200       # ~800 tokens at 2.75 chars/token
+  user_char_limit: 1375         # ~500 tokens at 2.75 chars/token
+```
+
+Both default to `false` in batch_runner and RL environments (checked programmatically). Configurable per-environment.
+
+### Long-term recall (session search)
+
+The bounded memory is the curated layer. For unbounded "long-term memory" -- searching past session transcripts -- see SQLite State Store (#5). A separate `session_search` tool provides ripgrep-style search over the full session history. This is never injected into the system prompt; the agent searches it on demand.
+
+### Later (optional)
+- Periodic consolidation via cronjob/subagent: reviews recent session summaries, suggests memory updates. Needs subagents (#1).
+- Memory import/export: `hermes memory export` / `hermes memory import` for backup/migration.
+
+**Files:** `tools/memory_tool.py` (tool logic + file I/O), `model_tools.py` (registration), system prompt injection in `run_agent.py`
 
 ---
 
-## 6. Session Transcript Search 🔍
+## 5. SQLite State Store & Session Search 🔍
 
 **Status:** Not started
-**Priority:** Medium-High -- low-hanging fruit, very useful
+**Priority:** High -- foundational infrastructure for memory, search, and scale
 
-Search across past session transcripts to find previous conversations, solutions, and tool outputs.
+Replace the current JSONL-per-session file approach with a SQLite database. This is infrastructure that makes everything else work better at scale.
+
+**The problem with JSONL files:**
+- Currently: one `.jsonl` file per session in `~/.hermes/sessions/` and `logs/`
+- At 5-10 sessions per day across 4 platforms, that's 1,500-3,600 files per year
+- Searching across sessions requires ripgrep over thousands of files (slow, no filtering)
+- No relational queries (e.g., "show me all sessions about Docker from last month")
+- No way to store structured metadata alongside transcripts (summaries, tags, memory references)
+- File system overhead: inode limits, directory listing performance, backup complexity
+
+**What Codex does:**
+- SQLite state database with tables for threads, stage1_outputs (extracted memories), and jobs (background processing queue with leases/heartbeats/watermarks)
+- All session metadata, memory extraction outputs, and job coordination in one DB
+- File system only used for human-readable artifacts (MEMORY.md, rollout_summaries/, skills/)
 
 **Our approach:**
-- **CLI command**: `hermes sessions search <query>` -- uses ripgrep over `~/.hermes/sessions/*.jsonl` and `logs/*.jsonl`
-- **Agent tool**: `session_search(query, role_filter, limit, offset)` -- same search, returns structured JSON
-- Ripgrep for speed with Python fallback for environments without rg
-- Filter by role (user/assistant/tool), date range, platform
-- Results: session_id, line number, role, content preview centered on match
-- Pagination for large result sets
-- Later: integrate with Phase 3 memory (vector search over transcripts)
 
-**Files:** `tools/session_search_tool.py`, `hermes_cli/sessions.py` (CLI command handler)
+### Schema: `~/.hermes/state.db`
+
+```sql
+-- Core session data
+sessions (
+    id TEXT PRIMARY KEY,
+    platform TEXT,           -- telegram, discord, whatsapp, slack, cli
+    user_id TEXT,
+    started_at INTEGER,
+    ended_at INTEGER,
+    summary TEXT,            -- agent-written session summary (nullable)
+    tags TEXT,               -- comma-separated tags
+    message_count INTEGER,
+    tool_call_count INTEGER
+)
+
+-- Full message history (replaces JSONL)
+messages (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT REFERENCES sessions,
+    role TEXT,               -- user, assistant, tool, system
+    content TEXT,
+    tool_name TEXT,          -- nullable, for tool calls
+    timestamp INTEGER,
+    tokens_used INTEGER
+)
+
+-- FTS5 virtual table for fast text search across messages
+messages_fts USING fts5(content, content=messages, content_rowid=id)
+
+-- Session summaries (written by agent at session end)
+session_summaries (
+    session_id TEXT PRIMARY KEY REFERENCES sessions,
+    summary TEXT,
+    keywords TEXT,
+    created_at INTEGER
+)
+
+-- Learnings from errors (item #15)
+learnings (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT,
+    error_type TEXT,
+    fix TEXT,
+    context TEXT,
+    tags TEXT,
+    created_at INTEGER,
+    times_used INTEGER DEFAULT 0
+)
+```
+
+### Migration path from JSONL
+- New sessions go directly to SQLite
+- Existing JSONL files imported on first run (background migration)
+- `hermes migrate-sessions` CLI command for manual migration
+- Keep JSONL export as an option (`hermes sessions export <id>`)
+
+### Session search (replaces the old plan)
+- **Agent tool**: `session_search(query, role_filter, date_range, platform, limit)` -- FTS5 search across messages table
+- **CLI command**: `hermes sessions search <query>` with filters
+- FTS5 gives us: ranking, phrase matching, boolean operators, prefix queries
+- Much faster than ripgrep over thousands of files
+- Filter by platform, date range, role -- impossible with flat files
+
+### Benefits for other systems
+- **Memory**: session summaries stored in `session_summaries` table, searchable by keyword
+- **Learnings**: structured storage with `times_used` counter and tag search
+- **Subagents**: parent-child session relationships trackable via foreign keys
+- **Analytics**: token usage over time, tool call frequency, session duration -- trivially queryable
+- **Cleanup**: `hermes sessions prune --older-than 90d` becomes a SQL DELETE
+
+**Files:** `hermes_state.py` (SQLite wrapper, schema, migrations), `tools/session_search_tool.py` (agent tool), `hermes_cli/sessions.py` (CLI)
 
 ---
 
-## 7. Local Browser Control via CDP 🌐
+## 6. Local Browser Control via CDP 🌐
 
 **Status:** Not started (currently Browserbase cloud only)
 **Priority:** Medium
@@ -308,7 +504,7 @@ Support local Chrome/Chromium via Chrome DevTools Protocol alongside existing Br
 
 ---
 
-## 8. Signal Integration 📡
+## 7. Signal Integration 📡
 
 **Status:** Not started
 **Priority:** Low
@@ -319,7 +515,7 @@ New platform adapter using signal-cli daemon (JSON-RPC HTTP + SSE). Requires Jav
 
 ---
 
-## 9. Plugin/Extension System 🔌
+## 8. Plugin/Extension System 🔌
 
 **Status:** Partially implemented (event hooks exist in `gateway/hooks.py`)
 **Priority:** Medium
@@ -354,7 +550,7 @@ Full Python plugin interface that goes beyond the current hook system.
 
 ---
 
-## 10. Native Companion Apps 📱
+## 9. Native Companion Apps 📱
 
 **Status:** Not started
 **Priority:** Low
@@ -374,7 +570,7 @@ macOS (Swift/SwiftUI), iOS, Android apps connecting via WebSocket.
 
 ---
 
-## 11. Evaluation System 📏
+## 10. Evaluation System 📏
 
 **Status:** Not started
 **Priority:** Medium
@@ -393,7 +589,7 @@ Systematic evaluation of agent performance for batch_runner and RL training.
 
 ---
 
-## 12. Layered Context Architecture 📊
+## 11. Layered Context Architecture 📊
 
 **Status:** Partially implemented (context files, skills, compression exist)
 **Priority:** Medium
@@ -406,11 +602,11 @@ Structured hierarchy for what goes into the system prompt, with clear priority o
 - Define explicit layers with token budgets: `project context (AGENTS.md) > skills > user profile (USER.md) > learnings > memory > session context > runtime introspection`
 - Each layer has a max token budget; when total exceeds limit, lower-priority layers get summarized first
 - Runtime introspection layer: current working directory, active processes, git status, recent file changes
-- This becomes the backbone for the memory system (item 5) and subagent architecture (item 1)
+- This becomes the backbone for the memory system (item 4) and subagent architecture (item 1)
 
 ---
 
-## 13. Tools Wishlist 🧰
+## 12. Tools Wishlist 🧰
 
 **Status:** Various
 **Priority:** Mixed
@@ -428,7 +624,7 @@ Structured hierarchy for what goes into the system prompt, with clear priority o
 ### Canvas / Visual Workspace
 - **OpenClaw has this**: A2UI (Agent-to-UI) -- agent pushes visual content to a Canvas surface
 - For us: could be a web-based canvas (HTML/JS) that the agent can draw on
-- Depends on companion app / web UI (item 10)
+- Depends on companion app / web UI (item 9)
 
 ### Coding Agent Skill
 - Orchestrate Codex CLI or Claude Code via PTY mode (already supported!)
@@ -448,7 +644,7 @@ Structured hierarchy for what goes into the system prompt, with clear priority o
 
 ---
 
-## 14. MCP (Model Context Protocol) Support 🔗
+## 13. MCP (Model Context Protocol) Support 🔗
 
 **Status:** Not started
 **Priority:** High -- this is becoming an industry standard
@@ -465,11 +661,11 @@ MCP is the protocol that Codex, Cline, and OpenCode all support for connecting t
 - Config: list of MCP servers in `~/.hermes/config.yaml` with transport type and connection details
 - Each MCP server's tools auto-registered as a dynamic toolset
 - Start with stdio transport (most common), then add SSE and HTTP
-- Could also be part of the Plugin system (item 9, Phase 3) since MCP is essentially a plugin protocol
+- Could also be part of the Plugin system (item 8, Phase 3) since MCP is essentially a plugin protocol
 
 ---
 
-## 15. Permission / Safety System 🛡️
+## 14. Permission / Safety System 🛡️
 
 **Status:** Partially implemented (dangerous command approval in gateway)
 **Priority:** Medium
@@ -489,12 +685,12 @@ Formalize the tool permission system beyond the current ad-hoc dangerous command
 
 ---
 
-## 16. Self-Learning from Errors 📖
+## 15. Self-Learning from Errors 📖
 
 **Status:** Not started
-**Priority:** Medium-High -- unique differentiator from Dash
+**Priority:** Medium-High -- the "error memory" layer of the knowledge system
 
-Automatic learning loop: when tool calls fail, the agent diagnoses the error, fixes it, and saves the pattern so it never repeats the same mistake.
+Automatic learning loop: when tool calls fail, the agent diagnoses the error, fixes it, and saves the pattern so it never repeats the same mistake. This is the error-specific counterpart to skills (procedural memory) and MEMORY.md (declarative memory).
 
 **What Dash does:**
 - LearningMachine with agentic mode
@@ -503,16 +699,18 @@ Automatic learning loop: when tool calls fail, the agent diagnoses the error, fi
 - 6 layers of context including institutional knowledge and runtime schema
 
 **Our approach:**
-- Part of the Memory System (item 5, Phase 2)
-- `~/.hermes/learnings.jsonl` stores: `{pattern, error_type, fix, context, tags, created_at, times_used}`
-- Before executing operations that have failed before, auto-inject relevant learnings
+- Part of the knowledge system, stored in the SQLite state store (#5) once available, or `~/.hermes/learnings.jsonl` as fallback
+- Each learning: `{pattern, error_type, fix, context, tags, created_at, times_used}`
+- `learning` tool with actions: `save`, `search`, `list`
+- Before executing operations that have failed before, auto-inject relevant learnings (appended to tool responses, same pattern as todo checkpoint nudges -- cache-friendly)
 - Agent prompted: "This is similar to a previous error. Here's what worked last time: ..."
 - Consolidation: periodically merge similar learnings and increment `times_used`
-- Could be triggered automatically on tool call errors or manually by the agent
+- Triggered automatically on tool call errors OR manually by the agent
+- **Relationship to skills**: if the same error pattern appears 3+ times, the agent should consider creating a skill that includes the fix as a "pitfalls" section, rather than keeping it as a standalone learning
 
 ---
 
-## 17. Session Branching / Checkpoints 🌿
+## 16. Session Branching / Checkpoints 🌿
 
 **Status:** Not started
 **Priority:** Low-Medium
@@ -534,7 +732,7 @@ Save and restore conversation state at any point. Branch off to explore alternat
 
 ---
 
-## 18. File Watcher / Project Awareness 👁️
+## 17. File Watcher / Project Awareness 👁️
 
 **Status:** Not started
 **Priority:** Low
@@ -554,7 +752,7 @@ Monitor the working directory for changes and notify the agent of relevant updat
 
 ---
 
-## 19. Heartbeat System 💓
+## 18. Heartbeat System 💓
 
 **Status:** Not started
 **Priority:** Low-Medium
@@ -574,7 +772,7 @@ Periodic agent wake-up for checking reminders, monitoring tasks, and running sch
 
 ---
 
-## 20. Programmatic Tool Calling (Code-Mediated Tool Use) 🧬
+## 19. Programmatic Tool Calling (Code-Mediated Tool Use) 🧬
 
 **Status:** Not started
 **Priority:** High -- potentially the single biggest efficiency win for agent loops
@@ -922,7 +1120,7 @@ This goes in the tool description:
 
 ### Relationship to other items
 - **Subagent Architecture (#1)**: A code sandbox that calls tools IS a lightweight subagent without its own LLM inference. This handles many of the "mechanical multi-step" cases (search+filter, bulk file ops, browser loops) at near-zero LLM cost. Full subagents are still needed for tasks requiring LLM reasoning at each step.
-- **Browser automation (#7)**: Biggest win. Browser workflows are 10+ round trips today. A script that navigates, clicks, extracts, paginates in a loop collapses that to 1 LLM turn.
+- **Browser automation (#6)**: Biggest win. Browser workflows are 10+ round trips today. A script that navigates, clicks, extracts, paginates in a loop collapses that to 1 LLM turn.
 - **Web search**: Directly matches Anthropic's dynamic filtering results.
 - **File ops**: Bulk read-search-patch workflows become one call.
 
@@ -932,30 +1130,62 @@ This goes in the tool description:
 
 ## Implementation Priority Order
 
-**Tier 1 (High impact, foundation for everything else):**
-1. Programmatic Tool Calling (code-mediated tool use) -- #20
-2. Memory System (Phase 1: MEMORY.md + USER.md) -- #5
-3. ~~Planning & Task Management (todo tool) -- #2~~ **DONE**
-4. Session Transcript Search -- #6
-5. Self-Learning from Errors -- #16
+### Tier 1: The Knowledge System + Agent Efficiency
 
-**Tier 2 (High impact, more complex):**
-6. Subagent Architecture -- #1 (partially solved by #20)
-7. MCP Support -- #14
-8. Interactive Clarifying Questions -- #4
-9. ~~Dynamic Skills Expansion~~ -- #3 (DONE: Skills Hub)
+These form two parallel tracks. The Knowledge System items depend on each other (build in order). Programmatic Tool Calling is independent and can be built in parallel.
 
-**Tier 3 (Quality of life, polish):**
-10. Permission / Safety System -- #15
-11. Local Browser Control via CDP -- #7
-12. Layered Context Architecture -- #12
-13. Plugin/Extension System (enhanced hooks first) -- #9
-14. Evaluation System -- #11
+**Track A: The Knowledge System (build in this order):**
+1. **Memory System Phase 1** (file-based: memory_summary.md + MEMORY.md) -- #4
+   - No infrastructure dependency. Just a new `memory` tool + prompt guidance + file read/write.
+   - Gives the agent persistent identity memory (user profile) and declarative memory (facts, preferences).
+   - memory_summary.md always in system prompt = immediate value every session.
 
-**Tier 4 (Nice to have, longer term):**
-15. Heartbeat System -- #19
-16. Session Branching / Checkpoints -- #17
-17. File Watcher -- #18
-18. Signal Integration -- #8
-19. Tools Wishlist items -- #13
-20. Native Companion Apps -- #10
+2. **Agent-Managed Skills** (create/edit/delete + proactive creation) -- #2
+   - Depends on: nothing (but better with memory, since the agent understands what it has learned)
+   - Gives the agent procedural memory. Combined with memory, the agent now has both "what I know" and "how I do things."
+   - The proactive feedback loop ("How was that? Want me to save it as a skill?") is taught via tool description.
+
+3. **Interactive Clarifying Questions** -- #3
+   - Makes the feedback loop cleaner with structured choices (especially on messaging platforms).
+   - Also useful independently for pre-task clarification ("Which approach?").
+
+4. **SQLite State Store** -- #5
+   - Migrate sessions from JSONL to SQLite. Enables fast session search, structured metadata, scales to thousands of sessions.
+   - Memory Phase 2 and Learnings depend on this.
+
+5. **Self-Learning from Errors** -- #15
+   - Depends on: SQLite (#5) for storage, or fallback to learnings.jsonl
+   - The "error memory" layer. Auto-saves error patterns and fixes.
+
+**Track B: Agent Efficiency (independent, build anytime):**
+6. **Programmatic Tool Calling** (code-mediated tool use) -- #19
+   - No dependency on the Knowledge System. Biggest efficiency win for agent loops.
+   - Can be built in parallel with Track A items.
+
+### Tier 2: Scaling & Ecosystem
+
+7. **Subagent Architecture** -- #1
+   - Benefits from the Knowledge System (subagents can read memory/skills) but doesn't require it.
+   - Partially solved by Programmatic Tool Calling (#19) for mechanical multi-step tasks.
+   - Once built, enables periodic memory consolidation (an optional subagent that reviews recent session summaries and updates MEMORY.md/skills).
+
+8. **MCP Support** -- #13
+   - Industry standard protocol. Instant access to hundreds of community tool servers.
+   - Independent of Knowledge System.
+
+### Tier 3: Quality of Life
+
+9. Permission / Safety System -- #14
+10. Local Browser Control via CDP -- #6
+11. Layered Context Architecture -- #11 (becomes more important as memory/skills grow in size)
+12. Plugin/Extension System (enhanced hooks first) -- #8
+13. Evaluation System -- #10
+
+### Tier 4: Nice to Have
+
+14. Heartbeat System -- #18 (useful for periodic memory consolidation once subagents exist)
+15. Session Branching / Checkpoints -- #16
+16. File Watcher -- #17
+17. Signal Integration -- #7
+18. Tools Wishlist items -- #12
+19. Native Companion Apps -- #9

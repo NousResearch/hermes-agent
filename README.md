@@ -154,7 +154,35 @@ hermes --toolsets "web,terminal"
 hermes --list-tools
 ```
 
-**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `cronjob`, and more.
+**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, and more.
+
+### 🧠 Persistent Memory
+
+Bounded curated memory that persists across sessions:
+
+- **MEMORY.md** — agent's personal notes (environment facts, conventions, things learned). ~800 token budget.
+- **USER.md** — user profile (preferences, communication style, expectations). ~500 token budget.
+
+Both are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool (add/replace/remove/read). Character limits keep memory focused — when full, the agent consolidates or replaces entries.
+
+Configure in `~/.hermes/config.yaml`:
+```yaml
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200   # ~800 tokens
+  user_char_limit: 1375     # ~500 tokens
+```
+
+### 🗄️ Session Store
+
+All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state.db`) with full-text search:
+
+- **Full message history** stored per-session with model config and system prompt snapshots
+- **FTS5 search** via the `session_search` tool -- search past conversations with Gemini Flash summarization
+- **Compression-triggered session splitting** -- when context is compressed, a new session is created linked to the parent, giving clean trajectories
+- **Source tagging** -- each session is tagged with its origin (cli, telegram, discord, etc.)
+- Batch runner and RL trajectories are NOT stored here (separate systems)
 
 ### 🔊 Text-to-Speech
 

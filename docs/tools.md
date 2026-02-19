@@ -48,6 +48,8 @@ async def web_search(query: str) -> dict:
 | **Reasoning** | `mixture_of_agents_tool.py` | `mixture_of_agents` |
 | **Skills** | `skills_tool.py` | `skills_list`, `skill_view` |
 | **Todo** | `todo_tool.py` | `todo` (read/write task list for multi-step planning) |
+| **Memory** | `memory_tool.py` | `memory` (persistent notes + user profile across sessions) |
+| **Session Search** | `session_search_tool.py` | `session_search` (search + summarize past conversations) |
 | **Cronjob** | `cronjob_tools.py` | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` |
 | **RL Training** | `rl_training_tool.py` | `rl_list_environments`, `rl_start_training`, `rl_check_status`, etc. |
 
@@ -89,6 +91,10 @@ TOOLSETS = {
     "todo": {
         "description": "Task planning and tracking for multi-step work",
         "tools": ["todo"]
+    },
+    "memory": {
+        "description": "Persistent memory across sessions (personal notes + user profile)",
+        "tools": ["memory"]
     },
     # ...
 }

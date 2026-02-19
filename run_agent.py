@@ -875,6 +875,24 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         else:
             return f"planning {len(todos_arg)} task(s)"
     
+    if tool_name == "session_search":
+        query = args.get("query", "")
+        return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+
+    if tool_name == "memory":
+        action = args.get("action", "")
+        target = args.get("target", "")
+        if action == "add":
+            content = args.get("content", "")
+            return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
+        elif action == "replace":
+            return f"~{target}: \"{args.get('old_text', '')[:20]}\""
+        elif action == "remove":
+            return f"-{target}: \"{args.get('old_text', '')[:20]}\""
+        elif action == "read":
+            return f"read {target}"
+        return action
+    
     if tool_name == "send_message":
         target = args.get("target", "?")
         msg = args.get("message", "")
@@ -1061,6 +1079,8 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
+        skip_memory: bool = False,
+        session_db=None,
     ):
         """
         Initialize the AI Agent.
@@ -1269,9 +1289,50 @@ class AIAgent:
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         
+        # Cached system prompt -- built once per session, only rebuilt on compression
+        self._cached_system_prompt: Optional[str] = None
+        
+        # SQLite session store (optional -- provided by CLI or gateway)
+        self._session_db = session_db
+        if self._session_db:
+            try:
+                self._session_db.create_session(
+                    session_id=self.session_id,
+                    source=self.platform or "cli",
+                    model=self.model,
+                    model_config={
+                        "max_iterations": self.max_iterations,
+                        "reasoning_config": reasoning_config,
+                        "max_tokens": max_tokens,
+                    },
+                    user_id=None,
+                )
+            except Exception:
+                pass
+        
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
+        
+        # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
+        self._memory_store = None
+        self._memory_enabled = False
+        self._user_profile_enabled = False
+        if not skip_memory:
+            try:
+                from hermes_cli.config import load_config as _load_mem_config
+                mem_config = _load_mem_config().get("memory", {})
+                self._memory_enabled = mem_config.get("memory_enabled", False)
+                self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                if self._memory_enabled or self._user_profile_enabled:
+                    from tools.memory_tool import MemoryStore
+                    self._memory_store = MemoryStore(
+                        memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                        user_char_limit=mem_config.get("user_char_limit", 1375),
+                    )
+                    self._memory_store.load_from_disk()
+            except Exception:
+                pass  # Memory is optional -- don't break agent init
         
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -1451,6 +1512,32 @@ class AIAgent:
                 return f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}"
             else:
                 return f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}"
+
+        # ── Session Search ──
+        if tool_name == "session_search":
+            query = _trunc(args.get("query", ""), 35)
+            return f"┊ 🔍 recall    \"{query}\"  {dur}"
+
+        # ── Memory ──
+        if tool_name == "memory":
+            action = args.get("action", "?")
+            target = args.get("target", "")
+            if action == "add":
+                preview = _trunc(args.get("content", ""), 30)
+                return f"┊ 🧠 memory    +{target}: \"{preview}\"  {dur}"
+            elif action == "replace":
+                snippet = _trunc(args.get("old_text", ""), 20)
+                return f"┊ 🧠 memory    ~{target}: \"{snippet}\"  {dur}"
+            elif action == "remove":
+                snippet = _trunc(args.get("old_text", ""), 20)
+                return f"┊ 🧠 memory    -{target}: \"{snippet}\"  {dur}"
+            elif action == "read":
+                return f"┊ 🧠 memory    read {target}  {dur}"
+            elif action == "search_sessions":
+                query = _trunc(args.get("content", ""), 30)
+                return f"┊ 🧠 recall    \"{query}\"  {dur}"
+            else:
+                return f"┊ 🧠 memory    {action}  {dur}"
 
         # ── Skills ──
         if tool_name == "skills_list":
@@ -2041,6 +2128,70 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
     
+    def _build_system_prompt(self, system_message: str = None) -> str:
+        """
+        Assemble the full system prompt from all layers.
+        
+        Called once per session (cached on self._cached_system_prompt) and only
+        rebuilt after context compression events. This ensures the system prompt
+        is stable across all turns in a session, maximizing prefix cache hits.
+        """
+        # Layers (in order):
+        #   1. Default agent identity (always present)
+        #   2. User / gateway system prompt (if provided)
+        #   3. Persistent memory (frozen snapshot)
+        #   4. Skills guidance (if skills tools are loaded)
+        #   5. Context files (SOUL.md, AGENTS.md, .cursorrules)
+        #   6. Current date & time (frozen at build time)
+        #   7. Platform-specific formatting hint
+        prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        caller_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
+        if caller_prompt:
+            prompt_parts.append(caller_prompt)
+
+        if self._memory_store:
+            if self._memory_enabled:
+                mem_block = self._memory_store.format_for_system_prompt("memory")
+                if mem_block:
+                    prompt_parts.append(mem_block)
+            if self._user_profile_enabled:
+                user_block = self._memory_store.format_for_system_prompt("user")
+                if user_block:
+                    prompt_parts.append(user_block)
+
+        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view'])
+        skills_prompt = build_skills_system_prompt() if has_skills_tools else ""
+        if skills_prompt:
+            prompt_parts.append(skills_prompt)
+
+        if not self.skip_context_files:
+            context_files_prompt = build_context_files_prompt()
+            if context_files_prompt:
+                prompt_parts.append(context_files_prompt)
+
+        now = datetime.now()
+        prompt_parts.append(
+            f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        )
+
+        platform_key = (self.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            prompt_parts.append(PLATFORM_HINTS[platform_key])
+
+        return "\n\n".join(prompt_parts)
+    
+    def _invalidate_system_prompt(self):
+        """
+        Invalidate the cached system prompt, forcing a rebuild on the next turn.
+        
+        Called after context compression events. Also reloads memory from disk
+        so the rebuilt prompt captures any writes from this session.
+        """
+        self._cached_system_prompt = None
+        if self._memory_store:
+            self._memory_store.load_from_disk()
+    
     def run_conversation(
         self,
         user_message: str,
@@ -2093,47 +2244,27 @@ class AIAgent:
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
         
-        # ── Build the full system prompt ──
-        # Layers (in order):
-        #   1. Default agent identity (always present)
-        #   2. User / gateway system prompt (if provided)
-        #   3. Skills guidance (if skills tools are loaded)
-        #   4. Context files (SOUL.md, AGENTS.md, .cursorrules)
-        #   5. Current date & time
-        #   6. Platform-specific formatting hint
-        prompt_parts = [DEFAULT_AGENT_IDENTITY]
+        # ── System prompt (cached per session for prefix caching) ──
+        # Built once on first call, reused for all subsequent calls.
+        # Only rebuilt after context compression events (which invalidate
+        # the cache and reload memory from disk).
+        if self._cached_system_prompt is None:
+            self._cached_system_prompt = self._build_system_prompt(system_message)
+            # Store the system prompt snapshot in SQLite
+            if self._session_db:
+                try:
+                    self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                except Exception:
+                    pass
 
-        # Layer in the caller-supplied system prompt (explicit > ephemeral).
-        caller_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
-        if caller_prompt:
-            prompt_parts.append(caller_prompt)
+        active_system_prompt = self._cached_system_prompt
 
-        # Auto-include skills guidance if skills tools are available.
-        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view'])
-        skills_prompt = build_skills_system_prompt() if has_skills_tools else ""
-        if skills_prompt:
-            prompt_parts.append(skills_prompt)
-
-        # Auto-include context files (SOUL.md, AGENTS.md, .cursorrules).
-        # Skipped for batch processing / data generation to avoid polluting trajectories.
-        if not self.skip_context_files:
-            context_files_prompt = build_context_files_prompt()
-            if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
-
-        # Current local date and time so the model is never confused about
-        # what day/time it is (LLM training cutoffs can otherwise mislead it).
-        now = datetime.now()
-        prompt_parts.append(
-            f"Current local date and time: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        )
-
-        # Platform-specific formatting hint (no markdown on WhatsApp, etc.).
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
-
-        active_system_prompt = "\n\n".join(prompt_parts)
+        # Log user message to SQLite
+        if self._session_db:
+            try:
+                self._session_db.append_message(self.session_id, "user", user_message)
+            except Exception:
+                pass
 
         # Main conversation loop
         api_call_count = 0
@@ -2510,6 +2641,25 @@ class AIAgent:
                             todo_snapshot = self._todo_store.format_for_injection()
                             if todo_snapshot:
                                 messages.append({"role": "user", "content": todo_snapshot})
+                            # Rebuild system prompt with fresh date/time + memory
+                            self._invalidate_system_prompt()
+                            active_system_prompt = self._build_system_prompt(system_message)
+                            self._cached_system_prompt = active_system_prompt
+                            # Split session in SQLite (close old, open new with parent link)
+                            if self._session_db:
+                                try:
+                                    self._session_db.end_session(self.session_id, "compression")
+                                    old_session_id = self.session_id
+                                    self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                                    self._session_db.create_session(
+                                        session_id=self.session_id,
+                                        source=self.platform or "cli",
+                                        model=self.model,
+                                        parent_session_id=old_session_id,
+                                    )
+                                    self._session_db.update_system_prompt(self.session_id, active_system_prompt)
+                                except Exception:
+                                    pass
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             continue  # Retry with compressed messages
                         else:
@@ -2769,9 +2919,33 @@ class AIAgent:
                                 store=self._todo_store,
                             )
                             tool_duration = time.time() - tool_start_time
-                            # Show clean output in quiet mode (no spinner needed -- instant)
                             if self.quiet_mode:
                                 print(f"  {self._get_cute_tool_message('todo', function_args, tool_duration)}")
+                        # Session search -- handle directly (needs SessionDB instance)
+                        elif function_name == "session_search" and self._session_db:
+                            from tools.session_search_tool import session_search as _session_search
+                            function_result = _session_search(
+                                query=function_args.get("query", ""),
+                                role_filter=function_args.get("role_filter"),
+                                limit=function_args.get("limit", 3),
+                                db=self._session_db,
+                            )
+                            tool_duration = time.time() - tool_start_time
+                            if self.quiet_mode:
+                                print(f"  {self._get_cute_tool_message('session_search', function_args, tool_duration)}")
+                        # Memory tool -- handle directly (needs agent's MemoryStore instance)
+                        elif function_name == "memory":
+                            from tools.memory_tool import memory_tool as _memory_tool
+                            function_result = _memory_tool(
+                                action=function_args.get("action"),
+                                target=function_args.get("target", "memory"),
+                                content=function_args.get("content"),
+                                old_text=function_args.get("old_text"),
+                                store=self._memory_store,
+                            )
+                            tool_duration = time.time() - tool_start_time
+                            if self.quiet_mode:
+                                print(f"  {self._get_cute_tool_message('memory', function_args, tool_duration)}")
                         # Execute other tools - with animated kawaii spinner in quiet mode
                         # The face is "alive" while the tool works, then vanishes
                         # and is replaced by the clean result line.
@@ -2790,7 +2964,7 @@ class AIAgent:
                                 'vision_analyze': '👁️', 'mixture_of_agents': '🧠',
                                 'skills_list': '📚', 'skill_view': '📚',
                                 'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
-                                'send_message': '📨', 'todo': '📋',
+                                'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
                             }
                             emoji = tool_emoji_map.get(function_name, '⚡')
                             preview = _build_tool_preview(function_name, function_args) or function_name
@@ -2852,10 +3026,29 @@ class AIAgent:
                             messages, 
                             current_tokens=self.context_compressor.last_prompt_tokens
                         )
-                        # Re-inject todo state after compression (cache already invalidated)
+                        # Re-inject todo state after compression
                         todo_snapshot = self._todo_store.format_for_injection()
                         if todo_snapshot:
                             messages.append({"role": "user", "content": todo_snapshot})
+                        # Rebuild system prompt with fresh date/time + memory
+                        self._invalidate_system_prompt()
+                        active_system_prompt = self._build_system_prompt(system_message)
+                        self._cached_system_prompt = active_system_prompt
+                        # Split session in SQLite (close old, open new with parent link)
+                        if self._session_db:
+                            try:
+                                self._session_db.end_session(self.session_id, "compression")
+                                old_session_id = self.session_id
+                                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                                self._session_db.create_session(
+                                    session_id=self.session_id,
+                                    source=self.platform or "cli",
+                                    model=self.model,
+                                    parent_session_id=old_session_id,
+                                )
+                                self._session_db.update_system_prompt(self.session_id, active_system_prompt)
+                            except Exception:
+                                pass
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
@@ -3041,6 +3234,32 @@ class AIAgent:
         # Update session messages and save session log
         self._session_messages = messages
         self._save_session_log(messages)
+        
+        # Log new messages to SQLite session store (everything after the user message we already logged)
+        if self._session_db:
+            try:
+                # Skip messages that were in the conversation history before this call
+                # (the user message was already logged at the start of run_conversation)
+                start_idx = (len(conversation_history) if conversation_history else 0) + 1  # +1 for the user msg
+                for msg in messages[start_idx:]:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content")
+                    # Extract tool call info from assistant messages
+                    tool_calls_data = None
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        tool_calls_data = [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in msg.tool_calls]
+                    elif isinstance(msg.get("tool_calls"), list):
+                        tool_calls_data = msg["tool_calls"]
+                    self._session_db.append_message(
+                        session_id=self.session_id,
+                        role=role,
+                        content=content,
+                        tool_name=msg.get("tool_name"),
+                        tool_calls=tool_calls_data,
+                        tool_call_id=msg.get("tool_call_id"),
+                    )
+            except Exception:
+                pass
         
         # Build result with interrupt info if applicable
         result = {

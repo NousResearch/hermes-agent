@@ -808,7 +808,7 @@ class ShellFileOperations(FileOperations):
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
-        cmd_parts = ["rg", "--line-number", "--no-heading"]
+        cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
         
         # Add context if requested
         if context > 0:
@@ -828,16 +828,21 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Limit results
-        cmd_parts.extend(["|", "head", "-n", str(limit + offset)])
+        # Fetch extra rows so we can report the true total before slicing.
+        # For context mode, rg emits separator lines ("--") between groups,
+        # so we grab generously and filter in Python.
+        fetch_limit = limit + offset + 200 if context > 0 else limit + offset
+        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
         # Parse results based on output mode
         if output_mode == "files_only":
-            files = [f for f in result.stdout.strip().split('\n') if f][offset:]
-            return SearchResult(files=files[:limit], total_count=len(files))
+            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            total = len(all_files)
+            page = all_files[offset:offset + limit]
+            return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
@@ -852,34 +857,54 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
-            # Parse content matches
+            # Parse content matches and context lines.
+            # rg match lines:   "file:lineno:content"  (colon separator)
+            # rg context lines: "file-lineno-content"   (dash separator)
+            # rg group seps:    "--"
             matches = []
-            for line in result.stdout.strip().split('\n')[offset:]:
-                if not line:
+            for line in result.stdout.strip().split('\n'):
+                if not line or line == "--":
                     continue
-                # Format: file:line:content
+                
+                # Try match line first (colon-separated: file:line:content)
                 parts = line.split(':', 2)
                 if len(parts) >= 3:
                     try:
                         matches.append(SearchMatch(
                             path=parts[0],
                             line_number=int(parts[1]),
-                            content=parts[2][:500]  # Truncate long lines
+                            content=parts[2][:500]
                         ))
+                        continue
                     except ValueError:
-                        # Line number not an int, skip
                         pass
+                
+                # Try context line (dash-separated: file-line-content)
+                # Only attempt if context was requested to avoid false positives
+                if context > 0:
+                    parts = line.split('-', 2)
+                    if len(parts) >= 3:
+                        try:
+                            matches.append(SearchMatch(
+                                path=parts[0],
+                                line_number=int(parts[1]),
+                                content=parts[2][:500]
+                            ))
+                        except ValueError:
+                            pass
             
+            total = len(matches)
+            page = matches[offset:offset + limit]
             return SearchResult(
-                matches=matches[:limit],
-                total_count=len(matches),
-                truncated=len(matches) > limit
+                matches=page,
+                total_count=total,
+                truncated=total > offset + limit
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
-        cmd_parts = ["grep", "-rn"]
+        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
         # Add context if requested
         if context > 0:
@@ -899,16 +924,18 @@ class ShellFileOperations(FileOperations):
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Limit and offset
-        cmd_parts.extend(["|", "tail", "-n", f"+{offset + 1}", "|", "head", "-n", str(limit)])
+        # Fetch generously so we can compute total before slicing
+        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
-        # Parse results (same format as rg)
         if output_mode == "files_only":
-            files = [f for f in result.stdout.strip().split('\n') if f]
-            return SearchResult(files=files, total_count=len(files))
+            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            total = len(all_files)
+            page = all_files[offset:offset + limit]
+            return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
@@ -923,10 +950,14 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
+            # grep match lines:   "file:lineno:content" (colon)
+            # grep context lines: "file-lineno-content"  (dash)
+            # grep group seps:    "--"
             matches = []
             for line in result.stdout.strip().split('\n'):
-                if not line:
+                if not line or line == "--":
                     continue
+                
                 parts = line.split(':', 2)
                 if len(parts) >= 3:
                     try:
@@ -935,10 +966,26 @@ class ShellFileOperations(FileOperations):
                             line_number=int(parts[1]),
                             content=parts[2][:500]
                         ))
+                        continue
                     except ValueError:
                         pass
+                
+                if context > 0:
+                    parts = line.split('-', 2)
+                    if len(parts) >= 3:
+                        try:
+                            matches.append(SearchMatch(
+                                path=parts[0],
+                                line_number=int(parts[1]),
+                                content=parts[2][:500]
+                            ))
+                        except ValueError:
+                            pass
             
+            total = len(matches)
+            page = matches[offset:offset + limit]
             return SearchResult(
-                matches=matches,
-                total_count=len(matches)
+                matches=page,
+                total_count=total,
+                truncated=total > offset + limit
             )

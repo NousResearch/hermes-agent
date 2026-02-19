@@ -28,7 +28,6 @@ Usage:
 import os
 import re
 import json
-import uuid
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -267,11 +266,19 @@ class ShellFileOperations(FileOperations):
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
-    def _exec(self, command: str, cwd: str = None, timeout: int = None) -> ExecuteResult:
-        """Execute command via terminal backend."""
+    def _exec(self, command: str, cwd: str = None, timeout: int = None,
+              stdin_data: str = None) -> ExecuteResult:
+        """Execute command via terminal backend.
+        
+        Args:
+            stdin_data: If provided, piped to the process's stdin instead of
+                        embedding in the command string. Bypasses ARG_MAX.
+        """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
+        if stdin_data is not None:
+            kwargs['stdin_data'] = stdin_data
         
         result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
         return ExecuteResult(
@@ -535,7 +542,9 @@ class ShellFileOperations(FileOperations):
         """
         Write content to a file, creating parent directories as needed.
         
-        Uses heredoc with unique marker for safe shell execution.
+        Pipes content through stdin to avoid OS ARG_MAX limits on large
+        files. The content never appears in the shell command string —
+        only the file path does.
         
         Args:
             path: File path to write
@@ -557,15 +566,10 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
         
-        # Generate unique marker for heredoc that won't appear in content
-        marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-        while marker in content:
-            marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-        
-        # Write using heredoc with single-quoted marker (prevents all expansion)
-        # The single quotes around the marker prevent variable expansion
-        write_cmd = f"cat > {self._escape_shell_arg(path)} << '{marker}'\n{content}\n{marker}"
-        write_result = self._exec(write_cmd)
+        # Write via stdin pipe — content bypasses shell arg parsing entirely,
+        # so there's no ARG_MAX limit regardless of file size.
+        write_cmd = f"cat > {self._escape_shell_arg(path)}"
+        write_result = self._exec(write_cmd, stdin_data=content)
         
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")

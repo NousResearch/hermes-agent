@@ -560,6 +560,7 @@ COMMANDS = {
     "/personality": "Set a predefined personality",
     "/clear": "Clear screen and reset conversation (fresh start)",
     "/history": "Show conversation history",
+    "/new": "Start a new conversation (reset history)",
     "/reset": "Reset conversation only (keep screen)",
     "/retry": "Retry the last message (resend to agent)",
     "/undo": "Remove the last user/assistant exchange",
@@ -1399,7 +1400,7 @@ class HermesCLI:
             print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
         elif cmd_lower == "/history":
             self.show_history()
-        elif cmd_lower == "/reset":
+        elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved

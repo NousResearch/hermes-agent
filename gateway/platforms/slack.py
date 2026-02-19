@@ -327,13 +327,19 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
 
-        # Map common slash subcommands to gateway commands
-        if text in ("new", "reset"):
-            text = "/reset"
-        elif text == "status":
-            text = "/status"
-        elif text == "stop":
-            text = "/stop"
+        # Map subcommands to gateway commands
+        subcommand_map = {
+            "new": "/reset", "reset": "/reset",
+            "status": "/status", "stop": "/stop",
+            "help": "/help",
+            "model": "/model", "personality": "/personality",
+            "retry": "/retry", "undo": "/undo",
+        }
+        first_word = text.split()[0] if text else ""
+        if first_word in subcommand_map:
+            # Preserve arguments after the subcommand
+            rest = text[len(first_word):].strip()
+            text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
         elif text:
             pass  # Treat as a regular question
         else:

@@ -635,7 +635,8 @@ class _LocalEnvironment:
         self.timeout = timeout
         self.env = env or {}
     
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
         """
         Execute a command locally with sudo support.
         
@@ -647,6 +648,10 @@ class _LocalEnvironment:
         pipe buffer deadlocks. Without this, commands producing >64KB of
         output would block (Linux pipe buffer = 64KB) while the poll loop
         waits for the process to finish — a classic deadlock.
+        
+        Args:
+            stdin_data: If provided, piped to the process's stdin. This
+                        bypasses shell ARG_MAX limits for large content.
         """
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
@@ -665,10 +670,23 @@ class _LocalEnvironment:
                 errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 # Start in a new process group so we can kill the whole tree
                 preexec_fn=os.setsid,
             )
+            
+            # Pipe stdin_data in a background thread to avoid deadlock
+            # (large writes can block if the pipe buffer fills before the
+            # process drains it).
+            if stdin_data is not None:
+                def _write_stdin():
+                    try:
+                        proc.stdin.write(stdin_data)
+                        proc.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
+                stdin_writer = threading.Thread(target=_write_stdin, daemon=True)
+                stdin_writer.start()
             
             # Drain stdout in a background thread to prevent pipe buffer
             # deadlocks. The OS pipe buffer is 64KB on Linux; if the child
@@ -798,7 +816,8 @@ class _SingularityEnvironment:
         except subprocess.TimeoutExpired:
             raise RuntimeError("Instance start timed out")
     
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
         """Execute a command in the persistent Singularity instance.
         
         All commands run in the same container, so files, installs, and
@@ -822,17 +841,21 @@ class _SingularityEnvironment:
         # Execute the command
         cmd.extend(["bash", "-c", exec_command])
         
+        run_kwargs = {
+            "text": True,
+            "timeout": timeout or self.timeout,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+        }
+        if stdin_data is not None:
+            run_kwargs["input"] = stdin_data
+        else:
+            run_kwargs["stdin"] = subprocess.DEVNULL
+        
         try:
-            result = subprocess.run(
-                cmd,
-                text=True,
-                timeout=timeout or self.timeout,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
-            )
+            result = subprocess.run(cmd, **run_kwargs)
             return {"output": result.stdout, "returncode": result.returncode}
         except subprocess.TimeoutExpired:
             return {"output": f"Command timed out after {timeout or self.timeout}s", "returncode": 124}
@@ -944,7 +967,8 @@ class _SSHEnvironment:
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
     
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
         """Execute a command on the remote host via SSH."""
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
@@ -953,23 +977,26 @@ class _SSHEnvironment:
         exec_command = _transform_sudo_command(command)
         
         # Wrap command to run in the correct directory
-        # Use bash -c to handle complex commands properly
         wrapped_command = f'cd {work_dir} && {exec_command}'
         
         cmd = self._build_ssh_command()
         cmd.extend(["bash", "-c", wrapped_command])
         
+        run_kwargs = {
+            "text": True,
+            "timeout": effective_timeout,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+        }
+        if stdin_data is not None:
+            run_kwargs["input"] = stdin_data
+        else:
+            run_kwargs["stdin"] = subprocess.DEVNULL
+        
         try:
-            result = subprocess.run(
-                cmd,
-                text=True,
-                timeout=effective_timeout,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
-            )
+            result = subprocess.run(cmd, **run_kwargs)
             return {"output": result.stdout, "returncode": result.returncode}
         except subprocess.TimeoutExpired:
             return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
@@ -1020,7 +1047,8 @@ class _DockerEnvironment:
         self.cwd = cwd
         self.timeout = timeout
     
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
         """Execute a command in the Docker container with sudo support."""
         # Transform sudo commands if SUDO_PASSWORD is available
         exec_command = _transform_sudo_command(command)
@@ -1031,7 +1059,10 @@ class _DockerEnvironment:
         # Get container_id from inner environment
         assert self._inner.container_id, "Container not started"
         
-        cmd = [self._inner.config.executable, "exec", "-w", work_dir]
+        cmd = [self._inner.config.executable, "exec"]
+        if stdin_data is not None:
+            cmd.append("-i")  # Enable stdin piping into the container
+        cmd.extend(["-w", work_dir])
         for key in self._inner.config.forward_env:
             if (value := os.getenv(key)) is not None:
                 cmd.extend(["-e", f"{key}={value}"])
@@ -1039,17 +1070,21 @@ class _DockerEnvironment:
             cmd.extend(["-e", f"{key}={value}"])
         cmd.extend([self._inner.container_id, "bash", "-lc", exec_command])
         
+        run_kwargs = {
+            "text": True,
+            "timeout": effective_timeout,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+        }
+        if stdin_data is not None:
+            run_kwargs["input"] = stdin_data
+        else:
+            run_kwargs["stdin"] = subprocess.DEVNULL
+        
         try:
-            result = subprocess.run(
-                cmd,
-                text=True,
-                timeout=effective_timeout,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on interactive prompts
-            )
+            result = subprocess.run(cmd, **run_kwargs)
             return {"output": result.stdout, "returncode": result.returncode}
         except subprocess.TimeoutExpired:
             return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
@@ -1110,8 +1145,20 @@ class _ModalEnvironment:
         self.cwd = cwd
         self.timeout = timeout
     
-    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict:
-        """Execute a command in Modal with sudo support."""
+    def execute(self, command: str, cwd: str = "", *, timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
+        """Execute a command in Modal with sudo support.
+        
+        Modal uses HTTP transport (no execve), so there's no ARG_MAX limit.
+        When stdin_data is provided, we embed it as a heredoc since there's
+        no process-level stdin pipe to the cloud sandbox.
+        """
+        if stdin_data is not None:
+            marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
+            while marker in stdin_data:
+                marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
+            command = f"{command} << '{marker}'\n{stdin_data}\n{marker}"
+        
         # Transform sudo commands if SUDO_PASSWORD is available
         exec_command = _transform_sudo_command(command)
         

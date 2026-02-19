@@ -366,6 +366,16 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        @tree.command(name="new", description="Start a new conversation")
+        async def slash_new(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/reset")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("New conversation started~", ephemeral=True)
+            except Exception:
+                pass
+
         @tree.command(name="reset", description="Reset your Hermes session")
         async def slash_reset(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
@@ -373,6 +383,48 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Session reset~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="model", description="Show or change the model")
+        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
+        async def slash_model(interaction: discord.Interaction, name: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/model {name}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="personality", description="Set a personality")
+        @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
+        async def slash_personality(interaction: discord.Interaction, name: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/personality {name}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="retry", description="Retry your last message")
+        async def slash_retry(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/retry")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Retrying~", ephemeral=True)
+            except Exception:
+                pass
+
+        @tree.command(name="undo", description="Remove the last exchange")
+        async def slash_undo(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/undo")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
             except Exception:
                 pass
 

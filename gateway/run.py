@@ -318,11 +318,26 @@ class GatewayRunner:
         if command in ["new", "reset"]:
             return await self._handle_reset_command(event)
         
+        if command == "help":
+            return await self._handle_help_command(event)
+        
         if command == "status":
             return await self._handle_status_command(event)
         
         if command == "stop":
             return await self._handle_stop_command(event)
+        
+        if command == "model":
+            return await self._handle_model_command(event)
+        
+        if command == "personality":
+            return await self._handle_personality_command(event)
+        
+        if command == "retry":
+            return await self._handle_retry_command(event)
+        
+        if command == "undo":
+            return await self._handle_undo_command(event)
         
         # Check for pending exec approval responses
         session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
@@ -586,6 +601,124 @@ class GatewayRunner:
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:
             return "No active task to stop."
+    
+    async def _handle_help_command(self, event: MessageEvent) -> str:
+        """Handle /help command - list available commands."""
+        return (
+            "📖 **Hermes Commands**\n"
+            "\n"
+            "`/new` — Start a new conversation\n"
+            "`/reset` — Reset conversation history\n"
+            "`/status` — Show session info\n"
+            "`/stop` — Interrupt the running agent\n"
+            "`/model [name]` — Show or change the model\n"
+            "`/personality [name]` — Set a personality\n"
+            "`/retry` — Retry your last message\n"
+            "`/undo` — Remove the last exchange\n"
+            "`/help` — Show this message"
+        )
+    
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - show or change the current model."""
+        args = event.get_command_args().strip()
+        current = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+        
+        if not args:
+            return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
+        
+        os.environ["HERMES_MODEL"] = args
+        return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
+    
+    async def _handle_personality_command(self, event: MessageEvent) -> str:
+        """Handle /personality command - list or set a personality."""
+        args = event.get_command_args().strip().lower()
+        
+        try:
+            import yaml
+            config_path = Path.home() / '.hermes' / 'config.yaml'
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f) or {}
+                personalities = config.get("agent", {}).get("personalities", {})
+            else:
+                personalities = {}
+        except Exception:
+            personalities = {}
+        
+        if not personalities:
+            return "No personalities configured in `~/.hermes/config.yaml`"
+        
+        if not args:
+            lines = ["🎭 **Available Personalities**\n"]
+            for name, prompt in personalities.items():
+                preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
+                lines.append(f"• `{name}` — {preview}")
+            lines.append(f"\nUsage: `/personality <name>`")
+            return "\n".join(lines)
+        
+        if args in personalities:
+            os.environ["HERMES_PERSONALITY"] = personalities[args]
+            return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
+        
+        available = ", ".join(f"`{n}`" for n in personalities.keys())
+        return f"Unknown personality: `{args}`\n\nAvailable: {available}"
+    
+    async def _handle_retry_command(self, event: MessageEvent) -> str:
+        """Handle /retry command - re-send the last user message."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        
+        # Find the last user message
+        last_user_msg = None
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_msg = history[i].get("content", "")
+                last_user_idx = i
+                break
+        
+        if not last_user_msg:
+            return "No previous message to retry."
+        
+        # Truncate history to before the last user message
+        truncated = history[:last_user_idx]
+        session_entry.conversation_history = truncated
+        
+        # Re-send by creating a fake text event with the old message
+        retry_event = MessageEvent(
+            text=last_user_msg,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event.raw_message,
+        )
+        
+        # Let the normal message handler process it
+        await self._handle_message(retry_event)
+        return None  # Response sent through normal flow
+    
+    async def _handle_undo_command(self, event: MessageEvent) -> str:
+        """Handle /undo command - remove the last user/assistant exchange."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        
+        # Find the last user message and remove everything from it onward
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
+                break
+        
+        if last_user_idx is None:
+            return "Nothing to undo."
+        
+        removed_msg = history[last_user_idx].get("content", "")
+        removed_count = len(history) - last_user_idx
+        session_entry.conversation_history = history[:last_user_idx]
+        
+        preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
+        return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
     
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""

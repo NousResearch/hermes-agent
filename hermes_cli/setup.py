@@ -907,6 +907,66 @@ def run_setup_wizard(args):
                     save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
                     print_success("Discord allowlist configured")
     
+    # Slack
+    existing_slack = get_env_value('SLACK_BOT_TOKEN')
+    if existing_slack:
+        print_info("Slack: already configured")
+        if prompt_yes_no("Reconfigure Slack?", False):
+            existing_slack = None
+    
+    if not existing_slack and prompt_yes_no("Set up Slack bot?", False):
+        print_info("Steps to create a Slack app:")
+        print_info("   1. Go to https://api.slack.com/apps → Create New App")
+        print_info("   2. Enable Socket Mode: App Settings → Socket Mode → Enable")
+        print_info("   3. Bot Token: OAuth & Permissions → Install to Workspace")
+        print_info("   4. App Token: Basic Information → App-Level Tokens → Generate")
+        print()
+        bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
+        if bot_token:
+            save_env_value("SLACK_BOT_TOKEN", bot_token)
+            app_token = prompt("Slack App Token (xapp-...)", password=True)
+            if app_token:
+                save_env_value("SLACK_APP_TOKEN", app_token)
+            print_success("Slack tokens saved")
+            
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   Find Slack user IDs in your profile or via the Slack API")
+            print()
+            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+            if allowed_users:
+                save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Slack allowlist configured")
+            else:
+                print_info("⚠️  No allowlist set - anyone in your workspace can use the bot!")
+    
+    # WhatsApp
+    existing_whatsapp = get_env_value('WHATSAPP_ENABLED')
+    if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
+        print_info("WhatsApp uses a bridge service for connectivity.")
+        print_info("See docs/messaging.md for detailed WhatsApp setup instructions.")
+        print()
+        if prompt_yes_no("Enable WhatsApp bridge?", True):
+            save_env_value("WHATSAPP_ENABLED", "true")
+            print_success("WhatsApp enabled")
+            print_info("Run 'hermes gateway' to complete WhatsApp pairing via QR code")
+    
+    # Gateway reminder
+    any_messaging = (
+        get_env_value('TELEGRAM_BOT_TOKEN')
+        or get_env_value('DISCORD_BOT_TOKEN')
+        or get_env_value('SLACK_BOT_TOKEN')
+        or get_env_value('WHATSAPP_ENABLED')
+    )
+    if any_messaging:
+        print()
+        print_info("━" * 50)
+        print_success("Messaging platforms configured!")
+        print_info("Start the gateway after setup to bring your bots online:")
+        print_info("   hermes gateway              # Run in foreground")
+        print_info("   hermes gateway install      # Install as background service (Linux)")
+        print_info("━" * 50)
+    
     # =========================================================================
     # Step 8: Additional Tools (Optional)
     # =========================================================================

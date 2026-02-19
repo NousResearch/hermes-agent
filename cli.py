@@ -723,6 +723,14 @@ class HermesCLI:
         if self.agent is not None:
             return True
         
+        # Initialize SQLite session store for CLI sessions
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception:
+            pass  # SQLite session store is optional
+        
         try:
             self.agent = AIAgent(
                 model=self.model,
@@ -735,6 +743,7 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 session_id=self.session_id,  # Pass CLI's session ID to agent
                 platform="cli",  # CLI interface — agent uses terminal-friendly formatting
+                session_db=self._session_db,
             )
             return True
         except Exception as e:
@@ -1775,6 +1784,12 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
+            # Close session in SQLite
+            if hasattr(self, '_session_db') and self._session_db and self.agent:
+                try:
+                    self._session_db.end_session(self.agent.session_id, "cli_close")
+                except Exception:
+                    pass
             _run_cleanup()
             print("\nGoodbye! ⚕")
 

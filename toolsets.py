@@ -120,6 +120,19 @@ TOOLSETS = {
         "includes": []
     },
     
+    "memory": {
+        "description": "Persistent memory across sessions (personal notes + user profile)",
+        "tools": ["memory"],
+        "includes": []
+    },
+    
+    "session_search": {
+        "description": "Search and recall past conversations with summarization",
+        "tools": ["session_search"],
+        "includes": []
+    },
+    
+    
     # Scenario-specific toolsets
     
     "debugging": {
@@ -164,6 +177,10 @@ TOOLSETS = {
             "text_to_speech",
             # Planning & task management
             "todo",
+            # Persistent memory
+            "memory",
+            # Session history search
+            "session_search",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -198,6 +215,10 @@ TOOLSETS = {
             "skills_list", "skill_view",
             # Planning & task management
             "todo",
+            # Persistent memory
+            "memory",
+            # Session history search
+            "session_search",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -230,6 +251,10 @@ TOOLSETS = {
             "skills_list", "skill_view",
             # Planning & task management
             "todo",
+            # Persistent memory
+            "memory",
+            # Session history search
+            "session_search",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -262,6 +287,10 @@ TOOLSETS = {
             "skills_list", "skill_view",
             # Planning & task management
             "todo",
+            # Persistent memory
+            "memory",
+            # Session history search
+            "session_search",
             # Cronjob management
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -294,6 +323,10 @@ TOOLSETS = {
             "skills_list", "skill_view",
             # Planning & task management
             "todo",
+            # Persistent memory
+            "memory",
+            # Session history search
+            "session_search",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging

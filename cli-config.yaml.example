@@ -143,6 +143,26 @@ compression:
   summary_model: "google/gemini-3-flash-preview"
 
 # =============================================================================
+# Persistent Memory
+# =============================================================================
+# Bounded curated memory injected into the system prompt every session.
+# Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
+# Character limits keep the memory small and focused. The agent manages
+# pruning -- when at the limit, it must consolidate or replace entries.
+# Disabled by default in batch_runner and RL environments.
+#
+memory:
+  # Agent's personal notes: environment facts, conventions, things learned
+  memory_enabled: true
+  
+  # User profile: preferences, communication style, expectations
+  user_profile_enabled: true
+  
+  # Character limits (~2.75 chars per token, model-independent)
+  memory_char_limit: 2200   # ~800 tokens
+  user_char_limit: 1375     # ~500 tokens
+
+# =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:
@@ -274,6 +294,8 @@ platform_toolsets:
 #   skills       - Load skill documents (skills_list, skill_view)
 #   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work
+#   memory       - Persistent memory across sessions (personal notes + user profile)
+#   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
 #   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
 #   rl           - RL training tools (Tinker-Atropos)

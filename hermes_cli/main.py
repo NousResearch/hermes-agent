@@ -534,6 +534,121 @@ For more help on a command:
     skills_parser.set_defaults(func=cmd_skills)
 
     # =========================================================================
+    # sessions command
+    # =========================================================================
+    sessions_parser = subparsers.add_parser(
+        "sessions",
+        help="Manage session history (list, export, prune, delete)",
+        description="View and manage the SQLite session store"
+    )
+    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
+
+    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
+    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+
+    sessions_export = sessions_subparsers.add_parser("export", help="Export sessions to a JSONL file")
+    sessions_export.add_argument("output", help="Output JSONL file path")
+    sessions_export.add_argument("--source", help="Filter by source")
+    sessions_export.add_argument("--session-id", help="Export a specific session")
+
+    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
+    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+
+    sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions")
+    sessions_prune.add_argument("--older-than", type=int, default=90, help="Delete sessions older than N days (default: 90)")
+    sessions_prune.add_argument("--source", help="Only prune sessions from this source")
+    sessions_prune.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+
+    sessions_stats = sessions_subparsers.add_parser("stats", help="Show session store statistics")
+
+    def cmd_sessions(args):
+        import json as _json
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception as e:
+            print(f"Error: Could not open session database: {e}")
+            return
+
+        action = args.sessions_action
+
+        if action == "list":
+            sessions = db.search_sessions(source=args.source, limit=args.limit)
+            if not sessions:
+                print("No sessions found.")
+                return
+            print(f"{'ID':<30} {'Source':<12} {'Model':<30} {'Messages':>8} {'Started'}")
+            print("─" * 100)
+            from datetime import datetime
+            for s in sessions:
+                started = datetime.fromtimestamp(s["started_at"]).strftime("%Y-%m-%d %H:%M") if s["started_at"] else "?"
+                model = (s.get("model") or "?")[:28]
+                ended = " (ended)" if s.get("ended_at") else ""
+                print(f"{s['id']:<30} {s['source']:<12} {model:<30} {s['message_count']:>8} {started}{ended}")
+
+        elif action == "export":
+            if args.session_id:
+                data = db.export_session(args.session_id)
+                if not data:
+                    print(f"Session '{args.session_id}' not found.")
+                    return
+                with open(args.output, "w") as f:
+                    f.write(_json.dumps(data, ensure_ascii=False) + "\n")
+                print(f"Exported 1 session to {args.output}")
+            else:
+                sessions = db.export_all(source=args.source)
+                with open(args.output, "w") as f:
+                    for s in sessions:
+                        f.write(_json.dumps(s, ensure_ascii=False) + "\n")
+                print(f"Exported {len(sessions)} sessions to {args.output}")
+
+        elif action == "delete":
+            if not args.yes:
+                confirm = input(f"Delete session '{args.session_id}' and all its messages? [y/N] ")
+                if confirm.lower() not in ("y", "yes"):
+                    print("Cancelled.")
+                    return
+            if db.delete_session(args.session_id):
+                print(f"Deleted session '{args.session_id}'.")
+            else:
+                print(f"Session '{args.session_id}' not found.")
+
+        elif action == "prune":
+            days = args.older_than
+            source_msg = f" from '{args.source}'" if args.source else ""
+            if not args.yes:
+                confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
+                if confirm.lower() not in ("y", "yes"):
+                    print("Cancelled.")
+                    return
+            count = db.prune_sessions(older_than_days=days, source=args.source)
+            print(f"Pruned {count} session(s).")
+
+        elif action == "stats":
+            total = db.session_count()
+            msgs = db.message_count()
+            print(f"Total sessions: {total}")
+            print(f"Total messages: {msgs}")
+            for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
+                c = db.session_count(source=src)
+                if c > 0:
+                    print(f"  {src}: {c} sessions")
+            import os
+            db_path = db.db_path
+            if db_path.exists():
+                size_mb = os.path.getsize(db_path) / (1024 * 1024)
+                print(f"Database size: {size_mb:.1f} MB")
+
+        else:
+            sessions_parser.print_help()
+
+        db.close()
+
+    sessions_parser.set_defaults(func=cmd_sessions)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(

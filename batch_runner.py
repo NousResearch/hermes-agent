@@ -277,6 +277,7 @@ def _process_single_prompt(
             reasoning_config=config.get("reasoning_config"),
             prefill_messages=config.get("prefill_messages"),
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
+            skip_memory=True,  # Don't use persistent memory in batch runs
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM

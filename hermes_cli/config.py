@@ -64,6 +64,7 @@ def ensure_hermes_home():
     (home / "cron").mkdir(parents=True, exist_ok=True)
     (home / "sessions").mkdir(parents=True, exist_ok=True)
     (home / "logs").mkdir(parents=True, exist_ok=True)
+    (home / "memories").mkdir(parents=True, exist_ok=True)
 
 
 # =============================================================================
@@ -128,11 +129,19 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
+    # Persistent memory -- bounded curated memory injected into system prompt
+    "memory": {
+        "memory_enabled": True,
+        "user_profile_enabled": True,
+        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
+        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+    },
+    
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 2,
+    "_config_version": 3,
 }
 
 # =============================================================================

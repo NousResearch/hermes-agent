@@ -4,8 +4,11 @@ description: Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, 
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Academic Writing, NeurIPS, ICML, ICLR, ACL, AAAI, COLM, LaTeX, Paper Writing, Citations, Research]
 dependencies: [semanticscholar, arxiv, habanero, requests]
+metadata:
+  hermes:
+    tags: [Academic Writing, NeurIPS, ICML, ICLR, ACL, AAAI, COLM, LaTeX, Paper Writing, Citations, Research]
+
 ---
 
 # ML Paper Writing for Top AI Conferences

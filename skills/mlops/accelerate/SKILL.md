@@ -4,8 +4,11 @@ description: Simplest distributed training API. 4 lines to add distributed suppo
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Distributed Training, HuggingFace, Accelerate, DeepSpeed, FSDP, Mixed Precision, PyTorch, DDP, Unified API, Simple]
 dependencies: [accelerate, torch, transformers]
+metadata:
+  hermes:
+    tags: [Distributed Training, HuggingFace, Accelerate, DeepSpeed, FSDP, Mixed Precision, PyTorch, DDP, Unified API, Simple]
+
 ---
 
 # HuggingFace Accelerate - Unified Distributed Training

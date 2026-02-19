@@ -294,3 +294,38 @@ For verbose output (debugging), use:
 ```bash
 ./hermes --verbose
 ```
+
+## Skills Hub Commands
+
+The Skills Hub provides search, install, and management of skills from online registries.
+
+**Terminal commands:**
+```bash
+hermes skills search <query>                      # Search all registries
+hermes skills search <query> --source github      # Search GitHub only
+hermes skills install <identifier>                # Install with security scan
+hermes skills install <id> --category devops      # Install into a category
+hermes skills install <id> --force                # Override caution block
+hermes skills inspect <identifier>                # Preview without installing
+hermes skills list                                # List all installed skills
+hermes skills list --source hub                   # Hub-installed only
+hermes skills audit                               # Re-scan all hub skills
+hermes skills audit <name>                        # Re-scan a specific skill
+hermes skills uninstall <name>                    # Remove a hub skill
+hermes skills publish <path> --to github --repo owner/repo
+hermes skills snapshot export <file.json>         # Export skill config
+hermes skills snapshot import <file.json>         # Re-install from snapshot
+hermes skills tap list                            # List custom sources
+hermes skills tap add owner/repo                  # Add a GitHub repo source
+hermes skills tap remove owner/repo               # Remove a source
+```
+
+**Slash commands (inside chat):**
+
+All the same commands work with `/skills` prefix:
+```
+/skills search kubernetes
+/skills install openai/skills/skill-creator
+/skills list
+/skills tap add myorg/skills
+```

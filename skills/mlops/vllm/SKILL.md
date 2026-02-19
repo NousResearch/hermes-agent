@@ -4,8 +4,11 @@ description: Serves LLMs with high throughput using vLLM's PagedAttention and co
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [vLLM, Inference Serving, PagedAttention, Continuous Batching, High Throughput, Production, OpenAI API, Quantization, Tensor Parallelism]
 dependencies: [vllm, torch, transformers]
+metadata:
+  hermes:
+    tags: [vLLM, Inference Serving, PagedAttention, Continuous Batching, High Throughput, Production, OpenAI API, Quantization, Tensor Parallelism]
+
 ---
 
 # vLLM - High-Performance LLM Serving

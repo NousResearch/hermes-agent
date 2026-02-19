@@ -4,8 +4,11 @@ description: Optimizes transformer attention with Flash Attention for 2-4x speed
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Optimization, Flash Attention, Attention Optimization, Memory Efficiency, Speed Optimization, Long Context, PyTorch, SDPA, H100, FP8, Transformers]
 dependencies: [flash-attn, torch, transformers]
+metadata:
+  hermes:
+    tags: [Optimization, Flash Attention, Attention Optimization, Memory Efficiency, Speed Optimization, Long Context, PyTorch, SDPA, H100, FP8, Transformers]
+
 ---
 
 # Flash Attention - Fast Memory-Efficient Attention

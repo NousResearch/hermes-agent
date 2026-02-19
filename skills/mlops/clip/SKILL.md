@@ -4,8 +4,11 @@ description: OpenAI's model connecting vision and language. Enables zero-shot im
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Multimodal, CLIP, Vision-Language, Zero-Shot, Image Classification, OpenAI, Image Search, Cross-Modal Retrieval, Content Moderation]
 dependencies: [transformers, torch, pillow]
+metadata:
+  hermes:
+    tags: [Multimodal, CLIP, Vision-Language, Zero-Shot, Image Classification, OpenAI, Image Search, Cross-Modal Retrieval, Content Moderation]
+
 ---
 
 # CLIP - Contrastive Language-Image Pre-Training

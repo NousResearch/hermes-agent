@@ -4,8 +4,11 @@ description: Expert guidance for fast fine-tuning with Unsloth - 2-5x faster tra
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Fine-Tuning, Unsloth, Fast Training, LoRA, QLoRA, Memory-Efficient, Optimization, Llama, Mistral, Gemma, Qwen]
 dependencies: [unsloth, torch, transformers, trl, datasets, peft]
+metadata:
+  hermes:
+    tags: [Fine-Tuning, Unsloth, Fast Training, LoRA, QLoRA, Memory-Efficient, Optimization, Llama, Mistral, Gemma, Qwen]
+
 ---
 
 # Unsloth Skill

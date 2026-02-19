@@ -33,6 +33,8 @@ dependencies = [
   "litellm>=1.75.5",
   "typer",
   "platformdirs",
+  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
+  "PyJWT[crypto]",
 ]
 
 [project.optional-dependencies]

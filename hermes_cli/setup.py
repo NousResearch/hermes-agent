@@ -199,6 +199,12 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
     
+    # Skills Hub
+    if get_env_value('GITHUB_TOKEN'):
+        tool_status.append(("Skills Hub (GitHub)", True, None))
+    else:
+        tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
+    
     # Terminal (always available if system deps met)
     tool_status.append(("Terminal/Commands", True, None))
     
@@ -1103,6 +1109,36 @@ def run_setup_wizard(args):
                 else:
                     print_warning("    Partially configured (both keys required)")
     
+    # =========================================================================
+    # Step 9: Skills Hub (Optional)
+    # =========================================================================
+    print_header("Skills Hub (Optional)")
+    print_info("A GitHub token enables higher API rate limits for skill search/install,")
+    print_info("and is required for publishing skills via GitHub PRs.")
+    print()
+
+    github_configured = get_env_value('GITHUB_TOKEN')
+    if github_configured:
+        print_success("  GitHub token: configured ✓")
+        choice = prompt("  Reconfigure? (y/N)", default="n")
+        if choice.lower() == 'y':
+            token = prompt("    GitHub Token (ghp_...)", password=True)
+            if token:
+                save_env_value("GITHUB_TOKEN", token)
+                print_success("    Updated")
+    else:
+        print_warning("  GitHub token: not configured (60 req/hr rate limit)")
+        choice = prompt("  Configure now? (y/N)", default="n")
+        if choice.lower() == 'y':
+            print_info("  Get a token at: https://github.com/settings/tokens")
+            print_info("  Recommended: Fine-grained token with Contents + Pull Requests permissions")
+            token = prompt("    GitHub Token", password=True)
+            if token:
+                save_env_value("GITHUB_TOKEN", token)
+                print_success("    Configured ✓")
+            else:
+                print_info("    Skipped — you can add it later in ~/.hermes/.env")
+
     # =========================================================================
     # Save config and show summary
     # =========================================================================

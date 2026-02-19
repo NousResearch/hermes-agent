@@ -4,8 +4,11 @@ description: Open-source embedding database for AI applications. Store embedding
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [RAG, Chroma, Vector Database, Embeddings, Semantic Search, Open Source, Self-Hosted, Document Retrieval, Metadata Filtering]
 dependencies: [chromadb, sentence-transformers]
+metadata:
+  hermes:
+    tags: [RAG, Chroma, Vector Database, Embeddings, Semantic Search, Open Source, Self-Hosted, Document Retrieval, Metadata Filtering]
+
 ---
 
 # Chroma - Open-Source Embedding Database

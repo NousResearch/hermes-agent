@@ -4,8 +4,11 @@ description: Expert guidance for Fully Sharded Data Parallel training with PyTor
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Distributed Training, PyTorch, FSDP, Data Parallel, Sharding, Mixed Precision, CPU Offloading, FSDP2, Large-Scale Training]
 dependencies: [torch>=2.0, transformers]
+metadata:
+  hermes:
+    tags: [Distributed Training, PyTorch, FSDP, Data Parallel, Sharding, Mixed Precision, CPU Offloading, FSDP2, Large-Scale Training]
+
 ---
 
 # Pytorch-Fsdp Skill

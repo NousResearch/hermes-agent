@@ -185,10 +185,10 @@ _todo_tool_calls_since_update: int  # counter for checkpoint nudges
 
 ## 3. Dynamic Skills Expansion 📚
 
-**Status:** Partially implemented (41 read-only skills exist)
-**Priority:** Medium
+**Status:** IMPLEMENTED — Skills Hub with search/install/publish/snapshot from 4 registries
+**Priority:** ~~Medium~~ Done
 
-Extend the skills system so the agent can create, edit, and delete skills at runtime. Skill acquisition from successful task patterns.
+Skills Hub implemented: search/install/inspect/audit/uninstall/publish/snapshot across GitHub repos, ClawHub, Claude Code marketplaces, and LobeHub. Security scanner with trust-aware policy (builtin/trusted/community). CLI (`hermes skills ...`) and `/skills` slash command. agentskills.io spec compliant.
 
 **What other agents do:**
 - **OpenClaw**: ClawHub registry -- bundled, managed, and workspace skills with install gating. Agent can auto-search and pull skills from a remote hub.
@@ -943,7 +943,7 @@ This goes in the tool description:
 6. Subagent Architecture -- #1 (partially solved by #20)
 7. MCP Support -- #14
 8. Interactive Clarifying Questions -- #4
-9. Dynamic Skills Expansion (create/edit/delete) -- #3
+9. ~~Dynamic Skills Expansion~~ -- #3 (DONE: Skills Hub)
 
 **Tier 3 (Quality of life, polish):**
 10. Permission / Safety System -- #15

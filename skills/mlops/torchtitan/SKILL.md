@@ -4,8 +4,11 @@ description: Provides PyTorch-native distributed LLM pretraining using torchtita
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Model Architecture, Distributed Training, TorchTitan, FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel, Float8, Llama, Pretraining]
 dependencies: [torch>=2.6.0, torchtitan>=0.2.0, torchao>=0.5.0]
+metadata:
+  hermes:
+    tags: [Model Architecture, Distributed Training, TorchTitan, FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel, Float8, Llama, Pretraining]
+
 ---
 
 # TorchTitan - PyTorch Native Distributed LLM Pretraining

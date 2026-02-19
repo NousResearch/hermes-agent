@@ -549,6 +549,7 @@ COMMANDS = {
     "/save": "Save the current conversation",
     "/config": "Show current configuration",
     "/cron": "Manage scheduled tasks (list, add, remove)",
+    "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
@@ -1276,6 +1277,11 @@ class HermesCLI:
             print(f"(._.) Unknown cron command: {subcommand}")
             print("  Available: list, add, remove")
     
+    def _handle_skills_command(self, cmd: str):
+        """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
+        from hermes_cli.skills_hub import handle_skills_slash
+        handle_skills_slash(cmd, self.console)
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -1401,6 +1407,8 @@ class HermesCLI:
             self.save_conversation()
         elif cmd_lower.startswith("/cron"):
             self._handle_cron_command(cmd_original)
+        elif cmd_lower.startswith("/skills"):
+            self._handle_skills_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         else:

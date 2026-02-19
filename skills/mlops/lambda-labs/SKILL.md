@@ -4,8 +4,11 @@ description: Reserved and on-demand GPU cloud instances for ML training and infe
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Infrastructure, GPU Cloud, Training, Inference, Lambda Labs]
 dependencies: [lambda-cloud-client>=1.0.0]
+metadata:
+  hermes:
+    tags: [Infrastructure, GPU Cloud, Training, Inference, Lambda Labs]
+
 ---
 
 # Lambda Labs GPU Cloud

@@ -265,9 +265,8 @@ class SessionStore:
     """
     Manages session storage and retrieval.
     
-    Sessions are stored in:
-    - sessions.json: Index mapping session keys to session IDs
-    - {session_id}.jsonl: Conversation transcripts
+    Uses SQLite (via SessionDB) for session metadata and message transcripts.
+    Falls back to legacy JSONL files if SQLite is unavailable.
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
@@ -276,12 +275,18 @@ class SessionStore:
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
-        # Optional callback to check if a session has active background processes.
-        # When set, sessions with running processes are exempt from reset.
         self._has_active_processes_fn = has_active_processes_fn
+        
+        # Initialize SQLite session database
+        self._db = None
+        try:
+            from hermes_state import SessionDB
+            self._db = SessionDB()
+        except Exception as e:
+            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     
     def _ensure_loaded(self) -> None:
-        """Load sessions from disk if not already loaded."""
+        """Load sessions index from disk if not already loaded."""
         if self._loaded:
             return
         
@@ -300,7 +305,7 @@ class SessionStore:
         self._loaded = True
     
     def _save(self) -> None:
-        """Save sessions index to disk."""
+        """Save sessions index to disk (kept for session key -> ID mapping)."""
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
         
@@ -313,20 +318,16 @@ class SessionStore:
         platform = source.platform.value
         
         if source.chat_type == "dm":
-            # DMs share the main session per platform
             return f"agent:main:{platform}:dm"
         else:
-            # Groups/channels get their own keys
             return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
     
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> bool:
         """
         Check if a session should be reset based on policy.
         
-        Returns True if the session is stale and should start fresh.
         Sessions with active background processes are never reset.
         """
-        # Don't reset sessions that have active background processes
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
@@ -339,15 +340,12 @@ class SessionStore:
         
         now = datetime.now()
         
-        # Check idle timeout
         if policy.mode in ("idle", "both"):
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return True
         
-        # Check daily reset
         if policy.mode in ("daily", "both"):
-            # Find the most recent reset boundary
             today_reset = now.replace(
                 hour=policy.at_hour, 
                 minute=0, 
@@ -355,7 +353,6 @@ class SessionStore:
                 microsecond=0
             )
             if now.hour < policy.at_hour:
-                # Reset boundary was yesterday
                 today_reset -= timedelta(days=1)
             
             if entry.updated_at < today_reset:
@@ -372,22 +369,27 @@ class SessionStore:
         Get an existing session or create a new one.
         
         Evaluates reset policy to determine if the existing session is stale.
+        Creates a session record in SQLite when a new session starts.
         """
         self._ensure_loaded()
         
         session_key = self._generate_session_key(source)
         now = datetime.now()
         
-        # Check for existing session
         if session_key in self._entries and not force_new:
             entry = self._entries[session_key]
             
-            # Check if session should be reset
             if not self._should_reset(entry, source):
-                # Update timestamp and return existing
                 entry.updated_at = now
                 self._save()
                 return entry
+            else:
+                # Session is being reset -- end the old one in SQLite
+                if self._db:
+                    try:
+                        self._db.end_session(entry.session_id, "session_reset")
+                    except Exception:
+                        pass
         
         # Create new session
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -405,6 +407,17 @@ class SessionStore:
         
         self._entries[session_key] = entry
         self._save()
+        
+        # Create session in SQLite
+        if self._db:
+            try:
+                self._db.create_session(
+                    session_id=session_id,
+                    source=source.platform.value,
+                    user_id=source.user_id,
+                )
+            except Exception as e:
+                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
         
         return entry
     
@@ -424,6 +437,14 @@ class SessionStore:
             entry.output_tokens += output_tokens
             entry.total_tokens = entry.input_tokens + entry.output_tokens
             self._save()
+            
+            if self._db:
+                try:
+                    self._db.update_token_counts(
+                        entry.session_id, input_tokens, output_tokens
+                    )
+                except Exception:
+                    pass
     
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
@@ -433,6 +454,14 @@ class SessionStore:
             return None
         
         old_entry = self._entries[session_key]
+        
+        # End old session in SQLite
+        if self._db:
+            try:
+                self._db.end_session(old_entry.session_id, "session_reset")
+            except Exception:
+                pass
+        
         now = datetime.now()
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
@@ -450,15 +479,21 @@ class SessionStore:
         self._entries[session_key] = new_entry
         self._save()
         
+        # Create new session in SQLite
+        if self._db:
+            try:
+                self._db.create_session(
+                    session_id=session_id,
+                    source=old_entry.platform.value if old_entry.platform else "unknown",
+                    user_id=old_entry.origin.user_id if old_entry.origin else None,
+                )
+            except Exception:
+                pass
+        
         return new_entry
     
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
-        """
-        List all sessions, optionally filtered by activity.
-        
-        Args:
-            active_minutes: If provided, only return sessions updated within this many minutes
-        """
+        """List all sessions, optionally filtered by activity."""
         self._ensure_loaded()
         
         entries = list(self._entries.values())
@@ -467,24 +502,47 @@ class SessionStore:
             cutoff = datetime.now() - timedelta(minutes=active_minutes)
             entries = [e for e in entries if e.updated_at >= cutoff]
         
-        # Sort by most recently updated
         entries.sort(key=lambda e: e.updated_at, reverse=True)
         
         return entries
     
     def get_transcript_path(self, session_id: str) -> Path:
-        """Get the path to a session's transcript file."""
+        """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Append a message to a session's transcript."""
-        transcript_path = self.get_transcript_path(session_id)
+        """Append a message to a session's transcript (SQLite + legacy JSONL)."""
+        # Write to SQLite
+        if self._db:
+            try:
+                self._db.append_message(
+                    session_id=session_id,
+                    role=message.get("role", "unknown"),
+                    content=message.get("content"),
+                    tool_name=message.get("tool_name"),
+                    tool_calls=message.get("tool_calls"),
+                    tool_call_id=message.get("tool_call_id"),
+                )
+            except Exception:
+                pass
         
+        # Also write legacy JSONL (keeps existing tooling working during transition)
+        transcript_path = self.get_transcript_path(session_id)
         with open(transcript_path, "a") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
+        # Try SQLite first
+        if self._db:
+            try:
+                messages = self._db.get_messages_as_conversation(session_id)
+                if messages:
+                    return messages
+            except Exception:
+                pass
+        
+        # Fall back to legacy JSONL
         transcript_path = self.get_transcript_path(session_id)
         
         if not transcript_path.exists():

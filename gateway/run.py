@@ -904,6 +904,8 @@ class GatewayRunner:
                 "skill_view": "📚",
                 "skills_list": "📋",
                 "todo": "📋",
+                "memory": "🧠",
+                "session_search": "🔍",
                 "send_message": "📨",
                 "schedule_cronjob": "⏰",
                 "list_cronjobs": "⏰",

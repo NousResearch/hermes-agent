@@ -328,6 +328,12 @@ class HermesAgentLoop:
                                     store=_todo_store,
                                 )
                                 tool_elapsed = _time.monotonic() - tool_submit_time
+                            elif tool_name == "memory":
+                                tool_result = json.dumps({"error": "Memory is not available in RL environments."})
+                                tool_elapsed = _time.monotonic() - tool_submit_time
+                            elif tool_name == "session_search":
+                                tool_result = json.dumps({"error": "Session search is not available in RL environments."})
+                                tool_elapsed = _time.monotonic() - tool_submit_time
                             else:
                                 # Run tool calls in a thread pool so backends that
                                 # use asyncio.run() internally (modal, docker) get

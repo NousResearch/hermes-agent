@@ -87,6 +87,10 @@ from tools.browser_tool import (
 from tools.tts_tool import text_to_speech_tool, check_tts_requirements
 # Planning & task management tool
 from tools.todo_tool import todo_tool, check_todo_requirements, TODO_SCHEMA
+# Persistent memory tool
+from tools.memory_tool import memory_tool, check_memory_requirements, MEMORY_SCHEMA
+# Session search tool (past conversation recall with summarization)
+from tools.session_search_tool import session_search, check_session_search_requirements, SESSION_SEARCH_SCHEMA
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -182,6 +186,20 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_todo_requirements,
         "setup_url": None,
         "tools": ["todo"],
+    },
+    "memory": {
+        "name": "Persistent Memory",
+        "env_vars": [],  # File-based, no external deps
+        "check_fn": check_memory_requirements,
+        "setup_url": None,
+        "tools": ["memory"],
+    },
+    "session_search": {
+        "name": "Session History Search",
+        "env_vars": ["OPENROUTER_API_KEY"],  # Needs summarizer model
+        "check_fn": check_session_search_requirements,
+        "setup_url": "https://openrouter.ai/keys",
+        "tools": ["session_search"],
     },
 }
 
@@ -936,6 +954,26 @@ def get_todo_tool_definitions() -> List[Dict[str, Any]]:
     return [{"type": "function", "function": TODO_SCHEMA}]
 
 
+def get_memory_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the persistent memory tool.
+    
+    Returns:
+        List[Dict]: List containing the memory tool definition compatible with OpenAI API
+    """
+    return [{"type": "function", "function": MEMORY_SCHEMA}]
+
+
+def get_session_search_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the session history search tool.
+    
+    Returns:
+        List[Dict]: List containing the session_search tool definition compatible with OpenAI API
+    """
+    return [{"type": "function", "function": SESSION_SEARCH_SCHEMA}]
+
+
 def get_send_message_tool_definitions():
     """Tool definitions for cross-channel messaging."""
     return [
@@ -1093,6 +1131,14 @@ def get_all_tool_names() -> List[str]:
     if check_todo_requirements():
         tool_names.extend(["todo"])
     
+    # Persistent memory (always available)
+    if check_memory_requirements():
+        tool_names.extend(["memory"])
+    
+    # Session history search
+    if check_session_search_requirements():
+        tool_names.extend(["session_search"])
+    
     # Cross-channel messaging (always available on messaging platforms)
     tool_names.extend(["send_message"])
     
@@ -1150,6 +1196,10 @@ TOOL_TO_TOOLSET_MAP = {
     "send_message": "messaging_tools",
     # Planning & task management
     "todo": "todo_tools",
+    # Persistent memory
+    "memory": "memory_tools",
+    # Session history search
+    "session_search": "session_search_tools",
 }
 
 
@@ -1259,6 +1309,16 @@ def get_tool_definitions(
     # Planning & task management tool
     if check_todo_requirements():
         for tool in get_todo_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Persistent memory tool
+    if check_memory_requirements():
+        for tool in get_memory_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Session history search tool
+    if check_session_search_requirements():
+        for tool in get_session_search_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
     # Cross-channel messaging (always available on messaging platforms)
@@ -2001,6 +2061,14 @@ def handle_function_call(
         elif function_name == "todo":
             return json.dumps({"error": "todo must be handled by the agent loop"})
 
+        # Memory tool -- handled by the agent loop (needs MemoryStore instance).
+        elif function_name == "memory":
+            return json.dumps({"error": "Memory is not available. It may be disabled in config or this environment."})
+
+        # Session search -- handled by the agent loop (needs SessionDB instance).
+        elif function_name == "session_search":
+            return json.dumps({"error": "Session search is not available. The session database may not be initialized."})
+
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
@@ -2090,6 +2158,18 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["todo"],
             "description": "Planning & task management: in-memory todo list for multi-step work",
             "requirements": []
+        },
+        "memory_tools": {
+            "available": check_memory_requirements(),
+            "tools": ["memory"],
+            "description": "Persistent memory: bounded MEMORY.md + USER.md injected into system prompt",
+            "requirements": []
+        },
+        "session_search_tools": {
+            "available": check_session_search_requirements(),
+            "tools": ["session_search"],
+            "description": "Session history search: FTS5 search + Gemini Flash summarization of past conversations",
+            "requirements": ["OPENROUTER_API_KEY", "~/.hermes/state.db"]
         }
     }
     

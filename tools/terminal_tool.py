@@ -642,6 +642,11 @@ class _LocalEnvironment:
         Uses Popen + polling so the global interrupt event can kill the
         process early when the user sends a new message, instead of
         blocking for the full timeout.
+        
+        A background reader thread drains stdout continuously to prevent
+        pipe buffer deadlocks. Without this, commands producing >64KB of
+        output would block (Linux pipe buffer = 64KB) while the poll loop
+        waits for the process to finish — a classic deadlock.
         """
         work_dir = cwd or self.cwd or os.getcwd()
         effective_timeout = timeout or self.timeout
@@ -665,6 +670,25 @@ class _LocalEnvironment:
                 preexec_fn=os.setsid,
             )
             
+            # Drain stdout in a background thread to prevent pipe buffer
+            # deadlocks. The OS pipe buffer is 64KB on Linux; if the child
+            # writes more than that before anyone reads, it blocks forever.
+            _output_chunks: list[str] = []
+            def _drain_stdout():
+                try:
+                    for line in proc.stdout:
+                        _output_chunks.append(line)
+                except ValueError:
+                    pass  # stdout closed during interrupt/timeout
+                finally:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+            
+            reader = threading.Thread(target=_drain_stdout, daemon=True)
+            reader.start()
+            
             deadline = time.monotonic() + effective_timeout
             
             # Poll every 200ms so we notice interrupts quickly
@@ -676,9 +700,8 @@ class _LocalEnvironment:
                         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
-                    # Grab any partial output
-                    partial, _ = proc.communicate(timeout=2)
-                    output = partial or ""
+                    reader.join(timeout=2)
+                    output = "".join(_output_chunks)
                     return {
                         "output": output + "\n[Command interrupted — user sent a new message]",
                         "returncode": 130  # Standard interrupted exit code
@@ -690,15 +713,15 @@ class _LocalEnvironment:
                         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
-                    proc.communicate(timeout=2)
+                    reader.join(timeout=2)
                     return {"output": f"Command timed out after {effective_timeout}s", "returncode": 124}
                 
                 # Short sleep to avoid busy-waiting
                 time.sleep(0.2)
             
-            # Process finished normally — read all output
-            stdout, _ = proc.communicate()
-            return {"output": stdout or "", "returncode": proc.returncode}
+            # Process finished — wait for reader to drain remaining output
+            reader.join(timeout=5)
+            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
             
         except Exception as e:
             return {"output": f"Execution error: {str(e)}", "returncode": 1}

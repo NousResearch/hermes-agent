@@ -377,6 +377,17 @@ Both default to `false` in batch_runner and RL environments (checked programmati
 
 The bounded memory is the curated layer. For unbounded "long-term memory" -- searching past session transcripts -- see SQLite State Store (#5). A separate `session_search` tool provides ripgrep-style search over the full session history. This is never injected into the system prompt; the agent searches it on demand.
 
+### Known bug: duplicate entries are irrecoverable
+
+If the same content gets added twice (e.g., agent retries after a failed response generation and re-saves a memory it already saved), both `replace` and `remove` fail with "Multiple entries matched" because content-based matching can't disambiguate identical entries. The user/agent has no way to fix this without manually editing the file.
+
+**Possible fixes (pick one or combine):**
+- **Prevent on add**: reject or silently deduplicate when `content` exactly matches an existing entry. Cheapest fix, prevents the problem entirely.
+- **Remove-all flag**: `remove(target, old_text, remove_all=True)` deletes every match. Lets the agent nuke all copies, then re-add one if needed.
+- **Index-based fallback**: when multiple matches are found, return them with indices and accept `index` parameter on retry. More complex, but most precise.
+
+Simplest path: deduplicate on add (check before appending). One-line fix in `memory_tool.py`.
+
 ### Later (optional)
 - Periodic consolidation via cronjob/subagent: reviews recent session summaries, suggests memory updates. Needs subagents (#1).
 - Memory import/export: `hermes memory export` / `hermes memory import` for backup/migration.

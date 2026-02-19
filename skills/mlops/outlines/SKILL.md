@@ -4,8 +4,11 @@ description: Guarantee valid JSON/XML/code structure during generation, use Pyda
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Prompt Engineering, Outlines, Structured Generation, JSON Schema, Pydantic, Local Models, Grammar-Based Generation, vLLM, Transformers, Type Safety]
 dependencies: [outlines, transformers, vllm, pydantic]
+metadata:
+  hermes:
+    tags: [Prompt Engineering, Outlines, Structured Generation, JSON Schema, Pydantic, Local Models, Grammar-Based Generation, vLLM, Transformers, Type Safety]
+
 ---
 
 # Outlines: Structured Text Generation

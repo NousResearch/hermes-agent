@@ -4,8 +4,11 @@ description: Simple Preference Optimization for LLM alignment. Reference-free al
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Post-Training, SimPO, Preference Optimization, Alignment, DPO Alternative, Reference-Free, LLM Alignment, Efficient Training]
 dependencies: [torch, transformers, datasets, trl, accelerate]
+metadata:
+  hermes:
+    tags: [Post-Training, SimPO, Preference Optimization, Alignment, DPO Alternative, Reference-Free, LLM Alignment, Efficient Training]
+
 ---
 
 # SimPO - Simple Preference Optimization

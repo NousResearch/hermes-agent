@@ -155,14 +155,33 @@ skills/
     └── axolotl/
         ├── SKILL.md           # Main instructions (required)
         ├── references/        # Additional docs
-        └── templates/         # Output formats, configs
+        ├── templates/         # Output formats, configs
+        └── assets/            # Supplementary files (agentskills.io)
 ```
 
-SKILL.md uses YAML frontmatter:
+SKILL.md uses YAML frontmatter (agentskills.io compatible):
 ```yaml
 ---
 name: axolotl
 description: Fine-tuning LLMs with Axolotl
-tags: [Fine-Tuning, LoRA, DPO]
+metadata:
+  hermes:
+    tags: [Fine-Tuning, LoRA, DPO]
 ---
 ```
+
+## Skills Hub
+
+The Skills Hub enables searching, installing, and managing skills from online registries. It is **user-driven only** — the model cannot search for or install skills.
+
+**Sources:** GitHub repos (openai/skills, anthropics/skills, custom taps), ClawHub, Claude Code marketplaces, LobeHub.
+
+**Security:** Every downloaded skill is scanned by `tools/skills_guard.py` (regex patterns + optional LLM audit) before installation. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
+
+**Architecture:**
+- `tools/skills_guard.py` — Static scanner + LLM audit, trust-aware install policy
+- `tools/skills_hub.py` — SkillSource ABC, GitHubAuth (PAT + App), 4 source adapters, lock file, hub state
+- `hermes_cli/skills_hub.py` — Shared `do_*` functions, CLI subcommands, `/skills` slash command handler
+
+**CLI:** `hermes skills search|install|inspect|list|audit|uninstall|publish|snapshot|tap`
+**Slash:** `/skills search|install|inspect|list|audit|uninstall|publish|snapshot|tap`

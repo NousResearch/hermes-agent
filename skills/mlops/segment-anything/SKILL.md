@@ -4,8 +4,11 @@ description: Foundation model for image segmentation with zero-shot transfer. Us
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Multimodal, Image Segmentation, Computer Vision, SAM, Zero-Shot]
 dependencies: [segment-anything, transformers>=4.30.0, torch>=1.7.0]
+metadata:
+  hermes:
+    tags: [Multimodal, Image Segmentation, Computer Vision, SAM, Zero-Shot]
+
 ---
 
 # Segment Anything Model (SAM)

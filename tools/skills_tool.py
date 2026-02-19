@@ -18,19 +18,24 @@ Directory Structure:
     │   ├── references/        # Supporting documentation
     │   │   ├── api.md
     │   │   └── examples.md
-    │   └── templates/         # Templates for output
-    │       └── template.md
+    │   ├── templates/         # Templates for output
+    │   │   └── template.md
+    │   └── assets/            # Supplementary files (agentskills.io standard)
     └── category/              # Category folder for organization
         └── another-skill/
             └── SKILL.md
 
-SKILL.md Format (YAML Frontmatter):
+SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     ---
     name: skill-name              # Required, max 64 chars
     description: Brief description # Required, max 1024 chars
-    tags: [fine-tuning, llm]      # Optional, for filtering
-    related_skills: [peft, lora]  # Optional, for composability
-    version: 1.0.0                # Optional, for tracking
+    version: 1.0.0                # Optional
+    license: MIT                  # Optional (agentskills.io)
+    compatibility: Requires X     # Optional (agentskills.io)
+    metadata:                     # Optional, arbitrary key-value (agentskills.io)
+      hermes:
+        tags: [fine-tuning, llm]
+        related_skills: [peft, lora]
     ---
     
     # Skill Title
@@ -60,6 +65,8 @@ import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
+import yaml
+
 
 # Default skills directory (relative to repo root)
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -79,9 +86,12 @@ def check_skills_requirements() -> bool:
     return SKILLS_DIR.exists() and SKILLS_DIR.is_dir()
 
 
-def _parse_frontmatter(content: str) -> Tuple[Dict[str, str], str]:
+def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """
     Parse YAML frontmatter from markdown content.
+    
+    Uses yaml.safe_load for full YAML support (nested metadata, lists, etc.)
+    with a fallback to simple key:value splitting for robustness.
     
     Args:
         content: Full markdown file content
@@ -92,19 +102,23 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, str], str]:
     frontmatter = {}
     body = content
     
-    # Check for YAML frontmatter (starts with ---)
     if content.startswith("---"):
-        # Find the closing ---
         end_match = re.search(r'\n---\s*\n', content[3:])
         if end_match:
             yaml_content = content[3:end_match.start() + 3]
             body = content[end_match.end() + 3:]
             
-            # Simple YAML parsing for key: value pairs
-            for line in yaml_content.strip().split('\n'):
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    frontmatter[key.strip()] = value.strip()
+            try:
+                parsed = yaml.safe_load(yaml_content)
+                if isinstance(parsed, dict):
+                    frontmatter = parsed
+                # yaml.safe_load returns None for empty frontmatter
+            except yaml.YAMLError:
+                # Fallback: simple key:value parsing for malformed YAML
+                for line in yaml_content.strip().split('\n'):
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        frontmatter[key.strip()] = value.strip()
     
     return frontmatter, body
 
@@ -148,16 +162,17 @@ def _estimate_tokens(content: str) -> int:
     return len(content) // 4
 
 
-def _parse_tags(tags_value: str) -> List[str]:
+def _parse_tags(tags_value) -> List[str]:
     """
     Parse tags from frontmatter value.
     
-    Handles both:
-    - YAML list format: [tag1, tag2]
-    - Comma-separated: tag1, tag2
+    Handles:
+    - Already-parsed list (from yaml.safe_load): [tag1, tag2]
+    - String with brackets: "[tag1, tag2]"
+    - Comma-separated string: "tag1, tag2"
     
     Args:
-        tags_value: Raw tags string from frontmatter
+        tags_value: Raw tags value — may be a list or string
         
     Returns:
         List of tag strings
@@ -165,12 +180,15 @@ def _parse_tags(tags_value: str) -> List[str]:
     if not tags_value:
         return []
     
-    # Remove brackets if present
-    tags_value = tags_value.strip()
+    # yaml.safe_load already returns a list for [tag1, tag2]
+    if isinstance(tags_value, list):
+        return [str(t).strip() for t in tags_value if t]
+    
+    # String fallback — handle bracket-wrapped or comma-separated
+    tags_value = str(tags_value).strip()
     if tags_value.startswith('[') and tags_value.endswith(']'):
         tags_value = tags_value[1:-1]
     
-    # Split by comma and clean up
     return [t.strip().strip('"\'') for t in tags_value.split(',') if t.strip()]
 
 
@@ -199,9 +217,9 @@ def _find_all_skills() -> List[Dict[str, Any]]:
     
     # Find all SKILL.md files recursively
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        # Skip hidden directories and common non-skill folders
+        # Skip hidden directories, hub state, and common non-skill folders
         path_str = str(skill_md)
-        if '/.git/' in path_str or '/.github/' in path_str:
+        if '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str:
             continue
             
         skill_dir = skill_md.parent
@@ -253,9 +271,9 @@ def _find_all_skills() -> List[Dict[str, Any]]:
         if md_file.name == "SKILL.md":
             continue
             
-        # Skip hidden directories
+        # Skip hidden directories and hub state
         path_str = str(md_file)
-        if '/.git/' in path_str or '/.github/' in path_str:
+        if '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str:
             continue
         
         # Skip files inside skill directories (they're references, not standalone skills)
@@ -538,6 +556,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 available_files = {
                     "references": [],
                     "templates": [],
+                    "assets": [],
                     "scripts": [],
                     "other": []
                 }
@@ -550,6 +569,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                             available_files["references"].append(rel)
                         elif rel.startswith("templates/"):
                             available_files["templates"].append(rel)
+                        elif rel.startswith("assets/"):
+                            available_files["assets"].append(rel)
                         elif rel.startswith("scripts/"):
                             available_files["scripts"].append(rel)
                         elif f.suffix in ['.md', '.py', '.yaml', '.yml', '.json', '.tex', '.sh']:
@@ -590,32 +611,43 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         content = skill_md.read_text(encoding='utf-8')
         frontmatter, body = _parse_frontmatter(content)
         
-        # Get reference, template, and script files if this is a directory-based skill
+        # Get reference, template, asset, and script files if this is a directory-based skill
         reference_files = []
         template_files = []
+        asset_files = []
         script_files = []
         
         if skill_dir:
-            # References (documentation)
             references_dir = skill_dir / "references"
             if references_dir.exists():
                 reference_files = [str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")]
             
-            # Templates (output formats, boilerplate)
             templates_dir = skill_dir / "templates"
             if templates_dir.exists():
                 for ext in ['*.md', '*.py', '*.yaml', '*.yml', '*.json', '*.tex', '*.sh']:
                     template_files.extend([str(f.relative_to(skill_dir)) for f in templates_dir.rglob(ext)])
             
-            # Scripts (executable helpers)
+            # assets/ — agentskills.io standard directory for supplementary files
+            assets_dir = skill_dir / "assets"
+            if assets_dir.exists():
+                for f in assets_dir.rglob("*"):
+                    if f.is_file():
+                        asset_files.append(str(f.relative_to(skill_dir)))
+            
             scripts_dir = skill_dir / "scripts"
             if scripts_dir.exists():
                 for ext in ['*.py', '*.sh', '*.bash', '*.js', '*.ts', '*.rb']:
                     script_files.extend([str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)])
         
-        # Parse metadata
-        tags = _parse_tags(frontmatter.get('tags', ''))
-        related_skills = _parse_tags(frontmatter.get('related_skills', ''))
+        # Read tags/related_skills with backward compat:
+        # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
+        hermes_meta = {}
+        metadata = frontmatter.get('metadata')
+        if isinstance(metadata, dict):
+            hermes_meta = metadata.get('hermes', {}) or {}
+        
+        tags = _parse_tags(hermes_meta.get('tags') or frontmatter.get('tags', ''))
+        related_skills = _parse_tags(hermes_meta.get('related_skills') or frontmatter.get('related_skills', ''))
         
         # Build linked files structure for clear discovery
         linked_files = {}
@@ -623,10 +655,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             linked_files["references"] = reference_files
         if template_files:
             linked_files["templates"] = template_files
+        if asset_files:
+            linked_files["assets"] = asset_files
         if script_files:
             linked_files["scripts"] = script_files
         
-        return json.dumps({
+        # Build response with agentskills.io standard fields when present
+        result = {
             "success": True,
             "name": frontmatter.get('name', skill_md.stem if not skill_dir else skill_dir.name),
             "description": frontmatter.get('description', ''),
@@ -635,8 +670,16 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "content": content,
             "path": str(skill_md.relative_to(SKILLS_DIR)),
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'templates/config.yaml'" if linked_files else None
-        }, ensure_ascii=False)
+            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None
+        }
+        
+        # Surface agentskills.io optional fields when present
+        if frontmatter.get('compatibility'):
+            result["compatibility"] = frontmatter['compatibility']
+        if isinstance(metadata, dict):
+            result["metadata"] = metadata
+        
+        return json.dumps(result, ensure_ascii=False)
         
     except Exception as e:
         return json.dumps({
@@ -650,12 +693,13 @@ SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instru
 
 Progressive disclosure workflow:
 1. skills_list() - Returns metadata (name, description, tags, linked_file_count) for all skills
-2. skill_view(name) - Loads full SKILL.md content + shows available linked_files (references/templates/scripts)
+2. skill_view(name) - Loads full SKILL.md content + shows available linked_files
 3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
 
 Skills may include:
 - references/: Additional documentation, API specs, examples
 - templates/: Output formats, config files, boilerplate code
+- assets/: Supplementary files (agentskills.io standard)
 - scripts/: Executable helpers (Python, shell scripts)"""
 
 

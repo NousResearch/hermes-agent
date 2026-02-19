@@ -4,8 +4,11 @@ description: High-level PyTorch framework with Trainer class, automatic distribu
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [PyTorch Lightning, Training Framework, Distributed Training, DDP, FSDP, DeepSpeed, High-Level API, Callbacks, Best Practices, Scalable]
 dependencies: [lightning, torch, transformers]
+metadata:
+  hermes:
+    tags: [PyTorch Lightning, Training Framework, Distributed Training, DDP, FSDP, DeepSpeed, High-Level API, Callbacks, Best Practices, Scalable]
+
 ---
 
 # PyTorch Lightning - High-Level Training Framework

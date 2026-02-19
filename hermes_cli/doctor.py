@@ -381,6 +381,37 @@ def run_doctor(args):
         check_warn("Could not check tool availability", f"({e})")
     
     # =========================================================================
+    # Check: Skills Hub
+    # =========================================================================
+    print()
+    print(color("◆ Skills Hub", Colors.CYAN, Colors.BOLD))
+
+    hub_dir = PROJECT_ROOT / "skills" / ".hub"
+    if hub_dir.exists():
+        check_ok("Skills Hub directory exists")
+        lock_file = hub_dir / "lock.json"
+        if lock_file.exists():
+            try:
+                import json
+                lock_data = json.loads(lock_file.read_text())
+                count = len(lock_data.get("installed", {}))
+                check_ok(f"Lock file OK ({count} hub-installed skill(s))")
+            except Exception:
+                check_warn("Lock file", "(corrupted or unreadable)")
+        quarantine = hub_dir / "quarantine"
+        q_count = sum(1 for d in quarantine.iterdir() if d.is_dir()) if quarantine.exists() else 0
+        if q_count > 0:
+            check_warn(f"{q_count} skill(s) in quarantine", "(pending review)")
+    else:
+        check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
+
+    github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if github_token:
+        check_ok("GitHub token configured (authenticated API access)")
+    else:
+        check_warn("No GITHUB_TOKEN", "(60 req/hr rate limit — set in ~/.hermes/.env for better rates)")
+
+    # =========================================================================
     # Summary
     # =========================================================================
     print()

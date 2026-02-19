@@ -4,8 +4,11 @@ description: Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Evaluation, LM Evaluation Harness, Benchmarking, MMLU, HumanEval, GSM8K, EleutherAI, Model Quality, Academic Benchmarks, Industry Standard]
 dependencies: [lm-eval, transformers, vllm]
+metadata:
+  hermes:
+    tags: [Evaluation, LM Evaluation Harness, Benchmarking, MMLU, HumanEval, GSM8K, EleutherAI, Model Quality, Academic Benchmarks, Industry Standard]
+
 ---
 
 # lm-evaluation-harness - LLM Benchmarking

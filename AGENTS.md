@@ -23,8 +23,11 @@ hermes-agent/
 │   ├── doctor.py         # Diagnostics
 │   ├── gateway.py        # Gateway management
 │   ├── uninstall.py      # Uninstaller
-│   └── cron.py           # Cron job management
+│   ├── cron.py           # Cron job management
+│   └── skills_hub.py     # Skills Hub CLI + /skills slash command
 ├── tools/                # Tool implementations
+│   ├── skills_guard.py         # Security scanner for external skills
+│   ├── skills_hub.py           # Source adapters, GitHub auth, lock file (library)
 │   ├── todo_tool.py            # Planning & task management (in-memory TodoStore)
 │   ├── process_registry.py     # Background process management (spawn, poll, wait, kill)
 │   ├── transcription_tools.py  # Speech-to-text (Whisper API)
@@ -579,7 +582,7 @@ python batch_runner.py \
 
 ## Skills System
 
-Skills are on-demand knowledge documents the agent can load. Located in `skills/` directory:
+Skills are on-demand knowledge documents the agent can load. Compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
 ```
 skills/
@@ -587,11 +590,16 @@ skills/
 │   ├── axolotl/             # Skill folder
 │   │   ├── SKILL.md         # Main instructions (required)
 │   │   ├── references/      # Additional docs, API specs
-│   │   └── templates/       # Output formats, configs
+│   │   ├── templates/       # Output formats, configs
+│   │   └── assets/          # Supplementary files (agentskills.io)
 │   └── vllm/
 │       └── SKILL.md
-└── example-skill/
-    └── SKILL.md
+├── .hub/                    # Skills Hub state (gitignored)
+│   ├── lock.json            # Installed skill provenance
+│   ├── quarantine/          # Pending security review
+│   ├── audit.log            # Security scan history
+│   ├── taps.json            # Custom source repos
+│   └── index-cache/         # Cached remote indexes
 ```
 
 **Progressive disclosure** (token-efficient):
@@ -599,19 +607,27 @@ skills/
 2. `skills_list(category)` - Name + description per skill (~3k tokens)
 3. `skill_view(name)` - Full content + tags + linked files
 
-SKILL.md files use YAML frontmatter:
+SKILL.md files use YAML frontmatter (agentskills.io format):
 ```yaml
 ---
 name: skill-name
 description: Brief description for listing
-tags: [tag1, tag2]
-related_skills: [other-skill]
 version: 1.0.0
+metadata:
+  hermes:
+    tags: [tag1, tag2]
+    related_skills: [other-skill]
 ---
 # Skill Content...
 ```
 
-Tool files: `tools/skills_tool.py` → `model_tools.py` → `toolsets.py`
+**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub, Claude marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
+
+Key files:
+- `tools/skills_tool.py` — Agent-facing skill list/view (progressive disclosure)
+- `tools/skills_guard.py` — Security scanner (regex + LLM audit, trust-aware install policy)
+- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
+- `hermes_cli/skills_hub.py` — CLI subcommands + `/skills` slash command handler
 
 ---
 

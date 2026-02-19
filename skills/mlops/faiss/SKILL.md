@@ -4,8 +4,11 @@ description: Facebook's library for efficient similarity search and clustering o
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [RAG, FAISS, Similarity Search, Vector Search, Facebook AI, GPU Acceleration, Billion-Scale, K-NN, HNSW, High Performance, Large Scale]
 dependencies: [faiss-cpu, faiss-gpu, numpy]
+metadata:
+  hermes:
+    tags: [RAG, FAISS, Similarity Search, Vector Search, Facebook AI, GPU Acceleration, Billion-Scale, K-NN, HNSW, High Performance, Large Scale]
+
 ---
 
 # FAISS - Efficient Similarity Search

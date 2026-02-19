@@ -4,8 +4,11 @@ description: Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Fine-Tuning, PEFT, LoRA, QLoRA, Parameter-Efficient, Adapters, Low-Rank, Memory Optimization, Multi-Adapter]
 dependencies: [peft>=0.13.0, transformers>=4.45.0, torch>=2.0.0, bitsandbytes>=0.43.0]
+metadata:
+  hermes:
+    tags: [Fine-Tuning, PEFT, LoRA, QLoRA, Parameter-Efficient, Adapters, Low-Rank, Memory Optimization, Multi-Adapter]
+
 ---
 
 # PEFT (Parameter-Efficient Fine-Tuning)

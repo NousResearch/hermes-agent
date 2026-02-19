@@ -4,9 +4,12 @@ description: Create hand-drawn style diagrams using Excalidraw JSON format. Gene
 version: 1.0.0
 author: Hermes Agent
 license: MIT
-tags: [Excalidraw, Diagrams, Flowcharts, Architecture, Visualization, JSON]
 dependencies: []
-related_skills: []
+metadata:
+  hermes:
+    tags: [Excalidraw, Diagrams, Flowcharts, Architecture, Visualization, JSON]
+    related_skills: []
+
 ---
 
 # Excalidraw Diagram Skill

@@ -4,8 +4,11 @@ description: State-of-the-art text-to-image generation with Stable Diffusion mod
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Image Generation, Stable Diffusion, Diffusers, Text-to-Image, Multimodal, Computer Vision]
 dependencies: [diffusers>=0.30.0, transformers>=4.41.0, accelerate>=0.31.0, torch>=2.0.0]
+metadata:
+  hermes:
+    tags: [Image Generation, Stable Diffusion, Diffusers, Text-to-Image, Multimodal, Computer Vision]
+
 ---
 
 # Stable Diffusion Image Generation

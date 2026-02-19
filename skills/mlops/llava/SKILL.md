@@ -4,8 +4,11 @@ description: Large Language and Vision Assistant. Enables visual instruction tun
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [LLaVA, Vision-Language, Multimodal, Visual Question Answering, Image Chat, CLIP, Vicuna, Conversational AI, Instruction Tuning, VQA]
 dependencies: [transformers, torch, pillow]
+metadata:
+  hermes:
+    tags: [LLaVA, Vision-Language, Multimodal, Visual Question Answering, Image Chat, CLIP, Vicuna, Conversational AI, Instruction Tuning, VQA]
+
 ---
 
 # LLaVA - Large Language and Vision Assistant

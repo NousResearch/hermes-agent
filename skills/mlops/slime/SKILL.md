@@ -4,8 +4,11 @@ description: Provides guidance for LLM post-training with RL using slime, a Mega
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Reinforcement Learning, Megatron-LM, SGLang, GRPO, Post-Training, GLM]
 dependencies: [sglang-router>=0.2.3, ray, torch>=2.0.0, transformers>=4.40.0]
+metadata:
+  hermes:
+    tags: [Reinforcement Learning, Megatron-LM, SGLang, GRPO, Post-Training, GLM]
+
 ---
 
 # slime: LLM Post-Training Framework for RL Scaling

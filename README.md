@@ -100,6 +100,9 @@ hermes doctor             # Diagnose issues
 hermes update             # Update to latest version (prompts for new config)
 hermes uninstall          # Uninstall (can keep configs for later reinstall)
 hermes gateway            # Start messaging gateway
+hermes skills search k8s  # Search skill registries
+hermes skills install ... # Install a skill (with security scan)
+hermes skills list        # List installed skills
 hermes cron list          # View scheduled jobs
 hermes pairing list       # View/manage DM pairing codes
 hermes version            # Show version info
@@ -125,6 +128,7 @@ Type `/` to see an autocomplete dropdown of all commands.
 | `/save` | Save the current conversation |
 | `/config` | Show current configuration |
 | `/cron` | Manage scheduled tasks |
+| `/skills` | Search, install, inspect, or manage skills from registries |
 | `/platforms` | Show gateway/messaging platform status |
 | `/quit` | Exit (also: `/exit`, `/q`) |
 
@@ -622,7 +626,7 @@ hermes --toolsets browser -q "Go to amazon.com and find the price of the latest 
 
 ### 📚 Skills System
 
-Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage.
+Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
 **Using Skills:**
 ```bash
@@ -630,15 +634,32 @@ hermes --toolsets skills -q "What skills do you have?"
 hermes --toolsets skills -q "Show me the axolotl skill"
 ```
 
+**Skills Hub — Search, install, and manage skills from online registries:**
+```bash
+hermes skills search kubernetes          # Search all sources (GitHub, ClawHub, LobeHub)
+hermes skills install openai/skills/k8s  # Install with security scan
+hermes skills inspect openai/skills/k8s  # Preview before installing
+hermes skills list --source hub          # List hub-installed skills
+hermes skills audit                      # Re-scan all hub skills
+hermes skills uninstall k8s              # Remove a hub skill
+hermes skills publish skills/my-skill --to github --repo owner/repo
+hermes skills snapshot export setup.json # Export skill config
+hermes skills tap add myorg/skills-repo  # Add a custom source
+```
+
+All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
+
 **Creating Skills:**
 
 Create `skills/category/skill-name/SKILL.md`:
 ```markdown
 ---
 name: my-skill
-description: Brief description shown in skills_list
-tags: [python, automation]
+description: Brief description
 version: 1.0.0
+metadata:
+  hermes:
+    tags: [python, automation]
 ---
 
 # Skill Content
@@ -653,9 +674,14 @@ skills/
 │   ├── axolotl/
 │   │   ├── SKILL.md          # Main instructions (required)
 │   │   ├── references/       # Additional docs
-│   │   └── templates/        # Output formats
+│   │   ├── templates/        # Output formats
+│   │   └── assets/           # Supplementary files (agentskills.io standard)
 │   └── vllm/
 │       └── SKILL.md
+├── .hub/                     # Skills Hub state (gitignored)
+│   ├── lock.json             # Installed skill provenance
+│   ├── quarantine/           # Pending security review
+│   └── audit.log             # Security scan history
 ```
 
 ---

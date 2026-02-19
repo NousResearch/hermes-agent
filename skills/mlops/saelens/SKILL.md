@@ -4,8 +4,11 @@ description: Provides guidance for training and analyzing Sparse Autoencoders (S
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Sparse Autoencoders, SAE, Mechanistic Interpretability, Feature Discovery, Superposition]
 dependencies: [sae-lens>=6.0.0, transformer-lens>=2.0.0, torch>=2.0.0]
+metadata:
+  hermes:
+    tags: [Sparse Autoencoders, SAE, Mechanistic Interpretability, Feature Discovery, Superposition]
+
 ---
 
 # SAELens: Sparse Autoencoders for Mechanistic Interpretability

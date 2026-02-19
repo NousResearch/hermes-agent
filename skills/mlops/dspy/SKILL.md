@@ -4,8 +4,11 @@ description: Build complex AI systems with declarative programming, optimize pro
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Prompt Engineering, DSPy, Declarative Programming, RAG, Agents, Prompt Optimization, LM Programming, Stanford NLP, Automatic Optimization, Modular AI]
 dependencies: [dspy, openai, anthropic]
+metadata:
+  hermes:
+    tags: [Prompt Engineering, DSPy, Declarative Programming, RAG, Agents, Prompt Optimization, LM Programming, Stanford NLP, Automatic Optimization, Modular AI]
+
 ---
 
 # DSPy: Declarative Language Model Programming

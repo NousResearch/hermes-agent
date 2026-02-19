@@ -4,8 +4,11 @@ description: Extract structured data from LLM responses with Pydantic validation
 version: 1.0.0
 author: Orchestra Research
 license: MIT
-tags: [Prompt Engineering, Instructor, Structured Output, Pydantic, Data Extraction, JSON Parsing, Type Safety, Validation, Streaming, OpenAI, Anthropic]
 dependencies: [instructor, pydantic, openai, anthropic]
+metadata:
+  hermes:
+    tags: [Prompt Engineering, Instructor, Structured Output, Pydantic, Data Extraction, JSON Parsing, Type Safety, Validation, Streaming, OpenAI, Anthropic]
+
 ---
 
 # Instructor: Structured LLM Outputs

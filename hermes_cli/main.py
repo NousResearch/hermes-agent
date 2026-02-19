@@ -475,6 +475,65 @@ For more help on a command:
     pairing_parser.set_defaults(func=cmd_pairing)
 
     # =========================================================================
+    # skills command
+    # =========================================================================
+    skills_parser = subparsers.add_parser(
+        "skills",
+        help="Skills Hub — search, install, and manage skills from online registries",
+        description="Search, install, inspect, audit, and manage skills from GitHub, ClawHub, and other registries."
+    )
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
+
+    skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
+    skills_search.add_argument("query", help="Search query")
+    skills_search.add_argument("--source", default="all", choices=["all", "github", "clawhub", "lobehub"])
+    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
+
+    skills_install = skills_subparsers.add_parser("install", help="Install a skill")
+    skills_install.add_argument("identifier", help="Skill identifier (e.g. openai/skills/skill-creator)")
+    skills_install.add_argument("--category", default="", help="Category folder to install into")
+    skills_install.add_argument("--force", action="store_true", help="Install despite caution verdict")
+
+    skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
+    skills_inspect.add_argument("identifier", help="Skill identifier")
+
+    skills_list = skills_subparsers.add_parser("list", help="List installed skills")
+    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin"])
+
+    skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
+    skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
+
+    skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
+    skills_uninstall.add_argument("name", help="Skill name to remove")
+
+    skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
+    skills_publish.add_argument("skill_path", help="Path to skill directory")
+    skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="Target registry")
+    skills_publish.add_argument("--repo", default="", help="Target GitHub repo (e.g. openai/skills)")
+
+    skills_snapshot = skills_subparsers.add_parser("snapshot", help="Export/import skill configurations")
+    snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
+    snap_export = snapshot_subparsers.add_parser("export", help="Export installed skills to a file")
+    snap_export.add_argument("output", help="Output JSON file path")
+    snap_import = snapshot_subparsers.add_parser("import", help="Import and install skills from a file")
+    snap_import.add_argument("input", help="Input JSON file path")
+    snap_import.add_argument("--force", action="store_true", help="Force install despite caution verdict")
+
+    skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")
+    tap_subparsers = skills_tap.add_subparsers(dest="tap_action")
+    tap_subparsers.add_parser("list", help="List configured taps")
+    tap_add = tap_subparsers.add_parser("add", help="Add a GitHub repo as skill source")
+    tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
+    tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
+    tap_rm.add_argument("name", help="Tap name to remove")
+
+    def cmd_skills(args):
+        from hermes_cli.skills_hub import skills_command
+        skills_command(args)
+
+    skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(

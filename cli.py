@@ -32,7 +32,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, Float, FloatContainer
+from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
@@ -1672,22 +1672,18 @@ class HermesCLI:
             height=get_hint_height,
         )
         
-        # Layout with dynamic spacer, input at bottom, and floating completion menu
+        # Layout: spacer + input at bottom, completions rendered inline below input.
+        # Using inline CompletionsMenu (not a Float) so it reliably appears even
+        # after agent output has filled the terminal via patch_stdout.  Float-based
+        # menus lose their rendering space in non-full-screen mode once scrollback
+        # pushes the app area to the very bottom of the terminal.
         layout = Layout(
-            FloatContainer(
-                content=HSplit([
-                    Window(height=0),  # Expands to push everything to bottom
-                    spacer,
-                    input_area,
-                ]),
-                floats=[
-                    Float(
-                        xcursor=True,
-                        ycursor=True,
-                        content=CompletionsMenu(max_height=12, scroll_offset=1),
-                    )
-                ],
-            )
+            HSplit([
+                Window(height=0),
+                spacer,
+                input_area,
+                CompletionsMenu(max_height=12, scroll_offset=1),
+            ])
         )
         
         # Style for the application

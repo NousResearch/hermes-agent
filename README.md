@@ -31,6 +31,46 @@ hermes          # Start chatting!
 
 ---
 
+## Updating
+
+**Quick update (installer version):**
+```bash
+hermes update    # Update to latest version (prompts for new config)
+```
+
+**Manual update (if you cloned the repo yourself):**
+```bash
+cd /path/to/hermes-agent
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Pull latest code and submodules
+git pull origin main
+git submodule update --init --recursive
+
+# Reinstall (picks up new dependencies)
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
+
+# Check for new config options added since your last update
+hermes config check
+hermes config migrate   # Interactively add any missing options
+```
+
+**Uninstalling:**
+```bash
+hermes uninstall          # Uninstall (can keep configs for later reinstall)
+```
+
+Or manually:
+```bash
+rm -f ~/.local/bin/hermes
+rm -rf /path/to/hermes-agent
+rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
+```
+
+---
+
 ## Configuration
 
 All your settings are stored in `~/.hermes/` for easy access:
@@ -83,6 +123,132 @@ You need at least one LLM provider:
 | Voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
 | Slack integration | [Slack](https://api.slack.com/apps) | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
 | Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
+
+---
+
+## Messaging Gateway
+
+Chat with Hermes from Telegram, Discord, or WhatsApp.
+
+### Starting the Gateway
+
+```bash
+hermes gateway              # Run in foreground
+hermes gateway install      # Install as systemd service (Linux)
+hermes gateway start        # Start the systemd service
+hermes gateway stop         # Stop the systemd service
+hermes gateway status       # Check service status
+```
+
+### Gateway Commands (inside chat)
+
+| Command | Description |
+|---------|-------------|
+| `/new` or `/reset` | Start fresh conversation |
+| `/status` | Show session info |
+| `/hermes` (Discord) | Slash command — ask, reset, status, stop |
+
+### Telegram Setup
+
+1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
+2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) - it replies with your numeric ID
+3. **Configure:**
+
+```bash
+# Add to ~/.hermes/.env:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
+```
+
+4. **Start the gateway:** `hermes gateway`
+
+### Discord Setup
+
+1. **Create a bot:** Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
+3. **Configure:**
+
+```bash
+# Add to ~/.hermes/.env:
+DISCORD_BOT_TOKEN=MTIz...
+DISCORD_ALLOWED_USERS=YOUR_USER_ID
+```
+
+### Slack Setup
+
+1. **Create an app:** Go to [Slack API](https://api.slack.com/apps), create a new app
+2. **Enable Socket Mode:** In app settings → Socket Mode → Enable
+3. **Get tokens:**
+   - Bot Token (`xoxb-...`): OAuth & Permissions → Install to Workspace
+   - App Token (`xapp-...`): Basic Information → App-Level Tokens → Generate
+4. **Configure:**
+
+```bash
+# Add to ~/.hermes/.env:
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
+```
+
+5. **Start the gateway:** `hermes gateway`
+
+### DM Pairing (Alternative to Allowlists)
+
+Instead of manually configuring user IDs in allowlists, you can use the pairing system. When an unknown user DMs your bot, they receive a one-time pairing code:
+
+```bash
+# The user sees: "Pairing code: XKGH5N7P"
+# You approve them with:
+hermes pairing approve telegram XKGH5N7P
+
+# Other pairing commands:
+hermes pairing list          # View pending + approved users
+hermes pairing revoke telegram 123456789  # Remove access
+```
+
+Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
+
+### Security (Important!)
+
+**Without an allowlist, anyone who finds your bot can use it!**
+
+```bash
+# Restrict to specific users (recommended):
+TELEGRAM_ALLOWED_USERS=123456789,987654321
+DISCORD_ALLOWED_USERS=123456789012345678
+
+# Or allow all users in a specific platform:
+# (Leave the variable unset - NOT recommended for bots with terminal access)
+```
+
+### Working Directory
+
+- **CLI (`hermes`)**: Uses current directory where you run the command
+- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+
+```bash
+# Set custom messaging working directory in ~/.hermes/.env
+MESSAGING_CWD=/home/myuser/projects
+```
+
+### Tool Progress Notifications
+
+Get real-time updates as the agent works:
+
+```bash
+# Enable in ~/.hermes/.env
+HERMES_TOOL_PROGRESS=true
+HERMES_TOOL_PROGRESS_MODE=new    # or "all" for every tool call
+```
+
+When enabled, you'll see messages like:
+```
+💻 `ls -la`...
+🔍 web_search...
+📄 web_extract...
+```
+
+See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 ---
 
@@ -156,117 +322,6 @@ hermes --list-tools
 
 **Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, and more.
 
-### 🧠 Persistent Memory
-
-Bounded curated memory that persists across sessions:
-
-- **MEMORY.md** — agent's personal notes (environment facts, conventions, things learned). ~800 token budget.
-- **USER.md** — user profile (preferences, communication style, expectations). ~500 token budget.
-
-Both are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool (add/replace/remove/read). Character limits keep memory focused — when full, the agent consolidates or replaces entries.
-
-Configure in `~/.hermes/config.yaml`:
-```yaml
-memory:
-  memory_enabled: true
-  user_profile_enabled: true
-  memory_char_limit: 2200   # ~800 tokens
-  user_char_limit: 1375     # ~500 tokens
-```
-
-### 🗄️ Session Store
-
-All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state.db`) with full-text search:
-
-- **Full message history** stored per-session with model config and system prompt snapshots
-- **FTS5 search** via the `session_search` tool -- search past conversations with Gemini Flash summarization
-- **Compression-triggered session splitting** -- when context is compressed, a new session is created linked to the parent, giving clean trajectories
-- **Source tagging** -- each session is tagged with its origin (cli, telegram, discord, etc.)
-- Batch runner and RL trajectories are NOT stored here (separate systems)
-
-### 🔊 Text-to-Speech
-
-Convert text to speech with three providers:
-
-| Provider | Quality | Cost | API Key |
-|----------|---------|------|---------|
-| **Edge TTS** (default) | Good | Free | None needed |
-| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | Good | Paid | `OPENAI_API_KEY` |
-
-On Telegram, audio plays as native voice bubbles (the round, inline-playable kind). On Discord/WhatsApp, sent as audio file attachments. In CLI mode, saved to `~/voice-memos/`.
-
-**Configure in `~/.hermes/config.yaml`:**
-```yaml
-tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai"
-  edge:
-    voice: "en-US-AriaNeural"   # 322 voices, 74 languages
-  elevenlabs:
-    voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
-    model_id: "eleven_multilingual_v2"
-  openai:
-    model: "gpt-4o-mini-tts"
-    voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
-```
-
-**Telegram voice bubbles & ffmpeg:**
-
-Telegram voice bubbles require Opus/OGG audio format. OpenAI and ElevenLabs produce Opus natively — no extra dependencies needed. Edge TTS (the default free provider) outputs MP3 and needs **ffmpeg** to convert to Opus:
-
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-
-# Fedora
-sudo dnf install ffmpeg
-```
-
-Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but shows as a rectangular player instead of a voice bubble). If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
-
-### 🎙️ Voice Message Transcription
-
-Voice messages sent on Telegram, Discord, WhatsApp, or Slack are automatically transcribed using OpenAI's Whisper API and injected as text into the conversation. The agent sees the transcript as normal text -- no special handling needed.
-
-| Provider | Model | Quality | Cost |
-|----------|-------|---------|------|
-| **OpenAI Whisper** | `whisper-1` (default) | Good | Low |
-| **OpenAI GPT-4o** | `gpt-4o-mini-transcribe` | Better | Medium |
-| **OpenAI GPT-4o** | `gpt-4o-transcribe` | Best | Higher |
-
-Requires `OPENAI_API_KEY` in `~/.hermes/.env`. Configure the model in `~/.hermes/config.yaml`:
-```yaml
-stt:
-  enabled: true
-  model: "whisper-1"
-```
-
-### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
-
-Drop these files in your project directory and the agent automatically picks them up:
-
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Project-specific instructions, coding conventions, tool usage guidelines |
-| `SOUL.md` | Persona definition -- the agent embodies this personality and tone |
-| `.cursorrules` | Cursor IDE rules (also detected) |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) |
-
-- **AGENTS.md** is hierarchical: if subdirectories also have `AGENTS.md`, all are combined (like Codex/Cline).
-- **SOUL.md** checks cwd first, then `~/.hermes/SOUL.md` as a global fallback.
-- All context files are capped at 20,000 characters with smart truncation.
-
-### 🛡️ Exec Approval (Messaging Platforms)
-
-When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
-
-> ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
-
-Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
-
 ### 🖥️ Terminal & Process Management
 
 The terminal tool can execute commands in different environments, with full background process management via the `process` tool:
@@ -329,136 +384,249 @@ hermes config set terminal.backend modal
 
 **Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.
 
-### 📱 Messaging Gateway
+### 🧠 Persistent Memory
 
-Chat with Hermes from Telegram, Discord, or WhatsApp.
+Bounded curated memory that persists across sessions:
 
-#### Telegram Setup
+- **MEMORY.md** — agent's personal notes (environment facts, conventions, things learned). ~800 token budget.
+- **USER.md** — user profile (preferences, communication style, expectations). ~500 token budget.
 
-1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
-2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) - it replies with your numeric ID
-3. **Configure:**
+Both are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool (add/replace/remove/read). Character limits keep memory focused — when full, the agent consolidates or replaces entries.
+
+Configure in `~/.hermes/config.yaml`:
+```yaml
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200   # ~800 tokens
+  user_char_limit: 1375     # ~500 tokens
+```
+
+### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
+
+Drop these files in your project directory and the agent automatically picks them up:
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Project-specific instructions, coding conventions, tool usage guidelines |
+| `SOUL.md` | Persona definition -- the agent embodies this personality and tone |
+| `.cursorrules` | Cursor IDE rules (also detected) |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) |
+
+- **AGENTS.md** is hierarchical: if subdirectories also have `AGENTS.md`, all are combined (like Codex/Cline).
+- **SOUL.md** checks cwd first, then `~/.hermes/SOUL.md` as a global fallback.
+- All context files are capped at 20,000 characters with smart truncation.
+
+### 🗜️ Context Compression
+
+Long conversations are automatically summarized when approaching context limits:
+
+```yaml
+# In ~/.hermes/config.yaml
+compression:
+  enabled: true
+  threshold: 0.85    # Compress at 85% of limit
+```
+
+### 🗄️ Session Store
+
+All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state.db`) with full-text search:
+
+- **Full message history** stored per-session with model config and system prompt snapshots
+- **FTS5 search** via the `session_search` tool -- search past conversations with Gemini Flash summarization
+- **Compression-triggered session splitting** -- when context is compressed, a new session is created linked to the parent, giving clean trajectories
+- **Source tagging** -- each session is tagged with its origin (cli, telegram, discord, etc.)
+- Batch runner and RL trajectories are NOT stored here (separate systems)
+
+### 📝 Session Logging
+
+Every conversation is logged to `~/.hermes-agent/logs/` for debugging:
+
+```
+logs/
+├── session_20260201_143052_a1b2c3.json
+└── ...
+```
+
+### ⏰ Scheduled Tasks (Cron)
+
+Schedule tasks to run automatically:
 
 ```bash
-# Add to ~/.hermes/.env:
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
+# In the CLI
+/cron add 30m "Remind me to check the build"
+/cron add "every 2h" "Check server status"
+/cron add "0 9 * * *" "Morning briefing"
+/cron list
+/cron remove <job_id>
 ```
 
-4. **Start the gateway:**
+The agent can also self-schedule using `schedule_cronjob` tool.
+
+**Run the scheduler:**
+```bash
+hermes cron daemon         # Built-in daemon
+# Or add to system cron for reliability
+```
+
+### 🛡️ Exec Approval (Messaging Platforms)
+
+When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
+
+> ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
+
+Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
+
+### 🔊 Text-to-Speech
+
+Convert text to speech with three providers:
+
+| Provider | Quality | Cost | API Key |
+|----------|---------|------|---------|
+| **Edge TTS** (default) | Good | Free | None needed |
+| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
+| **OpenAI TTS** | Good | Paid | `OPENAI_API_KEY` |
+
+On Telegram, audio plays as native voice bubbles (the round, inline-playable kind). On Discord/WhatsApp, sent as audio file attachments. In CLI mode, saved to `~/voice-memos/`.
+
+**Configure in `~/.hermes/config.yaml`:**
+```yaml
+tts:
+  provider: "edge"              # "edge" | "elevenlabs" | "openai"
+  edge:
+    voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+  elevenlabs:
+    voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
+    model_id: "eleven_multilingual_v2"
+  openai:
+    model: "gpt-4o-mini-tts"
+    voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+```
+
+**Telegram voice bubbles & ffmpeg:**
+
+Telegram voice bubbles require Opus/OGG audio format. OpenAI and ElevenLabs produce Opus natively — no extra dependencies needed. Edge TTS (the default free provider) outputs MP3 and needs **ffmpeg** to convert to Opus:
 
 ```bash
-hermes gateway              # Run in foreground
-hermes gateway install      # Install as systemd service (Linux)
-hermes gateway start        # Start the service
+# Ubuntu/Debian
+sudo apt install ffmpeg
+
+# macOS
+brew install ffmpeg
+
+# Fedora
+sudo dnf install ffmpeg
 ```
 
-#### Discord Setup
+Without ffmpeg, Edge TTS audio is sent as a regular audio file (playable, but shows as a rectangular player instead of a voice bubble). If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
 
-1. **Create a bot:** Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
-3. **Configure:**
+### 🎙️ Voice Message Transcription
 
+Voice messages sent on Telegram, Discord, WhatsApp, or Slack are automatically transcribed using OpenAI's Whisper API and injected as text into the conversation. The agent sees the transcript as normal text -- no special handling needed.
+
+| Provider | Model | Quality | Cost |
+|----------|-------|---------|------|
+| **OpenAI Whisper** | `whisper-1` (default) | Good | Low |
+| **OpenAI GPT-4o** | `gpt-4o-mini-transcribe` | Better | Medium |
+| **OpenAI GPT-4o** | `gpt-4o-transcribe` | Best | Higher |
+
+Requires `OPENAI_API_KEY` in `~/.hermes/.env`. Configure the model in `~/.hermes/config.yaml`:
+```yaml
+stt:
+  enabled: true
+  model: "whisper-1"
+```
+
+### 🌐 Browser Automation
+
+Browser tools let the agent navigate websites, fill forms, click buttons, and extract content using [Browserbase](https://browserbase.com/).
+
+**Setup:**
 ```bash
-# Add to ~/.hermes/.env:
-DISCORD_BOT_TOKEN=MTIz...
-DISCORD_ALLOWED_USERS=YOUR_USER_ID
+# 1. Get credentials from browserbase.com
+hermes config set BROWSERBASE_API_KEY your_api_key
+hermes config set BROWSERBASE_PROJECT_ID your_project_id
+
+# 2. Install Node.js dependencies (if not already)
+cd ~/.hermes-agent && npm install
 ```
 
-#### Slack Setup
+**Available tools:** `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_back`, `browser_press`, `browser_close`, `browser_get_images`
 
-1. **Create an app:** Go to [Slack API](https://api.slack.com/apps), create a new app
-2. **Enable Socket Mode:** In app settings → Socket Mode → Enable
-3. **Get tokens:**
-   - Bot Token (`xoxb-...`): OAuth & Permissions → Install to Workspace
-   - App Token (`xapp-...`): Basic Information → App-Level Tokens → Generate
-4. **Configure:**
-
+**Example:**
 ```bash
-# Add to ~/.hermes/.env:
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
+hermes --toolsets browser -q "Go to amazon.com and find the price of the latest Kindle"
 ```
 
-5. **Start the gateway:** `hermes gateway`
+### 📚 Skills System
 
-#### DM Pairing (Alternative to Allowlists)
+Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
-Instead of manually configuring user IDs in allowlists, you can use the pairing system. When an unknown user DMs your bot, they receive a one-time pairing code:
-
+**Using Skills:**
 ```bash
-# The user sees: "Pairing code: XKGH5N7P"
-# You approve them with:
-hermes pairing approve telegram XKGH5N7P
-
-# Other pairing commands:
-hermes pairing list          # View pending + approved users
-hermes pairing revoke telegram 123456789  # Remove access
+hermes --toolsets skills -q "What skills do you have?"
+hermes --toolsets skills -q "Show me the axolotl skill"
 ```
 
-Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
-
-#### Security (Important!)
-
-**Without an allowlist, anyone who finds your bot can use it!**
-
+**Skills Hub — Search, install, and manage skills from online registries:**
 ```bash
-# Restrict to specific users (recommended):
-TELEGRAM_ALLOWED_USERS=123456789,987654321
-DISCORD_ALLOWED_USERS=123456789012345678
-
-# Or allow all users in a specific platform:
-# (Leave the variable unset - NOT recommended for bots with terminal access)
+hermes skills search kubernetes          # Search all sources (GitHub, ClawHub, LobeHub)
+hermes skills install openai/skills/k8s  # Install with security scan
+hermes skills inspect openai/skills/k8s  # Preview before installing
+hermes skills list --source hub          # List hub-installed skills
+hermes skills audit                      # Re-scan all hub skills
+hermes skills uninstall k8s              # Remove a hub skill
+hermes skills publish skills/my-skill --to github --repo owner/repo
+hermes skills snapshot export setup.json # Export skill config
+hermes skills tap add myorg/skills-repo  # Add a custom source
 ```
 
-#### Gateway Commands
+All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
 
-| Command | Description |
-|---------|-------------|
-| `/new` or `/reset` | Start fresh conversation |
-| `/status` | Show session info |
-| `/hermes` (Discord) | Slash command — ask, reset, status, stop |
+**Creating Skills:**
 
-#### Working Directory
+Create `skills/category/skill-name/SKILL.md`:
+```markdown
+---
+name: my-skill
+description: Brief description
+version: 1.0.0
+metadata:
+  hermes:
+    tags: [python, automation]
+---
 
-- **CLI (`hermes`)**: Uses current directory where you run the command
-- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+# Skill Content
 
-```bash
-# Set custom messaging working directory in ~/.hermes/.env
-MESSAGING_CWD=/home/myuser/projects
+Instructions, examples, and guidelines here...
 ```
 
-#### Tool Progress Notifications
-
-Get real-time updates as the agent works:
-
-```bash
-# Enable in ~/.hermes/.env
-HERMES_TOOL_PROGRESS=true
-HERMES_TOOL_PROGRESS_MODE=new    # or "all" for every tool call
+**Skill Structure:**
 ```
-
-When enabled, you'll see messages like:
+skills/
+├── mlops/
+│   ├── axolotl/
+│   │   ├── SKILL.md          # Main instructions (required)
+│   │   ├── references/       # Additional docs
+│   │   ├── templates/        # Output formats
+│   │   └── assets/           # Supplementary files (agentskills.io standard)
+│   └── vllm/
+│       └── SKILL.md
+├── .hub/                     # Skills Hub state (gitignored)
+│   ├── lock.json             # Installed skill provenance
+│   ├── quarantine/           # Pending security review
+│   └── audit.log             # Security scan history
 ```
-💻 `ls -la`...
-🔍 web_search...
-📄 web_extract...
-```
-
-See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 ### 🤖 RL Training (Tinker + Atropos)
 
-Train language models with reinforcement learning using the Tinker API and Atropos framework.
+> **⚠️ In Development** — RL training integration is not yet functional. The tools and environments below are under active development.
 
-> **Note:** RL training tools require **Python 3.11+** (the upstream `tinker` package has this requirement). On Python 3.10, the RL toolset will be automatically disabled — all other features work fine.
+Train language models with reinforcement learning using the Tinker API and Atropos framework.
 
 #### Requirements
 
-1. **Python 3.11+** (check with `python3 --version`)
-2. **API Keys:** Add to `~/.hermes/.env`:
+1. **API Keys:** Add to `~/.hermes/.env`:
 ```bash
 TINKER_API_KEY=your-tinker-key      # Get from https://tinker-console.thinkingmachines.ai/keys
 WANDB_API_KEY=your-wandb-key        # Get from https://wandb.ai/authorize
@@ -587,129 +755,6 @@ For VLLM server type, a parser registry extracts structured `tool_calls` from ra
 
 ```bash
 --env.tool_call_parser hermes  # Match your VLLM --tool-parser flag
-```
-
-### ⏰ Scheduled Tasks (Cron)
-
-Schedule tasks to run automatically:
-
-```bash
-# In the CLI
-/cron add 30m "Remind me to check the build"
-/cron add "every 2h" "Check server status"
-/cron add "0 9 * * *" "Morning briefing"
-/cron list
-/cron remove <job_id>
-```
-
-The agent can also self-schedule using `schedule_cronjob` tool.
-
-**Run the scheduler:**
-```bash
-hermes cron daemon         # Built-in daemon
-# Or add to system cron for reliability
-```
-
-### 🗜️ Context Compression
-
-Long conversations are automatically summarized when approaching context limits:
-
-```yaml
-# In ~/.hermes/config.yaml
-compression:
-  enabled: true
-  threshold: 0.85    # Compress at 85% of limit
-```
-
-### 📝 Session Logging
-
-Every conversation is logged to `~/.hermes-agent/logs/` for debugging:
-
-```
-logs/
-├── session_20260201_143052_a1b2c3.json
-└── ...
-```
-
-### 🌐 Browser Automation
-
-Browser tools let the agent navigate websites, fill forms, click buttons, and extract content using [Browserbase](https://browserbase.com/).
-
-**Setup:**
-```bash
-# 1. Get credentials from browserbase.com
-hermes config set BROWSERBASE_API_KEY your_api_key
-hermes config set BROWSERBASE_PROJECT_ID your_project_id
-
-# 2. Install Node.js dependencies (if not already)
-cd ~/.hermes-agent && npm install
-```
-
-**Available tools:** `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_back`, `browser_press`, `browser_close`, `browser_get_images`
-
-**Example:**
-```bash
-hermes --toolsets browser -q "Go to amazon.com and find the price of the latest Kindle"
-```
-
-### 📚 Skills System
-
-Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
-
-**Using Skills:**
-```bash
-hermes --toolsets skills -q "What skills do you have?"
-hermes --toolsets skills -q "Show me the axolotl skill"
-```
-
-**Skills Hub — Search, install, and manage skills from online registries:**
-```bash
-hermes skills search kubernetes          # Search all sources (GitHub, ClawHub, LobeHub)
-hermes skills install openai/skills/k8s  # Install with security scan
-hermes skills inspect openai/skills/k8s  # Preview before installing
-hermes skills list --source hub          # List hub-installed skills
-hermes skills audit                      # Re-scan all hub skills
-hermes skills uninstall k8s              # Remove a hub skill
-hermes skills publish skills/my-skill --to github --repo owner/repo
-hermes skills snapshot export setup.json # Export skill config
-hermes skills tap add myorg/skills-repo  # Add a custom source
-```
-
-All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
-
-**Creating Skills:**
-
-Create `skills/category/skill-name/SKILL.md`:
-```markdown
----
-name: my-skill
-description: Brief description
-version: 1.0.0
-metadata:
-  hermes:
-    tags: [python, automation]
----
-
-# Skill Content
-
-Instructions, examples, and guidelines here...
-```
-
-**Skill Structure:**
-```
-skills/
-├── mlops/
-│   ├── axolotl/
-│   │   ├── SKILL.md          # Main instructions (required)
-│   │   ├── references/       # Additional docs
-│   │   ├── templates/        # Output formats
-│   │   └── assets/           # Supplementary files (agentskills.io standard)
-│   └── vllm/
-│       └── SKILL.md
-├── .hub/                     # Skills Hub state (gitignored)
-│   ├── lock.json             # Installed skill provenance
-│   ├── quarantine/           # Pending security review
-│   └── audit.log             # Security scan history
 ```
 
 ---
@@ -1005,43 +1050,6 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 # Verify
 hermes doctor
 hermes
-```
-
----
-
-### Updating a Manual Installation
-
-To update an existing manual install to the latest version:
-
-```bash
-cd /path/to/hermes-agent
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Pull latest code and submodules
-git pull origin main
-git submodule update --init --recursive
-
-# Reinstall (picks up new dependencies)
-uv pip install -e ".[all]"
-uv pip install -e "./mini-swe-agent"
-uv pip install -e "./tinker-atropos"
-
-# Check for new config options added since your last update
-hermes config check
-hermes config migrate   # Interactively add any missing options
-```
-
-### Uninstalling a Manual Installation
-
-```bash
-# Remove the hermes symlink
-rm -f ~/.local/bin/hermes
-
-# Remove the cloned repository
-rm -rf /path/to/hermes-agent
-
-# Remove user configuration (optional — keep if you plan to reinstall)
-rm -rf ~/.hermes
 ```
 
 ---

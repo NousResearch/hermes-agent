@@ -30,6 +30,52 @@ _console = Console()
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
+def _resolve_short_name(name: str, sources, console: Console) -> str:
+    """
+    Resolve a short skill name (e.g. 'pptx') to a full identifier by searching
+    all sources. If exactly one match is found, returns its identifier. If multiple
+    matches exist, shows them and asks the user to use the full identifier.
+    Returns empty string if nothing found or ambiguous.
+    """
+    from tools.skills_hub import unified_search
+
+    c = console or _console
+    c.print(f"[dim]Resolving '{name}'...[/]")
+
+    results = unified_search(name, sources, source_filter="all", limit=20)
+
+    # Filter to exact name matches (case-insensitive)
+    exact = [r for r in results if r.name.lower() == name.lower()]
+
+    if len(exact) == 1:
+        c.print(f"[dim]Resolved to: {exact[0].identifier}[/]")
+        return exact[0].identifier
+
+    if len(exact) > 1:
+        c.print(f"\n[yellow]Multiple skills named '{name}' found:[/]")
+        table = Table()
+        table.add_column("Source", style="dim")
+        table.add_column("Trust", style="dim")
+        table.add_column("Identifier", style="bold cyan")
+        for r in exact:
+            trust_style = {"trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+            table.add_row(r.source, f"[{trust_style}]{r.trust_level}[/]", r.identifier)
+        c.print(table)
+        c.print("[bold]Use the full identifier to install a specific one.[/]\n")
+        return ""
+
+    # No exact match — check if there are partial matches to suggest
+    if results:
+        c.print(f"[yellow]No exact match for '{name}'. Did you mean one of these?[/]")
+        for r in results[:5]:
+            c.print(f"  [cyan]{r.name}[/] — {r.identifier}")
+        c.print()
+        return ""
+
+    c.print(f"[bold red]Error:[/] No skill named '{name}' found in any source.\n")
+    return ""
+
+
 def do_search(query: str, source: str = "all", limit: int = 10,
               console: Optional[Console] = None) -> None:
     """Search registries and display results as a Rich table."""
@@ -84,6 +130,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
+    # If identifier looks like a short name (no slashes), resolve it via search
+    if "/" not in identifier:
+        identifier = _resolve_short_name(identifier, sources, c)
+        if not identifier:
+            return
+
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
     bundle = None
@@ -126,9 +178,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          f"{len(result.findings)}_findings")
         return
 
-    # Confirm with user
+    # Confirm with user — always show risk warning regardless of source
     if not force:
-        c.print(f"\n[bold]Install '{bundle.name}' to skills/{category + '/' if category else ''}{bundle.name}?[/]")
+        c.print()
+        c.print(Panel(
+            "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
+            "External skills can contain instructions that influence agent behavior,\n"
+            "shell commands, and scripts. Even after automated scanning, you should\n"
+            "review the installed files before use.\n\n"
+            f"Files will be at: [cyan]skills/{category + '/' if category else ''}{bundle.name}/[/]",
+            title="Disclaimer",
+            border_style="yellow",
+        ))
+        c.print(f"[bold]Install '{bundle.name}'?[/]")
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -152,6 +214,11 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     c = console or _console
     auth = GitHubAuth()
     sources = create_source_router(auth)
+
+    if "/" not in identifier:
+        identifier = _resolve_short_name(identifier, sources, c)
+        if not identifier:
+            return
 
     meta = None
     for src in sources:

@@ -701,6 +701,64 @@ run_setup_wizard() {
     fi
 }
 
+maybe_start_gateway() {
+    # Check if any messaging platform tokens were configured
+    ENV_FILE="$HERMES_HOME/.env"
+    if [ ! -f "$ENV_FILE" ]; then
+        return 0
+    fi
+
+    HAS_MESSAGING=false
+    for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED; do
+        VAL=$(grep "^${VAR}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
+        if [ -n "$VAL" ] && [ "$VAL" != "your-token-here" ]; then
+            HAS_MESSAGING=true
+            break
+        fi
+    done
+
+    if [ "$HAS_MESSAGING" = false ]; then
+        return 0
+    fi
+
+    echo ""
+    log_info "Messaging platform token detected!"
+    log_info "The gateway needs to be running for Hermes to send/receive messages."
+    echo ""
+    read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        HERMES_CMD="$HOME/.local/bin/hermes"
+        if [ ! -x "$HERMES_CMD" ]; then
+            HERMES_CMD="hermes"
+        fi
+
+        if command -v systemctl &> /dev/null; then
+            log_info "Installing systemd service..."
+            if $HERMES_CMD gateway install 2>/dev/null; then
+                log_success "Gateway service installed"
+                if $HERMES_CMD gateway start 2>/dev/null; then
+                    log_success "Gateway started! Your bot is now online."
+                else
+                    log_warn "Service installed but failed to start. Try: hermes gateway start"
+                fi
+            else
+                log_warn "Systemd install failed. You can start manually: hermes gateway"
+            fi
+        else
+            log_info "systemd not available — starting gateway in background..."
+            nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
+            GATEWAY_PID=$!
+            log_success "Gateway started (PID $GATEWAY_PID). Logs: ~/.hermes/logs/gateway.log"
+            log_info "To stop: kill $GATEWAY_PID"
+            log_info "To restart later: hermes gateway"
+        fi
+    else
+        log_info "Skipped. Start the gateway later with: hermes gateway"
+    fi
+}
+
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -779,6 +837,7 @@ main() {
     setup_path
     copy_config_templates
     run_setup_wizard
+    maybe_start_gateway
     
     print_success
 }

@@ -85,6 +85,18 @@ All your settings are stored in `~/.hermes/` for easy access:
 └── logs/           # Logs
 ```
 
+### Messaging Platforms (Telegram, Discord, Slack)
+
+If you configured a messaging bot token during setup, **start the gateway** so Hermes can receive and send messages:
+
+```bash
+hermes gateway              # Run in foreground (see output)
+hermes gateway install      # Or install as a background service (Linux)
+hermes gateway start        # Start the background service
+```
+
+The installer will offer to do this automatically if it detects a bot token. See [Messaging Gateway](#messaging-gateway) below for full setup instructions.
+
 ### Managing Configuration
 
 ```bash

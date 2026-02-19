@@ -12,6 +12,7 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes login               # Authenticate with Nous Portal
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
@@ -48,6 +49,7 @@ def cmd_chat(args):
     # Build kwargs from args
     kwargs = {
         "model": args.model,
+        "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "verbose": args.verbose,
         "query": args.query,
@@ -68,6 +70,11 @@ def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
+
+def cmd_login(args):
+    """Authenticate Hermes CLI with Nous Portal."""
+    from hermes_cli.login import login_command
+    login_command(args)
 
 
 def cmd_status(args):
@@ -250,6 +257,7 @@ Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
     hermes setup                  Run setup wizard
+    hermes login                  Authenticate with Nous Portal
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -285,6 +293,12 @@ For more help on a command:
     chat_parser.add_argument(
         "-m", "--model",
         help="Model to use (e.g., anthropic/claude-sonnet-4)"
+    )
+    chat_parser.add_argument(
+        "--provider",
+        choices=["auto", "openrouter", "nous"],
+        default=None,
+        help="Inference provider (default: auto)"
     )
     chat_parser.add_argument(
         "-t", "--toolsets",
@@ -352,7 +366,55 @@ For more help on a command:
         help="Reset configuration to defaults"
     )
     setup_parser.set_defaults(func=cmd_setup)
-    
+
+    # =========================================================================
+    # login command
+    # =========================================================================
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Authenticate with Nous Portal",
+        description="Run OAuth device authorization flow for Hermes CLI"
+    )
+    login_parser.add_argument(
+        "--portal-url",
+        help="Portal base URL (default: HERMES_PORTAL_BASE_URL or NOUS_PORTAL_BASE_URL env var, else production portal)"
+    )
+    login_parser.add_argument(
+        "--inference-url",
+        help="Inference API base URL (default: NOUS_INFERENCE_BASE_URL env var, else production inference API)"
+    )
+    login_parser.add_argument(
+        "--client-id",
+        default="hermes-cli",
+        help="OAuth client id to use (default: hermes-cli)"
+    )
+    login_parser.add_argument(
+        "--scope",
+        default="inference:mint_agent_key",
+        help="OAuth scope to request (default: inference:mint_agent_key)"
+    )
+    login_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically"
+    )
+    login_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="HTTP request timeout in seconds (default: 15)"
+    )
+    login_parser.add_argument(
+        "--ca-bundle",
+        help="Path to CA bundle PEM file for TLS verification (default: HERMES_CA_BUNDLE or SSL_CERT_FILE)"
+    )
+    login_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Disable TLS verification (testing only)"
+    )
+    login_parser.set_defaults(func=cmd_login)
+
     # =========================================================================
     # status command
     # =========================================================================
@@ -528,6 +590,7 @@ For more help on a command:
         # No command = run chat
         args.query = None
         args.model = None
+        args.provider = None
         args.toolsets = None
         args.verbose = False
         cmd_chat(args)

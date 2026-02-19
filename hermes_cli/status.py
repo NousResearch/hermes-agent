@@ -7,6 +7,7 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -38,6 +39,28 @@ def redact_key(key: str) -> str:
     if len(key) < 12:
         return "***"
     return key[:4] + "..." + key[-4:]
+
+
+def format_iso_timestamp(value: str) -> str:
+    """Format ISO timestamps for status output."""
+    if not value:
+        return "(unknown)"
+
+    text = value.strip()
+    if not text:
+        return "(unknown)"
+
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return value
+
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def show_status(args):
@@ -84,6 +107,28 @@ def show_status(args):
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
+
+    try:
+        from hermes_cli.login import get_nous_auth_status
+
+        nous_status = get_nous_auth_status()
+    except Exception:
+        nous_status = {}
+
+    nous_logged_in = bool(nous_status.get("logged_in"))
+    print(
+        f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
+        f"{'logged in' if nous_logged_in else 'not logged in'}"
+    )
+    if nous_logged_in:
+        portal_base_url = nous_status.get("portal_base_url") or "(unknown)"
+        access_exp = format_iso_timestamp(nous_status.get("access_expires_at"))
+        key_exp = format_iso_timestamp(nous_status.get("agent_key_expires_at"))
+        refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+        print(f"    Portal URL: {portal_base_url}")
+        print(f"    Access exp: {access_exp}")
+        print(f"    Key exp:    {key_exp}")
+        print(f"    Refresh:    {refresh_label}")
     
     # =========================================================================
     # Terminal Configuration

@@ -1858,6 +1858,95 @@ class AIAgent:
             # Silent fail - don't interrupt the agent for debug logging
             if self.verbose_logging:
                 logging.warning(f"Failed to log API payload: {e}")
+
+    def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        if len(key) <= 12:
+            return "***"
+        return f"{key[:8]}...{key[-4:]}"
+
+    def _dump_api_request_debug(
+        self,
+        api_kwargs: Dict[str, Any],
+        *,
+        reason: str,
+        error: Optional[Exception] = None,
+    ) -> Optional[Path]:
+        """
+        Dump a debug-friendly HTTP request record for chat.completions.create().
+
+        The body is captured from `api_kwargs` exactly as passed to the OpenAI SDK
+        (excluding transport-only keys like timeout). This is intended for debugging
+        provider-side 4xx failures where retries are not useful.
+        """
+        try:
+            body = copy.deepcopy(api_kwargs)
+            body.pop("timeout", None)
+            body = {k: v for k, v in body.items() if v is not None}
+
+            api_key = None
+            try:
+                api_key = getattr(self.client, "api_key", None)
+            except Exception:
+                api_key = None
+
+            dump_payload: Dict[str, Any] = {
+                "timestamp": datetime.now().isoformat(),
+                "session_id": self.session_id,
+                "reason": reason,
+                "request": {
+                    "method": "POST",
+                    "url": f"{self.base_url.rstrip('/')}/chat/completions",
+                    "headers": {
+                        "Authorization": f"Bearer {self._mask_api_key_for_logs(api_key)}",
+                        "Content-Type": "application/json",
+                    },
+                    "body": body,
+                },
+            }
+
+            if error is not None:
+                error_info: Dict[str, Any] = {
+                    "type": type(error).__name__,
+                    "message": str(error),
+                }
+
+                for attr_name in ("status_code", "request_id", "code", "param", "type"):
+                    attr_value = getattr(error, attr_name, None)
+                    if attr_value is not None:
+                        error_info[attr_name] = attr_value
+
+                # OpenAI exceptions often include structured body/response data.
+                body_attr = getattr(error, "body", None)
+                if body_attr is not None:
+                    error_info["body"] = body_attr
+
+                response_obj = getattr(error, "response", None)
+                if response_obj is not None:
+                    try:
+                        error_info["response_status"] = getattr(response_obj, "status_code", None)
+                        error_info["response_text"] = response_obj.text
+                    except Exception:
+                        pass
+
+                dump_payload["error"] = error_info
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            dump_file.write_text(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+            print(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
+
+            # Optional inline dump for immediate terminal inspection.
+            if os.getenv("HERMES_DUMP_REQUEST_STDOUT", "").strip().lower() in {"1", "true", "yes", "on"}:
+                print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+
+            return dump_file
+        except Exception as dump_error:
+            if self.verbose_logging:
+                logging.warning(f"Failed to dump API request debug payload: {dump_error}")
+            return None
     
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
@@ -2163,6 +2252,10 @@ class AIAgent:
                     
                     if extra_body:
                         api_kwargs["extra_body"] = extra_body
+
+                    # Optional: dump every outgoing request payload before send.
+                    if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                        self._dump_api_request_debug(api_kwargs, reason="preflight")
                     
                     response = self.client.chat.completions.create(**api_kwargs)
                     
@@ -2362,7 +2455,9 @@ class AIAgent:
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    is_client_error = any(phrase in error_msg for phrase in [
+                    status_code = getattr(api_error, "status_code", None)
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500
+                    is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 400', 'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
                         'is not a valid model', 'invalid model', 'model not found',
@@ -2371,6 +2466,11 @@ class AIAgent:
                     ])
                     
                     if is_client_error:
+                        self._dump_api_request_debug(
+                            api_kwargs,
+                            reason="non_retryable_client_error",
+                            error=api_error,
+                        )
                         print(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.")
                         print(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.")
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")

@@ -544,6 +544,49 @@ function Invoke-SetupWizard {
     Pop-Location
 }
 
+function Start-GatewayIfConfigured {
+    $envPath = "$HermesHome\.env"
+    if (-not (Test-Path $envPath)) { return }
+
+    $hasMessaging = $false
+    $content = Get-Content $envPath -ErrorAction SilentlyContinue
+    foreach ($var in @("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "WHATSAPP_ENABLED")) {
+        $match = $content | Where-Object { $_ -match "^${var}=.+" -and $_ -notmatch "your-token-here" }
+        if ($match) { $hasMessaging = $true; break }
+    }
+
+    if (-not $hasMessaging) { return }
+
+    Write-Host ""
+    Write-Info "Messaging platform token detected!"
+    Write-Info "The gateway needs to be running for Hermes to send/receive messages."
+    Write-Host ""
+    $response = Read-Host "Would you like to start the gateway now? [Y/n]"
+
+    if ($response -eq "" -or $response -match "^[Yy]") {
+        $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+        if (-not (Test-Path $hermesCmd)) {
+            $hermesCmd = "hermes"
+        }
+
+        Write-Info "Starting gateway in background..."
+        try {
+            $logFile = "$HermesHome\logs\gateway.log"
+            Start-Process -FilePath $hermesCmd -ArgumentList "gateway" `
+                -RedirectStandardOutput $logFile `
+                -RedirectStandardError "$HermesHome\logs\gateway-error.log" `
+                -WindowStyle Hidden
+            Write-Success "Gateway started! Your bot is now online."
+            Write-Info "Logs: $logFile"
+            Write-Info "To stop: close the gateway process from Task Manager"
+        } catch {
+            Write-Warn "Failed to start gateway. Run manually: hermes gateway"
+        }
+    } else {
+        Write-Info "Skipped. Start the gateway later with: hermes gateway"
+    }
+}
+
 function Write-Completion {
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Green
@@ -622,6 +665,7 @@ function Main {
     Set-PathVariable
     Copy-ConfigTemplates
     Invoke-SetupWizard
+    Start-GatewayIfConfigured
     
     Write-Completion
 }

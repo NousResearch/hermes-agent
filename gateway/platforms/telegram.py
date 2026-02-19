@@ -101,6 +101,23 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._app.start()
             await self._app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
             
+            # Register bot commands so Telegram shows a hint menu when users type /
+            try:
+                from telegram import BotCommand
+                await self._bot.set_my_commands([
+                    BotCommand("new", "Start a new conversation"),
+                    BotCommand("reset", "Reset conversation history"),
+                    BotCommand("model", "Show or change the model"),
+                    BotCommand("personality", "Set a personality"),
+                    BotCommand("retry", "Retry your last message"),
+                    BotCommand("undo", "Remove the last exchange"),
+                    BotCommand("status", "Show session info"),
+                    BotCommand("stop", "Stop the running agent"),
+                    BotCommand("help", "Show available commands"),
+                ])
+            except Exception as e:
+                print(f"[{self.name}] Could not register command menu: {e}")
+            
             self._running = True
             print(f"[{self.name}] Connected and polling for updates")
             return True

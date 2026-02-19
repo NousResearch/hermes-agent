@@ -1651,16 +1651,16 @@ class HermesCLI:
             complete_while_typing=True,
         )
 
-        # Dynamic height: grow the input area to match content lines so
-        # newlines (Alt+Enter) are always visible.  A static preferred=1
-        # causes the widget to stay 1-line and scroll internally after
-        # patch_stdout output has filled the terminal.
+        # Dynamic height: return the exact line count so the TextArea is
+        # always exactly as tall as its content -- no extra blank space.
+        # The bottom rule sits directly below the last line of text and
+        # pushes down only when the user adds a newline.
         def _input_height():
             try:
                 lines = input_area.buffer.document.line_count
-                return Dimension(min=1, max=8, preferred=max(lines, 1))
+                return min(max(lines, 1), 8)
             except Exception:
-                return Dimension(min=1, max=8, preferred=1)
+                return 1
 
         input_area.window.height = _input_height
 

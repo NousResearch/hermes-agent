@@ -814,9 +814,9 @@ class ShellFileOperations(FileOperations):
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # Add file glob filter
+        # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--glob", file_glob])
+            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -910,9 +910,9 @@ class ShellFileOperations(FileOperations):
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # Add file pattern filter
+        # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--include", file_glob])
+            cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":

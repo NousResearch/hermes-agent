@@ -203,10 +203,6 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
-    def read(self, target: str) -> Dict[str, Any]:
-        """Return live current entries and usage stats."""
-        return self._success_response(target)
-
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
         Return the frozen snapshot for system prompt injection.
@@ -328,11 +324,8 @@ def memory_tool(
             return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
         result = store.remove(target, old_text)
 
-    elif action == "read":
-        result = store.read(target)
-
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove, read"}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -351,7 +344,7 @@ MEMORY_SCHEMA = {
     "description": (
         "Manage persistent memory (visible in system prompt). Targets: "
         "'memory' (your notes) or 'user' (user profile).\n"
-        "Actions: add, replace, remove, read. For replace/remove, old_text "
+        "Actions: add, replace, remove. For replace/remove, old_text "
         "is a short unique snippet to identify the entry.\n"
         "Usage indicator in system prompt shows capacity. When >80%, "
         "consolidate/replace before adding. Prefer replacing over removing.\n"
@@ -363,7 +356,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove", "read"],
+                "enum": ["add", "replace", "remove"],
                 "description": "The action to perform."
             },
             "target": {

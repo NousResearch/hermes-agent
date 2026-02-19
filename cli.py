@@ -299,6 +299,12 @@ def _run_cleanup():
 # - Light: #FFF8DC (text)
 # - Dim: #B8860B (muted text)
 
+# ANSI escape codes for conversation display (works reliably with patch_stdout)
+_GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RST = "\033[0m"
+
 # Version string
 VERSION = "v1.0.0"
 
@@ -1448,9 +1454,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        # Visual separator after user input (adapt to terminal width, capped for readability)
-        term_width = min(self.console.width, 120)
-        print("─" * term_width, flush=True)
+        print(flush=True)
         
         try:
             # Run the conversation with interrupt monitoring
@@ -1507,21 +1511,9 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                # Use simple print for compatibility with prompt_toolkit's patch_stdout
-                # Adapt box width to terminal (cap at 120 for readability)
-                box_width = min(self.console.width, 120)
-                inner = box_width - 2  # account for border chars ╭/╰ and ╮/╯
-                label = "⚕ Hermes"
-                padding = inner - len(label) - 1  # -1 for the leading space
-                
-                print()
-                print("╭" + "─" * inner + "╮")
-                print("│ " + label + " " * max(padding, 0) + "│")
-                print("╰" + "─" * inner + "╯")
-                print()
+                print(f"\n{_GOLD}⚕ Hermes{_RST}\n")
                 print(response)
                 print()
-                print("─" * box_width)
             
             # If we have a pending message from interrupt, re-queue it for process_loop
             # instead of recursing (avoids unbounded recursion from rapid interrupts)
@@ -1752,18 +1744,17 @@ class HermesCLI:
                         if paste_path.exists():
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
-                            print(f"\n💬 You: [Pasted text: {line_count} lines]")
+                            print(f"\n{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
                             user_input = full_text
                         else:
-                            print(f"\n💬 You: {user_input}")
+                            print(f"\n{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     else:
-                        # Echo multi-line input compactly
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
-                            print(f"\n💬 You: {first_line} (+{line_count - 1} lines)")
+                            print(f"\n{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
                         else:
-                            print(f"\n💬 You: {user_input}")
+                            print(f"\n{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     
                     # Regular chat - run agent
                     self._agent_running = True

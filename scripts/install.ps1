@@ -39,7 +39,7 @@ function Write-Banner {
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
     Write-Host "│             🦋 Hermes Agent Installer                   │" -ForegroundColor Magenta
     Write-Host "├─────────────────────────────────────────────────────────┤" -ForegroundColor Magenta
-    Write-Host "│  I'm just a butterfly with a lot of tools.             │" -ForegroundColor Magenta
+    Write-Host "│  An open source AI agent by Nous Research.              │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
 }

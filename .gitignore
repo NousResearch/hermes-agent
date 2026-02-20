@@ -44,6 +44,10 @@ hermes_agent.egg-info/
 wandb/
 testlogs
 
+# Nix
+.direnv/
+result
+
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
 

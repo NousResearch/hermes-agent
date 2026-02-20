@@ -1293,8 +1293,9 @@ class AIAgent:
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
-        # Setup logs directory
-        self.logs_dir = Path(__file__).parent / "logs"
+        # Setup logs directory (use HERMES_HOME if set, else project root)
+        hermes_home = os.environ.get("HERMES_HOME")
+        self.logs_dir = Path(hermes_home) / "logs" if hermes_home else Path(__file__).parent / "logs"
         self.logs_dir.mkdir(exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
         

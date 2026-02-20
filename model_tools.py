@@ -177,7 +177,7 @@ TOOLSET_REQUIREMENTS = {
         "env_vars": [],  # Uses terminal backend, no additional requirements
         "check_fn": check_file_requirements,
         "setup_url": None,
-        "tools": ["read_file", "write_file", "patch", "search"],
+        "tools": ["read_file", "write_file", "patch", "search_files"],
     },
     "tts": {
         "name": "Text-to-Speech",
@@ -880,13 +880,15 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": "search",
+                "name": "search_files",
                 "description": (
-                    "Search for content inside files or find files by name. Preferred over 'grep' or 'find' "
-                    "in the terminal because it uses ripgrep (fast) with automatic fallback to grep, handles "
-                    "pagination, and returns structured results sorted by modification time (newest first).\n\n"
-                    "**Content search (target='content'):** Regex-powered search inside files with optional "
-                    "file type filtering and context lines. Three output modes: full matches with line numbers, "
+                    "The primary tool for searching code and files. Always use this instead of "
+                    "running grep, rg, find, fd, or ack in the terminal — it's faster (ripgrep-backed), "
+                    "returns structured results with line numbers, and handles pagination automatically.\n\n"
+                    "Use for: finding function/class definitions, searching for error strings, locating "
+                    "config files, finding all files of a type, checking where a variable is used.\n\n"
+                    "**Content search (target='content'):** Regex search inside files with optional "
+                    "file type filtering and context lines. Output modes: full matches with line numbers, "
                     "file paths only, or match counts per file.\n\n"
                     "**File search (target='files'):** Find files by glob pattern (e.g., '*.py', '*config*'). "
                     "Results sorted by modification time so recently changed files appear first."
@@ -1167,7 +1169,7 @@ def get_all_tool_names() -> List[str]:
     # File manipulation tools (use terminal backend)
     if check_file_requirements():
         tool_names.extend([
-            "read_file", "write_file", "patch", "search"
+            "read_file", "write_file", "patch", "search_files"
         ])
     
     # Text-to-speech tools
@@ -1247,7 +1249,7 @@ TOOL_TO_TOOLSET_MAP = {
     "read_file": "file_tools",
     "write_file": "file_tools",
     "patch": "file_tools",
-    "search": "file_tools",
+    "search_files": "file_tools",
     # Cross-channel messaging
     "send_message": "messaging_tools",
     # Planning & task management
@@ -1438,7 +1440,7 @@ def get_tool_definitions(
                             "rl_stop_training", "rl_get_results",
                             "rl_list_runs", "rl_test_inference"
                         ],
-                        "file_tools": ["read_file", "write_file", "patch", "search"],
+                        "file_tools": ["read_file", "write_file", "patch", "search_files"],
                         "tts_tools": ["text_to_speech"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
@@ -1492,7 +1494,7 @@ def get_tool_definitions(
                             "rl_stop_training", "rl_get_results",
                             "rl_list_runs", "rl_test_inference"
                         ],
-                        "file_tools": ["read_file", "write_file", "patch", "search"],
+                        "file_tools": ["read_file", "write_file", "patch", "search_files"],
                         "tts_tools": ["text_to_speech"]
                     }
                     legacy_tools = legacy_map.get(toolset_name, [])
@@ -2013,7 +2015,7 @@ def handle_file_function_call(
             task_id=tid
         )
     
-    elif function_name == "search":
+    elif function_name == "search_files":
         return search_tool(
             pattern=function_args.get("pattern", ""),
             target=function_args.get("target", "content"),
@@ -2274,7 +2276,7 @@ def handle_function_call(
             return handle_rl_function_call(function_name, function_args)
 
         # Route file manipulation tools
-        elif function_name in ["read_file", "write_file", "patch", "search"]:
+        elif function_name in ["read_file", "write_file", "patch", "search_files"]:
             return handle_file_function_call(function_name, function_args, task_id)
 
         # Route code execution sandbox (programmatic tool calling)
@@ -2381,7 +2383,7 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
         },
         "file_tools": {
             "available": check_file_requirements(),
-            "tools": ["read_file", "write_file", "patch", "search"],
+            "tools": ["read_file", "write_file", "patch", "search_files"],
             "description": "File manipulation tools: read/write files, search content/files, patch with fuzzy matching",
             "requirements": ["Terminal backend available (local/docker/ssh/singularity/modal)"]
         },

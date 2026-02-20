@@ -40,7 +40,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_extract",
     "read_file",
     "write_file",
-    "search",
+    "search_files",
     "patch",
     "terminal",
 ])
@@ -88,8 +88,8 @@ _TOOL_STUBS = {
         '"""Write content to a file (always overwrites). Returns dict with status."""',
         '{"path": path, "content": content}',
     ),
-    "search": (
-        "search",
+    "search_files": (
+        "search_files",
         'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50',
         '"""Search file contents (target="content") or find files (target="files"). Returns dict with "matches"."""',
         '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit}',
@@ -553,7 +553,7 @@ EXECUTE_CODE_SCHEMA = {
         "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n"
         "  write_file(path: str, content: str) -> dict\n"
         "    Always overwrites the entire file.\n"
-        "  search(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
+        "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
         "    target: \"content\" (grep) or \"files\" (find). Returns {\"matches\": [...]}\n"
         "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
         "    Replaces old_string with new_string in the file.\n"

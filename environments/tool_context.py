@@ -332,7 +332,7 @@ class ToolContext:
             Dict with search results
         """
         result = handle_function_call(
-            "search", {"query": query, "path": path}, task_id=self.task_id
+            "search_files", {"pattern": query, "path": path}, task_id=self.task_id
         )
         try:
             return json.loads(result)

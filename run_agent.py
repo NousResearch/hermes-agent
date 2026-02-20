@@ -1142,6 +1142,10 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
         
+        # Subagent delegation state
+        self._delegate_depth = 0        # 0 = top-level agent, incremented for children
+        self._active_children = []      # Running child AIAgents (for interrupt propagation)
+        
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
         self.providers_ignored = providers_ignored
@@ -1599,6 +1603,14 @@ class AIAgent:
             code = args.get("code", "")
             first_line = code.strip().split("\n")[0] if code.strip() else ""
             return f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}"
+
+        # ── Subagent Delegation ──
+        if tool_name == "delegate_task":
+            tasks = args.get("tasks")
+            if tasks and isinstance(tasks, list):
+                return f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}"
+            goal = _trunc(args.get("goal", ""), 35)
+            return f"┊ 🔀 delegate  {goal}  {dur}"
 
         # ── Fallback ──
         preview = _build_tool_preview(tool_name, args) or ""
@@ -2091,6 +2103,12 @@ class AIAgent:
         self._interrupt_message = message
         # Signal the terminal tool to kill any running subprocess immediately
         _set_terminal_interrupt(True)
+        # Propagate interrupt to any running child agents (subagent delegation)
+        for child in self._active_children:
+            try:
+                child.interrupt(message)
+            except Exception:
+                pass
         if not self.quiet_mode:
             print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
@@ -2957,6 +2975,21 @@ class AIAgent:
                             tool_duration = time.time() - tool_start_time
                             if self.quiet_mode:
                                 print(f"  {self._get_cute_tool_message('clarify', function_args, tool_duration)}")
+                        # Delegate task -- spawn child agent(s) with isolated context
+                        elif function_name == "delegate_task":
+                            from tools.delegate_tool import delegate_task as _delegate_task
+                            function_result = _delegate_task(
+                                goal=function_args.get("goal"),
+                                context=function_args.get("context"),
+                                toolsets=function_args.get("toolsets"),
+                                tasks=function_args.get("tasks"),
+                                model=function_args.get("model"),
+                                max_iterations=function_args.get("max_iterations"),
+                                parent_agent=self,
+                            )
+                            tool_duration = time.time() - tool_start_time
+                            if self.quiet_mode:
+                                print(f"  {self._get_cute_tool_message('delegate_task', function_args, tool_duration)}")
                         # Execute other tools - with animated kawaii spinner in quiet mode
                         # The face is "alive" while the tool works, then vanishes
                         # and is replaced by the clean result line.
@@ -2976,7 +3009,7 @@ class AIAgent:
                                 'skills_list': '📚', 'skill_view': '📚',
                                 'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
                                 'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
-                                'clarify': '❓', 'execute_code': '🐍',
+                                'clarify': '❓', 'execute_code': '🐍', 'delegate_task': '🔀',
                             }
                             emoji = tool_emoji_map.get(function_name, '⚡')
                             preview = _build_tool_preview(function_name, function_args) or function_name

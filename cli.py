@@ -139,6 +139,10 @@ def load_cli_config() -> Dict[str, Any]:
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
+        "delegation": {
+            "max_iterations": 25,  # Max tool-calling turns per child agent
+            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
+        },
     }
     
     # Track whether the config file explicitly set terminal config.

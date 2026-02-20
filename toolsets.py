@@ -144,6 +144,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "delegation": {
+        "description": "Spawn subagents with isolated context for complex subtasks",
+        "tools": ["delegate_task"],
+        "includes": []
+    },
+    
     
     # Scenario-specific toolsets
     
@@ -197,6 +203,8 @@ TOOLSETS = {
             "clarify",
             # Code execution sandbox (programmatic tool calling)
             "execute_code",
+            # Subagent delegation
+            "delegate_task",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -237,6 +245,8 @@ TOOLSETS = {
             "session_search",
             # Code execution sandbox (programmatic tool calling)
             "execute_code",
+            # Subagent delegation
+            "delegate_task",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -275,6 +285,8 @@ TOOLSETS = {
             "session_search",
             # Code execution sandbox (programmatic tool calling)
             "execute_code",
+            # Subagent delegation
+            "delegate_task",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -313,6 +325,8 @@ TOOLSETS = {
             "session_search",
             # Code execution sandbox (programmatic tool calling)
             "execute_code",
+            # Subagent delegation
+            "delegate_task",
             # Cronjob management
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -351,6 +365,8 @@ TOOLSETS = {
             "session_search",
             # Code execution sandbox (programmatic tool calling)
             "execute_code",
+            # Subagent delegation
+            "delegate_task",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging

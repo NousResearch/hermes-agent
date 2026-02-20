@@ -97,6 +97,8 @@ from tools.session_search_tool import session_search, check_session_search_requi
 from tools.clarify_tool import clarify_tool, check_clarify_requirements, CLARIFY_SCHEMA
 # Code execution sandbox (programmatic tool calling)
 from tools.code_execution_tool import execute_code, check_sandbox_requirements, EXECUTE_CODE_SCHEMA
+# Subagent delegation
+from tools.delegate_tool import delegate_task, check_delegate_requirements, DELEGATE_TASK_SCHEMA
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -220,6 +222,13 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_sandbox_requirements,
         "setup_url": None,
         "tools": ["execute_code"],
+    },
+    "delegation": {
+        "name": "Subagent Delegation",
+        "env_vars": [],  # Uses existing AIAgent class, no external deps
+        "check_fn": check_delegate_requirements,
+        "setup_url": None,
+        "tools": ["delegate_task"],
     },
 }
 
@@ -1023,6 +1032,13 @@ def get_execute_code_tool_definitions() -> List[Dict[str, Any]]:
     return [{"type": "function", "function": EXECUTE_CODE_SCHEMA}]
 
 
+def get_delegate_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the subagent delegation tool.
+    """
+    return [{"type": "function", "function": DELEGATE_TASK_SCHEMA}]
+
+
 def get_send_message_tool_definitions():
     """Tool definitions for cross-channel messaging."""
     return [
@@ -1196,6 +1212,10 @@ def get_all_tool_names() -> List[str]:
     if check_sandbox_requirements():
         tool_names.extend(["execute_code"])
     
+    # Subagent delegation
+    if check_delegate_requirements():
+        tool_names.extend(["delegate_task"])
+    
     # Cross-channel messaging (always available on messaging platforms)
     tool_names.extend(["send_message"])
     
@@ -1262,6 +1282,8 @@ TOOL_TO_TOOLSET_MAP = {
     "clarify": "clarify_tools",
     # Code execution sandbox
     "execute_code": "code_execution_tools",
+    # Subagent delegation
+    "delegate_task": "delegation_tools",
 }
 
 
@@ -1398,6 +1420,11 @@ def get_tool_definitions(
     # Code execution sandbox (programmatic tool calling)
     if check_sandbox_requirements():
         for tool in get_execute_code_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Subagent delegation
+    if check_delegate_requirements():
+        for tool in get_delegate_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
     # Cross-channel messaging (always available on messaging platforms)
@@ -2313,6 +2340,10 @@ def handle_function_call(
         elif function_name == "session_search":
             return json.dumps({"error": "Session search is not available. The session database may not be initialized."})
 
+        # Delegate task -- handled by the agent loop (needs parent AIAgent instance).
+        elif function_name == "delegate_task":
+            return json.dumps({"error": "delegate_task must be handled by the agent loop"})
+
         else:
             error_msg = f"Unknown function: {function_name}"
             print(f"❌ {error_msg}")
@@ -2426,6 +2457,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["execute_code"],
             "description": "Code execution sandbox: run Python scripts that call tools programmatically",
             "requirements": ["Linux or macOS (Unix domain sockets)"]
+        },
+        "delegation_tools": {
+            "available": check_delegate_requirements(),
+            "tools": ["delegate_task"],
+            "description": "Subagent delegation: spawn child agents with isolated context for complex subtasks",
+            "requirements": []
         }
     }
     
@@ -2450,6 +2487,7 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "file_tools": check_file_requirements(),
         "tts_tools": check_tts_requirements(),
         "code_execution_tools": check_sandbox_requirements(),
+        "delegation_tools": check_delegate_requirements(),
     }
 
 if __name__ == "__main__":

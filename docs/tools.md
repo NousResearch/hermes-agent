@@ -52,6 +52,9 @@ async def web_search(query: str) -> dict:
 | **Session Search** | `session_search_tool.py` | `session_search` (search + summarize past conversations) |
 | **Cronjob** | `cronjob_tools.py` | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` |
 | **RL Training** | `rl_training_tool.py` | `rl_list_environments`, `rl_start_training`, `rl_check_status`, etc. |
+| **Clarify** | `clarify_tool.py` | `clarify` (interactive multiple-choice / open-ended questions, CLI-only) |
+| **Code Execution** | `code_execution_tool.py` | `execute_code` (run Python scripts that call tools via RPC sandbox) |
+| **Delegation** | `delegate_tool.py` | `delegate_task` (spawn subagents with isolated context, single + parallel batch) |
 
 ## Tool Registration
 

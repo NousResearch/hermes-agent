@@ -386,6 +386,24 @@ stt:
 # To disable, you would need to modify the source code.
 
 # =============================================================================
+# Code Execution Sandbox (Programmatic Tool Calling)
+# =============================================================================
+# The execute_code tool runs Python scripts that call Hermes tools via RPC.
+# Intermediate tool results stay out of the LLM's context window.
+code_execution:
+  timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
+  max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
+
+# =============================================================================
+# Subagent Delegation
+# =============================================================================
+# The delegate_task tool spawns child agents with isolated context.
+# Supports single tasks and batch mode (up to 3 parallel).
+delegation:
+  max_iterations: 50                          # Max tool-calling turns per child (default: 25)
+  default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+
+# =============================================================================
 # Display
 # =============================================================================
 display:

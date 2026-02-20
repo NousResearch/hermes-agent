@@ -40,7 +40,7 @@ These four systems form a continuum of agent intelligence. They should be though
 
 ## 1. Subagent Architecture (Context Isolation) 🎯
 
-**Status:** Not started
+**Status:** Implemented ✅
 **Priority:** High -- this is foundational for scaling to complex tasks
 
 The main agent becomes an orchestrator that delegates context-heavy tasks to subagents with isolated context. Each subagent returns a summary, keeping the orchestrator's context clean.
@@ -598,11 +598,11 @@ This goes in the tool description:
 - **SQLite State Store & Session Search.** `~/.hermes/state.db` with sessions, messages, FTS5 search, `session_search` tool.
 - **Interactive Clarifying Questions.** `clarify` tool with arrow-key selection UI in CLI, configurable timeout, CLI-only.
 - **Programmatic Tool Calling.** `execute_code` tool -- sandbox child process with UDS RPC bridge to 7 tools (`web_search`, `web_extract`, `read_file`, `write_file`, `search`, `patch`, `terminal`). Configurable timeout and tool call limits via `config.yaml`.
+- **Subagent Architecture.** `delegate_task` tool -- spawn child AIAgents with isolated context and terminal sessions. Single-task and batch (up to 3 parallel) modes via ThreadPoolExecutor. Depth limit of 2, blocked tool enforcement, interrupt propagation.
 
 ### Tier 1: Next Up
 
-1. Subagent Architecture -- #1
-2. MCP Support -- #6
+1. MCP Support -- #6
 
 ### Tier 2: Quality of Life
 

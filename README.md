@@ -334,7 +334,7 @@ hermes --toolsets "web,terminal"
 hermes --list-tools
 ```
 
-**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, and more.
+**Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.
 
 ### 🖥️ Terminal & Process Management
 
@@ -680,6 +680,62 @@ How to confirm it worked.
 │   ├── quarantine/                # Pending security review
 │   └── audit.log                  # Security scan history
 └── .bundled_manifest              # Tracks which bundled skills have been offered
+```
+
+### 🐍 Code Execution (Programmatic Tool Calling)
+
+The `execute_code` tool lets the agent write Python scripts that call Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn. The script runs in a sandboxed child process on the agent host, communicating with the parent via Unix domain socket RPC.
+
+```bash
+# The agent can write scripts like:
+from hermes_tools import web_search, web_extract
+results = web_search("Python 3.13 features", limit=5)
+for r in results["data"]["web"]:
+    content = web_extract([r["url"]])
+    # ... filter and process ...
+print(summary)
+```
+
+**Available tools in sandbox:** `web_search`, `web_extract`, `read_file`, `write_file`, `search`, `patch`, `terminal` (foreground only).
+
+**When the agent uses this:** 3+ tool calls with processing logic between them, bulk data filtering, conditional branching, loops. The intermediate tool results never enter the context window -- only the final `print()` output comes back.
+
+Configure via `~/.hermes/config.yaml`:
+```yaml
+code_execution:
+  timeout: 300       # Max seconds per script (default: 300)
+  max_tool_calls: 50 # Max tool calls per execution (default: 50)
+```
+
+### 🔀 Subagents (Task Delegation)
+
+The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently -- only its final summary enters the parent's context.
+
+**Single task:**
+```
+delegate_task(goal="Debug why tests fail", context="Error: assertion in test_foo.py line 42", toolsets=["terminal", "file"])
+```
+
+**Parallel batch (up to 3 concurrent):**
+```
+delegate_task(tasks=[
+    {"goal": "Research topic A", "toolsets": ["web"]},
+    {"goal": "Research topic B", "toolsets": ["web"]},
+    {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
+])
+```
+
+**Key properties:**
+- Each subagent gets its own terminal session (separate from the parent)
+- Depth limit of 2 (no grandchildren)
+- Subagents cannot call: `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code`
+- Interrupt propagation: interrupting the parent interrupts all active children
+
+Configure via `~/.hermes/config.yaml`:
+```yaml
+delegation:
+  max_iterations: 25                        # Max turns per child (default: 25)
+  default_toolsets: ["terminal", "file", "web"]  # Default toolsets
 ```
 
 ### 🤖 RL Training (Tinker + Atropos)

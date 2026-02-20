@@ -285,6 +285,9 @@ When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
 - `💻 \`ls -la\`...` (terminal commands show the actual command)
 - `🔍 web_search...`
 - `📄 web_extract...`
+- `🐍 execute_code...` (programmatic tool calling sandbox)
+- `🔀 delegate_task...` (subagent delegation)
+- `❓ clarify...` (user question, CLI-only)
 
 Modes:
 - `new`: Only when switching to a different tool (less spam)

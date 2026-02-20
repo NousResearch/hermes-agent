@@ -67,13 +67,13 @@ _TOOL_STUBS = {
     "web_search": (
         "web_search",
         "query: str, limit: int = 5",
-        '"""Search the web. Returns dict with "results" list of {url, title, description}."""',
+        '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
         '{"query": query, "limit": limit}',
     ),
     "web_extract": (
         "web_extract",
         "urls: list",
-        '"""Extract content from URLs. Returns markdown text."""',
+        '"""Extract content from URLs. Returns dict with results list of {url, content, error}."""',
         '{"urls": urls}',
     ),
     "read_file": (
@@ -536,9 +536,9 @@ EXECUTE_CODE_SCHEMA = {
         "or the task requires interactive user input.\n\n"
         "Available via `from hermes_tools import ...`:\n\n"
         "  web_search(query: str, limit: int = 5) -> dict\n"
-        "    Returns {\"results\": [{\"url\", \"title\", \"description\"}, ...]}\n"
-        "  web_extract(urls: list[str]) -> str\n"
-        "    Returns extracted page content as markdown text\n"
+        "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n"
+        "  web_extract(urls: list[str]) -> dict\n"
+        "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown\n"
         "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
         "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n"
         "  write_file(path: str, content: str) -> dict\n"

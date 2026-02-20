@@ -132,6 +132,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "clarify": {
+        "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
+        "tools": ["clarify"],
+        "includes": []
+    },
+    
     
     # Scenario-specific toolsets
     
@@ -181,6 +187,8 @@ TOOLSETS = {
             "memory",
             # Session history search
             "session_search",
+            # Clarifying questions
+            "clarify",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],

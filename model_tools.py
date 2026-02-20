@@ -93,6 +93,8 @@ from tools.todo_tool import todo_tool, check_todo_requirements, TODO_SCHEMA
 from tools.memory_tool import memory_tool, check_memory_requirements, MEMORY_SCHEMA
 # Session search tool (past conversation recall with summarization)
 from tools.session_search_tool import session_search, check_session_search_requirements, SESSION_SEARCH_SCHEMA
+# Clarifying questions tool
+from tools.clarify_tool import clarify_tool, check_clarify_requirements, CLARIFY_SCHEMA
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -202,6 +204,13 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_session_search_requirements,
         "setup_url": "https://openrouter.ai/keys",
         "tools": ["session_search"],
+    },
+    "clarify": {
+        "name": "Clarifying Questions",
+        "env_vars": [],  # Pure UI interaction, no external deps
+        "check_fn": check_clarify_requirements,
+        "setup_url": None,
+        "tools": ["clarify"],
     },
 }
 
@@ -986,6 +995,16 @@ def get_session_search_tool_definitions() -> List[Dict[str, Any]]:
     return [{"type": "function", "function": SESSION_SEARCH_SCHEMA}]
 
 
+def get_clarify_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the clarifying questions tool.
+    
+    Returns:
+        List[Dict]: List containing the clarify tool definition compatible with OpenAI API
+    """
+    return [{"type": "function", "function": CLARIFY_SCHEMA}]
+
+
 def get_send_message_tool_definitions():
     """Tool definitions for cross-channel messaging."""
     return [
@@ -1150,6 +1169,10 @@ def get_all_tool_names() -> List[str]:
     # Session history search
     if check_session_search_requirements():
         tool_names.extend(["session_search"])
+    
+    # Clarifying questions (always available)
+    if check_clarify_requirements():
+        tool_names.extend(["clarify"])
     
     # Cross-channel messaging (always available on messaging platforms)
     tool_names.extend(["send_message"])
@@ -1334,6 +1357,11 @@ def get_tool_definitions(
     # Session history search tool
     if check_session_search_requirements():
         for tool in get_session_search_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Clarifying questions tool
+    if check_clarify_requirements():
+        for tool in get_clarify_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
     # Cross-channel messaging (always available on messaging platforms)
@@ -2333,6 +2361,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["session_search"],
             "description": "Session history search: FTS5 search + Gemini Flash summarization of past conversations",
             "requirements": ["OPENROUTER_API_KEY", "~/.hermes/state.db"]
+        },
+        "clarify_tools": {
+            "available": check_clarify_requirements(),
+            "tools": ["clarify"],
+            "description": "Clarifying questions: ask the user multiple-choice or open-ended questions",
+            "requirements": []
         }
     }
     

@@ -1074,6 +1074,7 @@ class AIAgent:
         provider_sort: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        clarify_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -1105,6 +1106,8 @@ class AIAgent:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
+                Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "xhigh"} for OpenRouter. Set to disable/customize reasoning.
@@ -1132,6 +1135,7 @@ class AIAgent:
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or "https://openrouter.ai/api/v1"
         self.tool_progress_callback = tool_progress_callback
+        self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -2936,6 +2940,17 @@ class AIAgent:
                             tool_duration = time.time() - tool_start_time
                             if self.quiet_mode:
                                 print(f"  {self._get_cute_tool_message('memory', function_args, tool_duration)}")
+                        # Clarify tool -- delegates to platform-provided callback
+                        elif function_name == "clarify":
+                            from tools.clarify_tool import clarify_tool as _clarify_tool
+                            function_result = _clarify_tool(
+                                question=function_args.get("question", ""),
+                                choices=function_args.get("choices"),
+                                callback=self.clarify_callback,
+                            )
+                            tool_duration = time.time() - tool_start_time
+                            if self.quiet_mode:
+                                print(f"  {self._get_cute_tool_message('clarify', function_args, tool_duration)}")
                         # Execute other tools - with animated kawaii spinner in quiet mode
                         # The face is "alive" while the tool works, then vanishes
                         # and is replaced by the clean result line.
@@ -2955,6 +2970,7 @@ class AIAgent:
                                 'skills_list': '📚', 'skill_view': '📚',
                                 'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
                                 'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
+                                'clarify': '❓',
                             }
                             emoji = tool_emoji_map.get(function_name, '⚡')
                             preview = _build_tool_preview(function_name, function_args) or function_name

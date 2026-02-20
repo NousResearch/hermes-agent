@@ -46,7 +46,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
-DEFAULT_TIMEOUT = 120        # seconds
+DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
@@ -255,11 +255,21 @@ def _rpc_server_loop(
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
 
-                # Dispatch through the standard tool handler
+                # Dispatch through the standard tool handler.
+                # Suppress stdout/stderr from internal tool handlers so
+                # their status prints don't leak into the CLI spinner.
                 try:
-                    result = handle_function_call(
-                        tool_name, tool_args, task_id=task_id
-                    )
+                    _real_stdout, _real_stderr = sys.stdout, sys.stderr
+                    sys.stdout = open(os.devnull, "w")
+                    sys.stderr = open(os.devnull, "w")
+                    try:
+                        result = handle_function_call(
+                            tool_name, tool_args, task_id=task_id
+                        )
+                    finally:
+                        sys.stdout.close()
+                        sys.stderr.close()
+                        sys.stdout, sys.stderr = _real_stdout, _real_stderr
                 except Exception as exc:
                     result = json.dumps({"error": str(exc)})
 

@@ -1023,6 +1023,10 @@ class KawaiiSpinner:
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
     
+    def update_text(self, new_message: str):
+        """Update the spinner message text while it's running."""
+        self.message = new_message
+
     def stop(self, final_message: str = None):
         """Stop the spinner and optionally print a final message."""
         self.running = False
@@ -2978,18 +2982,37 @@ class AIAgent:
                         # Delegate task -- spawn child agent(s) with isolated context
                         elif function_name == "delegate_task":
                             from tools.delegate_tool import delegate_task as _delegate_task
-                            function_result = _delegate_task(
-                                goal=function_args.get("goal"),
-                                context=function_args.get("context"),
-                                toolsets=function_args.get("toolsets"),
-                                tasks=function_args.get("tasks"),
-                                model=function_args.get("model"),
-                                max_iterations=function_args.get("max_iterations"),
-                                parent_agent=self,
-                            )
-                            tool_duration = time.time() - tool_start_time
+                            tasks_arg = function_args.get("tasks")
+                            if tasks_arg and isinstance(tasks_arg, list):
+                                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                            else:
+                                goal_preview = (function_args.get("goal") or "")[:30]
+                                spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                            spinner = None
                             if self.quiet_mode:
-                                print(f"  {self._get_cute_tool_message('delegate_task', function_args, tool_duration)}")
+                                face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                                spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
+                                spinner.start()
+                            # Store spinner on self so delegate_tool can update its text
+                            self._delegate_spinner = spinner
+                            try:
+                                function_result = _delegate_task(
+                                    goal=function_args.get("goal"),
+                                    context=function_args.get("context"),
+                                    toolsets=function_args.get("toolsets"),
+                                    tasks=tasks_arg,
+                                    model=function_args.get("model"),
+                                    max_iterations=function_args.get("max_iterations"),
+                                    parent_agent=self,
+                                )
+                            finally:
+                                self._delegate_spinner = None
+                                tool_duration = time.time() - tool_start_time
+                                cute_msg = self._get_cute_tool_message('delegate_task', function_args, tool_duration)
+                                if spinner:
+                                    spinner.stop(cute_msg)
+                                elif self.quiet_mode:
+                                    print(f"  {cute_msg}")
                         # Execute other tools - with animated kawaii spinner in quiet mode
                         # The face is "alive" while the tool works, then vanishes
                         # and is replaced by the clean result line.

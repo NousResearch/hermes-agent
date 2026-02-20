@@ -149,6 +149,13 @@ from .clarify_tool import (
     CLARIFY_SCHEMA,
 )
 
+# Code execution sandbox (programmatic tool calling)
+from .code_execution_tool import (
+    execute_code,
+    check_sandbox_requirements,
+    EXECUTE_CODE_SCHEMA,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -250,5 +257,9 @@ __all__ = [
     'clarify_tool',
     'check_clarify_requirements',
     'CLARIFY_SCHEMA',
+    # Code execution sandbox
+    'execute_code',
+    'check_sandbox_requirements',
+    'EXECUTE_CODE_SCHEMA',
 ]
 

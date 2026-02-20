@@ -70,7 +70,7 @@ The main agent becomes an orchestrator that delegates context-heavy tasks to sub
 
 ## 2. Interactive Clarifying Questions ❓
 
-**Status:** Not started
+**Status:** Implemented ✅
 **Priority:** Medium-High -- enables the knowledge system feedback loop
 
 Allow the agent to present structured choices to the user when it needs clarification or feedback. Rich terminal UI in CLI mode, graceful fallback on messaging platforms.
@@ -235,7 +235,7 @@ Automatic filesystem snapshots after each agent loop iteration so the user can r
 
 ## 9. Programmatic Tool Calling (Code-Mediated Tool Use) 🧬
 
-**Status:** Not started
+**Status:** Implemented (MVP) ✅
 **Priority:** High -- potentially the single biggest efficiency win for agent loops
 
 Instead of the LLM making one tool call, reading the result, deciding what to do next, making another tool call (N round trips), the LLM writes a Python script that calls multiple tools, processes results, branches on conditions, and returns a final summary -- all in one turn.
@@ -596,24 +596,21 @@ This goes in the tool description:
 - **Memory System.** MEMORY.md + USER.md, bounded, system prompt injection, `memory` tool.
 - **Agent-Managed Skills.** `skill_manage` tool (create/patch/edit/delete/write_file/remove_file), unified `~/.hermes/skills/` dir, manifest-based sync.
 - **SQLite State Store & Session Search.** `~/.hermes/state.db` with sessions, messages, FTS5 search, `session_search` tool.
+- **Interactive Clarifying Questions.** `clarify` tool with arrow-key selection UI in CLI, configurable timeout, CLI-only.
+- **Programmatic Tool Calling.** `execute_code` tool -- sandbox child process with UDS RPC bridge to 7 tools (`web_search`, `web_extract`, `read_file`, `write_file`, `search`, `patch`, `terminal`). Configurable timeout and tool call limits via `config.yaml`.
 
 ### Tier 1: Next Up
 
-1. Interactive Clarifying Questions -- #2
-2. Programmatic Tool Calling -- #9
+1. Subagent Architecture -- #1
+2. MCP Support -- #6
 
-### Tier 2: Scaling & Ecosystem
+### Tier 2: Quality of Life
 
-3. Subagent Architecture -- #1
-4. MCP Support -- #6
+3. Local Browser Control via CDP -- #3
+4. Plugin/Extension System -- #5
 
-### Tier 3: Quality of Life
+### Tier 3: Nice to Have
 
-5. Local Browser Control via CDP -- #3
-6. Plugin/Extension System -- #5
-
-### Tier 4: Nice to Have
-
-7. Session Branching / Checkpoints -- #7
-8. Filesystem Checkpointing / Rollback -- #8
-9. Signal Integration -- #4
+5. Session Branching / Checkpoints -- #7
+6. Filesystem Checkpointing / Rollback -- #8
+7. Signal Integration -- #4

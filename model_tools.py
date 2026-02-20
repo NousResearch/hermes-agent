@@ -95,6 +95,8 @@ from tools.memory_tool import memory_tool, check_memory_requirements, MEMORY_SCH
 from tools.session_search_tool import session_search, check_session_search_requirements, SESSION_SEARCH_SCHEMA
 # Clarifying questions tool
 from tools.clarify_tool import clarify_tool, check_clarify_requirements, CLARIFY_SCHEMA
+# Code execution sandbox (programmatic tool calling)
+from tools.code_execution_tool import execute_code, check_sandbox_requirements, EXECUTE_CODE_SCHEMA
 from toolsets import (
     get_toolset, resolve_toolset, resolve_multiple_toolsets,
     get_all_toolsets, get_toolset_names, validate_toolset,
@@ -211,6 +213,13 @@ TOOLSET_REQUIREMENTS = {
         "check_fn": check_clarify_requirements,
         "setup_url": None,
         "tools": ["clarify"],
+    },
+    "code_execution": {
+        "name": "Code Execution Sandbox",
+        "env_vars": [],  # Uses stdlib only (subprocess, socket), no external deps
+        "check_fn": check_sandbox_requirements,
+        "setup_url": None,
+        "tools": ["execute_code"],
     },
 }
 
@@ -1005,6 +1014,13 @@ def get_clarify_tool_definitions() -> List[Dict[str, Any]]:
     return [{"type": "function", "function": CLARIFY_SCHEMA}]
 
 
+def get_execute_code_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the code execution sandbox (programmatic tool calling).
+    """
+    return [{"type": "function", "function": EXECUTE_CODE_SCHEMA}]
+
+
 def get_send_message_tool_definitions():
     """Tool definitions for cross-channel messaging."""
     return [
@@ -1174,6 +1190,10 @@ def get_all_tool_names() -> List[str]:
     if check_clarify_requirements():
         tool_names.extend(["clarify"])
     
+    # Code execution sandbox (programmatic tool calling)
+    if check_sandbox_requirements():
+        tool_names.extend(["execute_code"])
+    
     # Cross-channel messaging (always available on messaging platforms)
     tool_names.extend(["send_message"])
     
@@ -1236,6 +1256,10 @@ TOOL_TO_TOOLSET_MAP = {
     "memory": "memory_tools",
     # Session history search
     "session_search": "session_search_tools",
+    # Clarifying questions
+    "clarify": "clarify_tools",
+    # Code execution sandbox
+    "execute_code": "code_execution_tools",
 }
 
 
@@ -1250,6 +1274,11 @@ def get_toolset_for_tool(tool_name: str) -> str:
         str: Name of the toolset, or "unknown" if not found
     """
     return TOOL_TO_TOOLSET_MAP.get(tool_name, "unknown")
+
+
+# Stores the resolved tool name list from the most recent get_tool_definitions()
+# call, so execute_code can determine which tools are available in this session.
+_last_resolved_tool_names: Optional[List[str]] = None
 
 
 def get_tool_definitions(
@@ -1362,6 +1391,11 @@ def get_tool_definitions(
     # Clarifying questions tool
     if check_clarify_requirements():
         for tool in get_clarify_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
+    
+    # Code execution sandbox (programmatic tool calling)
+    if check_sandbox_requirements():
+        for tool in get_execute_code_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
     
     # Cross-channel messaging (always available on messaging platforms)
@@ -1490,6 +1524,10 @@ def get_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
+    
+    # Store resolved names so execute_code knows what's available in this session
+    global _last_resolved_tool_names
+    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
     
     return filtered_tools
 
@@ -2239,6 +2277,15 @@ def handle_function_call(
         elif function_name in ["read_file", "write_file", "patch", "search"]:
             return handle_file_function_call(function_name, function_args, task_id)
 
+        # Route code execution sandbox (programmatic tool calling)
+        elif function_name == "execute_code":
+            code = function_args.get("code", "")
+            return execute_code(
+                code=code,
+                task_id=task_id,
+                enabled_tools=_last_resolved_tool_names,
+            )
+
         # Route text-to-speech tools
         elif function_name in ["text_to_speech"]:
             return handle_tts_function_call(function_name, function_args)
@@ -2367,6 +2414,12 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
             "tools": ["clarify"],
             "description": "Clarifying questions: ask the user multiple-choice or open-ended questions",
             "requirements": []
+        },
+        "code_execution_tools": {
+            "available": check_sandbox_requirements(),
+            "tools": ["execute_code"],
+            "description": "Code execution sandbox: run Python scripts that call tools programmatically",
+            "requirements": ["Linux or macOS (Unix domain sockets)"]
         }
     }
     
@@ -2389,7 +2442,8 @@ def check_toolset_requirements() -> Dict[str, bool]:
         "browser_tools": check_browser_requirements(),
         "cronjob_tools": check_cronjob_requirements(),
         "file_tools": check_file_requirements(),
-        "tts_tools": check_tts_requirements()
+        "tts_tools": check_tts_requirements(),
+        "code_execution_tools": check_sandbox_requirements(),
     }
 
 if __name__ == "__main__":

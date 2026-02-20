@@ -138,6 +138,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "code_execution": {
+        "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
+        "tools": ["execute_code"],
+        "includes": []
+    },
+    
     
     # Scenario-specific toolsets
     
@@ -189,6 +195,8 @@ TOOLSETS = {
             "session_search",
             # Clarifying questions
             "clarify",
+            # Code execution sandbox (programmatic tool calling)
+            "execute_code",
             # Cronjob management (CLI-only)
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
         ],
@@ -227,6 +235,8 @@ TOOLSETS = {
             "memory",
             # Session history search
             "session_search",
+            # Code execution sandbox (programmatic tool calling)
+            "execute_code",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -263,6 +273,8 @@ TOOLSETS = {
             "memory",
             # Session history search
             "session_search",
+            # Code execution sandbox (programmatic tool calling)
+            "execute_code",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -299,6 +311,8 @@ TOOLSETS = {
             "memory",
             # Session history search
             "session_search",
+            # Code execution sandbox (programmatic tool calling)
+            "execute_code",
             # Cronjob management
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging
@@ -335,6 +349,8 @@ TOOLSETS = {
             "memory",
             # Session history search
             "session_search",
+            # Code execution sandbox (programmatic tool calling)
+            "execute_code",
             # Cronjob management - let users schedule tasks
             "schedule_cronjob", "list_cronjobs", "remove_cronjob",
             # Cross-channel messaging

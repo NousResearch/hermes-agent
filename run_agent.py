@@ -1594,6 +1594,12 @@ class AIAgent:
             detail = rl.get(tool_name, tool_name.replace("rl_", ""))
             return f"┊ 🧪 rl        {detail}  {dur}"
 
+        # ── Code Execution Sandbox ──
+        if tool_name == "execute_code":
+            code = args.get("code", "")
+            first_line = code.strip().split("\n")[0] if code.strip() else ""
+            return f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}"
+
         # ── Fallback ──
         preview = _build_tool_preview(tool_name, args) or ""
         return f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}"
@@ -2970,7 +2976,7 @@ class AIAgent:
                                 'skills_list': '📚', 'skill_view': '📚',
                                 'schedule_cronjob': '⏰', 'list_cronjobs': '⏰', 'remove_cronjob': '⏰',
                                 'send_message': '📨', 'todo': '📋', 'memory': '🧠', 'session_search': '🔍',
-                                'clarify': '❓',
+                                'clarify': '❓', 'execute_code': '🐍',
                             }
                             emoji = tool_emoji_map.get(function_name, '⚡')
                             preview = _build_tool_preview(function_name, function_args) or function_name

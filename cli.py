@@ -135,6 +135,10 @@ def load_cli_config() -> Dict[str, Any]:
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },
+        "code_execution": {
+            "timeout": 120,    # Max seconds a sandbox script can run before being killed
+            "max_tool_calls": 50,  # Max RPC tool calls per execution
+        },
     }
     
     # Track whether the config file explicitly set terminal config.

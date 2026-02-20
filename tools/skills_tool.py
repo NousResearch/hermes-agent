@@ -68,8 +68,11 @@ from typing import Dict, Any, List, Optional, Tuple
 import yaml
 
 
-# Default skills directory (relative to repo root)
-SKILLS_DIR = Path(__file__).parent.parent / "skills"
+# All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
+# This is the single source of truth -- agent edits, hub installs, and bundled
+# skills all coexist here without polluting the git repo.
+HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+SKILLS_DIR = HERMES_HOME / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -77,13 +80,8 @@ MAX_DESCRIPTION_LENGTH = 1024
 
 
 def check_skills_requirements() -> bool:
-    """
-    Check if skills tool requirements are met.
-    
-    Returns:
-        bool: True if the skills directory exists, False otherwise
-    """
-    return SKILLS_DIR.exists() and SKILLS_DIR.is_dir()
+    """Skills are always available -- the directory is created on first use if needed."""
+    return True
 
 
 def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
@@ -127,21 +125,11 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     Extract category from skill path based on directory structure.
     
-    For paths like: skills/03-fine-tuning/axolotl/SKILL.md
-    Returns: "03-fine-tuning"
-    
-    Args:
-        skill_path: Path to SKILL.md file
-        
-    Returns:
-        Category name or None if skill is at root level
+    For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     """
     try:
-        # Get path relative to skills directory
         rel_path = skill_path.relative_to(SKILLS_DIR)
         parts = rel_path.parts
-        
-        # If there are at least 2 parts (category/skill/SKILL.md), return category
         if len(parts) >= 3:
             return parts[0]
         return None
@@ -194,18 +182,10 @@ def _parse_tags(tags_value) -> List[str]:
 
 def _find_all_skills() -> List[Dict[str, Any]]:
     """
-    Recursively find all skills in the skills directory.
+    Recursively find all skills in ~/.hermes/skills/.
     
     Returns metadata for progressive disclosure (tier 1):
-    - name (≤64 chars)
-    - description (≤1024 chars)  
-    - category, path, tags, related_skills
-    - reference/template file counts
-    - estimated token count for full content
-    
-    Skills can be:
-    1. Directories containing SKILL.md (preferred)
-    2. Flat .md files (legacy support)
+    - name, description, category
     
     Returns:
         List of skill metadata dicts
@@ -215,9 +195,7 @@ def _find_all_skills() -> List[Dict[str, Any]]:
     if not SKILLS_DIR.exists():
         return skills
     
-    # Find all SKILL.md files recursively
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        # Skip hidden directories, hub state, and common non-skill folders
         path_str = str(skill_md)
         if '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str:
             continue
@@ -228,10 +206,8 @@ def _find_all_skills() -> List[Dict[str, Any]]:
             content = skill_md.read_text(encoding='utf-8')
             frontmatter, body = _parse_frontmatter(content)
             
-            # Get name from frontmatter or directory name (max 64 chars)
             name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
             
-            # Get description from frontmatter or first paragraph (max 1024 chars)
             description = frontmatter.get('description', '')
             if not description:
                 for line in body.strip().split('\n'):
@@ -240,92 +216,19 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                         description = line
                         break
             
-            # Truncate description to limit
             if len(description) > MAX_DESCRIPTION_LENGTH:
                 description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
             
-            # Get category from path
             category = _get_category_from_path(skill_md)
             
-            # Track the path internally for excluding from legacy search
-            skill_path = str(skill_dir.relative_to(SKILLS_DIR))
-            
-            # Minimal entry for list - full details in skill_view()
             skills.append({
                 "name": name,
                 "description": description,
                 "category": category,
-                "_path": skill_path  # Internal only, removed before return
-            })
-            
-        except Exception as e:
-            # Skip files that can't be read
-            continue
-    
-    # Also find flat .md files at any level (legacy support)
-    # But exclude files in skill directories (already handled above)
-    skill_dirs = {s["_path"] for s in skills}
-    
-    for md_file in SKILLS_DIR.rglob("*.md"):
-        # Skip SKILL.md files (already handled)
-        if md_file.name == "SKILL.md":
-            continue
-            
-        # Skip hidden directories and hub state
-        path_str = str(md_file)
-        if '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str:
-            continue
-        
-        # Skip files inside skill directories (they're references, not standalone skills)
-        rel_dir = str(md_file.parent.relative_to(SKILLS_DIR))
-        if any(rel_dir.startswith(sd) for sd in skill_dirs):
-            continue
-            
-        # Skip common non-skill files
-        if md_file.name in ['README.md', 'CONTRIBUTING.md', 'CLAUDE.md', 'LICENSE']:
-            continue
-        if md_file.name.startswith('_'):
-            continue
-            
-        try:
-            content = md_file.read_text(encoding='utf-8')
-            frontmatter, body = _parse_frontmatter(content)
-            
-            name = frontmatter.get('name', md_file.stem)[:MAX_NAME_LENGTH]
-            description = frontmatter.get('description', '')
-            
-            if not description:
-                for line in body.strip().split('\n'):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        description = line
-                        break
-            
-            if len(description) > MAX_DESCRIPTION_LENGTH:
-                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
-            
-            # Get category from parent directory if not at root
-            category = None
-            rel_path = md_file.relative_to(SKILLS_DIR)
-            if len(rel_path.parts) > 1:
-                category = rel_path.parts[0]
-            
-            # Parse optional fields
-            tags = _parse_tags(frontmatter.get('tags', ''))
-            
-            # Minimal entry for list - full details in skill_view()
-            skills.append({
-                "name": name,
-                "description": description,
-                "category": category
             })
             
         except Exception:
             continue
-    
-    # Strip internal _path field before returning
-    for skill in skills:
-        skill.pop("_path", None)
     
     return skills
 
@@ -390,7 +293,6 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
                 "message": "No skills directory found."
             }, ensure_ascii=False)
         
-        # Scan for categories (top-level directories containing skills)
         category_dirs = {}
         for skill_md in SKILLS_DIR.rglob("SKILL.md"):
             category = _get_category_from_path(skill_md)
@@ -399,22 +301,15 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
                 if category not in category_dirs:
                     category_dirs[category] = category_dir
         
-        # Build category list with descriptions
         categories = []
         for name in sorted(category_dirs.keys()):
             category_dir = category_dirs[name]
             description = _load_category_description(category_dir)
-            
-            # Count skills in this category
             skill_count = sum(1 for _ in category_dir.rglob("SKILL.md"))
             
-            cat_entry = {
-                "name": name,
-                "skill_count": skill_count
-            }
+            cat_entry = {"name": name, "skill_count": skill_count}
             if description:
                 cat_entry["description"] = description
-            
             categories.append(cat_entry)
         
         return json.dumps({
@@ -445,14 +340,13 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        # Ensure skills directory exists
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
             return json.dumps({
                 "success": True,
                 "skills": [],
                 "categories": [],
-                "message": "Skills directory created. No skills available yet."
+                "message": "No skills found. Skills directory created at ~/.hermes/skills/"
             }, ensure_ascii=False)
         
         # Find all skills
@@ -507,35 +401,34 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if not SKILLS_DIR.exists():
             return json.dumps({
                 "success": False,
-                "error": "Skills directory does not exist."
+                "error": "Skills directory does not exist yet. It will be created on first install."
             }, ensure_ascii=False)
         
-        # Find the skill
         skill_dir = None
         skill_md = None
         
-        # Try direct path first (e.g., "03-fine-tuning/axolotl")
+        # Try direct path first (e.g., "mlops/axolotl")
         direct_path = SKILLS_DIR / name
         if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
             skill_dir = direct_path
             skill_md = direct_path / "SKILL.md"
         elif direct_path.with_suffix('.md').exists():
-            # Legacy flat file
             skill_md = direct_path.with_suffix('.md')
-        else:
-            # Search for skill by name
+        
+        # Search by directory name
+        if not skill_md:
             for found_skill_md in SKILLS_DIR.rglob("SKILL.md"):
                 if found_skill_md.parent.name == name:
                     skill_dir = found_skill_md.parent
                     skill_md = found_skill_md
                     break
-            
-            # Also check flat .md files
-            if not skill_md:
-                for found_md in SKILLS_DIR.rglob(f"{name}.md"):
-                    if found_md.name != "SKILL.md":
-                        skill_md = found_md
-                        break
+        
+        # Legacy: flat .md files
+        if not skill_md:
+            for found_md in SKILLS_DIR.rglob(f"{name}.md"):
+                if found_md.name != "SKILL.md":
+                    skill_md = found_md
+                    break
         
         if not skill_md or not skill_md.exists():
             # List available skills in error message
@@ -660,7 +553,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if script_files:
             linked_files["scripts"] = script_files
         
-        # Build response with agentskills.io standard fields when present
+        rel_path = str(skill_md.relative_to(SKILLS_DIR))
+        
         result = {
             "success": True,
             "name": frontmatter.get('name', skill_md.stem if not skill_dir else skill_dir.name),
@@ -668,7 +562,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "tags": tags,
             "related_skills": related_skills,
             "content": content,
-            "path": str(skill_md.relative_to(SKILLS_DIR)),
+            "path": rel_path,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None
         }

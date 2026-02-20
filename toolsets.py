@@ -68,8 +68,8 @@ TOOLSETS = {
     },
     
     "skills": {
-        "description": "Access skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view"],
+        "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
+        "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
     
@@ -167,7 +167,7 @@ TOOLSETS = {
             # MoA
             "mixture_of_agents",
             # Skills
-            "skills_list", "skill_view",
+            "skills_list", "skill_view", "skill_manage",
             # Browser
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
@@ -212,7 +212,7 @@ TOOLSETS = {
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision",
             # Skills - access knowledge base
-            "skills_list", "skill_view",
+            "skills_list", "skill_view", "skill_manage",
             # Planning & task management
             "todo",
             # Persistent memory
@@ -248,7 +248,7 @@ TOOLSETS = {
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision",
             # Skills - access knowledge base
-            "skills_list", "skill_view",
+            "skills_list", "skill_view", "skill_manage",
             # Planning & task management
             "todo",
             # Persistent memory
@@ -284,7 +284,7 @@ TOOLSETS = {
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision",
             # Skills
-            "skills_list", "skill_view",
+            "skills_list", "skill_view", "skill_manage",
             # Planning & task management
             "todo",
             # Persistent memory
@@ -320,7 +320,7 @@ TOOLSETS = {
             "browser_press", "browser_close", "browser_get_images",
             "browser_vision",
             # Skills - access knowledge base
-            "skills_list", "skill_view",
+            "skills_list", "skill_view", "skill_manage",
             # Planning & task management
             "todo",
             # Persistent memory

@@ -65,6 +65,12 @@ from .skills_tool import (
     SKILLS_TOOL_DESCRIPTION
 )
 
+from .skill_manager_tool import (
+    skill_manage,
+    check_skill_manage_requirements,
+    SKILL_MANAGE_SCHEMA
+)
+
 # Browser automation tools (agent-browser + Browserbase)
 from .browser_tool import (
     browser_navigate,
@@ -175,6 +181,10 @@ __all__ = [
     'skill_view',
     'check_skills_requirements',
     'SKILLS_TOOL_DESCRIPTION',
+    # Skill management
+    'skill_manage',
+    'check_skill_manage_requirements',
+    'SKILL_MANAGE_SCHEMA',
     # Browser automation tools
     'browser_navigate',
     'browser_snapshot',

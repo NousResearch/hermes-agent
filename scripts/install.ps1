@@ -447,6 +447,8 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\hooks" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\image_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
     
     # Create .env
     $envPath = "$HermesHome\.env"
@@ -499,6 +501,24 @@ Delete the contents (or this file) to use the default personality.
     }
     
     Write-Success "Configuration directory ready: ~/.hermes/"
+    
+    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
+    Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
+    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    if (Test-Path $pythonExe) {
+        try {
+            & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            Write-Success "Skills synced to ~/.hermes/skills/"
+        } catch {
+            # Fallback: simple directory copy
+            $bundledSkills = "$InstallDir\skills"
+            $userSkills = "$HermesHome\skills"
+            if ((Test-Path $bundledSkills) -and -not (Get-ChildItem $userSkills -Exclude '.bundled_manifest' -ErrorAction SilentlyContinue)) {
+                Copy-Item -Path "$bundledSkills\*" -Destination $userSkills -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Success "Skills copied to ~/.hermes/skills/"
+            }
+        }
+    }
 }
 
 function Install-NodeDeps {

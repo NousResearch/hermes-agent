@@ -589,7 +589,7 @@ def apply_anthropic_cache_control(
 # the model can match skills at a glance without extra tool calls.
 def build_skills_system_prompt() -> str:
     """
-    Build a dynamic skills system prompt by scanning the skills/ directory.
+    Build a dynamic skills system prompt by scanning both bundled and user skill directories.
     
     Returns a prompt section that lists all skill categories (with descriptions
     from DESCRIPTION.md) and their skill names inline, so the model can
@@ -599,10 +599,13 @@ def build_skills_system_prompt() -> str:
     Returns:
         str: The skills system prompt section, or empty string if no skills found.
     """
+    import os
     import re
     from pathlib import Path
     
-    skills_dir = Path(__file__).parent / "skills"
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    skills_dir = hermes_home / "skills"
+    
     if not skills_dir.exists():
         return ""
     
@@ -613,7 +616,7 @@ def build_skills_system_prompt() -> str:
         parts = rel_path.parts
         if len(parts) >= 2:
             category = parts[0]
-            skill_name = parts[-2]  # Folder containing SKILL.md
+            skill_name = parts[-2]
         else:
             category = "general"
             skill_name = skill_file.parent.name
@@ -622,25 +625,23 @@ def build_skills_system_prompt() -> str:
     if not skills_by_category:
         return ""
     
-    # Load category descriptions from DESCRIPTION.md files (YAML frontmatter)
+    # Load category descriptions from DESCRIPTION.md files
     category_descriptions = {}
     for category in skills_by_category:
         desc_file = skills_dir / category / "DESCRIPTION.md"
         if desc_file.exists():
             try:
                 content = desc_file.read_text(encoding="utf-8")
-                # Parse description from YAML frontmatter: ---\ndescription: ...\n---
                 match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
                 if match:
                     category_descriptions[category] = match.group(1).strip()
             except Exception:
                 pass
     
-    # Build compact index: category with description + skill names
     index_lines = []
     for category in sorted(skills_by_category.keys()):
         desc = category_descriptions.get(category, "")
-        names = ", ".join(sorted(skills_by_category[category]))
+        names = ", ".join(sorted(set(skills_by_category[category])))
         if desc:
             index_lines.append(f"  {category}: {desc}")
         else:
@@ -650,7 +651,8 @@ def build_skills_system_prompt() -> str:
     return (
         "## Skills (mandatory)\n"
         "Before replying, scan the skills below. If one clearly matches your task, "
-        "load it with skill_view(name) and follow its instructions.\n"
+        "load it with skill_view(name) and follow its instructions. "
+        "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
@@ -2156,7 +2158,7 @@ class AIAgent:
                 if user_block:
                     prompt_parts.append(user_block)
 
-        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view'])
+        has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         skills_prompt = build_skills_system_prompt() if has_skills_tools else ""
         if skills_prompt:
             prompt_parts.append(skills_prompt)

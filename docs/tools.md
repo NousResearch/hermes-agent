@@ -46,7 +46,7 @@ async def web_search(query: str) -> dict:
 | **Image Gen** | `image_generation_tool.py` | `image_generate` |
 | **TTS** | `tts_tool.py` | `text_to_speech` (Edge TTS free / ElevenLabs / OpenAI) |
 | **Reasoning** | `mixture_of_agents_tool.py` | `mixture_of_agents` |
-| **Skills** | `skills_tool.py` | `skills_list`, `skill_view` |
+| **Skills** | `skills_tool.py`, `skill_manager_tool.py` | `skills_list`, `skill_view`, `skill_manage` |
 | **Todo** | `todo_tool.py` | `todo` (read/write task list for multi-step planning) |
 | **Memory** | `memory_tool.py` | `memory` (persistent notes + user profile across sessions) |
 | **Session Search** | `session_search_tool.py` | `session_search` (search + summarize past conversations) |
@@ -154,15 +154,22 @@ Level 2: skill_view(name)        → Full content + metadata       (varies)
 Level 3: skill_view(name, path)  → Specific reference file       (varies)
 ```
 
+All skills live in `~/.hermes/skills/` — a single directory that serves as the source of truth. On fresh install, bundled skills are seeded from the repo's `skills/` directory. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
+
 Skill directory structure:
 ```
-skills/
-└── mlops/
-    └── axolotl/
-        ├── SKILL.md           # Main instructions (required)
-        ├── references/        # Additional docs
-        ├── templates/         # Output formats, configs
-        └── assets/            # Supplementary files (agentskills.io)
+~/.hermes/skills/
+├── mlops/
+│   └── axolotl/
+│       ├── SKILL.md             # Main instructions (required)
+│       ├── references/          # Additional docs
+│       ├── templates/           # Output formats, configs
+│       └── assets/              # Supplementary files (agentskills.io)
+├── devops/
+│   └── deploy-k8s/
+│       └── SKILL.md
+├── .hub/                        # Skills Hub state
+└── .bundled_manifest            # Tracks seeded bundled skills
 ```
 
 SKILL.md uses YAML frontmatter (agentskills.io compatible):
@@ -173,8 +180,54 @@ description: Fine-tuning LLMs with Axolotl
 metadata:
   hermes:
     tags: [Fine-Tuning, LoRA, DPO]
+    category: mlops
 ---
 ```
+
+## Skill Management (skill_manage)
+
+The `skill_manage` tool lets the agent create, update, and delete its own skills -- turning successful approaches into reusable procedural knowledge.
+
+**Module:** `tools/skill_manager_tool.py`
+
+**Actions:**
+| Action | Description | Required params |
+|--------|-------------|-----------------|
+| `create` | Create new skill (SKILL.md + directory) | `name`, `content`, optional `category` |
+| `patch` | Targeted find-and-replace in SKILL.md or supporting file | `name`, `old_string`, `new_string`, optional `file_path`, `replace_all` |
+| `edit` | Full replacement of SKILL.md (major rewrites only) | `name`, `content` |
+| `delete` | Remove a user skill entirely | `name` |
+| `write_file` | Add/overwrite a supporting file | `name`, `file_path`, `file_content` |
+| `remove_file` | Remove a supporting file | `name`, `file_path` |
+
+### patch vs edit
+
+`patch` and `edit` both modify skill files, but serve different purposes:
+
+**`patch`** (preferred for most updates):
+- Targeted `old_string` → `new_string` replacement, same interface as the `patch` file tool
+- Token-efficient: only the changed text appears in the tool call, not the full file
+- Requires unique match by default; set `replace_all=true` for global replacements
+- Returns match count on ambiguous matches so the model can add more context
+- When targeting SKILL.md, validates that frontmatter remains intact after the patch
+- Also works on supporting files via `file_path` parameter (e.g., `references/api.md`)
+- Returns a file preview on not-found errors for self-correction without extra reads
+
+**`edit`** (for major rewrites):
+- Full replacement of SKILL.md content
+- Use when the skill's structure needs to change (reorganizing sections, rewriting from scratch)
+- The model should `skill_view()` first, then provide the complete updated text
+
+**Constraints:**
+- All skills live in `~/.hermes/skills/` and can be modified or deleted
+- Skill names must be lowercase, filesystem-safe (`[a-z0-9._-]+`), max 64 chars
+- SKILL.md must have valid YAML frontmatter with `name` and `description` fields
+- Supporting files must be under `references/`, `templates/`, `scripts/`, or `assets/`
+- Path traversal (`..`) in file paths is blocked
+
+**Availability:** Enabled by default in CLI, Telegram, Discord, WhatsApp, and Slack. Not included in batch_runner or RL training environments.
+
+**Behavioral guidance:** The tool description teaches the model when to create skills (after difficult tasks), when to update them (stale/broken instructions), to prefer `patch` over `edit` for targeted fixes, and the feedback loop pattern (ask user after difficult tasks, offer to save as a skill).
 
 ## Skills Hub
 
@@ -187,6 +240,7 @@ The Skills Hub enables searching, installing, and managing skills from online re
 **Architecture:**
 - `tools/skills_guard.py` — Static scanner + LLM audit, trust-aware install policy
 - `tools/skills_hub.py` — SkillSource ABC, GitHubAuth (PAT + App), 4 source adapters, lock file, hub state
+- `tools/skill_manager_tool.py` — Agent-managed skill CRUD (`skill_manage` tool)
 - `hermes_cli/skills_hub.py` — Shared `do_*` functions, CLI subcommands, `/skills` slash command handler
 
 **CLI:** `hermes skills search|install|inspect|list|audit|uninstall|publish|snapshot|tap`

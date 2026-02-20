@@ -211,8 +211,8 @@ def _print_setup_summary(config: dict, hermes_home):
     # Task planning (always available, in-memory)
     tool_status.append(("Task Planning (todo)", True, None))
     
-    # Skills (always available if skills dir exists)
-    tool_status.append(("Skills Knowledge Base", True, None))
+    # Skills (always available -- bundled skills + user-created skills)
+    tool_status.append(("Skills (view, create, edit)", True, None))
     
     # Print status
     available_count = sum(1 for _, avail, _ in tool_status if avail)

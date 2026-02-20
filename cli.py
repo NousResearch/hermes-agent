@@ -136,7 +136,7 @@ def load_cli_config() -> Dict[str, Any]:
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
         },
         "code_execution": {
-            "timeout": 120,    # Max seconds a sandbox script can run before being killed
+            "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
     }

@@ -132,6 +132,9 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
         },
+        "clarify": {
+            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
+        },
     }
     
     # Track whether the config file explicitly set terminal config.
@@ -1446,19 +1449,18 @@ class HermesCLI:
         
         return True
     
-    # How long to wait for the user to answer a clarify question before
-    # the agent auto-proceeds with its own judgment (seconds).
-    CLARIFY_TIMEOUT = 120
-
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
 
         Sets up the interactive selection UI (or freetext prompt for open-ended
         questions), then blocks until the user responds via the prompt_toolkit
-        key bindings.  If no response arrives within CLARIFY_TIMEOUT seconds the
+        key bindings.  If no response arrives within the configured timeout the
         question is dismissed and the agent is told to decide on its own.
         """
+        import time as _time
+
+        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
         response_queue = queue.Queue()
         is_open_ended = not choices or len(choices) == 0
 
@@ -1468,6 +1470,7 @@ class HermesCLI:
             "selected": 0,
             "response_queue": response_queue,
         }
+        self._clarify_deadline = _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
@@ -1475,21 +1478,32 @@ class HermesCLI:
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
 
-        # Block until the user answers, or time out so automated /
-        # unattended sessions aren't stuck forever.
-        try:
-            return response_queue.get(timeout=self.CLARIFY_TIMEOUT)
-        except queue.Empty:
-            # Timed out — tear down the UI and let the agent decide
-            self._clarify_state = None
-            self._clarify_freetext = False
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            _cprint(f"\n{_DIM}(clarify timed out after {self.CLARIFY_TIMEOUT}s — agent will decide){_RST}")
-            return (
-                "The user did not provide a response within the time limit. "
-                "Use your best judgement to make the choice and proceed."
-            )
+        # Poll in 1-second ticks so the countdown refreshes in the UI.
+        # Each tick triggers an invalidate() to repaint the hint line.
+        while True:
+            try:
+                result = response_queue.get(timeout=1)
+                self._clarify_deadline = 0
+                return result
+            except queue.Empty:
+                remaining = self._clarify_deadline - _time.monotonic()
+                if remaining <= 0:
+                    break
+                # Repaint so the countdown updates
+                if hasattr(self, '_app') and self._app:
+                    self._app.invalidate()
+
+        # Timed out — tear down the UI and let the agent decide
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = 0
+        if hasattr(self, '_app') and self._app:
+            self._app.invalidate()
+        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+        return (
+            "The user did not provide a response within the time limit. "
+            "Use your best judgement to make the choice and proceed."
+        )
 
     def chat(self, message: str) -> Optional[str]:
         """
@@ -1628,6 +1642,7 @@ class HermesCLI:
         # the prompt_toolkit UI switches to a selection mode.
         self._clarify_state = None      # dict with question, choices, selected, response_queue
         self._clarify_freetext = False  # True when user chose "Other" and is typing
+        self._clarify_deadline = 0      # monotonic timestamp when the clarify times out
         
         # Key bindings for the input area
         kb = KeyBindings()
@@ -1805,11 +1820,20 @@ class HermesCLI:
         def get_hint_text():
             if not cli_ref._agent_running:
                 return []
-            # When clarify is active, show a different hint
+            # When clarify is active, show a different hint with countdown
             if cli_ref._clarify_state:
+                import time as _time
+                remaining = max(0, int(cli_ref._clarify_deadline - _time.monotonic()))
+                countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
                 if cli_ref._clarify_freetext:
-                    return [('class:hint', '  type your answer and press Enter')]
-                return [('class:hint', '  ↑/↓ to select, Enter to confirm')]
+                    return [
+                        ('class:hint', '  type your answer and press Enter'),
+                        ('class:clarify-countdown', countdown),
+                    ]
+                return [
+                    ('class:hint', '  ↑/↓ to select, Enter to confirm'),
+                    ('class:clarify-countdown', countdown),
+                ]
             buf = input_area.buffer
             if buf.text:
                 return []
@@ -1933,6 +1957,7 @@ class HermesCLI:
             'clarify-choice': '#AAAAAA',
             'clarify-selected': '#FFD700 bold',
             'clarify-active-other': '#FFD700 italic',
+            'clarify-countdown': '#CD7F32',
         })
         
         # Create the application

@@ -142,6 +142,13 @@ from .todo_tool import (
     TodoStore,
 )
 
+# Clarifying questions tool (interactive Q&A with the user)
+from .clarify_tool import (
+    clarify_tool,
+    check_clarify_requirements,
+    CLARIFY_SCHEMA,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -239,5 +246,9 @@ __all__ = [
     'check_todo_requirements',
     'TODO_SCHEMA',
     'TodoStore',
+    # Clarifying questions tool
+    'clarify_tool',
+    'check_clarify_requirements',
+    'CLARIFY_SCHEMA',
 ]
 

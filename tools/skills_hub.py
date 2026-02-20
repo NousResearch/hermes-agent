@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 
-SKILLS_DIR = Path(__file__).parent.parent / "skills"
+HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+SKILLS_DIR = HERMES_HOME / "skills"
 HUB_DIR = SKILLS_DIR / ".hub"
 LOCK_FILE = HUB_DIR / "lock.json"
 QUARANTINE_DIR = HUB_DIR / "quarantine"

@@ -355,33 +355,32 @@ COMPACT_BANNER = """
 
 def _get_available_skills() -> Dict[str, List[str]]:
     """
-    Scan the skills directory and return skills grouped by category.
+    Scan ~/.hermes/skills/ and return skills grouped by category.
     
     Returns:
         Dict mapping category name to list of skill names
     """
-    skills_dir = Path(__file__).parent / "skills"
+    import os
+    
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    skills_dir = hermes_home / "skills"
     skills_by_category = {}
     
     if not skills_dir.exists():
         return skills_by_category
     
-    # Scan for SKILL.md files
     for skill_file in skills_dir.rglob("SKILL.md"):
-        # Get category (parent of parent if nested, else parent)
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         
         if len(parts) >= 2:
             category = parts[0]
-            skill_name = parts[-2]  # Folder containing SKILL.md
+            skill_name = parts[-2]
         else:
             category = "general"
             skill_name = skill_file.parent.name
         
-        if category not in skills_by_category:
-            skills_by_category[category] = []
-        skills_by_category[category].append(skill_name)
+        skills_by_category.setdefault(category, []).append(skill_name)
     
     return skills_by_category
 

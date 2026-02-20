@@ -231,7 +231,11 @@ def delegate_task(
     overall_start = time.monotonic()
     results = []
 
-    if len(task_list) == 1:
+    n_tasks = len(task_list)
+    # Track goal labels for progress display (truncated for readability)
+    task_labels = [t["goal"][:40] for t in task_list]
+
+    if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         t = task_list[0]
         result = _run_single_child(
@@ -245,7 +249,10 @@ def delegate_task(
         )
         results.append(result)
     else:
-        # Batch -- run in parallel
+        # Batch -- run in parallel with per-task progress lines
+        completed_count = 0
+        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
             for i, t in enumerate(task_list):
@@ -263,17 +270,35 @@ def delegate_task(
 
             for future in as_completed(futures):
                 try:
-                    results.append(future.result())
+                    entry = future.result()
                 except Exception as exc:
                     idx = futures[future]
-                    results.append({
+                    entry = {
                         "task_index": idx,
                         "status": "error",
                         "summary": None,
                         "error": str(exc),
                         "api_calls": 0,
                         "duration_seconds": 0,
-                    })
+                    }
+                results.append(entry)
+                completed_count += 1
+
+                # Print per-task completion line (visible in CLI via patch_stdout)
+                idx = entry["task_index"]
+                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                dur = entry.get("duration_seconds", 0)
+                status = entry.get("status", "?")
+                icon = "✓" if status == "completed" else "✗"
+                remaining = n_tasks - completed_count
+                print(f"  {icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)")
+
+                # Update spinner text to show remaining count
+                if spinner_ref and remaining > 0:
+                    try:
+                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                    except Exception:
+                        pass
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])

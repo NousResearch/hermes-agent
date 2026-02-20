@@ -898,13 +898,13 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "For target='content': regex pattern to search for. For target='files': glob pattern (e.g., '*.py', '*config*')"
+                            "description": "Regex pattern for grep mode, or glob pattern (e.g., '*.py', '*config*') for find mode"
                         },
                         "target": {
                             "type": "string",
-                            "enum": ["content", "files"],
-                            "description": "Search mode: 'content' searches inside files (like grep/rg), 'files' searches for files by name (like find/glob)",
-                            "default": "content"
+                            "enum": ["grep", "find"],
+                            "description": "'grep' searches inside file contents, 'find' searches for files by name",
+                            "default": "grep"
                         },
                         "path": {
                             "type": "string",
@@ -913,7 +913,7 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                         },
                         "file_glob": {
                             "type": "string",
-                            "description": "Filter files by pattern when target='content' (e.g., '*.py' to only search Python files)"
+                            "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"
                         },
                         "limit": {
                             "type": "integer",
@@ -928,12 +928,12 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
                         "output_mode": {
                             "type": "string",
                             "enum": ["content", "files_only", "count"],
-                            "description": "Output format for content search: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
+                            "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
                             "default": "content"
                         },
                         "context": {
                             "type": "integer",
-                            "description": "Number of lines to show before and after each match (only for target='content', output_mode='content')",
+                            "description": "Number of context lines before and after each match (grep mode only)",
                             "default": 0
                         }
                     },
@@ -2016,9 +2016,13 @@ def handle_file_function_call(
         )
     
     elif function_name == "search_files":
+        # Map user-facing target values to internal ones
+        target_map = {"grep": "content", "find": "files"}
+        raw_target = function_args.get("target", "grep")
+        target = target_map.get(raw_target, raw_target)
         return search_tool(
             pattern=function_args.get("pattern", ""),
-            target=function_args.get("target", "content"),
+            target=target,
             path=function_args.get("path", "."),
             file_glob=function_args.get("file_glob"),
             limit=function_args.get("limit", 50),

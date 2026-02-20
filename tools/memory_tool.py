@@ -25,7 +25,7 @@ Design:
 
 import json
 import os
-import fcntl
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -60,6 +60,10 @@ class MemoryStore:
 
         self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
         self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+
+        # Deduplicate entries (preserves order, keeps first occurrence)
+        self.memory_entries = list(dict.fromkeys(self.memory_entries))
+        self.user_entries = list(dict.fromkeys(self.user_entries))
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -107,6 +111,10 @@ class MemoryStore:
         entries = self._entries_for(target)
         limit = self._char_limit(target)
 
+        # Reject exact duplicates
+        if content in entries:
+            return self._success_response(target, "Entry already exists (no duplicate added).")
+
         # Calculate what the new total would be
         new_entries = entries + [content]
         new_total = len(ENTRY_DELIMITER.join(new_entries))
@@ -146,12 +154,16 @@ class MemoryStore:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
 
         if len(matches) > 1:
-            previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-            return {
-                "success": False,
-                "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                "matches": previews,
-            }
+            # If all matches are identical (exact duplicates), operate on the first one
+            unique_texts = set(e for _, e in matches)
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return {
+                    "success": False,
+                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                    "matches": previews,
+                }
+            # All identical -- safe to replace just the first
 
         idx = matches[0][0]
         limit = self._char_limit(target)
@@ -189,12 +201,16 @@ class MemoryStore:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
 
         if len(matches) > 1:
-            previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-            return {
-                "success": False,
-                "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                "matches": previews,
-            }
+            # If all matches are identical (exact duplicates), remove the first one
+            unique_texts = set(e for _, e in matches)
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return {
+                    "success": False,
+                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                    "matches": previews,
+                }
+            # All identical -- safe to remove just the first
 
         idx = matches[0][0]
         entries.pop(idx)
@@ -255,16 +271,15 @@ class MemoryStore:
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries."""
+        """Read a memory file and split into entries.
+
+        No file locking needed: _write_file uses atomic rename, so readers
+        always see either the previous complete file or the new complete file.
+        """
         if not path.exists():
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_SH)
-                try:
-                    raw = f.read()
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+            raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
             return []
 
@@ -276,15 +291,32 @@ class MemoryStore:
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file with file locking."""
+        """Write entries to a memory file using atomic temp-file + rename.
+
+        Previous implementation used open("w") + flock, but "w" truncates the
+        file *before* the lock is acquired, creating a race window where
+        concurrent readers see an empty file. Atomic rename avoids this:
+        readers always see either the old complete file or the new one.
+        """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                try:
+            # Write to temp file in same directory (same filesystem for atomic rename)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(content)
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
@@ -376,3 +408,11 @@ MEMORY_SCHEMA = {
         "required": ["action", "target"],
     },
 }
+
+
+
+
+
+
+
+

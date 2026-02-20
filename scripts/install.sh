@@ -614,7 +614,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
     
     # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories}
+    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
     
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -662,6 +662,18 @@ SOUL_EOF
     fi
     
     log_success "Configuration directory ready: ~/.hermes/"
+    
+    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
+    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+        log_success "Skills synced to ~/.hermes/skills/"
+    else
+        # Fallback: simple directory copy if Python sync fails
+        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
+            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
+            log_success "Skills copied to ~/.hermes/skills/"
+        fi
+    fi
 }
 
 install_node_deps() {

@@ -80,6 +80,8 @@ All your settings are stored in `~/.hermes/` for easy access:
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
 ├── SOUL.md         # Optional: global persona (agent embodies this personality)
+├── memories/       # Persistent memory (MEMORY.md, USER.md)
+├── skills/         # Agent-created skills (managed via skill_manage tool)
 ├── cron/           # Scheduled jobs
 ├── sessions/       # Gateway sessions
 └── logs/           # Logs
@@ -574,11 +576,45 @@ hermes --toolsets browser -q "Go to amazon.com and find the price of the latest 
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
+All skills live in **`~/.hermes/skills/`** -- a single directory that is the source of truth. On fresh install, bundled skills are copied there from the repo. Hub-installed skills and agent-created skills also go here. The agent can modify or delete any skill. `hermes update` adds only genuinely new bundled skills (via a manifest) without overwriting your changes or re-adding skills you deleted.
+
 **Using Skills:**
 ```bash
 hermes --toolsets skills -q "What skills do you have?"
 hermes --toolsets skills -q "Show me the axolotl skill"
 ```
+
+**Agent-Managed Skills (skill_manage tool):**
+
+The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** -- when it figures out a non-trivial workflow, it can save the approach as a skill for future reuse.
+
+The agent is encouraged to **create** skills when:
+- It completed a complex task (5+ tool calls) successfully
+- It hit errors or dead ends and found the working path
+- The user corrected its approach and the corrected version worked
+- It discovered a non-trivial workflow (deployment, data pipeline, configuration)
+
+The agent is encouraged to **update** skills when:
+- Instructions were stale or incorrect (outdated API, changed behavior)
+- Steps didn't work on the current OS or environment
+- Missing critical steps or pitfalls discovered during use
+
+**Actions:**
+
+| Action | Use for | Key params |
+|--------|---------|------------|
+| `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
+| `patch` | Targeted fixes (preferred for updates) | `name`, `old_string`, `new_string` |
+| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
+| `delete` | Remove a skill entirely | `name` |
+| `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
+| `remove_file` | Remove a supporting file | `name`, `file_path` |
+
+The `patch` action uses the same `old_string`/`new_string` pattern as the `patch` file tool -- find a unique string and replace it. This is more token-efficient than `edit` for small fixes (updating a command, adding a pitfall, fixing a version) because the model doesn't need to rewrite the entire skill. When patching SKILL.md, frontmatter integrity is validated after the replacement. The `patch` action also works on supporting files via the `file_path` parameter.
+
+User-created skills are stored in `~/.hermes/skills/` and can optionally be organized into categories (subdirectories). Each skill has a `SKILL.md` file and may include supporting files under `references/`, `templates/`, `scripts/`, and `assets/`.
+
+The `skill_manage` tool is enabled by default in CLI and all messaging platforms. It is **not** included in batch_runner or RL training environments.
 
 **Skills Hub — Search, install, and manage skills from online registries:**
 ```bash
@@ -595,39 +631,55 @@ hermes skills tap add myorg/skills-repo  # Add a custom source
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, and other threats. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
 
-**Creating Skills:**
+**SKILL.md Format:**
 
-Create `skills/category/skill-name/SKILL.md`:
 ```markdown
 ---
 name: my-skill
-description: Brief description
+description: Brief description of what this skill does
 version: 1.0.0
 metadata:
   hermes:
     tags: [python, automation]
+    category: devops
 ---
 
-# Skill Content
+# Skill Title
 
-Instructions, examples, and guidelines here...
+## When to Use
+Trigger conditions for this skill.
+
+## Procedure
+1. Step one
+2. Step two
+
+## Pitfalls
+- Known failure modes and fixes
+
+## Verification
+How to confirm it worked.
 ```
 
-**Skill Structure:**
+**Skill Directory Structure:**
 ```
-skills/
-├── mlops/
+~/.hermes/skills/                  # Single source of truth for all skills
+├── mlops/                         # Category directory
 │   ├── axolotl/
-│   │   ├── SKILL.md          # Main instructions (required)
-│   │   ├── references/       # Additional docs
-│   │   ├── templates/        # Output formats
-│   │   └── assets/           # Supplementary files (agentskills.io standard)
+│   │   ├── SKILL.md               # Main instructions (required)
+│   │   ├── references/            # Additional docs
+│   │   ├── templates/             # Output formats
+│   │   └── assets/                # Supplementary files (agentskills.io standard)
 │   └── vllm/
 │       └── SKILL.md
-├── .hub/                     # Skills Hub state (gitignored)
-│   ├── lock.json             # Installed skill provenance
-│   ├── quarantine/           # Pending security review
-│   └── audit.log             # Security scan history
+├── devops/
+│   └── deploy-k8s/                # Agent-created skill
+│       ├── SKILL.md
+│       └── references/
+├── .hub/                          # Skills Hub state
+│   ├── lock.json                  # Installed skill provenance
+│   ├── quarantine/                # Pending security review
+│   └── audit.log                  # Security scan history
+└── .bundled_manifest              # Tracks which bundled skills have been offered
 ```
 
 ### 🤖 RL Training (Tinker + Atropos)
@@ -910,7 +962,7 @@ Hermes stores all user configuration in `~/.hermes/`:
 
 ```bash
 # Create the directory structure
-mkdir -p ~/.hermes/{cron,sessions,logs}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
 
 # Copy the example config file
 cp cli-config.yaml.example ~/.hermes/config.yaml
@@ -924,6 +976,8 @@ Your `~/.hermes/` directory should now look like:
 ~/.hermes/
 ├── config.yaml     # Agent settings (model, terminal, toolsets, compression, etc.)
 ├── .env            # API keys and secrets (one per line: KEY=value)
+├── memories/       # Persistent memory (MEMORY.md, USER.md)
+├── skills/         # Agent-created skills (auto-created on first use)
 ├── cron/           # Scheduled job data
 ├── sessions/       # Messaging gateway sessions
 └── logs/           # Conversation logs
@@ -1050,7 +1104,7 @@ uv pip install -e "./tinker-atropos"
 npm install  # optional, for browser tools
 
 # Configure
-mkdir -p ~/.hermes/{cron,sessions,logs}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
 cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
@@ -1207,7 +1261,8 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `~/.hermes-agent/logs/` | Session logs |
 | `hermes_cli/` | CLI implementation |
 | `tools/` | Tool implementations |
-| `skills/` | Knowledge documents |
+| `skills/` | Bundled skill sources (copied to `~/.hermes/skills/` on install) |
+| `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `gateway/` | Messaging platform adapters |
 | `cron/` | Scheduler implementation |
 

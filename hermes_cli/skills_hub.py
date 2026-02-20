@@ -186,7 +186,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             "External skills can contain instructions that influence agent behavior,\n"
             "shell commands, and scripts. Even after automated scanning, you should\n"
             "review the installed files before use.\n\n"
-            f"Files will be at: [cyan]skills/{category + '/' if category else ''}{bundle.name}/[/]",
+            f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
             title="Disclaimer",
             border_style="yellow",
         ))

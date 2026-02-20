@@ -42,6 +42,8 @@ from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
 from tools.skills_tool import skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
+# Agent-managed skill creation/editing
+from tools.skill_manager_tool import skill_manage, check_skill_manage_requirements, SKILL_MANAGE_SCHEMA
 # RL Training tools (Tinker-Atropos)
 from tools.rl_training_tool import (
     rl_list_environments,
@@ -151,7 +153,7 @@ TOOLSET_REQUIREMENTS = {
         "env_vars": [],  # Just needs skills directory
         "check_fn": check_skills_requirements,
         "setup_url": None,
-        "tools": ["skills_list", "skill_view"],
+        "tools": ["skills_list", "skill_view", "skill_manage"],
     },
     "rl": {
         "name": "RL Training (Tinker-Atropos)",
@@ -511,6 +513,16 @@ def get_skills_tool_definitions() -> List[Dict[str, Any]]:
             }
         }
     ]
+
+
+def get_skill_manage_tool_definitions() -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for the skill management tool.
+    
+    Returns:
+        List[Dict]: List containing the skill_manage tool definition compatible with OpenAI API
+    """
+    return [{"type": "function", "function": SKILL_MANAGE_SCHEMA}]
 
 
 def get_browser_tool_definitions() -> List[Dict[str, Any]]:
@@ -1090,7 +1102,7 @@ def get_all_tool_names() -> List[str]:
     
     # Skills tools
     if check_skills_requirements():
-        tool_names.extend(["skills_list", "skill_view"])
+        tool_names.extend(["skills_list", "skill_view", "skill_manage"])
     
     # Browser automation tools
     if check_browser_requirements():
@@ -1159,6 +1171,7 @@ TOOL_TO_TOOLSET_MAP = {
     # Skills tools
     "skills_list": "skills_tools",
     "skill_view": "skills_tools",
+    "skill_manage": "skills_tools",
     # Browser automation tools
     "browser_navigate": "browser_tools",
     "browser_snapshot": "browser_tools",
@@ -1281,6 +1294,8 @@ def get_tool_definitions(
     if check_skills_requirements():
         for tool in get_skills_tool_definitions():
             all_available_tools_map[tool["function"]["name"]] = tool
+        for tool in get_skill_manage_tool_definitions():
+            all_available_tools_map[tool["function"]["name"]] = tool
     
     if check_browser_requirements():
         for tool in get_browser_tool_definitions():
@@ -1346,7 +1361,7 @@ def get_tool_definitions(
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
-                        "skills_tools": ["skills_list", "skill_view"],
+                        "skills_tools": ["skills_list", "skill_view", "skill_manage"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -1400,7 +1415,7 @@ def get_tool_definitions(
                         "vision_tools": ["vision_analyze"],
                         "moa_tools": ["mixture_of_agents"],
                         "image_tools": ["image_generate"],
-                        "skills_tools": ["skills_list", "skill_view"],
+                        "skills_tools": ["skills_list", "skill_view", "skill_manage"],
                         "browser_tools": [
                             "browser_navigate", "browser_snapshot", "browser_click",
                             "browser_type", "browser_scroll", "browser_back",
@@ -1676,7 +1691,7 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
 
 def handle_skills_function_call(function_name: str, function_args: Dict[str, Any]) -> str:
     """
-    Handle function calls for skills tools.
+    Handle function calls for skills tools (read-only and management).
     
     Args:
         function_name (str): Name of the skills function to call
@@ -1695,6 +1710,25 @@ def handle_skills_function_call(function_name: str, function_args: Dict[str, Any
             return json.dumps({"error": "Skill name is required"}, ensure_ascii=False)
         file_path = function_args.get("file_path")
         return skill_view(name, file_path=file_path)
+    
+    elif function_name == "skill_manage":
+        action = function_args.get("action", "")
+        name = function_args.get("name", "")
+        if not action:
+            return json.dumps({"error": "action is required"}, ensure_ascii=False)
+        if not name:
+            return json.dumps({"error": "name is required"}, ensure_ascii=False)
+        return skill_manage(
+            action=action,
+            name=name,
+            content=function_args.get("content"),
+            category=function_args.get("category"),
+            file_path=function_args.get("file_path"),
+            file_content=function_args.get("file_content"),
+            old_string=function_args.get("old_string"),
+            new_string=function_args.get("new_string"),
+            replace_all=function_args.get("replace_all", False),
+        )
     
     else:
         return json.dumps({"error": f"Unknown skills function: {function_name}"}, ensure_ascii=False)
@@ -2147,7 +2181,7 @@ def handle_function_call(
             return handle_image_function_call(function_name, function_args)
 
         # Route skills tools
-        elif function_name in ["skills_list", "skill_view"]:
+        elif function_name in ["skills_list", "skill_view", "skill_manage"]:
             return handle_skills_function_call(function_name, function_args)
 
         # Route browser automation tools
@@ -2249,9 +2283,9 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
         },
         "skills_tools": {
             "available": check_skills_requirements(),
-            "tools": ["skills_list", "skill_view"],
-            "description": "Access skill documents that provide specialized instructions, guidelines, or knowledge the agent can load on demand",
-            "requirements": ["skills/ directory in repo root"]
+            "tools": ["skills_list", "skill_view", "skill_manage"],
+            "description": "Access, create, edit, and manage skill documents that provide specialized instructions, guidelines, or knowledge the agent can load on demand",
+            "requirements": ["~/.hermes/skills/ directory (seeded from bundled skills on install)"]
         },
         "browser_tools": {
             "available": check_browser_requirements(),

@@ -190,6 +190,19 @@ def cmd_update(args):
         print()
         print("✓ Code updated!")
         
+        # Sync any new bundled skills (manifest-based -- won't overwrite or re-add deleted skills)
+        try:
+            from tools.skills_sync import sync_skills
+            print()
+            print("→ Checking for new bundled skills...")
+            result = sync_skills(quiet=True)
+            if result["copied"]:
+                print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
+            else:
+                print("  ✓ Skills are up to date")
+        except Exception:
+            pass
+        
         # Check for config migrations
         print()
         print("→ Checking configuration for new options...")

@@ -47,9 +47,5 @@ testlogs
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
 
-# Skills Hub state (local to each machine)
-skills/.hub/lock.json
-skills/.hub/audit.log
-skills/.hub/quarantine/
-skills/.hub/index-cache/
-skills/.hub/taps.json
+# Skills Hub state (lives in ~/.hermes/skills/.hub/ at runtime, but just in case)
+skills/.hub/

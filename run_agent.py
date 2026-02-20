@@ -839,7 +839,7 @@ def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "read_file": "path",
         "write_file": "path",
         "patch": "path",
-        "search": "pattern",
+        "search_files": "pattern",
         "browser_navigate": "url",
         "browser_click": "ref",
         "browser_type": "text",
@@ -1463,7 +1463,7 @@ class AIAgent:
         if tool_name == "patch":
             return f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}"
 
-        if tool_name == "search":
+        if tool_name == "search_files":
             pattern = _trunc(args.get("pattern", ""), 35)
             target = args.get("target", "content")
             verb = "find" if target == "files" else "grep"
@@ -2965,7 +2965,7 @@ class AIAgent:
                             tool_emoji_map = {
                                 'web_search': '🔍', 'web_extract': '📄', 'web_crawl': '🕸️',
                                 'terminal': '💻', 'process': '⚙️',
-                                'read_file': '📖', 'write_file': '✍️', 'patch': '🔧', 'search': '🔎',
+                                'read_file': '📖', 'write_file': '✍️', 'patch': '🔧', 'search_files': '🔎',
                                 'browser_navigate': '🌐', 'browser_snapshot': '📸',
                                 'browser_click': '👆', 'browser_type': '⌨️',
                                 'browser_scroll': '📜', 'browser_back': '◀️',

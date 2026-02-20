@@ -176,7 +176,7 @@ FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
     {"name": "write_file", "function": write_file_tool},
     {"name": "patch", "function": patch_tool},
-    {"name": "search", "function": search_tool}
+    {"name": "search_files", "function": search_tool}
 ]
 
 

@@ -104,7 +104,7 @@ TOOLSETS = {
     
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search"],
+        "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
     
@@ -171,7 +171,7 @@ TOOLSETS = {
             # Terminal + process management
             "terminal", "process",
             # File manipulation
-            "read_file", "write_file", "patch", "search",
+            "read_file", "write_file", "patch", "search_files",
             # Vision
             "vision_analyze",
             # Image generation
@@ -213,7 +213,7 @@ TOOLSETS = {
             # Terminal + process management
             "terminal", "process",
             # File manipulation
-            "read_file", "write_file", "patch", "search",
+            "read_file", "write_file", "patch", "search_files",
             # Web tools
             "web_search", "web_extract",
             # Vision - analyze images sent by users
@@ -251,7 +251,7 @@ TOOLSETS = {
             # Terminal + process management
             "terminal", "process",
             # File manipulation
-            "read_file", "write_file", "patch", "search",
+            "read_file", "write_file", "patch", "search_files",
             # Web tools
             "web_search", "web_extract",
             # Vision - analyze images sent by users
@@ -291,7 +291,7 @@ TOOLSETS = {
             # Terminal + process management
             "terminal", "process",
             # File manipulation
-            "read_file", "write_file", "patch", "search",
+            "read_file", "write_file", "patch", "search_files",
             # Vision
             "vision_analyze",
             # Image generation
@@ -327,7 +327,7 @@ TOOLSETS = {
             # Terminal + process management
             "terminal", "process",
             # File manipulation
-            "read_file", "write_file", "patch", "search",
+            "read_file", "write_file", "patch", "search_files",
             # Web tools
             "web_search", "web_extract",
             # Vision - analyze images sent by users

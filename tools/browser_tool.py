@@ -642,11 +642,39 @@ def _get_browserbase_config() -> Dict[str, str]:
     }
 
 
+_stale_daemons_cleaned = False
+
+def _kill_stale_agent_browser_daemons():
+    """Kill any orphaned agent-browser daemon processes from previous runs."""
+    global _stale_daemons_cleaned
+    if _stale_daemons_cleaned:
+        return
+    _stale_daemons_cleaned = True
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "agent-browser.*daemon"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = result.stdout.strip().split()
+        if pids and pids[0]:
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                except (ProcessLookupError, ValueError, PermissionError):
+                    pass
+            if not os.getenv("HERMES_QUIET"):
+                print(f"[browser_tool] Cleaned up {len(pids)} stale daemon process(es)", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _find_agent_browser() -> str:
     """
     Find the agent-browser CLI executable.
     
     Checks in order: PATH, local node_modules/.bin/, npx fallback.
+    Also kills any stale daemon processes from prior runs on first call.
     
     Returns:
         Path to agent-browser executable
@@ -654,6 +682,8 @@ def _find_agent_browser() -> str:
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
+    _kill_stale_agent_browser_daemons()
+
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
     if which_result:

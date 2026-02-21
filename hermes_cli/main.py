@@ -89,14 +89,31 @@ def cmd_model(args):
         current_model = current_model.get("default", "")
     current_model = current_model or "(not set)"
 
-    active = resolve_provider("auto")
+    # Read effective provider the same way the CLI does at startup:
+    # config.yaml model.provider > env var > auto-detect
+    import os
+    config_provider = None
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        config_provider = model_cfg.get("provider")
 
-    # Map active provider to a display name
+    effective_provider = (
+        os.getenv("HERMES_INFERENCE_PROVIDER")
+        or config_provider
+        or "auto"
+    )
+    active = resolve_provider(effective_provider)
+
+    # Detect custom endpoint
+    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+        active = "custom"
+
     provider_labels = {
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
+        "custom": "Custom endpoint",
     }
-    active_label = provider_labels.get(active, "Custom endpoint")
+    active_label = provider_labels.get(active, active)
 
     print()
     print(f"  Current model:    {current_model}")
@@ -177,7 +194,7 @@ def _prompt_provider_choice(choices):
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
-    from hermes_cli.auth import _prompt_model_selection, _save_model_choice
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value
 
     api_key = get_env_value("OPENROUTER_API_KEY")
@@ -217,7 +234,8 @@ def _model_flow_openrouter(config, current_model=""):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
         _save_model_choice(selected)
-        # Update config provider
+
+        # Update config provider and deactivate any OAuth provider
         from hermes_cli.config import load_config, save_config
         cfg = load_config()
         model = cfg.get("model")
@@ -225,6 +243,7 @@ def _model_flow_openrouter(config, current_model=""):
             model["provider"] = "openrouter"
             model["base_url"] = "https://openrouter.ai/api/v1"
         save_config(cfg)
+        deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
     else:
         print("No change.")
@@ -234,9 +253,11 @@ def _model_flow_nous(config, current_model=""):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state, _prompt_model_selection, _save_model_choice,
-        resolve_nous_runtime_credentials, fetch_nous_models,
-        AuthError, format_auth_error, _login_nous, PROVIDER_REGISTRY,
+        _update_config_for_provider, resolve_nous_runtime_credentials,
+        fetch_nous_models, AuthError, format_auth_error,
+        _login_nous, PROVIDER_REGISTRY,
     )
+    from hermes_cli.config import get_env_value, save_env_value
     import argparse
 
     state = get_provider_auth_state("nous")
@@ -256,7 +277,7 @@ def _model_flow_nous(config, current_model=""):
         except Exception as exc:
             print(f"Login failed: {exc}")
             return
-        # login_nous already handles model selection, so we're done
+        # login_nous already handles model selection + config update
         return
 
     # Already logged in — fetch models and select
@@ -279,6 +300,13 @@ def _model_flow_nous(config, current_model=""):
     selected = _prompt_model_selection(model_ids, current_model=current_model)
     if selected:
         _save_model_choice(selected)
+        # Reactivate Nous as the provider and update config
+        inference_url = creds.get("base_url", "")
+        _update_config_for_provider("nous", inference_url)
+        # Clear any custom endpoint that might conflict
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
     else:
         print("No change.")
@@ -286,7 +314,7 @@ def _model_flow_nous(config, current_model=""):
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name."""
-    from hermes_cli.auth import _save_model_choice
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
@@ -325,16 +353,19 @@ def _model_flow_custom(config):
     if model_name:
         _save_model_choice(model_name)
 
-        # Update config to reflect custom provider
+        # Update config and deactivate any OAuth provider
         cfg = load_config()
         model = cfg.get("model")
         if isinstance(model, dict):
             model["provider"] = "auto"
             model["base_url"] = effective_url
         save_config(cfg)
+        deactivate_provider()
 
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
+        if base_url or api_key:
+            deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
 

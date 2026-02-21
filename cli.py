@@ -782,8 +782,7 @@ class HermesCLI:
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
         except Exception as exc:
-            from hermes_cli.auth import AuthError
-            message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+            message = format_auth_error(exc)
             self.console.print(f"[bold red]{message}[/]")
             return False
 

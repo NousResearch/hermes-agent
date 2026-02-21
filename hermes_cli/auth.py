@@ -261,6 +261,18 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     return True
 
 
+def deactivate_provider() -> None:
+    """
+    Clear active_provider in auth.json without deleting credentials.
+    Used when the user switches to a non-OAuth provider (OpenRouter, custom)
+    so auto-resolution doesn't keep picking the OAuth provider.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = None
+        _save_auth_store(auth_store)
+
+
 # =============================================================================
 # Provider Resolution — picks which provider to use
 # =============================================================================
@@ -799,7 +811,14 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 # =============================================================================
 
 def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Path:
-    """Update config.yaml to reflect the active provider after login."""
+    """Update config.yaml and auth.json to reflect the active provider."""
+    # Set active_provider in auth.json so auto-resolution picks this provider
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        _save_auth_store(auth_store)
+
+    # Update config.yaml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -99,8 +99,3 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> dict:
             "transcript": "",
             "error": str(e),
         }
-
-
-def check_stt_requirements() -> bool:
-    """Check if OpenAI API key is available for speech-to-text."""
-    return bool(os.getenv("HERMES_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))

@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
-from multiprocessing import Pool, Manager, Lock
+from multiprocessing import Pool, Lock
 import traceback
 
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
@@ -36,7 +36,6 @@ import fire
 
 from run_agent import AIAgent
 from toolset_distributions import (
-    get_distribution, 
     list_distributions, 
     sample_toolsets_from_distribution,
     validate_distribution
@@ -173,7 +172,7 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
                     if content_json.get("success") is False:
                         is_success = False
                         
-            except:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 # If not JSON, check if content is empty or explicitly states an error
                 # Note: We avoid simple substring matching to prevent false positives
                 if not content:

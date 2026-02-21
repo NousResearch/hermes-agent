@@ -21,7 +21,7 @@ import sys
 import os
 import argparse
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List
 
 # Import the web tools to test (updated path after moving tools/)
 from tools.web_tools import (

@@ -23,6 +23,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from openai import AsyncOpenAI
+from hermes_constants import OPENROUTER_BASE_URL
 
 SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
 MAX_SESSION_CHARS = 100_000
@@ -40,7 +41,7 @@ def _get_client() -> AsyncOpenAI:
             raise ValueError("OPENROUTER_API_KEY not set")
         _summarizer_client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
+            base_url=OPENROUTER_BASE_URL,
         )
     return _summarizer_client
 

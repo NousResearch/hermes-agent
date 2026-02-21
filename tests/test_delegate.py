@@ -12,7 +12,6 @@ Run with:  python -m pytest tests/test_delegate.py -v
 import json
 import os
 import sys
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 

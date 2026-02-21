@@ -11,20 +11,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-# ANSI colors
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    CYAN = "\033[36m"
-
-def color(text: str, *codes) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return "".join(codes) + text + Colors.RESET
+from hermes_cli.colors import Colors, color
+from hermes_constants import OPENROUTER_MODELS_URL
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -232,7 +220,7 @@ def show_status(args):
                 jobs = data.get("jobs", [])
                 enabled_jobs = [j for j in jobs if j.get("enabled", True)]
                 print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
-        except:
+        except Exception:
             print(f"  Jobs:         (error reading jobs file)")
     else:
         print(f"  Jobs:         0")
@@ -250,7 +238,7 @@ def show_status(args):
             with open(sessions_file) as f:
                 data = json.load(f)
                 print(f"  Active:       {len(data)} session(s)")
-        except:
+        except Exception:
             print(f"  Active:       (error reading sessions file)")
     else:
         print(f"  Active:       0")
@@ -268,7 +256,7 @@ def show_status(args):
             try:
                 import httpx
                 response = httpx.get(
-                    "https://openrouter.ai/api/v1/models",
+                    OPENROUTER_MODELS_URL,
                     headers={"Authorization": f"Bearer {openrouter_key}"},
                     timeout=10
                 )
@@ -288,7 +276,7 @@ def show_status(args):
             port_in_use = result == 0
             # This is informational, not necessarily bad
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
-        except:
+        except OSError:
             pass
     
     print()

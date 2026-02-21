@@ -31,19 +31,17 @@ import asyncio
 import os
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.web_tools import web_search_tool, web_extract_tool, web_crawl_tool, check_firecrawl_api_key
-from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION, cleanup_vm
+from tools.web_tools import web_search_tool, web_extract_tool, check_firecrawl_api_key
+from tools.terminal_tool import terminal_tool, check_terminal_requirements, TERMINAL_TOOL_DESCRIPTION
 # File manipulation tools (read, write, patch, search)
 from tools.file_tools import read_file_tool, write_file_tool, patch_tool, search_tool
 from tools import check_file_requirements
-# Hecate/MorphCloud terminal tool (cloud VMs) - available as alternative backend
-from tools.terminal_hecate import terminal_hecate_tool, check_hecate_requirements, TERMINAL_HECATE_DESCRIPTION
 from tools.vision_tools import vision_analyze_tool, check_vision_requirements
 from tools.mixture_of_agents_tool import mixture_of_agents_tool, check_moa_requirements
 from tools.image_generation_tool import image_generate_tool, check_image_generation_requirements
-from tools.skills_tool import skills_list, skill_view, check_skills_requirements, SKILLS_TOOL_DESCRIPTION
+from tools.skills_tool import skills_list, skill_view, check_skills_requirements
 # Agent-managed skill creation/editing
-from tools.skill_manager_tool import skill_manage, check_skill_manage_requirements, SKILL_MANAGE_SCHEMA
+from tools.skill_manager_tool import skill_manage, SKILL_MANAGE_SCHEMA
 # RL Training tools (Tinker-Atropos)
 from tools.rl_training_tool import (
     rl_list_environments,
@@ -64,7 +62,6 @@ from tools.cronjob_tools import (
     list_cronjobs,
     remove_cronjob,
     check_cronjob_requirements,
-    get_cronjob_tool_definitions,
     SCHEDULE_CRONJOB_SCHEMA,
     LIST_CRONJOBS_SCHEMA,
     REMOVE_CRONJOB_SCHEMA
@@ -99,11 +96,7 @@ from tools.clarify_tool import clarify_tool, check_clarify_requirements, CLARIFY
 from tools.code_execution_tool import execute_code, check_sandbox_requirements, EXECUTE_CODE_SCHEMA
 # Subagent delegation
 from tools.delegate_tool import delegate_task, check_delegate_requirements, DELEGATE_TASK_SCHEMA
-from toolsets import (
-    get_toolset, resolve_toolset, resolve_multiple_toolsets,
-    get_all_toolsets, get_toolset_names, validate_toolset,
-    get_toolset_info, print_toolset_tree
-)
+from toolsets import resolve_toolset, validate_toolset
 
 
 # =============================================================================
@@ -260,43 +253,6 @@ def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[Dict[s
             })
     
     return available, unavailable
-
-
-def print_tool_availability_warnings(unavailable: List[Dict[str, Any]], prefix: str = ""):
-    """Print warnings about unavailable tools."""
-    if not unavailable:
-        return
-    
-    # Filter to only those missing API keys (not system dependencies)
-    api_key_missing = [u for u in unavailable if u["missing_vars"]]
-    
-    if api_key_missing:
-        print(f"{prefix}⚠️  Some tools are disabled due to missing API keys:")
-        for item in api_key_missing:
-            vars_str = ", ".join(item["missing_vars"])
-            print(f"{prefix}   • {item['name']}: missing {vars_str}")
-            if item["setup_url"]:
-                print(f"{prefix}     Get key at: {item['setup_url']}")
-        print(f"{prefix}   Run 'hermes setup' to configure API keys")
-        print()
-
-
-def get_tool_availability_summary() -> Dict[str, Any]:
-    """
-    Get a summary of tool availability for display in status/doctor commands.
-    
-    Returns:
-        Dict with 'available' and 'unavailable' lists of tool info
-    """
-    available, unavailable = check_tool_availability()
-    
-    return {
-        "available": [
-            {"id": tid, "name": TOOLSET_REQUIREMENTS[tid]["name"], "tools": TOOLSET_REQUIREMENTS[tid]["tools"]}
-            for tid in available
-        ],
-        "unavailable": unavailable,
-    }
 
 
 def get_web_tool_definitions() -> List[Dict[str, Any]]:

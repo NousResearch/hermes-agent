@@ -36,9 +36,9 @@ import base64
 from pathlib import Path
 from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
-import httpx  # Use httpx for async HTTP requests
+import httpx
+from hermes_constants import OPENROUTER_BASE_URL
 
-# Initialize OpenRouter API client lazily (only when needed)
 _openrouter_client = None
 
 def _get_openrouter_client():
@@ -50,7 +50,7 @@ def _get_openrouter_client():
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
         _openrouter_client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1"
+            base_url=OPENROUTER_BASE_URL
         )
     return _openrouter_client
 

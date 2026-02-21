@@ -108,7 +108,7 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
         if value:
             try:
                 total += len(_TOKENIZER.encode(value))
-            except:
+            except Exception:
                 # Fallback to character estimate
                 total += len(value) // 4
     

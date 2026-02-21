@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
+from hermes_constants import OPENROUTER_BASE_URL
 
 # Initialize Firecrawl client lazily (only when needed)
 # This prevents import errors when FIRECRAWL_API_KEY is not set
@@ -77,7 +78,7 @@ def _get_summarizer_client():
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
         _summarizer_client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1"
+            base_url=OPENROUTER_BASE_URL
         )
     return _summarizer_client
 

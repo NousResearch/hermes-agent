@@ -39,16 +39,16 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.keys import Keys
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 import threading
 import queue
-import tempfile
 
 
 # Load environment variables first
 from dotenv import load_dotenv
+from hermes_constants import OPENROUTER_BASE_URL
+
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
     load_dotenv(dotenv_path=env_path)
@@ -88,7 +88,7 @@ def load_cli_config() -> Dict[str, Any]:
     defaults = {
         "model": {
             "default": "anthropic/claude-opus-4.6",
-            "base_url": "https://openrouter.ai/api/v1",
+            "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
         },
         "terminal": {
@@ -262,20 +262,15 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
-from rich.console import Console, Group
+from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 from rich.table import Table
-from rich.markdown import Markdown
-from rich.columns import Columns
-from rich.align import Align
-from rich import box
 
 import fire
 
 # Import the agent and tool systems
 from run_agent import AIAgent
-from model_tools import get_tool_definitions, get_all_tool_names, get_toolset_for_tool, get_available_toolsets
+from model_tools import get_tool_definitions, get_toolset_for_tool
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
 # Cron job system for scheduled tasks

@@ -13,23 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-# ANSI colors
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
-    CYAN = "\033[36m"
-
-def color(text: str, *codes) -> str:
-    """Apply color codes to text (only in TTY)."""
-    if not sys.stdout.isatty():
-        return text
-    return "".join(codes) + text + Colors.RESET
+from hermes_cli.colors import Colors, color
 
 def log_info(msg: str):
     print(f"{color('→', Colors.CYAN)} {msg}")

@@ -1081,7 +1081,7 @@ class GatewayRunner:
                         try:
                             msg = progress_queue.get_nowait()
                             await adapter.send(chat_id=source.chat_id, content=msg)
-                        except:
+                        except Exception:
                             break
                     return
                 except Exception as e:

@@ -267,7 +267,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles and URLs. Uses advanced search depth for comprehensive results. PREFERRED over browser tools for finding information - faster and more cost-effective. Use browser tools only when you need to interact with pages (click, fill forms, handle dynamic content).",
+                "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -284,7 +284,7 @@ def get_web_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web_extract",
-                "description": "Extract and read the full content from specific web page URLs. Useful for getting detailed information from webpages found through search. The content returned will be excerpts and key points summarized with an LLM to reduce impact on the context window. PREFERRED over browser tools for reading page content - faster and more cost-effective. Use browser tools only when pages require interaction or have dynamic content.",
+                "description": "Extract content from web page URLs. Pages under 5000 chars return raw content; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. Use browser tools only when pages require interaction or dynamic content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -367,13 +367,13 @@ def get_vision_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "vision_analyze",
-                "description": "Analyze images using AI vision. Accepts HTTP/HTTPS URLs or local file paths (e.g. from the image cache). Provides comprehensive image description and answers specific questions about the image content. Perfect for understanding visual content, reading text in images, identifying objects, analyzing scenes, and extracting visual information.",
+                "description": "Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "image_url": {
                             "type": "string",
-                            "description": "The URL or local file path of the image to analyze. Accepts publicly accessible HTTP/HTTPS URLs or local file paths (e.g. /home/user/.hermes/image_cache/abc123.jpg)."
+                            "description": "Image URL (http/https) or local file path to analyze."
                         },
                         "question": {
                             "type": "string",
@@ -399,7 +399,7 @@ def get_moa_tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "mixture_of_agents",
-                "description": "Process extremely difficult problems requiring intense reasoning using a Mixture-of-Agents. This tool leverages multiple frontier language models to collaboratively solve complex tasks that single models struggle with. Uses a fixed 2-layer architecture: reference models generate diverse responses, then an aggregator synthesizes the best solution. Best for: complex mathematical proofs, advanced coding problems, multi-step analytical reasoning, precise and complex STEM problems, algorithm design, and problems requiring diverse domain expertise.",
+                "description": "Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls (4 reference models + 1 aggregator) with maximum reasoning effort — use sparingly for genuinely difficult problems. Best for: complex math, advanced algorithms, multi-step analytical reasoning, problems benefiting from diverse perspectives.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -729,13 +729,9 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "read_file",
                 "description": (
-                    "Read a file with pagination support. Preferred over 'cat' in the terminal because it "
-                    "provides line numbers, handles binary/image files, and suggests similar filenames if "
-                    "the file is not found.\n\n"
-                    "**Output format:** Each line is returned as 'LINE_NUM|CONTENT' for easy reference.\n"
-                    "**Binary files:** Detected automatically; images (png/jpg/gif/webp) are returned as base64 with MIME type and dimensions.\n"
-                    "**Large files:** Use offset and limit to paginate. The response includes total line count and a hint for the next page.\n"
-                    "**Paths:** Supports absolute paths, relative paths (from working directory), and ~ expansion."
+                    "Read a file with line numbers and pagination. Output format: 'LINE_NUM|CONTENT'. "
+                    "Suggests similar filenames if not found. Images (png/jpg/gif/webp) returned as base64. "
+                    "Use offset and limit for large files."
                 ),
                 "parameters": {
                     "type": "object",
@@ -766,13 +762,8 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "write_file",
                 "description": (
-                    "Write content to a file, completely replacing any existing content. Creates parent "
-                    "directories automatically if they don't exist. Preferred over 'echo' or heredoc in the "
-                    "terminal because it safely handles special characters, newlines, and shell metacharacters "
-                    "without escaping issues.\n\n"
-                    "**Important:** This OVERWRITES the entire file. To make targeted edits to an existing file, "
-                    "use the 'patch' tool instead.\n"
-                    "**Paths:** Supports absolute paths, relative paths, and ~ expansion."
+                    "Write content to a file, completely replacing existing content. Creates parent "
+                    "directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits."
                 ),
                 "parameters": {
                     "type": "object",
@@ -795,17 +786,11 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "patch",
                 "description": (
-                    "Modify existing files using targeted edits. Preferred over 'sed' or manual rewriting because "
-                    "it uses intelligent fuzzy matching that tolerates minor whitespace and indentation differences, "
-                    "and auto-runs syntax checks (Python, JS, TS, Go, Rust) after editing.\n\n"
-                    "**Replace mode (recommended):** Find a unique string in the file and replace it. Uses a "
-                    "9-strategy fuzzy matching chain (exact → line-trimmed → whitespace-normalized → "
-                    "indentation-flexible → context-aware) so small formatting differences won't cause failures. "
-                    "Returns a unified diff showing exactly what changed.\n\n"
-                    "**Patch mode:** Apply multi-file changes using V4A patch format for large-scale edits across "
-                    "multiple files in one call.\n\n"
-                    "**Auto-lint:** After every edit, automatically runs syntax checks and reports errors so you "
-                    "can fix them immediately."
+                    "Targeted find-and-replace edits in files. Uses fuzzy matching (9 strategies) so "
+                    "minor whitespace/indentation differences won't break it. Returns a unified diff. "
+                    "Auto-runs syntax checks after editing.\n\n"
+                    "Replace mode (default): find a unique string and replace it.\n"
+                    "Patch mode: apply V4A multi-file patches for bulk changes."
                 ),
                 "parameters": {
                     "type": "object",
@@ -847,29 +832,25 @@ def get_file_tool_definitions() -> List[Dict[str, Any]]:
             "function": {
                 "name": "search_files",
                 "description": (
-                    "The primary tool for searching code and files. Always use this instead of "
-                    "running grep, rg, find, fd, or ack in the terminal — it's faster (ripgrep-backed), "
-                    "returns structured results with line numbers, and handles pagination automatically.\n\n"
-                    "Use for: finding function/class definitions, searching for error strings, locating "
-                    "config files, finding all files of a type, checking where a variable is used.\n\n"
-                    "**Content search (target='content'):** Regex search inside files with optional "
-                    "file type filtering and context lines. Output modes: full matches with line numbers, "
-                    "file paths only, or match counts per file.\n\n"
-                    "**File search (target='files'):** Find files by glob pattern (e.g., '*.py', '*config*'). "
-                    "Results sorted by modification time so recently changed files appear first."
+                    "Search file contents or find files by name. Ripgrep-backed, faster than "
+                    "grep/rg/find in the terminal.\n\n"
+                    "Content search (target='content'): Regex search inside files. Output modes: "
+                    "full matches with line numbers, file paths only, or match counts.\n\n"
+                    "File search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). "
+                    "Results sorted by modification time."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "Regex pattern for grep mode, or glob pattern (e.g., '*.py', '*config*') for find mode"
+                            "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"
                         },
                         "target": {
                             "type": "string",
-                            "enum": ["grep", "find"],
-                            "description": "'grep' searches inside file contents, 'find' searches for files by name",
-                            "default": "grep"
+                            "enum": ["content", "files"],
+                            "description": "'content' searches inside file contents, 'files' searches for files by name",
+                            "default": "content"
                         },
                         "path": {
                             "type": "string",
@@ -1038,9 +1019,8 @@ def get_process_tool_definitions() -> List[Dict[str, Any]]:
                     "Manage background processes started with terminal(background=true). "
                     "Actions: 'list' (show all), 'poll' (check status + new output), "
                     "'log' (full output with pagination), 'wait' (block until done or timeout), "
-                    "'kill' (terminate), 'write' (send raw data to stdin), 'submit' (send data + Enter). "
-                    "Use 'wait' when you have nothing else to do and want "
-                    "to block until a background process finishes."
+                    "'kill' (terminate), 'write' (send raw stdin data without newline), "
+                    "'submit' (send data + Enter, for answering prompts)."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1052,7 +1032,7 @@ def get_process_tool_definitions() -> List[Dict[str, Any]]:
                         },
                         "session_id": {
                             "type": "string",
-                            "description": "Process session ID (from terminal background output). Required for poll/log/wait/kill."
+                            "description": "Process session ID (from terminal background output). Required for all actions except 'list'."
                         },
                         "data": {
                             "type": "string",
@@ -1999,9 +1979,9 @@ def handle_file_function_call(
         )
     
     elif function_name == "search_files":
-        # Map user-facing target values to internal ones
+        # Accept both old enum values (grep/find) and new ones (content/files)
         target_map = {"grep": "content", "find": "files"}
-        raw_target = function_args.get("target", "grep")
+        raw_target = function_args.get("target", "content")
         target = target_map.get(raw_target, raw_target)
         return search_tool(
             pattern=function_args.get("pattern", ""),

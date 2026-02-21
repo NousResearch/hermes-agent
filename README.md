@@ -37,28 +37,14 @@ hermes          # Start chatting!
 
 ## Getting Started
 
-Hermes supports multiple inference providers. Pick one to get going:
+After installing, connect Hermes to an LLM provider. The quickest way:
 
-**Option A — Nous Portal (subscription):**
 ```bash
-hermes login        # Opens browser to authenticate with Nous Portal
-hermes              # Start chatting!
+hermes login    # Log in with your Nous Portal account (opens browser)
+hermes          # Start chatting!
 ```
 
-**Option B — OpenRouter (pay-per-use, 100+ models):**
-```bash
-hermes model        # Interactive provider & model selector
-                    # → choose OpenRouter, paste your API key, pick a model
-hermes              # Start chatting!
-```
-
-**Option C — Custom endpoint (VLLM, SGLang, etc.):**
-```bash
-hermes model        # → choose Custom endpoint, enter URL + API key + model name
-hermes              # Start chatting!
-```
-
-You can switch providers and models at any time with `hermes model`.
+Don't have a Nous Portal account? Use `hermes model` to set up **OpenRouter** (100+ models, pay-per-use API key) or a **custom endpoint** (VLLM, SGLang, or any OpenAI-compatible API) instead. You can switch providers and models at any time by running `hermes model` again.
 
 ---
 

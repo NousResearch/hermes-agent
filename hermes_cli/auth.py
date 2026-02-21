@@ -30,6 +30,7 @@ import httpx
 import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path
+from hermes_constants import OPENROUTER_BASE_URL
 
 try:
     import fcntl
@@ -865,7 +866,7 @@ def _reset_config_provider() -> Path:
     if isinstance(model, dict):
         model["provider"] = "auto"
         if "base_url" in model:
-            model["base_url"] = "https://openrouter.ai/api/v1"
+            model["base_url"] = OPENROUTER_BASE_URL
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path
 

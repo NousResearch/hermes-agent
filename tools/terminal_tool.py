@@ -212,7 +212,7 @@ def _check_disk_usage_warning():
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
-                    except:
+                    except OSError:
                         pass
         
         total_gb = total_bytes / (1024 ** 3)
@@ -341,7 +341,7 @@ def _prompt_dangerous_approval(command: str, description: str, timeout_seconds: 
         def get_input():
             try:
                 result["choice"] = input("      Choice [o/s/a/D]: ").strip().lower()
-            except:
+            except (EOFError, OSError):
                 result["choice"] = ""
         
         thread = threading.Thread(target=get_input, daemon=True)
@@ -894,7 +894,7 @@ class _SingularityEnvironment:
         """Cleanup on destruction."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass
 
 
@@ -1022,13 +1022,13 @@ class _SSHEnvironment:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}", "-O", "exit", 
                        f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5)
-            except:
+            except (OSError, subprocess.SubprocessError):
                 pass
             
             # Remove socket file
             try:
                 self.control_socket.unlink()
-            except:
+            except OSError:
                 pass
     
     def stop(self):
@@ -1039,7 +1039,7 @@ class _SSHEnvironment:
         """Cleanup on destruction."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass
 
 
@@ -1112,7 +1112,7 @@ class _DockerEnvironment:
         """Cleanup on destruction."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass
 
 
@@ -1189,7 +1189,7 @@ class _ModalEnvironment:
         """Cleanup on destruction."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass
 
 
@@ -1504,7 +1504,7 @@ def get_active_environments_info() -> Dict[str, Any]:
                 try:
                     size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
                     total_size += size
-                except:
+                except OSError:
                     pass
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
@@ -1532,7 +1532,7 @@ def cleanup_all_environments():
         try:
             shutil.rmtree(path, ignore_errors=True)
             print(f"[Terminal Cleanup] Removed orphaned: {path}")
-        except:
+        except OSError:
             pass
     
     if not os.getenv("HERMES_QUIET") and cleaned > 0:
@@ -1669,7 +1669,6 @@ def terminal_tool(
         # This prevents parallel tasks from overwriting each other's files
         # In CLI mode (HERMES_QUIET), use the cwd directly without subdirectories
         if env_type == "local" and not os.getenv("HERMES_QUIET"):
-            import uuid
             with _env_lock:
                 if effective_task_id not in _task_workdirs:
                     task_workdir = Path(cwd) / f"hermes-{effective_task_id}-{uuid.uuid4().hex[:8]}"
@@ -1944,7 +1943,7 @@ def check_terminal_requirements() -> bool:
 
 
 if __name__ == "__main__":
-    """Simple test when run directly."""
+    # Simple test when run directly
     print("Terminal Tool Module (mini-swe-agent backend)")
     print("=" * 50)
     

@@ -446,33 +446,3 @@ def _map_normalized_positions(original: str, normalized: str,
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
-
-
-# =============================================================================
-# Utility Functions
-# =============================================================================
-
-def find_best_match(content: str, pattern: str) -> Optional[Tuple[int, int, str]]:
-    """
-    Find the best match for a pattern and return the strategy name.
-    
-    Returns:
-        Tuple of (start, end, strategy_name) or None if no match
-    """
-    strategies = [
-        ("exact", _strategy_exact),
-        ("line_trimmed", _strategy_line_trimmed),
-        ("whitespace_normalized", _strategy_whitespace_normalized),
-        ("indentation_flexible", _strategy_indentation_flexible),
-        ("escape_normalized", _strategy_escape_normalized),
-        ("trimmed_boundary", _strategy_trimmed_boundary),
-        ("block_anchor", _strategy_block_anchor),
-        ("context_aware", _strategy_context_aware),
-    ]
-    
-    for strategy_name, strategy_fn in strategies:
-        matches = strategy_fn(content, pattern)
-        if matches:
-            return (matches[0][0], matches[0][1], strategy_name)
-    
-    return None

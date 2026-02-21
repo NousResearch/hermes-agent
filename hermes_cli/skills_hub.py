@@ -12,7 +12,6 @@ handler are thin wrappers that parse args and delegate.
 
 import json
 import shutil
-import sys
 from pathlib import Path
 from typing import Optional
 

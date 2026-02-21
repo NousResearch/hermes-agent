@@ -24,7 +24,6 @@ Usage:
 """
 
 from typing import List, Dict, Any, Set, Optional
-import json
 
 
 # Core toolset definitions
@@ -162,7 +161,7 @@ TOOLSETS = {
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": ["mixture_of_agents"],
-        "includes": ["web", "vision", "creative"]
+        "includes": ["web", "vision", "image_gen"]
     },
     
     # ==========================================================================
@@ -587,50 +586,31 @@ def print_toolset_tree(name: str, indent: int = 0) -> None:
 
 
 if __name__ == "__main__":
-    """
-    Demo and testing of the toolsets system
-    """
-    print("🎯 Toolsets System Demo")
+    print("Toolsets System Demo")
     print("=" * 60)
     
-    # Show all available toolsets
-    print("\n📦 Available Toolsets:")
+    print("\nAvailable Toolsets:")
     print("-" * 40)
     for name, toolset in get_all_toolsets().items():
         info = get_toolset_info(name)
-        composite = "📂" if info["is_composite"] else "🔧"
-        print(f"{composite} {name:20} - {toolset['description']}")
-        print(f"   Tools: {len(info['resolved_tools'])} total")
+        composite = "[composite]" if info["is_composite"] else "[leaf]"
+        print(f"  {composite} {name:20} - {toolset['description']}")
+        print(f"     Tools: {len(info['resolved_tools'])} total")
     
-    
-    # Demo toolset resolution
-    print("\n🔍 Toolset Resolution Examples:")
+    print("\nToolset Resolution Examples:")
     print("-" * 40)
-    
-    examples = ["research", "development", "full_stack", "minimal", "safe"]
-    for name in examples:
+    for name in ["web", "terminal", "safe", "debugging"]:
         tools = resolve_toolset(name)
-        print(f"\n{name}:")
-        print(f"  Resolved to {len(tools)} tools: {', '.join(sorted(tools))}")
+        print(f"\n  {name}:")
+        print(f"    Resolved to {len(tools)} tools: {', '.join(sorted(tools))}")
     
-    # Show toolset composition tree
-    print("\n🌳 Toolset Composition Tree:")
+    print("\nMultiple Toolset Resolution:")
     print("-" * 40)
-    print("\nExample: 'content_creation' toolset:")
-    print_toolset_tree("content_creation")
+    combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
+    print(f"  Combining ['web', 'vision', 'terminal']:")
+    print(f"    Result: {', '.join(sorted(combined))}")
     
-    print("\nExample: 'full_stack' toolset:")
-    print_toolset_tree("full_stack")
-    
-    # Demo multiple toolset resolution
-    print("\n🔗 Multiple Toolset Resolution:")
-    print("-" * 40)
-    combined = resolve_multiple_toolsets(["minimal", "vision", "reasoning"])
-    print(f"Combining ['minimal', 'vision', 'reasoning']:")
-    print(f"  Result: {', '.join(sorted(combined))}")
-    
-    # Demo custom toolset creation
-    print("\n➕ Custom Toolset Creation:")
+    print("\nCustom Toolset Creation:")
     print("-" * 40)
     create_custom_toolset(
         name="my_custom",
@@ -638,8 +618,7 @@ if __name__ == "__main__":
         tools=["web_search"],
         includes=["terminal", "vision"]
     )
-    
     custom_info = get_toolset_info("my_custom")
-    print(f"Created 'my_custom' toolset:")
-    print(f"  Description: {custom_info['description']}")
-    print(f"  Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+    print(f"  Created 'my_custom' toolset:")
+    print(f"    Description: {custom_info['description']}")
+    print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")

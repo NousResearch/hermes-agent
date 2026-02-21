@@ -23,20 +23,8 @@ if _env_path.exists():
 # Also try project .env as fallback
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-# ANSI colors
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    CYAN = "\033[36m"
-
-def color(text: str, *codes) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return "".join(codes) + text + Colors.RESET
+from hermes_cli.colors import Colors, color
+from hermes_constants import OPENROUTER_MODELS_URL
 
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
@@ -314,7 +302,7 @@ def run_doctor(args):
         try:
             import httpx
             response = httpx.get(
-                "https://openrouter.ai/api/v1/models",
+                OPENROUTER_MODELS_URL,
                 headers={"Authorization": f"Bearer {openrouter_key}"},
                 timeout=10
             )

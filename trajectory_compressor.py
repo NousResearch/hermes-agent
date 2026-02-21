@@ -44,6 +44,7 @@ from datetime import datetime
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
+from hermes_constants import OPENROUTER_BASE_URL
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -70,7 +71,7 @@ class CompressionConfig:
     
     # Summarization (OpenRouter)
     summarization_model: str = "google/gemini-3-flash-preview"
-    base_url: str = "https://openrouter.ai/api/v1"
+    base_url: str = OPENROUTER_BASE_URL
     api_key_env: str = "OPENROUTER_API_KEY"
     temperature: float = 0.3
     max_retries: int = 3

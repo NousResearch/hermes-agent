@@ -8,14 +8,13 @@ Routes messages to the appropriate destination based on:
 - Local (always saved to files)
 """
 
-import json
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
 
-from .config import Platform, GatewayConfig, HomeChannel
+from .config import Platform, GatewayConfig
 from .session import SessionSource
 
 

@@ -84,7 +84,7 @@ Create a markdown summary that captures all key information in a well-organized,
             max_tokens=4000
         )
         print(f"✅ SUCCESS")
-    except:
+    except Exception:
         print(f"❌ FAILED")
     
     await asyncio.sleep(0.5)
@@ -101,7 +101,7 @@ Create a markdown summary that captures all key information in a well-organized,
             max_tokens=4000
         )
         print(f"✅ SUCCESS")
-    except:
+    except Exception:
         print(f"❌ FAILED")
 
 if __name__ == "__main__":

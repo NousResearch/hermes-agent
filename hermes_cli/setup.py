@@ -301,7 +301,7 @@ def run_setup_wizard(args):
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
-    print(color("│             🦋 Hermes Agent Setup Wizard                │", Colors.MAGENTA))
+    print(color("│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA))
     print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
     print(color("│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA))
     print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))

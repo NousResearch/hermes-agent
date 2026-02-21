@@ -432,7 +432,7 @@ def cmd_update(args):
     import subprocess
     import shutil
     
-    print("🦋 Updating Hermes Agent...")
+    print("⚕ Updating Hermes Agent...")
     print()
     
     # Check if we're in a git repo

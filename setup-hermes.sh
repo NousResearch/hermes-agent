@@ -32,7 +32,7 @@ cd "$SCRIPT_DIR"
 PYTHON_VERSION="3.11"
 
 echo ""
-echo -e "${CYAN}🦋 Hermes Agent Setup${NC}"
+echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
 echo ""
 
 # ============================================================================

@@ -17,7 +17,8 @@ from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
 import sys
-sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource

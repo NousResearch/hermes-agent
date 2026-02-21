@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 import sys
-sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

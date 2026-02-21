@@ -437,127 +437,233 @@ def run_setup_wizard(args):
     print_info("You can edit these files directly or use 'hermes config edit'")
     
     # =========================================================================
-    # Step 1: OpenRouter API Key (Required for tools)
+    # Step 1: Inference Provider Selection
     # =========================================================================
-    print_header("OpenRouter API Key (Required)")
-    print_info("OpenRouter is used for vision, web scraping, and tool operations")
-    print_info("even if you use a custom endpoint for your main agent.")
-    print_info("Get your API key at: https://openrouter.ai/keys")
-    
+    print_header("Inference Provider")
+    print_info("Choose how to connect to your main chat model.")
+    print()
+
+    # Detect current provider state
+    from hermes_cli.auth import (
+        get_active_provider, get_provider_auth_state, PROVIDER_REGISTRY,
+        format_auth_error, AuthError, fetch_nous_models,
+        resolve_nous_runtime_credentials, _update_config_for_provider,
+    )
+    existing_custom = get_env_value("OPENAI_BASE_URL")
     existing_or = get_env_value("OPENROUTER_API_KEY")
-    if existing_or:
-        print_info(f"Current: {existing_or[:8]}... (configured)")
-        if prompt_yes_no("Update OpenRouter API key?", False):
+    active_oauth = get_active_provider()
+
+    # Build "keep current" label
+    if active_oauth and active_oauth in PROVIDER_REGISTRY:
+        keep_label = f"Keep current ({PROVIDER_REGISTRY[active_oauth].name})"
+    elif existing_custom:
+        keep_label = f"Keep current (Custom: {existing_custom})"
+    elif existing_or:
+        keep_label = "Keep current (OpenRouter)"
+    else:
+        keep_label = "Keep current"
+
+    provider_choices = [
+        "Login with Nous Portal (Nous Research subscription)",
+        "OpenRouter API key (100+ models, pay-per-use)",
+        "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
+        keep_label,
+    ]
+
+    provider_idx = prompt_choice("Select your inference provider:", provider_choices, 3)
+
+    # Track which provider was selected for model step
+    selected_provider = None  # "nous", "openrouter", "custom", or None (keep)
+    nous_models = []  # populated if Nous login succeeds
+
+    if provider_idx == 0:  # Nous Portal
+        selected_provider = "nous"
+        print()
+        print_header("Nous Portal Login")
+        print_info("This will open your browser to authenticate with Nous Portal.")
+        print_info("You'll need a Nous Research account with an active subscription.")
+        print()
+
+        try:
+            from hermes_cli.auth import _login_nous, ProviderConfig
+            import argparse
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            pconfig = PROVIDER_REGISTRY["nous"]
+            _login_nous(mock_args, pconfig)
+
+            # Fetch models for the selection step
+            try:
+                creds = resolve_nous_runtime_credentials(
+                    min_key_ttl_seconds=5 * 60, timeout_seconds=15.0,
+                )
+                nous_models = fetch_nous_models(
+                    inference_base_url=creds.get("base_url", ""),
+                    api_key=creds.get("api_key", ""),
+                )
+            except Exception:
+                pass
+
+        except SystemExit:
+            print_warning("Nous Portal login was cancelled or failed.")
+            print_info("You can try again later with: hermes login")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes login")
+            selected_provider = None
+
+    elif provider_idx == 1:  # OpenRouter
+        selected_provider = "openrouter"
+        print()
+        print_header("OpenRouter API Key")
+        print_info("OpenRouter provides access to 100+ models from multiple providers.")
+        print_info("Get your API key at: https://openrouter.ai/keys")
+
+        if existing_or:
+            print_info(f"Current: {existing_or[:8]}... (configured)")
+            if prompt_yes_no("Update OpenRouter API key?", False):
+                api_key = prompt("  OpenRouter API key", password=True)
+                if api_key:
+                    save_env_value("OPENROUTER_API_KEY", api_key)
+                    print_success("OpenRouter API key updated")
+        else:
             api_key = prompt("  OpenRouter API key", password=True)
             if api_key:
                 save_env_value("OPENROUTER_API_KEY", api_key)
-                print_success("OpenRouter API key updated")
-    else:
-        api_key = prompt("  OpenRouter API key", password=True)
-        if api_key:
-            save_env_value("OPENROUTER_API_KEY", api_key)
-            print_success("OpenRouter API key saved")
-        else:
-            print_warning("Skipped - some tools (vision, web scraping) won't work without this")
-    
-    # =========================================================================
-    # Step 2: Main Agent Provider
-    # =========================================================================
-    print_header("Main Agent Provider")
-    print_info("Choose how to connect to your main chat model.")
-    
-    existing_custom = get_env_value("OPENAI_BASE_URL")
-    
-    provider_choices = [
-        "OpenRouter (use same key for agent - recommended)",
-        "Custom OpenAI-compatible endpoint (separate from OpenRouter)",
-        f"Keep current" + (f" ({existing_custom})" if existing_custom else " (OpenRouter)")
-    ]
-    
-    provider_idx = prompt_choice("Select your main agent provider:", provider_choices, 2)
-    
-    if provider_idx == 0:  # OpenRouter for agent too
-        # Clear any custom endpoint - will use OpenRouter
+                print_success("OpenRouter API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear any custom endpoint if switching to OpenRouter
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        print_success("Agent will use OpenRouter")
-    
-    elif provider_idx == 1:  # Custom endpoint
-        print_info("Custom OpenAI-Compatible Endpoint Configuration:")
+
+    elif provider_idx == 2:  # Custom endpoint
+        selected_provider = "custom"
+        print()
+        print_header("Custom OpenAI-Compatible Endpoint")
         print_info("Works with any API that follows OpenAI's chat completions spec")
-        
-        # Show current values if set
+
         current_url = get_env_value("OPENAI_BASE_URL") or ""
         current_key = get_env_value("OPENAI_API_KEY")
         current_model = config.get('model', '')
-        
+
         if current_url:
             print_info(f"  Current URL: {current_url}")
         if current_key:
             print_info(f"  Current key: {current_key[:8]}... (configured)")
-        
+
         base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
         api_key = prompt("  API key", password=True)
         model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
-        
+
         if base_url:
             save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)
         if model_name:
             config['model'] = model_name
+            save_env_value("LLM_MODEL", model_name)
         print_success("Custom endpoint configured")
-    # else: Keep current (provider_idx == 2)
-    
+    # else: provider_idx == 3, keep current
+
     # =========================================================================
-    # Step 3: Model Selection
+    # Step 1b: OpenRouter API Key for tools (if not already set)
     # =========================================================================
-    print_header("Default Model")
-    
-    current_model = config.get('model', 'anthropic/claude-opus-4.6')
-    print_info(f"Current: {current_model}")
-    
-    model_choices = [
-        "anthropic/claude-opus-4.6 (recommended)",
-        "anthropic/claude-sonnet-4.5",
-        "anthropic/claude-opus-4.5",
-        "openai/gpt-5.2",
-        "openai/gpt-5.2-codex",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
-        "z-ai/glm-4.7",
-        "moonshotai/kimi-k2.5",
-        "minimax/minimax-m2.1",
-        "Custom model",
-        f"Keep current ({current_model})"
-    ]
-    
-    model_idx = prompt_choice("Select default model:", model_choices, 11)  # Default: keep current
-    
-    model_map = {
-        0: "anthropic/claude-opus-4.6",
-        1: "anthropic/claude-sonnet-4.5",
-        2: "anthropic/claude-opus-4.5",
-        3: "openai/gpt-5.2",
-        4: "openai/gpt-5.2-codex",
-        5: "google/gemini-3-pro-preview",
-        6: "google/gemini-3-flash-preview",
-        7: "z-ai/glm-4.7",
-        8: "moonshotai/kimi-k2.5",
-        9: "minimax/minimax-m2.1",
-    }
-    
-    if model_idx in model_map:
-        config['model'] = model_map[model_idx]
-        # Also update LLM_MODEL in .env so it stays in sync (cli.py reads .env first)
-        save_env_value("LLM_MODEL", model_map[model_idx])
-    elif model_idx == 10:  # Custom
-        custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
-        if custom:
-            config['model'] = custom
-            save_env_value("LLM_MODEL", custom)
-    # else: Keep current (model_idx == 11)
+    # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
+    # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
+    if selected_provider in ("nous", "custom") and not get_env_value("OPENROUTER_API_KEY"):
+        print()
+        print_header("OpenRouter API Key (for tools)")
+        print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
+        print_info("independently of your main inference provider.")
+        print_info("Get your API key at: https://openrouter.ai/keys")
+
+        api_key = prompt("  OpenRouter API key (optional, press Enter to skip)", password=True)
+        if api_key:
+            save_env_value("OPENROUTER_API_KEY", api_key)
+            print_success("OpenRouter API key saved (for tools)")
+        else:
+            print_info("Skipped - some tools (vision, web scraping) won't work without this")
+
+    # =========================================================================
+    # Step 2: Model Selection (adapts based on provider)
+    # =========================================================================
+    if selected_provider != "custom":  # Custom already prompted for model name
+        print_header("Default Model")
+
+        current_model = config.get('model', 'anthropic/claude-opus-4.6')
+        print_info(f"Current: {current_model}")
+
+        if selected_provider == "nous" and nous_models:
+            # Dynamic model list from Nous Portal
+            model_choices = [f"{m}" for m in nous_models]
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            # Post-login validation: warn if current model might not be available
+            if current_model and current_model not in nous_models:
+                print_warning(f"Your current model ({current_model}) may not be available via Nous Portal.")
+                print_info("Select a model from the list, or keep current to use it anyway.")
+                print()
+
+            model_idx = prompt_choice("Select default model:", model_choices, len(model_choices) - 1)
+
+            if model_idx < len(nous_models):
+                config['model'] = nous_models[model_idx]
+                save_env_value("LLM_MODEL", nous_models[model_idx])
+            elif model_idx == len(nous_models):  # Custom
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: keep current
+        else:
+            # Static list for OpenRouter / fallback
+            model_choices = [
+                "anthropic/claude-opus-4.6 (recommended)",
+                "anthropic/claude-sonnet-4.5",
+                "anthropic/claude-opus-4.5",
+                "openai/gpt-5.2",
+                "openai/gpt-5.2-codex",
+                "google/gemini-3-pro-preview",
+                "google/gemini-3-flash-preview",
+                "z-ai/glm-4.7",
+                "moonshotai/kimi-k2.5",
+                "minimax/minimax-m2.1",
+                "Custom model",
+                f"Keep current ({current_model})"
+            ]
+
+            model_idx = prompt_choice("Select default model:", model_choices, 11)
+
+            model_map = {
+                0: "anthropic/claude-opus-4.6",
+                1: "anthropic/claude-sonnet-4.5",
+                2: "anthropic/claude-opus-4.5",
+                3: "openai/gpt-5.2",
+                4: "openai/gpt-5.2-codex",
+                5: "google/gemini-3-pro-preview",
+                6: "google/gemini-3-flash-preview",
+                7: "z-ai/glm-4.7",
+                8: "moonshotai/kimi-k2.5",
+                9: "minimax/minimax-m2.1",
+            }
+
+            if model_idx in model_map:
+                config['model'] = model_map[model_idx]
+                save_env_value("LLM_MODEL", model_map[model_idx])
+            elif model_idx == 10:  # Custom
+                custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: Keep current (model_idx == 11)
     
     # =========================================================================
     # Step 4: Terminal Backend

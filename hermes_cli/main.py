@@ -12,6 +12,8 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes login               # Authenticate with Nous Portal (or other providers)
+    hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
@@ -48,6 +50,7 @@ def cmd_chat(args):
     # Build kwargs from args
     kwargs = {
         "model": args.model,
+        "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "verbose": args.verbose,
         "query": args.query,
@@ -68,6 +71,18 @@ def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
+
+
+def cmd_login(args):
+    """Authenticate Hermes CLI with a provider."""
+    from hermes_cli.auth import login_command
+    login_command(args)
+
+
+def cmd_logout(args):
+    """Clear provider authentication."""
+    from hermes_cli.auth import logout_command
+    logout_command(args)
 
 
 def cmd_status(args):
@@ -244,6 +259,9 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         print()
+        print("Tip: You can now log in with Nous Portal for inference:")
+        print("  hermes login              # Authenticate with Nous Portal")
+        print()
         print("Note: If you have the gateway service running, restart it:")
         print("  hermes gateway restart")
         
@@ -263,6 +281,8 @@ Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
     hermes setup                  Run setup wizard
+    hermes login                  Authenticate with an inference provider
+    hermes logout                 Clear stored authentication
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -302,6 +322,12 @@ For more help on a command:
     chat_parser.add_argument(
         "-t", "--toolsets",
         help="Comma-separated toolsets to enable"
+    )
+    chat_parser.add_argument(
+        "--provider",
+        choices=["auto", "openrouter", "nous"],
+        default=None,
+        help="Inference provider (default: auto)"
     )
     chat_parser.add_argument(
         "-v", "--verbose",
@@ -365,7 +391,77 @@ For more help on a command:
         help="Reset configuration to defaults"
     )
     setup_parser.set_defaults(func=cmd_setup)
-    
+
+    # =========================================================================
+    # login command
+    # =========================================================================
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Authenticate with an inference provider",
+        description="Run OAuth device authorization flow for Hermes CLI"
+    )
+    login_parser.add_argument(
+        "--provider",
+        choices=["nous"],
+        default=None,
+        help="Provider to authenticate with (default: interactive selection)"
+    )
+    login_parser.add_argument(
+        "--portal-url",
+        help="Portal base URL (default: production portal)"
+    )
+    login_parser.add_argument(
+        "--inference-url",
+        help="Inference API base URL (default: production inference API)"
+    )
+    login_parser.add_argument(
+        "--client-id",
+        default=None,
+        help="OAuth client id to use (default: hermes-cli)"
+    )
+    login_parser.add_argument(
+        "--scope",
+        default=None,
+        help="OAuth scope to request"
+    )
+    login_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically"
+    )
+    login_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="HTTP request timeout in seconds (default: 15)"
+    )
+    login_parser.add_argument(
+        "--ca-bundle",
+        help="Path to CA bundle PEM file for TLS verification"
+    )
+    login_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Disable TLS verification (testing only)"
+    )
+    login_parser.set_defaults(func=cmd_login)
+
+    # =========================================================================
+    # logout command
+    # =========================================================================
+    logout_parser = subparsers.add_parser(
+        "logout",
+        help="Clear authentication for an inference provider",
+        description="Remove stored credentials and reset provider config"
+    )
+    logout_parser.add_argument(
+        "--provider",
+        choices=["nous"],
+        default=None,
+        help="Provider to log out from (default: active provider)"
+    )
+    logout_parser.set_defaults(func=cmd_logout)
+
     # =========================================================================
     # status command
     # =========================================================================
@@ -712,9 +808,9 @@ For more help on a command:
     
     # Default to chat if no command specified
     if args.command is None:
-        # No command = run chat
         args.query = None
         args.model = None
+        args.provider = None
         args.toolsets = None
         args.verbose = False
         cmd_chat(args)

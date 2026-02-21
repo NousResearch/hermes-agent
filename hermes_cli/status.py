@@ -40,6 +40,25 @@ def redact_key(key: str) -> str:
     return key[:4] + "..." + key[-4:]
 
 
+def _format_iso_timestamp(value) -> str:
+    """Format ISO timestamps for status output, converting to local timezone."""
+    if not value or not isinstance(value, str):
+        return "(unknown)"
+    from datetime import datetime, timezone
+    text = value.strip()
+    if not text:
+        return "(unknown)"
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return value
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -85,7 +104,34 @@ def show_status(args):
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
-    
+
+    # =========================================================================
+    # Auth Providers (OAuth)
+    # =========================================================================
+    print()
+    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from hermes_cli.auth import get_nous_auth_status
+        nous_status = get_nous_auth_status()
+    except Exception:
+        nous_status = {}
+
+    nous_logged_in = bool(nous_status.get("logged_in"))
+    print(
+        f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
+        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes login)'}"
+    )
+    if nous_logged_in:
+        portal_url = nous_status.get("portal_base_url") or "(unknown)"
+        access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
+        key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
+        refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+        print(f"    Portal URL: {portal_url}")
+        print(f"    Access exp: {access_exp}")
+        print(f"    Key exp:    {key_exp}")
+        print(f"    Refresh:    {refresh_label}")
+
     # =========================================================================
     # Terminal Configuration
     # =========================================================================

@@ -89,6 +89,7 @@ def load_cli_config() -> Dict[str, Any]:
         "model": {
             "default": "anthropic/claude-opus-4.6",
             "base_url": "https://openrouter.ai/api/v1",
+            "provider": "auto",
         },
         "terminal": {
             "env_type": "local",
@@ -670,6 +671,7 @@ class HermesCLI:
         self,
         model: str = None,
         toolsets: List[str] = None,
+        provider: str = None,
         api_key: str = None,
         base_url: str = None,
         max_turns: int = 60,
@@ -682,6 +684,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
+            provider: Inference provider ("auto", "openrouter", "nous")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -702,6 +705,22 @@ class HermesCLI:
         
         # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+
+        # Provider resolution: determines whether to use OAuth credentials or env var keys
+        from hermes_cli.auth import resolve_provider
+        self.requested_provider = (
+            provider
+            or os.getenv("HERMES_INFERENCE_PROVIDER")
+            or CLI_CONFIG["model"].get("provider")
+            or "auto"
+        )
+        self.provider = resolve_provider(
+            self.requested_provider,
+            explicit_api_key=api_key,
+            explicit_base_url=base_url,
+        )
+        self._nous_key_expires_at: Optional[str] = None
+        self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
         if max_turns != 60:  # CLI arg was explicitly set
             self.max_turns = max_turns
@@ -742,7 +761,53 @@ class HermesCLI:
         
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
-    
+
+    def _ensure_runtime_credentials(self) -> bool:
+        """
+        Ensure OAuth provider credentials are fresh before agent use.
+        For Nous Portal: checks agent key TTL, refreshes/re-mints as needed.
+        If the key changed, tears down the agent so it rebuilds with new creds.
+        Returns True if credentials are ready, False on auth failure.
+        """
+        if self.provider != "nous":
+            return True
+
+        from hermes_cli.auth import format_auth_error, resolve_nous_runtime_credentials
+
+        try:
+            credentials = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(
+                    60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
+                ),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            )
+        except Exception as exc:
+            from hermes_cli.auth import AuthError
+            message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+            self.console.print(f"[bold red]{message}[/]")
+            return False
+
+        api_key = credentials.get("api_key")
+        base_url = credentials.get("base_url")
+        if not isinstance(api_key, str) or not api_key:
+            self.console.print("[bold red]Nous credential resolver returned an empty API key.[/]")
+            return False
+        if not isinstance(base_url, str) or not base_url:
+            self.console.print("[bold red]Nous credential resolver returned an empty base URL.[/]")
+            return False
+
+        credentials_changed = api_key != self.api_key or base_url != self.base_url
+        self.api_key = api_key
+        self.base_url = base_url
+        self._nous_key_expires_at = credentials.get("expires_at")
+        self._nous_key_source = credentials.get("source")
+
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
+        if credentials_changed and self.agent is not None:
+            self.agent = None
+
+        return True
+
     def _init_agent(self) -> bool:
         """
         Initialize the agent on first use.
@@ -752,7 +817,10 @@ class HermesCLI:
         """
         if self.agent is not None:
             return True
-        
+
+        if self.provider == "nous" and not self._ensure_runtime_credentials():
+            return False
+
         # Initialize SQLite session store for CLI sessions
         self._session_db = None
         try:
@@ -853,11 +921,15 @@ class HermesCLI:
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
             toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
-        
+
+        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        if self.provider == "nous" and self._nous_key_source:
+            provider_info += f" [dim #B8860B]·[/] [dim]key: {self._nous_key_source}[/]"
+
         self.console.print(
             f"  {api_indicator} [#FFBF00]{model_short}[/] "
             f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
-            f"{toolsets_info}"
+            f"{toolsets_info}{provider_info}"
         )
     
     def show_help(self):
@@ -1528,6 +1600,10 @@ class HermesCLI:
         Returns:
             The agent's response, or None on error
         """
+        # Refresh OAuth credentials if needed (handles key rotation transparently)
+        if self.provider == "nous" and not self._ensure_runtime_credentials():
+            return None
+
         # Initialize agent if needed
         if not self._init_agent():
             return None
@@ -2072,6 +2148,7 @@ def main(
     q: str = None,
     toolsets: str = None,
     model: str = None,
+    provider: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = 60,
@@ -2091,6 +2168,7 @@ def main(
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
+        provider: Inference provider ("auto", "openrouter", "nous")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
@@ -2165,6 +2243,7 @@ def main(
     cli = HermesCLI(
         model=model,
         toolsets=toolsets_list,
+        provider=provider,
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,

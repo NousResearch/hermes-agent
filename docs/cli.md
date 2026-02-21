@@ -11,6 +11,10 @@ The Hermes Agent CLI provides an interactive terminal interface for working with
 # With specific model
 ./hermes --model "anthropic/claude-sonnet-4"
 
+# With specific provider
+./hermes --provider nous        # Use Nous Portal (requires: hermes login)
+./hermes --provider openrouter  # Force OpenRouter
+
 # With specific toolsets
 ./hermes --toolsets "web,terminal,skills"
 
@@ -75,13 +79,21 @@ The CLI is configured via `cli-config.yaml`. Copy from `cli-config.yaml.example`
 cp cli-config.yaml.example cli-config.yaml
 ```
 
-### Model Configuration
+### Model & Provider Configuration
 
 ```yaml
 model:
-  default: "anthropic/claude-opus-4.5"
+  default: "anthropic/claude-opus-4.6"
   base_url: "https://openrouter.ai/api/v1"
+  provider: "auto"  # "auto" | "openrouter" | "nous"
 ```
+
+**Provider selection** (`provider` field):
+- `auto` (default): Uses Nous Portal if logged in (`hermes login`), otherwise falls back to OpenRouter/env vars.
+- `openrouter`: Always uses `OPENROUTER_API_KEY` from `.env`.
+- `nous`: Always uses Nous Portal OAuth credentials from `auth.json`.
+
+Can also be overridden per-session with `--provider` or via `HERMES_INFERENCE_PROVIDER` env var.
 
 ### Terminal Configuration
 

@@ -1707,7 +1707,7 @@ def terminal_tool(
                         needs_creation = False
 
                 if needs_creation:
-                    if env_type in ("singularity", "local"):
+                    if env_type == "singularity":
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:

@@ -645,28 +645,41 @@ def _get_browserbase_config() -> Dict[str, str]:
 _stale_daemons_cleaned = False
 
 def _kill_stale_agent_browser_daemons():
-    """Kill any orphaned agent-browser daemon processes from previous runs."""
+    """Kill any orphaned agent-browser daemon processes from previous runs.
+    
+    Uses multiple patterns to catch daemons from different agent-browser versions,
+    since the daemon process name/args can vary between releases.
+    """
     global _stale_daemons_cleaned
     if _stale_daemons_cleaned:
         return
     _stale_daemons_cleaned = True
 
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "agent-browser.*daemon"],
-            capture_output=True, text=True, timeout=5
-        )
-        pids = result.stdout.strip().split()
-        if pids and pids[0]:
+    patterns = [
+        "agent-browser.*daemon",
+        "agent-browser/.*dist/daemon",
+    ]
+    killed_pids = set()
+
+    for pattern in patterns:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip().split()
             for pid in pids:
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                except (ProcessLookupError, ValueError, PermissionError):
-                    pass
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[browser_tool] Cleaned up {len(pids)} stale daemon process(es)", file=sys.stderr)
-    except Exception:
-        pass
+                if pid and pid not in killed_pids:
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                        killed_pids.add(pid)
+                    except (ProcessLookupError, ValueError, PermissionError):
+                        pass
+        except Exception:
+            pass
+
+    if killed_pids and not os.getenv("HERMES_QUIET"):
+        print(f"[browser_tool] Cleaned up {len(killed_pids)} stale daemon process(es)", file=sys.stderr)
 
 
 def _find_agent_browser() -> str:
@@ -771,10 +784,22 @@ def _run_browser_command(
             env=browser_env,
         )
         
+        # Log stderr for diagnostics (agent-browser may emit warnings there)
+        if result.stderr and result.stderr.strip() and not os.getenv("HERMES_QUIET"):
+            print(f"[browser_tool] stderr from '{command}': {result.stderr.strip()[:200]}", file=sys.stderr)
+        
         # Parse JSON output
         if result.stdout.strip():
             try:
-                return json.loads(result.stdout.strip())
+                parsed = json.loads(result.stdout.strip())
+                # Warn if snapshot came back empty (common sign of daemon/CDP issues)
+                if command == "snapshot" and parsed.get("success"):
+                    snap_data = parsed.get("data", {})
+                    if not snap_data.get("snapshot") and not snap_data.get("refs"):
+                        print(f"[browser_tool] WARNING: snapshot returned empty content. "
+                              f"Possible stale daemon or CDP connection issue. "
+                              f"returncode={result.returncode}", file=sys.stderr)
+                return parsed
             except json.JSONDecodeError:
                 # If not valid JSON, return as raw output
                 return {

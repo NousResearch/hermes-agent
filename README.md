@@ -492,10 +492,10 @@ All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state
 
 ### 📝 Session Logging
 
-Every conversation is logged to `~/.hermes-agent/logs/` for debugging:
+Every conversation is logged to `~/.hermes/sessions/` for debugging:
 
 ```
-logs/
+sessions/
 ├── session_20260201_143052_a1b2c3.json
 └── ...
 ```
@@ -1361,8 +1361,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes login`) |
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
-| `~/.hermes-agent/` | Installation directory |
-| `~/.hermes-agent/logs/` | Session logs |
+| `~/.hermes/hermes-agent/` | Installation directory |
 | `hermes_cli/` | CLI implementation |
 | `hermes_cli/auth.py` | Multi-provider auth system |
 | `tools/` | Tool implementations |

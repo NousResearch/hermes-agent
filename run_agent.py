@@ -1207,6 +1207,19 @@ class AIAgent:
             logging.getLogger('openai._base_client').setLevel(logging.ERROR)
             logging.getLogger('httpx').setLevel(logging.ERROR)
             logging.getLogger('httpcore').setLevel(logging.ERROR)
+            if self.quiet_mode:
+                # In quiet mode (CLI default), suppress all tool/infra log
+                # noise. The TUI has its own rich display for status; logger
+                # INFO/WARNING messages just clutter it.
+                for quiet_logger in [
+                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
+                    'minisweagent',         # mini-swe-agent execution backend
+                    'run_agent',            # agent runner internals
+                    'trajectory_compressor',
+                    'cron',                 # scheduler (only relevant in daemon mode)
+                    'hermes_cli',           # CLI helpers
+                ]:
+                    logging.getLogger(quiet_logger).setLevel(logging.ERROR)
         
         # Initialize OpenAI client - defaults to OpenRouter
         client_kwargs = {}

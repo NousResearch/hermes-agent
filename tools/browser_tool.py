@@ -57,6 +57,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from hermes_constants import OPENROUTER_CHAT_URL
 
 # Try to import httpx for async LLM calls
 try:
@@ -821,7 +822,7 @@ Provide a concise summary focused on interactive elements and key content."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                OPENROUTER_CHAT_URL,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
@@ -1324,7 +1325,7 @@ Focus on answering the user's specific question."""
             async def analyze_screenshot():
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
+                        OPENROUTER_CHAT_URL,
                         headers={
                             "Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json"
@@ -1374,7 +1375,7 @@ Focus on answering the user's specific question."""
         else:
             # Fallback: use synchronous requests
             response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                OPENROUTER_CHAT_URL,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"

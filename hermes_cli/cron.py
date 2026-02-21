@@ -4,29 +4,14 @@ Cron subcommand for hermes CLI.
 Handles: hermes cron [list|daemon|tick]
 """
 
-import json
 import sys
-import time
 from pathlib import Path
 from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# ANSI colors
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    CYAN = "\033[36m"
-
-def color(text: str, *codes) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return "".join(codes) + text + Colors.RESET
+from hermes_cli.colors import Colors, color
 
 
 def cron_list(show_all: bool = False):

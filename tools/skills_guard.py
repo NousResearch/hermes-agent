@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from hermes_constants import OPENROUTER_BASE_URL
+
 
 # ---------------------------------------------------------------------------
 # Hardcoded trust configuration
@@ -941,7 +943,7 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
             return static_result
 
         client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url=OPENROUTER_BASE_URL,
             api_key=api_key,
         )
         response = client.chat.completions.create(
@@ -1035,11 +1037,6 @@ def _get_configured_model() -> str:
         return config.get("model", "")
     except Exception:
         return ""
-
-
-def check_guard_requirements() -> Tuple[bool, str]:
-    """Check if the guard module can operate. Always returns True (no external deps)."""
-    return True, "Skills Guard ready"
 
 
 # ---------------------------------------------------------------------------

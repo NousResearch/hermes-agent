@@ -40,6 +40,7 @@ if env_path.exists():
     load_dotenv(dotenv_path=env_path)
 
 from hermes_cli import __version__
+from hermes_constants import OPENROUTER_BASE_URL
 
 
 def cmd_chat(args):
@@ -241,7 +242,7 @@ def _model_flow_openrouter(config, current_model=""):
         model = cfg.get("model")
         if isinstance(model, dict):
             model["provider"] = "openrouter"
-            model["base_url"] = "https://openrouter.ai/api/v1"
+            model["base_url"] = OPENROUTER_BASE_URL
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")

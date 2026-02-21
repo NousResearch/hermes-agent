@@ -1,3 +1,7 @@
+# NOTE: This file is maintained for convenience only.
+# The canonical dependency list is in pyproject.toml.
+# Preferred install: pip install -e ".[all]"
+
 # Core dependencies
 openai
 python-dotenv
@@ -10,6 +14,7 @@ pyyaml
 requests
 jinja2
 pydantic>=2.0
+PyJWT[crypto]
 
 # Web tools
 firecrawl-py
@@ -23,27 +28,13 @@ litellm>=1.75.5
 typer
 platformdirs
 
-# Optional: For Docker backend (recommended)
-# Requires Docker installed and user in 'docker' group
-
-# Optional: For Modal backend (cloud execution)
-# swe-rex[modal]>=1.4.0  # Includes modal + boto3 + swe-rex runtime
-
 # Text-to-speech (Edge TTS is free, no API key needed)
 edge-tts
-
-# Optional: Premium TTS providers
-# elevenlabs  # Uncomment if using ElevenLabs TTS (needs ELEVENLABS_API_KEY)
 
 # Optional: For cron expression parsing (cronjob scheduling)
 croniter
 
 # Optional: For messaging platform integrations (gateway)
-# Telegram
 python-telegram-bot>=20.0
-
-# Discord
 discord.py>=2.0
-
-# WhatsApp bridge communication + general async HTTP (used by gateway)
 aiohttp>=3.9.0

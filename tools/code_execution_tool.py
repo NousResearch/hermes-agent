@@ -345,7 +345,7 @@ def execute_code(
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    sock_path = f"/tmp/hermes_rpc_{uuid.uuid4().hex}.sock"
+    sock_path = os.path.join(tempfile.gettempdir(), f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment

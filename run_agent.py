@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 import threading
@@ -53,6 +54,8 @@ from tools.terminal_tool import cleanup_vm, set_interrupt_event as _set_terminal
 from tools.browser_tool import cleanup_browser
 
 import requests
+
+from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 
 # =============================================================================
 # Default Agent Identity & Platform Hints
@@ -133,7 +136,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     
     try:
         response = requests.get(
-            "https://openrouter.ai/api/v1/models",
+            OPENROUTER_MODELS_URL,
             timeout=10
         )
         response.raise_for_status()
@@ -282,7 +285,7 @@ class ContextCompressor:
         api_key = os.getenv("OPENROUTER_API_KEY", "")
         self.client = OpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1"
+            base_url=OPENROUTER_BASE_URL
         ) if api_key else None
     
     def update_from_response(self, usage: Dict[str, Any]):
@@ -600,7 +603,6 @@ def build_skills_system_prompt() -> str:
         str: The skills system prompt section, or empty string if no skills found.
     """
     import os
-    import re
     from pathlib import Path
     
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
@@ -1093,8 +1095,8 @@ class AIAgent:
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
-            model (str): Model name to use (default: "gpt-4")
-            max_iterations (int): Maximum number of tool calling iterations (default: 10)
+            model (str): Model name to use (default: "anthropic/claude-opus-4.6")
+            max_iterations (int): Maximum number of tool calling iterations (default: 60)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -1102,7 +1104,7 @@ class AIAgent:
             verbose_logging (bool): Enable verbose logging for debugging (default: False)
             quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
             ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
-            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 20)
+            log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses (default: 100)
             log_prefix (str): Prefix to add to all log messages for identification in parallel processing (default: "")
             providers_allowed (List[str]): OpenRouter providers to allow (optional)
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
@@ -1137,7 +1139,7 @@ class AIAgent:
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
-        self.base_url = base_url or "https://openrouter.ai/api/v1"
+        self.base_url = base_url or OPENROUTER_BASE_URL
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode
@@ -1215,7 +1217,7 @@ class AIAgent:
         if base_url:
             client_kwargs["base_url"] = base_url
         else:
-            client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
+            client_kwargs["base_url"] = OPENROUTER_BASE_URL
         
         # Handle API key - OpenRouter is the primary provider
         if api_key:
@@ -1636,7 +1638,6 @@ class AIAgent:
         if not content:
             return False
         
-        import re
         # Remove all <think>...</think> blocks (including nested ones, non-greedy)
         cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
         
@@ -1686,6 +1687,19 @@ class AIAgent:
         
         return None
     
+    def _cleanup_task_resources(self, task_id: str) -> None:
+        """Clean up VM and browser resources for a given task."""
+        try:
+            cleanup_vm(task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
+        try:
+            cleanup_browser(task_id)
+        except Exception as e:
+            if self.verbose_logging:
+                logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
         Get messages up to (but not including) the last assistant turn.
@@ -2331,7 +2345,6 @@ class AIAgent:
             Dict: Complete conversation result with final response and message history
         """
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
-        import uuid
         effective_task_id = task_id or str(uuid.uuid4())
         
         # Reset retry counters at the start of each conversation to prevent state leakage
@@ -2628,17 +2641,7 @@ class AIAgent:
                             print(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
                             
-                            # Clean up VM and browser
-                            try:
-                                cleanup_vm(effective_task_id)
-                            except Exception as e:
-                                if self.verbose_logging:
-                                    logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
-                            try:
-                                cleanup_browser(effective_task_id)
-                            except Exception as e:
-                                if self.verbose_logging:
-                                    logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
+                            self._cleanup_task_resources(effective_task_id)
                             
                             return {
                                 "final_response": None,
@@ -2846,15 +2849,7 @@ class AIAgent:
                         self._incomplete_scratchpad_retries = 0
                         
                         rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
-                        
-                        try:
-                            cleanup_vm(effective_task_id)
-                        except Exception:
-                            pass
-                        try:
-                            cleanup_browser(effective_task_id)
-                        except Exception:
-                            pass
+                        self._cleanup_task_resources(effective_task_id)
                         
                         return {
                             "final_response": None,
@@ -3247,18 +3242,7 @@ class AIAgent:
                             self._empty_content_retries = 0  # Reset for next conversation
                             
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
-                            
-                            # Clean up VM and browser
-                            try:
-                                cleanup_vm(effective_task_id)
-                            except Exception as e:
-                                if self.verbose_logging:
-                                    logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
-                            try:
-                                cleanup_browser(effective_task_id)
-                            except Exception as e:
-                                if self.verbose_logging:
-                                    logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
+                            self._cleanup_task_resources(effective_task_id)
                             
                             return {
                                 "final_response": None,
@@ -3365,7 +3349,6 @@ class AIAgent:
                     final_response = summary_response.choices[0].message.content
                     # Strip think blocks from final response
                     if "<think>" in final_response:
-                        import re
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                     
                     # Add to messages for session continuity
@@ -3384,17 +3367,7 @@ class AIAgent:
         self._save_trajectory(messages, user_message, completed)
 
         # Clean up VM and browser for this task after conversation completes
-        try:
-            cleanup_vm(effective_task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup VM for task {effective_task_id}: {e}")
-        
-        try:
-            cleanup_browser(effective_task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup browser for task {effective_task_id}: {e}")
+        self._cleanup_task_resources(effective_task_id)
 
         # Update session messages and save session log
         self._session_messages = messages
@@ -3644,7 +3617,6 @@ def main(
     
     # Save sample trajectory to UUID-named file if requested
     if save_sample:
-        import uuid
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
         

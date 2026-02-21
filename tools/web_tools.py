@@ -41,6 +41,7 @@ Usage:
 #TODO: Tool to see what pages are available/saved to search over
 
 import json
+import logging
 import os
 import re
 import asyncio
@@ -51,6 +52,8 @@ from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Initialize Firecrawl client lazily (only when needed)
 # This prevents import errors when FIRECRAWL_API_KEY is not set
@@ -100,13 +103,7 @@ DEBUG_DATA = {
 # Create logs directory if debug mode is enabled
 if DEBUG_MODE:
     DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    _verbose_print(f"🐛 Debug mode enabled - Session ID: {DEBUG_SESSION_ID}")
-
-
-def _verbose_print(*args, **kwargs):
-    """Print only if not in quiet mode (HERMES_QUIET not set)."""
-    if not os.getenv("HERMES_QUIET"):
-        print(*args, **kwargs)
+    logger.info("Debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
 
 
 def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
@@ -147,10 +144,10 @@ def _save_debug_log() -> None:
         with open(debug_filepath, 'w', encoding='utf-8') as f:
             json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
         
-        _verbose_print(f"🐛 Debug log saved: {debug_filepath}")
+        logger.debug("Debug log saved: %s", debug_filepath)
         
     except Exception as e:
-        print(f"❌ Error saving debug log: {str(e)}")
+        logger.error("Error saving debug log: %s", e)
 
 
 async def process_content_with_llm(
@@ -192,12 +189,12 @@ async def process_content_with_llm(
         # Refuse if content is absurdly large
         if content_len > MAX_CONTENT_SIZE:
             size_mb = content_len / 1_000_000
-            _verbose_print(f"🚫 Content too large ({size_mb:.1f}MB > 2MB limit). Refusing to process.")
+            logger.warning("Content too large (%.1fMB > 2MB limit). Refusing to process.", size_mb)
             return f"[Content too large to process: {size_mb:.1f}MB. Try using web_crawl with specific extraction instructions, or search for a more focused source.]"
         
         # Skip processing if content is too short
         if content_len < min_length:
-            _verbose_print(f"📏 Content too short ({content_len} < {min_length} chars), skipping LLM processing")
+            logger.debug("Content too short (%d < %d chars), skipping LLM processing", content_len, min_length)
             return None
         
         # Create context information
@@ -210,13 +207,13 @@ async def process_content_with_llm(
         
         # Check if we need chunked processing
         if content_len > CHUNK_THRESHOLD:
-            _verbose_print(f"📦 Content large ({content_len:,} chars). Using chunked processing...")
+            logger.info("Content large (%d chars). Using chunked processing...", content_len)
             return await _process_large_content_chunked(
                 content, context_str, model, CHUNK_SIZE, MAX_OUTPUT_SIZE
             )
         
         # Standard single-pass processing for normal content
-        _verbose_print(f"🧠 Processing content with LLM ({content_len} characters)")
+        logger.info("Processing content with LLM (%d characters)", content_len)
         
         processed_content = await _call_summarizer_llm(content, context_str, model)
         
@@ -228,12 +225,12 @@ async def process_content_with_llm(
             # Log compression metrics
             processed_length = len(processed_content)
             compression_ratio = processed_length / content_len if content_len > 0 else 1.0
-            _verbose_print(f"✅ Content processed: {content_len} → {processed_length} chars ({compression_ratio:.1%})")
+            logger.info("Content processed: %d -> %d chars (%.1f%%)", content_len, processed_length, compression_ratio * 100)
         
         return processed_content
         
     except Exception as e:
-        print(f"❌ Error processing content with LLM: {str(e)}")
+        logger.error("Error processing content with LLM: %s", e)
         return f"[Failed to process content: {str(e)[:100]}. Content size: {len(content):,} chars]"
 
 
@@ -325,8 +322,8 @@ Create a markdown summary that captures all key information in a well-organized,
         except Exception as api_error:
             last_error = api_error
             if attempt < max_retries - 1:
-                _verbose_print(f"⚠️  LLM API call failed (attempt {attempt + 1}/{max_retries}): {str(api_error)[:100]}")
-                _verbose_print(f"   Retrying in {retry_delay}s...")
+                logger.warning("LLM API call failed (attempt %d/%d): %s", attempt + 1, max_retries, str(api_error)[:100])
+                logger.warning("Retrying in %ds...", retry_delay)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
             else:
@@ -362,7 +359,7 @@ async def _process_large_content_chunked(
         chunk = content[i:i + chunk_size]
         chunks.append(chunk)
     
-    _verbose_print(f"   📦 Split into {len(chunks)} chunks of ~{chunk_size:,} chars each")
+    logger.info("Split into %d chunks of ~%d chars each", len(chunks), chunk_size)
     
     # Summarize each chunk in parallel
     async def summarize_chunk(chunk_idx: int, chunk_content: str) -> tuple[int, Optional[str]]:
@@ -378,10 +375,10 @@ async def _process_large_content_chunked(
                 chunk_info=chunk_info
             )
             if summary:
-                _verbose_print(f"   ✅ Chunk {chunk_idx + 1}/{len(chunks)} summarized: {len(chunk_content):,} → {len(summary):,} chars")
+                logger.info("Chunk %d/%d summarized: %d -> %d chars", chunk_idx + 1, len(chunks), len(chunk_content), len(summary))
             return chunk_idx, summary
         except Exception as e:
-            _verbose_print(f"   ⚠️  Chunk {chunk_idx + 1}/{len(chunks)} failed: {str(e)[:50]}")
+            logger.warning("Chunk %d/%d failed: %s", chunk_idx + 1, len(chunks), str(e)[:50])
             return chunk_idx, None
     
     # Run all chunk summarizations in parallel
@@ -395,10 +392,10 @@ async def _process_large_content_chunked(
             summaries.append(f"## Section {chunk_idx + 1}\n{summary}")
     
     if not summaries:
-        print(f"   ❌ All chunk summarizations failed")
+        logger.error("All chunk summarizations failed")
         return "[Failed to process large content: all chunk summarizations failed]"
     
-    _verbose_print(f"   📊 Got {len(summaries)}/{len(chunks)} chunk summaries")
+    logger.info("Got %d/%d chunk summaries", len(summaries), len(chunks))
     
     # If only one chunk succeeded, just return it (with cap)
     if len(summaries) == 1:
@@ -408,7 +405,7 @@ async def _process_large_content_chunked(
         return result
     
     # Synthesize the summaries into a final summary
-    _verbose_print(f"   🔗 Synthesizing {len(summaries)} summaries...")
+    logger.info("Synthesizing %d summaries...", len(summaries))
     
     combined_summaries = "\n\n---\n\n".join(summaries)
     
@@ -450,11 +447,11 @@ Create a single, unified markdown summary."""
         final_len = len(final_summary)
         compression = final_len / original_len if original_len > 0 else 1.0
         
-        _verbose_print(f"   ✅ Synthesis complete: {original_len:,} → {final_len:,} chars ({compression:.2%})")
+        logger.info("Synthesis complete: %d -> %d chars (%.2f%%)", original_len, final_len, compression * 100)
         return final_summary
         
     except Exception as e:
-        _verbose_print(f"   ⚠️  Synthesis failed: {str(e)[:100]}")
+        logger.warning("Synthesis failed: %s", str(e)[:100])
         # Fall back to concatenated summaries with truncation
         fallback = "\n\n".join(summaries)
         if len(fallback) > max_output_size:
@@ -541,8 +538,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
     
     try:
-        if not os.getenv("HERMES_QUIET"):
-            _verbose_print(f"🔍 Searching the web for: '{query}' (limit: {limit})")
+        logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
         
         # Use Firecrawl's v2 search functionality WITHOUT scraping
         # We only want search result metadata, not scraped content
@@ -582,8 +578,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 web_results = response['web']
         
         results_count = len(web_results)
-        if not os.getenv("HERMES_QUIET"):
-            _verbose_print(f"✅ Found {results_count} search results")
+        logger.info("Found %d search results", results_count)
         
         # Build response with just search metadata (URLs, titles, descriptions)
         response_data = {
@@ -609,7 +604,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _log_debug_call("web_search_tool", debug_call_data)
@@ -663,7 +658,7 @@ async def web_extract_tool(
     }
     
     try:
-        _verbose_print(f"📄 Extracting content from {len(urls)} URL(s)")
+        logger.info("Extracting content from %d URL(s)", len(urls))
         
         # Determine requested formats for Firecrawl v2
         formats: List[str] = []
@@ -681,7 +676,7 @@ async def web_extract_tool(
         
         for url in urls:
             try:
-                _verbose_print(f"  📄 Scraping: {url}")
+                logger.info("Scraping: %s", url)
                 scrape_result = _get_firecrawl_client().scrape(
                     url=url,
                     formats=formats
@@ -745,7 +740,7 @@ async def web_extract_tool(
                 })
                 
             except Exception as scrape_err:
-                print(f"  ❌ Error scraping {url}: {str(scrape_err)}")
+                logger.error("Error scraping %s: %s", url, scrape_err)
                 results.append({
                     "url": url,
                     "title": "",
@@ -757,14 +752,14 @@ async def web_extract_tool(
         response = {"results": results}
         
         pages_extracted = len(response.get('results', []))
-        _verbose_print(f"✅ Extracted content from {pages_extracted} pages")
+        logger.info("Extracted content from %d pages", pages_extracted)
         
         debug_call_data["pages_extracted"] = pages_extracted
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
         if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
-            _verbose_print("🧠 Processing extracted content with LLM (parallel)...")
+            logger.info("Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
             # Prepare tasks for parallel processing
@@ -822,22 +817,22 @@ async def web_extract_tool(
                 if status == "processed":
                     debug_call_data["compression_metrics"].append(metrics)
                     debug_call_data["pages_processed_with_llm"] += 1
-                    _verbose_print(f"  📝 {url} (processed)")
+                    logger.info("%s (processed)", url)
                 elif status == "too_short":
                     debug_call_data["compression_metrics"].append(metrics)
-                    _verbose_print(f"  📝 {url} (no processing - content too short)")
+                    logger.info("%s (no processing - content too short)", url)
                 else:
-                    _verbose_print(f"  ⚠️  {url} (no content to process)")
+                    logger.warning("%s (no content to process)", url)
         else:
             if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
-                print("⚠️  LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
+                logger.warning("LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of extracted pages for debugging (original behavior)
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('raw_content', ''))
-                _verbose_print(f"  📝 {url} ({content_length} characters)")
+                logger.info("%s (%d characters)", url, content_length)
         
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
@@ -871,7 +866,7 @@ async def web_extract_tool(
             
     except Exception as e:
         error_msg = f"Error extracting content: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _log_debug_call("web_extract_tool", debug_call_data)
@@ -932,10 +927,10 @@ async def web_crawl_tool(
         # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
-            _verbose_print(f"  📝 Added https:// prefix to URL: {url}")
+            logger.info("Added https:// prefix to URL: %s", url)
         
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
-        _verbose_print(f"🕷️ Crawling {url}{instructions_text}")
+        logger.info("Crawling %s%s", url, instructions_text)
         
         # Use Firecrawl's v2 crawl functionality
         # Docs: https://docs.firecrawl.dev/features/crawl
@@ -952,7 +947,7 @@ async def web_crawl_tool(
         # Note: The 'prompt' parameter is not documented for crawl
         # Instructions are typically used with the Extract endpoint, not Crawl
         if instructions:
-            _verbose_print(f"  ℹ️  Note: Instructions parameter ignored (not supported in crawl API)")
+            logger.info("Instructions parameter ignored (not supported in crawl API)")
         
         # Use the crawl method which waits for completion automatically
         try:
@@ -961,7 +956,7 @@ async def web_crawl_tool(
                 **crawl_params
             )
         except Exception as e:
-            print(f"  ❌ Crawl API call failed: {e}")
+            logger.error("Crawl API call failed: %s", e)
             raise
 
         pages: List[Dict[str, Any]] = []
@@ -972,23 +967,23 @@ async def web_crawl_tool(
         # The crawl_result is a CrawlJob object with a 'data' attribute containing list of Document objects
         if hasattr(crawl_result, 'data'):
             data_list = crawl_result.data if crawl_result.data else []
-            _verbose_print(f"  📊 Status: {getattr(crawl_result, 'status', 'unknown')}")
-            _verbose_print(f"  📄 Retrieved {len(data_list)} pages")
+            logger.info("Status: %s", getattr(crawl_result, 'status', 'unknown'))
+            logger.info("Retrieved %d pages", len(data_list))
             
             # Debug: Check other attributes if no data
             if not data_list:
-                _verbose_print(f"  🔍 Debug - CrawlJob attributes: {[attr for attr in dir(crawl_result) if not attr.startswith('_')]}")
-                _verbose_print(f"  🔍 Debug - Status: {getattr(crawl_result, 'status', 'N/A')}")
-                _verbose_print(f"  🔍 Debug - Total: {getattr(crawl_result, 'total', 'N/A')}")
-                _verbose_print(f"  🔍 Debug - Completed: {getattr(crawl_result, 'completed', 'N/A')}")
+                logger.debug("CrawlJob attributes: %s", [attr for attr in dir(crawl_result) if not attr.startswith('_')])
+                logger.debug("Status: %s", getattr(crawl_result, 'status', 'N/A'))
+                logger.debug("Total: %s", getattr(crawl_result, 'total', 'N/A'))
+                logger.debug("Completed: %s", getattr(crawl_result, 'completed', 'N/A'))
                 
         elif isinstance(crawl_result, dict) and 'data' in crawl_result:
             data_list = crawl_result.get("data", [])
         else:
-            print("  ⚠️  Unexpected crawl result type")
-            _verbose_print(f"  🔍 Debug - Result type: {type(crawl_result)}")
+            logger.warning("Unexpected crawl result type")
+            logger.debug("Result type: %s", type(crawl_result))
             if hasattr(crawl_result, '__dict__'):
-                _verbose_print(f"  🔍 Debug - Result attributes: {list(crawl_result.__dict__.keys())}")
+                logger.debug("Result attributes: %s", list(crawl_result.__dict__.keys()))
         
         for item in data_list:
             # Process each crawled page - properly handle object serialization
@@ -1053,14 +1048,14 @@ async def web_crawl_tool(
         response = {"results": pages}
         
         pages_crawled = len(response.get('results', []))
-        _verbose_print(f"✅ Crawled {pages_crawled} pages")
+        logger.info("Crawled %d pages", pages_crawled)
         
         debug_call_data["pages_crawled"] = pages_crawled
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
         # Process each result with LLM if enabled
         if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
-            _verbose_print("🧠 Processing crawled content with LLM (parallel)...")
+            logger.info("Processing crawled content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
             # Prepare tasks for parallel processing
@@ -1118,22 +1113,22 @@ async def web_crawl_tool(
                 if status == "processed":
                     debug_call_data["compression_metrics"].append(metrics)
                     debug_call_data["pages_processed_with_llm"] += 1
-                    _verbose_print(f"  🌐 {page_url} (processed)")
+                    logger.info("%s (processed)", page_url)
                 elif status == "too_short":
                     debug_call_data["compression_metrics"].append(metrics)
-                    _verbose_print(f"  🌐 {page_url} (no processing - content too short)")
+                    logger.info("%s (no processing - content too short)", page_url)
                 else:
-                    _verbose_print(f"  ⚠️  {page_url} (no content to process)")
+                    logger.warning("%s (no content to process)", page_url)
         else:
             if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
-                print("⚠️  LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
+                logger.warning("LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of crawled pages for debugging (original behavior)
             for result in response.get('results', []):
                 page_url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('content', ''))
-                _verbose_print(f"  🌐 {page_url} ({content_length} characters)")
+                logger.info("%s (%d characters)", page_url, content_length)
         
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
@@ -1161,7 +1156,7 @@ async def web_crawl_tool(
         
     except Exception as e:
         error_msg = f"Error crawling website: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _log_debug_call("web_crawl_tool", debug_call_data)
@@ -1255,7 +1250,7 @@ if __name__ == "__main__":
     
     # Show debug mode status
     if DEBUG_MODE:
-        _verbose_print(f"🐛 Debug mode ENABLED - Session ID: {DEBUG_SESSION_ID}")
+        print(f"🐛 Debug mode ENABLED - Session ID: {DEBUG_SESSION_ID}")
         print(f"   Debug logs will be saved to: ./logs/web_tools_debug_{DEBUG_SESSION_ID}.json")
     else:
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")

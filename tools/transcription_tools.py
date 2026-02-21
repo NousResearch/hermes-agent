@@ -21,9 +21,12 @@ Usage:
         print(result["transcript"])
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Default STT model -- cheapest and widely available
@@ -85,7 +88,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> dict:
         # The response is a plain string when response_format="text"
         transcript_text = str(transcription).strip()
 
-        print(f"[STT] Transcribed {audio_path.name} ({len(transcript_text)} chars)", flush=True)
+        logger.info("Transcribed %s (%d chars)", audio_path.name, len(transcript_text))
 
         return {
             "success": True,
@@ -93,7 +96,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> dict:
         }
 
     except Exception as e:
-        print(f"[STT] Transcription error: {e}", flush=True)
+        logger.error("Transcription error: %s", e)
         return {
             "success": False,
             "transcript": "",

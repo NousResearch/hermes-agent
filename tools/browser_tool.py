@@ -45,6 +45,7 @@ Usage:
 
 import atexit
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -58,6 +59,8 @@ import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from hermes_constants import OPENROUTER_CHAT_URL
+
+logger = logging.getLogger(__name__)
 
 # Try to import httpx for async LLM calls
 try:
@@ -123,14 +126,14 @@ def _emergency_cleanup_all_sessions():
     if not _active_sessions:
         return
     
-    print(f"\n[browser_tool] Emergency cleanup: closing {len(_active_sessions)} active session(s)...", file=sys.stderr)
+    logger.info("Emergency cleanup: closing %s active session(s)...", len(_active_sessions))
     
     try:
         api_key = os.environ.get("BROWSERBASE_API_KEY")
         project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
         
         if not api_key or not project_id:
-            print("[browser_tool] WARNING: Cannot cleanup - missing BROWSERBASE credentials", file=sys.stderr)
+            logger.warning("Cannot cleanup - missing BROWSERBASE credentials")
             return
         
         for task_id, session_info in list(_active_sessions.items()):
@@ -150,20 +153,20 @@ def _emergency_cleanup_all_sessions():
                         timeout=5  # Short timeout for cleanup
                     )
                     if response.status_code in (200, 201, 204):
-                        print(f"[browser_tool] Closed session {bb_session_id}", file=sys.stderr)
+                        logger.info("Closed session %s", bb_session_id)
                     else:
-                        print(f"[browser_tool] Failed to close session {bb_session_id}: HTTP {response.status_code}", file=sys.stderr)
+                        logger.warning("Failed to close session %s: HTTP %s", bb_session_id, response.status_code)
                 except Exception as e:
-                    print(f"[browser_tool] Error closing session {bb_session_id}: {e}", file=sys.stderr)
+                    logger.error("Error closing session %s: %s", bb_session_id, e)
         
         _active_sessions.clear()
     except Exception as e:
-        print(f"[browser_tool] Emergency cleanup error: {e}", file=sys.stderr)
+        logger.error("Emergency cleanup error: %s", e)
 
 
 def _signal_handler(signum, frame):
     """Handle interrupt signals to cleanup sessions before exit."""
-    print(f"\n[browser_tool] Received signal {signum}, cleaning up...", file=sys.stderr)
+    logger.warning("Received signal %s, cleaning up...", signum)
     _emergency_cleanup_all_sessions()
     sys.exit(128 + signum)
 
@@ -202,17 +205,14 @@ def _cleanup_inactive_browser_sessions():
     
     for task_id in sessions_to_cleanup:
         try:
-            if not os.getenv("HERMES_QUIET"):
-                elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
-                print(f"[browser_tool] Cleaning up inactive session for task: {task_id} "
-                      f"(inactive for {elapsed}s)", file=sys.stderr)
+            elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
+            logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
             cleanup_browser(task_id)
             with _cleanup_lock:
                 if task_id in _session_last_activity:
                     del _session_last_activity[task_id]
         except Exception as e:
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[browser_tool] Error cleaning up inactive session {task_id}: {e}", file=sys.stderr)
+            logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
 
 
 def _browser_cleanup_thread_worker():
@@ -228,8 +228,7 @@ def _browser_cleanup_thread_worker():
         try:
             _cleanup_inactive_browser_sessions()
         except Exception as e:
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[browser_tool] Cleanup thread error: {e}", file=sys.stderr)
+            logger.warning("Cleanup thread error: %s", e)
         
         # Sleep in 1-second intervals so we can stop quickly if needed
         for _ in range(30):
@@ -251,9 +250,7 @@ def _start_browser_cleanup_thread():
                 name="browser-cleanup"
             )
             _cleanup_thread.start()
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[browser_tool] Started inactivity cleanup thread "
-                      f"(timeout: {BROWSER_SESSION_INACTIVITY_TIMEOUT}s)", file=sys.stderr)
+            logger.info("Started inactivity cleanup thread (timeout: %ss)", BROWSER_SESSION_INACTIVITY_TIMEOUT)
 
 
 def _stop_browser_cleanup_thread():
@@ -480,8 +477,7 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
             if timeout_val > 0:
                 session_config["timeout"] = timeout_val
         except ValueError:
-            print(f"[browser_tool] WARNING: Invalid BROWSERBASE_SESSION_TIMEOUT value: {custom_timeout_ms}", 
-                  file=sys.stderr)
+            logger.warning("Invalid BROWSERBASE_SESSION_TIMEOUT value: %s", custom_timeout_ms)
     
     # Enable proxies for better CAPTCHA solving (default: true)
     # Routes traffic through residential IPs for more reliable access
@@ -516,8 +512,8 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
         # First try without keepAlive (most likely culprit for paid plan requirement)
         if enable_keep_alive:
             keepalive_fallback = True
-            print(f"[browser_tool] WARNING: keepAlive may require paid plan (402), retrying without it. "
-                  f"Sessions may timeout during long operations.", file=sys.stderr)
+            logger.warning("keepAlive may require paid plan (402), retrying without it. "
+                          "Sessions may timeout during long operations.")
             session_config.pop("keepAlive", None)
             response = requests.post(
                 "https://api.browserbase.com/v1/sessions",
@@ -532,8 +528,8 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
         # If still 402, try without proxies too
         if response.status_code == 402 and enable_proxies:
             proxies_fallback = True
-            print(f"[browser_tool] WARNING: Proxies unavailable (402), retrying without proxies. "
-                  f"Bot detection may be less effective.", file=sys.stderr)
+            logger.warning("Proxies unavailable (402), retrying without proxies. "
+                          "Bot detection may be less effective.")
             session_config.pop("proxies", None)
             response = requests.post(
                 "https://api.browserbase.com/v1/sessions",
@@ -563,7 +559,7 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
     
     # Log session info for debugging
     feature_str = ", ".join(k for k, v in features_enabled.items() if v)
-    print(f"[browser_tool] Created session {session_name} with features: {feature_str}", file=sys.stderr)
+    logger.info("Created session %s with features: %s", session_name, feature_str)
     
     return {
         "session_name": session_name,
@@ -751,8 +747,8 @@ def _run_browser_command(
         )
         
         # Log stderr for diagnostics (agent-browser may emit warnings there)
-        if result.stderr and result.stderr.strip() and not os.getenv("HERMES_QUIET"):
-            print(f"[browser_tool] stderr from '{command}': {result.stderr.strip()[:200]}", file=sys.stderr)
+        if result.stderr and result.stderr.strip():
+            logger.debug("stderr from '%s': %s", command, result.stderr.strip()[:200])
         
         # Parse JSON output
         if result.stdout.strip():
@@ -762,9 +758,9 @@ def _run_browser_command(
                 if command == "snapshot" and parsed.get("success"):
                     snap_data = parsed.get("data", {})
                     if not snap_data.get("snapshot") and not snap_data.get("refs"):
-                        print(f"[browser_tool] WARNING: snapshot returned empty content. "
-                              f"Possible stale daemon or CDP connection issue. "
-                              f"returncode={result.returncode}", file=sys.stderr)
+                        logger.warning("snapshot returned empty content. "
+                                       "Possible stale daemon or CDP connection issue. "
+                                       "returncode=%s", result.returncode)
                 return parsed
             except json.JSONDecodeError:
                 # If not valid JSON, return as raw output
@@ -1196,7 +1192,7 @@ def browser_close(task_id: Optional[str] = None) -> str:
                 config = _get_browserbase_config()
                 _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
             except Exception as e:
-                print(f"[browser_tool] Warning: Could not close BrowserBase session: {e}", file=sys.stderr)
+                logger.warning("Could not close BrowserBase session: %s", e)
         del _active_sessions[session_key]
     
     if result.get("success"):
@@ -1484,14 +1480,14 @@ def _close_browserbase_session(session_id: str, api_key: str, project_id: str) -
         )
         
         if response.status_code in (200, 201, 204):
-            print(f"[browser_tool] Successfully closed BrowserBase session {session_id}", file=sys.stderr)
+            logger.debug("Successfully closed BrowserBase session %s", session_id)
             return True
         else:
-            print(f"[browser_tool] Failed to close session {session_id}: HTTP {response.status_code} - {response.text[:200]}", file=sys.stderr)
+            logger.warning("Failed to close session %s: HTTP %s - %s", session_id, response.status_code, response.text[:200])
             return False
                 
     except Exception as e:
-        print(f"[browser_tool] Exception closing session {session_id}: {e}", file=sys.stderr)
+        logger.error("Exception closing session %s: %s", session_id, e)
         return False
 
 
@@ -1508,9 +1504,8 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if task_id is None:
         task_id = "default"
     
-    if not os.getenv("HERMES_QUIET"):
-        print(f"[browser_tool] cleanup_browser called for task_id: {task_id}", file=sys.stderr)
-        print(f"[browser_tool] Active sessions: {list(_active_sessions.keys())}", file=sys.stderr)
+    logger.debug("cleanup_browser called for task_id: %s", task_id)
+    logger.debug("Active sessions: %s", list(_active_sessions.keys()))
     
     # Check if session exists (under lock), but don't remove yet -
     # _run_browser_command needs it to build the close command.
@@ -1519,14 +1514,14 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     
     if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
-        print(f"[browser_tool] Found session for task {task_id}: bb_session_id={bb_session_id}", file=sys.stderr)
+        logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
         
         # Try to close via agent-browser first (needs session in _active_sessions)
         try:
             _run_browser_command(task_id, "close", [], timeout=10)
-            print(f"[browser_tool] agent-browser close command completed for task {task_id}", file=sys.stderr)
+            logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:
-            print(f"[browser_tool] agent-browser close failed for task {task_id}: {e}", file=sys.stderr)
+            logger.warning("agent-browser close failed for task %s: %s", task_id, e)
         
         # Now remove from tracking under lock
         with _cleanup_lock:
@@ -1538,9 +1533,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             config = _get_browserbase_config()
             success = _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
             if not success:
-                print(f"[browser_tool] WARNING: Could not close BrowserBase session {bb_session_id}", file=sys.stderr)
+                logger.warning("Could not close BrowserBase session %s", bb_session_id)
         except Exception as e:
-            print(f"[browser_tool] Exception during BrowserBase session close: {e}", file=sys.stderr)
+            logger.error("Exception during BrowserBase session close: %s", e)
         
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -1553,16 +1548,14 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                     try:
                         daemon_pid = int(open(pid_file).read().strip())
                         os.kill(daemon_pid, signal.SIGTERM)
-                        if not os.getenv("HERMES_QUIET"):
-                            print(f"[browser_tool] Killed daemon pid {daemon_pid} for {session_name}", file=sys.stderr)
+                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         pass
                 shutil.rmtree(socket_dir, ignore_errors=True)
         
-        if not os.getenv("HERMES_QUIET"):
-            print(f"[browser_tool] Removed task {task_id} from active sessions", file=sys.stderr)
-    elif not os.getenv("HERMES_QUIET"):
-        print(f"[browser_tool] No active session found for task_id: {task_id}", file=sys.stderr)
+        logger.debug("Removed task %s from active sessions", task_id)
+    else:
+        logger.debug("No active session found for task_id: %s", task_id)
 
 
 def cleanup_all_browsers() -> None:

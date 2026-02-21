@@ -12,6 +12,7 @@ Usage:
     python cli.py --list-tools             # List available tools and exit
 """
 
+import logging
 import os
 import sys
 import json
@@ -20,6 +21,8 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience
 os.environ["MSWEA_SILENT_STARTUP"] = "1"  # mini-swe-agent
@@ -183,7 +186,7 @@ def load_cli_config() -> Dict[str, Any]:
             if "max_turns" in file_config and "agent" not in file_config:
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
-            print(f"[Warning] Failed to load cli-config.yaml: {e}")
+            logger.warning("Failed to load cli-config.yaml: %s", e)
     
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -646,7 +649,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         
         return True
     except Exception as e:
-        print(f"(x_x) Failed to save config: {e}")
+        logger.error("Failed to save config: %s", e)
         return False
 
 

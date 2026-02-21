@@ -6,6 +6,7 @@ This module provides:
 - run_daemon(): Run continuously, checking every 60 seconds
 """
 
+import logging
 import os
 import sys
 import time
@@ -13,6 +14,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,8 +36,8 @@ def run_job(job: dict) -> tuple[bool, str, Optional[str]]:
     job_name = job["name"]
     prompt = job["prompt"]
     
-    print(f"[cron] Running job '{job_name}' (ID: {job_id})")
-    print(f"[cron] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+    logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+    logger.info("Prompt: %s", prompt[:100])
     
     try:
         # Create agent with default settings
@@ -69,12 +72,12 @@ def run_job(job: dict) -> tuple[bool, str, Optional[str]]:
 {final_response}
 """
         
-        print(f"[cron] Job '{job_name}' completed successfully")
+        logger.info("Job '%s' completed successfully", job_name)
         return True, output, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
-        print(f"[cron] Job '{job_name}' failed: {error_msg}")
+        logger.error("Job '%s' failed: %s", job_name, error_msg)
         
         # Build error output
         output = f"""# Cron Job: {job_name} (FAILED)
@@ -114,11 +117,11 @@ def tick(verbose: bool = True) -> int:
     due_jobs = get_due_jobs()
     
     if verbose and not due_jobs:
-        print(f"[cron] {datetime.now().strftime('%H:%M:%S')} - No jobs due")
+        logger.info("%s - No jobs due", datetime.now().strftime('%H:%M:%S'))
         return 0
     
     if verbose:
-        print(f"[cron] {datetime.now().strftime('%H:%M:%S')} - {len(due_jobs)} job(s) due")
+        logger.info("%s - %s job(s) due", datetime.now().strftime('%H:%M:%S'), len(due_jobs))
     
     executed = 0
     for job in due_jobs:
@@ -128,14 +131,14 @@ def tick(verbose: bool = True) -> int:
             # Save output to file
             output_file = save_job_output(job["id"], output)
             if verbose:
-                print(f"[cron] Output saved to: {output_file}")
+                logger.info("Output saved to: %s", output_file)
             
             # Mark job as run (handles repeat counting, next_run computation)
             mark_job_run(job["id"], success, error)
             executed += 1
             
         except Exception as e:
-            print(f"[cron] Error processing job {job['id']}: {e}")
+            logger.error("Error processing job %s: %s", job['id'], e)
             mark_job_run(job["id"], False, str(e))
     
     return executed
@@ -151,21 +154,20 @@ def run_daemon(check_interval: int = 60, verbose: bool = True):
         check_interval: Seconds between checks (default: 60)
         verbose: Whether to print status messages
     """
-    print(f"[cron] Starting daemon (checking every {check_interval}s)")
-    print(f"[cron] Press Ctrl+C to stop")
-    print()
+    logger.info("Starting daemon (checking every %ss)", check_interval)
+    logger.info("Press Ctrl+C to stop")
     
     try:
         while True:
             try:
                 tick(verbose=verbose)
             except Exception as e:
-                print(f"[cron] Tick error: {e}")
+                logger.error("Tick error: %s", e)
             
             time.sleep(check_interval)
             
     except KeyboardInterrupt:
-        print("\n[cron] Daemon stopped")
+        logger.info("Daemon stopped")
 
 
 if __name__ == "__main__":

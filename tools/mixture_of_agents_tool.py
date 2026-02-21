@@ -46,6 +46,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import asyncio
 import uuid
@@ -54,6 +55,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from openai import AsyncOpenAI
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 _openrouter_client = None
 
@@ -108,7 +111,7 @@ DEBUG_DATA = {
 # Create logs directory if debug mode is enabled
 if DEBUG_MODE:
     DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    print(f"🐛 MoA debug mode enabled - Session ID: {DEBUG_SESSION_ID}")
+    logger.debug("MoA debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
 
 
 def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
@@ -149,10 +152,10 @@ def _save_debug_log() -> None:
         with open(debug_filepath, 'w', encoding='utf-8') as f:
             json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
         
-        print(f"🐛 MoA debug log saved: {debug_filepath}")
+        logger.debug("MoA debug log saved: %s", debug_filepath)
         
     except Exception as e:
-        print(f"❌ Error saving MoA debug log: {str(e)}")
+        logger.error("Error saving MoA debug log: %s", e)
 
 
 def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
@@ -192,7 +195,7 @@ async def _run_reference_model_safe(
     """
     for attempt in range(max_retries):
         try:
-            print(f"🤖 Querying {model} (attempt {attempt + 1}/{max_retries})")
+            logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
             
             # Build parameters for the API call
             api_params = {
@@ -214,27 +217,27 @@ async def _run_reference_model_safe(
             response = await _get_openrouter_client().chat.completions.create(**api_params)
             
             content = response.choices[0].message.content.strip()
-            print(f"✅ {model} responded ({len(content)} characters)")
+            logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
         except Exception as e:
             error_str = str(e)
             # Log more detailed error information for debugging
             if "invalid" in error_str.lower():
-                print(f"⚠️  {model} invalid request error (attempt {attempt + 1}): {error_str}")
+                logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_str)
             elif "rate" in error_str.lower() or "limit" in error_str.lower():
-                print(f"⚠️  {model} rate limit error (attempt {attempt + 1}): {error_str}")
+                logger.warning("%s rate limit error (attempt %s): %s", model, attempt + 1, error_str)
             else:
-                print(f"⚠️  {model} unknown error (attempt {attempt + 1}): {error_str}")
+                logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str)
                 
             if attempt < max_retries - 1:
                 # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
                 sleep_time = min(2 ** (attempt + 1), 60)
-                print(f"   Retrying in {sleep_time}s...")
+                logger.info("Retrying in %ss...", sleep_time)
                 await asyncio.sleep(sleep_time)
             else:
                 error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
-                print(f"❌ {error_msg}")
+                logger.error("%s", error_msg)
                 return model, error_msg, False
 
 
@@ -256,7 +259,7 @@ async def _run_aggregator_model(
     Returns:
         str: Synthesized final response
     """
-    print(f"🧠 Running aggregator model: {AGGREGATOR_MODEL}")
+    logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
     
     # Build parameters for the API call
     api_params = {
@@ -281,7 +284,7 @@ async def _run_aggregator_model(
     response = await _get_openrouter_client().chat.completions.create(**api_params)
     
     content = response.choices[0].message.content.strip()
-    print(f"✅ Aggregation complete ({len(content)} characters)")
+    logger.info("Aggregation complete (%s characters)", len(content))
     return content
 
 
@@ -348,8 +351,8 @@ async def mixture_of_agents_tool(
     }
     
     try:
-        print(f"🚀 Starting Mixture-of-Agents processing...")
-        print(f"📝 Query: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}")
+        logger.info("Starting Mixture-of-Agents processing...")
+        logger.info("Query: %s", user_prompt[:100])
         
         # Validate API key availability
         if not os.getenv("OPENROUTER_API_KEY"):
@@ -359,10 +362,10 @@ async def mixture_of_agents_tool(
         ref_models = reference_models or REFERENCE_MODELS
         agg_model = aggregator_model or AGGREGATOR_MODEL
         
-        print(f"🔄 Using {len(ref_models)} reference models in 2-layer MoA architecture")
+        logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
         # Layer 1: Generate diverse responses from reference models (with failure handling)
-        print("📡 Layer 1: Generating reference responses...")
+        logger.info("Layer 1: Generating reference responses...")
         model_results = await asyncio.gather(*[
             _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
             for model in ref_models
@@ -381,10 +384,10 @@ async def mixture_of_agents_tool(
         successful_count = len(successful_responses)
         failed_count = len(failed_models)
         
-        print(f"📊 Reference model results: {successful_count} successful, {failed_count} failed")
+        logger.info("Reference model results: %s successful, %s failed", successful_count, failed_count)
         
         if failed_models:
-            print(f"⚠️  Failed models: {', '.join(failed_models)}")
+            logger.warning("Failed models: %s", ', '.join(failed_models))
         
         # Check if we have enough successful responses to proceed
         if successful_count < MIN_SUCCESSFUL_REFERENCES:
@@ -395,7 +398,7 @@ async def mixture_of_agents_tool(
         debug_call_data["failed_models"] = failed_models
         
         # Layer 2: Aggregate responses using the aggregator model
-        print("🧠 Layer 2: Synthesizing final response...")
+        logger.info("Layer 2: Synthesizing final response...")
         aggregator_system_prompt = _construct_aggregator_prompt(
             AGGREGATOR_SYSTEM_PROMPT, 
             successful_responses
@@ -411,7 +414,7 @@ async def mixture_of_agents_tool(
         end_time = datetime.datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         
-        print(f"✅ MoA processing completed in {processing_time:.2f} seconds")
+        logger.info("MoA processing completed in %.2f seconds", processing_time)
         
         # Prepare successful response (only final aggregated result, minimal fields)
         result = {
@@ -436,7 +439,7 @@ async def mixture_of_agents_tool(
         
     except Exception as e:
         error_msg = f"Error in MoA processing: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         
         # Calculate processing time even for errors
         end_time = datetime.datetime.now()

@@ -84,7 +84,7 @@ TOOLSETS = {
     },
     
     "cronjob": {
-        "description": "Cronjob management tools - schedule, list, and remove automated tasks (CLI-only)",
+        "description": "Cronjob management tools - schedule, list, and remove automated tasks",
         "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
         "includes": []
     },

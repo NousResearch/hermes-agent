@@ -2021,66 +2021,6 @@ class AIAgent:
         except Exception as e:
             print(f"⚠️ Failed to save trajectory: {e}")
     
-    def _log_api_payload(self, turn_number: int, api_kwargs: Dict[str, Any], response=None):
-        """
-        [TEMPORARY DEBUG] Log the full API payload and response token metrics
-        for each agent turn to a per-session JSONL file for inspection.
-        
-        Writes one JSON line per turn to logs/payload_<session_id>.jsonl.
-        Tool schemas are summarized (just names) to keep logs readable.
-        
-        Args:
-            turn_number: Which API call this is (1-indexed)
-            api_kwargs: The full kwargs dict being passed to chat.completions.create
-            response: The API response object (optional, added after the call completes)
-        """
-        try:
-            payload_log_file = self.logs_dir / f"payload_{self.session_id}.jsonl"
-            
-            # Build a serializable copy of the request payload
-            payload = {
-                "turn": turn_number,
-                "timestamp": datetime.now().isoformat(),
-                "model": api_kwargs.get("model"),
-                "max_tokens": api_kwargs.get("max_tokens"),
-                "extra_body": api_kwargs.get("extra_body"),
-                "num_tools": len(api_kwargs.get("tools") or []),
-                "tool_names": [t["function"]["name"] for t in (api_kwargs.get("tools") or [])],
-                "messages": api_kwargs.get("messages", []),
-            }
-            
-            # Add response token metrics if available
-            if response is not None:
-                try:
-                    usage_raw = response.usage.model_dump() if hasattr(response.usage, 'model_dump') else {}
-                    payload["response"] = {
-                        # Core token counts
-                        "prompt_tokens": usage_raw.get("prompt_tokens"),
-                        "completion_tokens": usage_raw.get("completion_tokens"),
-                        "total_tokens": usage_raw.get("total_tokens"),
-                        # Completion breakdown (reasoning tokens, etc.)
-                        "completion_tokens_details": usage_raw.get("completion_tokens_details"),
-                        # Prompt breakdown (cached tokens, etc.)
-                        "prompt_tokens_details": usage_raw.get("prompt_tokens_details"),
-                        # Cost tracking
-                        "cost": usage_raw.get("cost"),
-                        "is_byok": usage_raw.get("is_byok"),
-                        "cost_details": usage_raw.get("cost_details"),
-                        # Provider info (top-level field from OpenRouter)
-                        "provider": getattr(response, 'provider', None),
-                        "response_model": getattr(response, 'model', None),
-                    }
-                except Exception:
-                    payload["response"] = {"error": "failed to extract usage"}
-            
-            with open(payload_log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-                
-        except Exception as e:
-            # Silent fail - don't interrupt the agent for debug logging
-            if self.verbose_logging:
-                logging.warning(f"Failed to log API payload: {e}")
-
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
             return None
@@ -2172,48 +2112,35 @@ class AIAgent:
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
-        Save the current session trajectory to the logs directory.
-        
-        Automatically called after each conversation turn to maintain
-        a complete log of the session for debugging and inspection.
-        
-        Args:
-            messages: Message history to save (uses self._session_messages if not provided)
+        Save the full raw session to a JSON file.
+
+        Stores every message exactly as the agent sees it: user messages,
+        assistant messages (with reasoning, finish_reason, tool_calls),
+        tool responses (with tool_call_id, tool_name), and injected system
+        messages (compression summaries, todo snapshots, etc.).
+
+        Overwritten after each turn so it always reflects the latest state.
         """
         messages = messages or self._session_messages
         if not messages:
             return
-        
+
         try:
-            # Extract the actual user query for the trajectory format.
-            # Skip prefill messages (they're ephemeral and shouldn't appear in trajectories)
-            # so the first user message we find is the real task prompt.
-            first_user_query = ""
-            start_idx = len(self.prefill_messages) if self.prefill_messages else 0
-            for msg in messages[start_idx:]:
-                if msg.get("role") == "user":
-                    first_user_query = msg.get("content", "")
-                    break
-            
-            # Convert to trajectory format
-            trajectory = self._convert_to_trajectory_format(messages, first_user_query, True)
-            
-            # Build the session log entry
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,
+                "base_url": self.base_url,
+                "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
                 "message_count": len(messages),
-                "conversations": trajectory,
+                "messages": messages,
             }
-            
-            # Write to session log file (overwrite with latest state)
+
             with open(self.session_log_file, "w", encoding="utf-8") as f:
-                json.dump(entry, f, indent=2, ensure_ascii=False)
-                
+                json.dump(entry, f, indent=2, ensure_ascii=False, default=str)
+
         except Exception as e:
-            # Silent fail - don't interrupt the user experience for logging issues
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
     
@@ -2584,9 +2511,6 @@ class AIAgent:
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
                     
-                    # [DEBUG] Log the full API payload + response token metrics
-                    self._log_api_payload(api_call_count, api_kwargs, response=response)
-
                     # Validate response has valid choices before proceeding
                     if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
                         # Stop spinner before printing error messages

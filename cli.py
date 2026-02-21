@@ -2097,7 +2097,8 @@ class HermesCLI:
                 if not ti.document.text and ti.lineno == 0:
                     text = self._get_text()
                     if text:
-                        return Transformation(fragments=[('class:placeholder', text)])
+                        # Append after existing fragments (preserves the ❯ prompt)
+                        return Transformation(fragments=ti.fragments + [('class:placeholder', text)])
                 return Transformation(fragments=ti.fragments)
 
         def _get_placeholder():
@@ -2151,7 +2152,9 @@ class HermesCLI:
         def get_hint_height():
             if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state:
                 return 1
-            return 0
+            # Keep a 1-line spacer while agent runs so output doesn't push
+            # right up against the top rule of the input area
+            return 1 if cli_ref._agent_running else 0
 
         spacer = Window(
             content=FormattedTextControl(get_hint_text),

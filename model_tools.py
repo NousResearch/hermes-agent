@@ -1102,7 +1102,7 @@ def get_all_tool_names() -> List[str]:
             "browser_vision"
         ])
     
-    # Cronjob management tools (CLI-only, checked at runtime)
+    # Cronjob management tools (CLI + gateway, checked at runtime)
     if check_cronjob_requirements():
         tool_names.extend([
             "schedule_cronjob", "list_cronjobs", "remove_cronjob"
@@ -2349,8 +2349,8 @@ def get_available_toolsets() -> Dict[str, Dict[str, Any]]:
         "cronjob_tools": {
             "available": check_cronjob_requirements(),
             "tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
-            "description": "Schedule and manage automated tasks (cronjobs) - only available in interactive CLI mode",
-            "requirements": ["HERMES_INTERACTIVE=1 (set automatically by cli.py)"]
+            "description": "Schedule and manage automated tasks (cronjobs) - available in CLI and messaging platforms",
+            "requirements": ["Interactive or gateway session"]
         },
         "file_tools": {
             "available": check_file_requirements(),

@@ -340,9 +340,14 @@ def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
     
-    Only available in interactive CLI mode (HERMES_INTERACTIVE=1).
+    Available in interactive CLI mode and gateway/messaging platforms.
+    Cronjobs are server-side scheduled tasks so they work from any interface.
     """
-    return os.getenv("HERMES_INTERACTIVE") == "1"
+    return bool(
+        os.getenv("HERMES_INTERACTIVE")
+        or os.getenv("HERMES_GATEWAY_SESSION")
+        or os.getenv("HERMES_EXEC_ASK")
+    )
 
 
 # =============================================================================

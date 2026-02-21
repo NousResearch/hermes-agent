@@ -93,8 +93,8 @@ def _get_scratch_dir() -> Path:
         logger.info("Using /scratch for sandboxes: %s", user_scratch)
         return user_scratch
     
-    # Fall back to /tmp
-    logger.warning("/scratch not available, using /tmp (limited space)")
+    # Fall back to /tmp (only relevant for Singularity/HPC sandboxes)
+    logger.debug("/scratch not available, using /tmp for sandboxes")
     return Path(tempfile.gettempdir())
 
 

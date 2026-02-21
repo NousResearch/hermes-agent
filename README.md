@@ -37,14 +37,19 @@ hermes          # Start chatting!
 
 ## Getting Started
 
-After installing, connect Hermes to an LLM provider. The quickest way:
+The installer (`hermes setup`) walks you through selecting a provider and model. Once that's done:
 
 ```bash
-hermes login    # Log in with your Nous Portal account (opens browser)
 hermes          # Start chatting!
 ```
 
-Don't have a Nous Portal account? Use `hermes model` to set up **OpenRouter** (100+ models, pay-per-use API key) or a **custom endpoint** (VLLM, SGLang, or any OpenAI-compatible API) instead. You can switch providers and models at any time by running `hermes model` again.
+To change your provider or model later:
+
+```bash
+hermes model    # Interactive provider & model selector
+```
+
+This lets you switch between **Nous Portal** (subscription), **OpenRouter** (100+ models, pay-per-use), or a **custom endpoint** (VLLM, SGLang, any OpenAI-compatible API) at any time.
 
 ---
 

@@ -851,24 +851,34 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _prompt_model_selection(model_ids: List[str]) -> Optional[str]:
-    """Interactive model selection after login. Returns chosen model ID or None."""
-    print(f"Available models ({len(model_ids)}):")
-    for i, mid in enumerate(model_ids, 1):
-        print(f"  {i}. {mid}")
-    print(f"  {len(model_ids) + 1}. Custom model name")
-    print(f"  {len(model_ids) + 2}. Skip (keep current)")
-    print()
+def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Optional[str]:
+    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None."""
+    # Reorder: current model first, then the rest (deduplicated)
+    ordered = []
+    if current_model and current_model in model_ids:
+        ordered.append(current_model)
+    for mid in model_ids:
+        if mid not in ordered:
+            ordered.append(mid)
+
+    # Build display labels with marker on current
+    def _label(mid):
+        if mid == current_model:
+            return f"{mid}  ← currently in use"
+        return mid
+
+    # Default cursor on the current model (index 0 if it was reordered to top)
+    default_idx = 0
 
     # Try arrow-key menu first, fall back to number input
     try:
         from simple_term_menu import TerminalMenu
-        choices = [f"  {mid}" for mid in model_ids]
-        choices.append("  Custom model name")
+        choices = [f"  {_label(mid)}" for mid in ordered]
+        choices.append("  Enter custom model name")
         choices.append("  Skip (keep current)")
         menu = TerminalMenu(
             choices,
-            cursor_index=0,
+            cursor_index=default_idx,
             menu_cursor="-> ",
             menu_cursor_style=("fg_green", "bold"),
             menu_highlight_style=("fg_green",),
@@ -880,30 +890,38 @@ def _prompt_model_selection(model_ids: List[str]) -> Optional[str]:
         if idx is None:
             return None
         print()
-        if idx < len(model_ids):
-            return model_ids[idx]
-        elif idx == len(model_ids):
+        if idx < len(ordered):
+            return ordered[idx]
+        elif idx == len(ordered):
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
     except ImportError:
         pass
 
-    # Fallback: number-based selection
+    # Fallback: numbered list
+    print("Select default model:")
+    for i, mid in enumerate(ordered, 1):
+        print(f"  {i}. {_label(mid)}")
+    n = len(ordered)
+    print(f"  {n + 1}. Enter custom model name")
+    print(f"  {n + 2}. Skip (keep current)")
+    print()
+
     while True:
         try:
-            choice = input(f"Select model [1-{len(model_ids) + 2}] (default: skip): ").strip()
+            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
             if not choice:
                 return None
             idx = int(choice)
-            if 1 <= idx <= len(model_ids):
-                return model_ids[idx - 1]
-            elif idx == len(model_ids) + 1:
+            if 1 <= idx <= n:
+                return ordered[idx - 1]
+            elif idx == n + 1:
                 custom = input("Enter model name: ").strip()
                 return custom if custom else None
-            elif idx == len(model_ids) + 2:
+            elif idx == n + 2:
                 return None
-            print(f"Please enter a number between 1 and {len(model_ids) + 2}")
+            print(f"Please enter 1-{n + 2}")
         except ValueError:
             print("Please enter a number")
         except (KeyboardInterrupt, EOFError):

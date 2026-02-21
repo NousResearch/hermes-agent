@@ -28,6 +28,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import asyncio
 import uuid
@@ -38,6 +39,8 @@ from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
 import httpx
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 _openrouter_client = None
 
@@ -71,7 +74,7 @@ DEBUG_DATA = {
 # Create logs directory if debug mode is enabled
 if DEBUG_MODE:
     DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    print(f"🐛 Vision debug mode enabled - Session ID: {DEBUG_SESSION_ID}")
+    logger.debug("Vision debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
 
 
 def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
@@ -112,10 +115,10 @@ def _save_debug_log() -> None:
         with open(debug_filepath, 'w', encoding='utf-8') as f:
             json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
         
-        print(f"🐛 Vision debug log saved: {debug_filepath}")
+        logger.debug("Vision debug log saved: %s", debug_filepath)
         
     except Exception as e:
-        print(f"❌ Error saving vision debug log: {str(e)}")
+        logger.error("Error saving vision debug log: %s", e)
 
 
 def _validate_image_url(url: str) -> bool:
@@ -184,11 +187,11 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             last_error = e
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                print(f"⚠️  Image download failed (attempt {attempt + 1}/{max_retries}): {str(e)[:50]}")
-                print(f"   Retrying in {wait_time}s...")
+                logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+                logger.warning("Retrying in %ss...", wait_time)
                 await asyncio.sleep(wait_time)
             else:
-                print(f"❌ Image download failed after {max_retries} attempts: {str(e)[:100]}")
+                logger.error("Image download failed after %s attempts: %s", max_retries, str(e)[:100])
     
     raise last_error
 
@@ -298,8 +301,8 @@ async def vision_analyze_tool(
     should_cleanup = True
     
     try:
-        print(f"🔍 Analyzing image: {image_url[:60]}{'...' if len(image_url) > 60 else ''}", flush=True)
-        print(f"📝 User prompt: {user_prompt[:100]}{'...' if len(user_prompt) > 100 else ''}", flush=True)
+        logger.info("Analyzing image: %s", image_url[:60])
+        logger.info("User prompt: %s", user_prompt[:100])
         
         # Check API key availability
         if not os.getenv("OPENROUTER_API_KEY"):
@@ -309,12 +312,12 @@ async def vision_analyze_tool(
         local_path = Path(image_url)
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
-            print(f"📁 Using local image file: {image_url}", flush=True)
+            logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
         elif _validate_image_url(image_url):
             # Remote URL -- download to a temporary location
-            print(f"⬇️  Downloading image from URL...", flush=True)
+            logger.info("Downloading image from URL...")
             temp_dir = Path("./temp_vision_images")
             temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
             await _download_image(image_url, temp_image_path)
@@ -327,14 +330,14 @@ async def vision_analyze_tool(
         # Get image file size for logging
         image_size_bytes = temp_image_path.stat().st_size
         image_size_kb = image_size_bytes / 1024
-        print(f"✅ Image ready ({image_size_kb:.1f} KB)", flush=True)
+        logger.info("Image ready (%.1f KB)", image_size_kb)
         
         # Convert image to base64 data URL
-        print(f"🔄 Converting image to base64...", flush=True)
+        logger.info("Converting image to base64...")
         image_data_url = _image_to_base64_data_url(temp_image_path)
         # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
-        print(f"✅ Image converted to base64 ({data_size_kb:.1f} KB)", flush=True)
+        logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
         
         debug_call_data["image_size_bytes"] = image_size_bytes
         
@@ -360,7 +363,7 @@ async def vision_analyze_tool(
             }
         ]
         
-        print(f"🧠 Processing image with {model}...", flush=True)
+        logger.info("Processing image with %s...", model)
         
         # Call the vision API with reasoning enabled
         response = await _get_openrouter_client().chat.completions.create(
@@ -380,7 +383,7 @@ async def vision_analyze_tool(
         analysis = response.choices[0].message.content.strip()
         analysis_length = len(analysis)
         
-        print(f"✅ Image analysis completed ({analysis_length} characters)", flush=True)
+        logger.info("Image analysis completed (%s characters)", analysis_length)
         
         # Prepare successful response
         result = {
@@ -399,7 +402,7 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        print(f"❌ {error_msg}", flush=True)
+        logger.error("%s", error_msg)
         
         # Prepare error response
         result = {
@@ -418,9 +421,9 @@ async def vision_analyze_tool(
         if should_cleanup and temp_image_path and temp_image_path.exists():
             try:
                 temp_image_path.unlink()
-                print(f"🧹 Cleaned up temporary image file", flush=True)
+                logger.debug("Cleaned up temporary image file")
             except Exception as cleanup_error:
-                print(f"⚠️  Warning: Could not delete temporary file: {cleanup_error}", flush=True)
+                logger.warning("Could not delete temporary file: %s", cleanup_error)
 
 
 def check_openrouter_api_key() -> bool:

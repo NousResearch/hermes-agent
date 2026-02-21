@@ -23,12 +23,15 @@ Usage:
 import asyncio
 import datetime
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional imports -- providers degrade gracefully if not installed
@@ -262,7 +265,7 @@ def text_to_speech_tool(
 
     # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:
-        print(f"⚠️  TTS text too long ({len(text)} chars), truncating to {MAX_TEXT_LENGTH}")
+        logger.warning("TTS text too long (%d chars), truncating to %d", len(text), MAX_TEXT_LENGTH)
         text = text[:MAX_TEXT_LENGTH]
 
     tts_config = _load_tts_config()
@@ -301,7 +304,7 @@ def text_to_speech_tool(
                     "success": False,
                     "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"
                 }, ensure_ascii=False)
-            print(f"🔊 Generating speech with ElevenLabs...")
+            logger.info("Generating speech with ElevenLabs...")
             _generate_elevenlabs(text, file_str, tts_config)
 
         elif provider == "openai":
@@ -310,7 +313,7 @@ def text_to_speech_tool(
                     "success": False,
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
-            print(f"🔊 Generating speech with OpenAI TTS...")
+            logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
         else:
@@ -320,7 +323,7 @@ def text_to_speech_tool(
                     "success": False,
                     "error": "Edge TTS not available. Run: pip install edge-tts"
                 }, ensure_ascii=False)
-            print(f"🔊 Generating speech with Edge TTS...")
+            logger.info("Generating speech with Edge TTS...")
             # Edge TTS is async, run it
             try:
                 loop = asyncio.get_running_loop()
@@ -351,7 +354,7 @@ def text_to_speech_tool(
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
-        print(f"✅ TTS audio saved: {file_str} ({file_size:,} bytes, provider: {provider})")
+        logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
 
         # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
@@ -368,7 +371,7 @@ def text_to_speech_tool(
 
     except Exception as e:
         error_msg = f"TTS generation failed ({provider}): {e}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
 
 

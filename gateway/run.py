@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 import re
 import sys
@@ -59,6 +60,8 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayRunner:
@@ -106,8 +109,8 @@ class GatewayRunner:
         
         Returns True if at least one adapter connected successfully.
         """
-        print("[gateway] Starting Hermes Gateway...")
-        print(f"[gateway] Session storage: {self.config.sessions_dir}")
+        logger.info("Starting Hermes Gateway...")
+        logger.info("Session storage: %s", self.config.sessions_dir)
         
         # Discover and load event hooks
         self.hooks.discover_and_load()
@@ -117,9 +120,9 @@ class GatewayRunner:
             from tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
             if recovered:
-                print(f"[gateway] Recovered {recovered} background process(es) from previous run")
+                logger.info("Recovered %s background process(es) from previous run", recovered)
         except Exception as e:
-            print(f"[gateway] Process checkpoint recovery: {e}")
+            logger.warning("Process checkpoint recovery: %s", e)
         
         connected_count = 0
         
@@ -130,27 +133,27 @@ class GatewayRunner:
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                print(f"[gateway] No adapter available for {platform.value}")
+                logger.warning("No adapter available for %s", platform.value)
                 continue
             
             # Set up message handler
             adapter.set_message_handler(self._handle_message)
             
             # Try to connect
-            print(f"[gateway] Connecting to {platform.value}...")
+            logger.info("Connecting to %s...", platform.value)
             try:
                 success = await adapter.connect()
                 if success:
                     self.adapters[platform] = adapter
                     connected_count += 1
-                    print(f"[gateway] ✓ {platform.value} connected")
+                    logger.info("✓ %s connected", platform.value)
                 else:
-                    print(f"[gateway] ✗ {platform.value} failed to connect")
+                    logger.warning("✗ %s failed to connect", platform.value)
             except Exception as e:
-                print(f"[gateway] ✗ {platform.value} error: {e}")
+                logger.error("✗ %s error: %s", platform.value, e)
         
         if connected_count == 0:
-            print("[gateway] No platforms connected. Check your configuration.")
+            logger.warning("No platforms connected. Check your configuration.")
             return False
         
         # Update delivery router with adapters
@@ -161,31 +164,31 @@ class GatewayRunner:
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
-            print(f"[gateway] {hook_count} hook(s) loaded")
+            logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
         
-        print(f"[gateway] Gateway running with {connected_count} platform(s)")
-        print("[gateway] Press Ctrl+C to stop")
+        logger.info("Gateway running with %s platform(s)", connected_count)
+        logger.info("Press Ctrl+C to stop")
         
         return True
     
     async def stop(self) -> None:
         """Stop the gateway and disconnect all adapters."""
-        print("[gateway] Stopping gateway...")
+        logger.info("Stopping gateway...")
         self._running = False
         
         for platform, adapter in self.adapters.items():
             try:
                 await adapter.disconnect()
-                print(f"[gateway] ✓ {platform.value} disconnected")
+                logger.info("✓ %s disconnected", platform.value)
             except Exception as e:
-                print(f"[gateway] ✗ {platform.value} disconnect error: {e}")
+                logger.error("✗ %s disconnect error: %s", platform.value, e)
         
         self.adapters.clear()
         self._shutdown_event.set()
-        print("[gateway] Gateway stopped")
+        logger.info("Gateway stopped")
     
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
@@ -200,28 +203,28 @@ class GatewayRunner:
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
             if not check_telegram_requirements():
-                print(f"[gateway] Telegram: python-telegram-bot not installed")
+                logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
             if not check_discord_requirements():
-                print(f"[gateway] Discord: discord.py not installed")
+                logger.warning("Discord: discord.py not installed")
                 return None
             return DiscordAdapter(config)
         
         elif platform == Platform.WHATSAPP:
             from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
             if not check_whatsapp_requirements():
-                print(f"[gateway] WhatsApp: Node.js not installed or bridge not configured")
+                logger.warning("WhatsApp: Node.js not installed or bridge not configured")
                 return None
             return WhatsAppAdapter(config)
         
         elif platform == Platform.SLACK:
             from gateway.platforms.slack import SlackAdapter, check_slack_requirements
             if not check_slack_requirements():
-                print(f"[gateway] Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
+                logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
             return SlackAdapter(config)
         
@@ -286,7 +289,7 @@ class GatewayRunner:
         
         # Check if user is authorized
         if not self._is_user_authorized(source):
-            print(f"[gateway] Unauthorized user: {source.user_id} ({source.user_name}) on {source.platform.value}")
+            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm":
                 platform_name = source.platform.value if source.platform else "unknown"
@@ -347,7 +350,7 @@ class GatewayRunner:
                 approval = self._pending_approvals.pop(session_key_preview)
                 cmd = approval["command"]
                 pattern_key = approval.get("pattern_key", "")
-                print(f"[gateway] ✅ User approved dangerous command: {cmd[:60]}...")
+                logger.info("User approved dangerous command: %s...", cmd[:60])
                 # Approve for session and re-run via terminal_tool with force=True
                 from tools.terminal_tool import terminal_tool, _session_approved_patterns
                 _session_approved_patterns.add(pattern_key)
@@ -365,7 +368,7 @@ class GatewayRunner:
         # Check if there's already a running agent for this session
         if session_key in self._running_agents:
             running_agent = self._running_agents[session_key]
-            print(f"[gateway] ⚡ Interrupting running agent for session {session_key[:20]}...")
+            logger.debug("Interrupting running agent for session %s...", session_key[:20])
             running_agent.interrupt(event.text)
             # Store the new message to be processed after current agent finishes
             self._pending_messages[session_key] = event.text
@@ -466,7 +469,7 @@ class GatewayRunner:
                     watcher = process_registry.pending_watchers.pop(0)
                     asyncio.create_task(self._run_process_watcher(watcher))
             except Exception as e:
-                print(f"[gateway] Process watcher setup error: {e}", flush=True)
+                logger.error("Process watcher setup error: %s", e)
 
             # Check if the agent encountered a dangerous command needing approval
             # The terminal tool stores the last pending approval globally
@@ -533,7 +536,7 @@ class GatewayRunner:
             return response
             
         except Exception as e:
-            print(f"[gateway] Agent error: {e}")
+            logger.error("Agent error: %s", e)
             return f"Sorry, I encountered an error: {str(e)}"
         finally:
             # Clear session env
@@ -766,7 +769,7 @@ class GatewayRunner:
         enriched_parts = []
         for path in image_paths:
             try:
-                print(f"[gateway] Auto-analyzing user image: {path}", flush=True)
+                logger.debug("Auto-analyzing user image: %s", path)
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
@@ -786,7 +789,7 @@ class GatewayRunner:
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
-                print(f"[gateway] Vision auto-analysis error: {e}", flush=True)
+                logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
                     f"[The user sent an image but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
@@ -823,7 +826,7 @@ class GatewayRunner:
         enriched_parts = []
         for path in audio_paths:
             try:
-                print(f"[gateway] Transcribing user voice: {path}", flush=True)
+                logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
@@ -845,7 +848,7 @@ class GatewayRunner:
                             f"transcribing it~ ({error})]"
                         )
             except Exception as e:
-                print(f"[gateway] Transcription error: {e}", flush=True)
+                logger.error("Transcription error: %s", e)
                 enriched_parts.append(
                     "[The user sent a voice message but something went wrong "
                     "when I tried to listen to it~ Let them know!]"
@@ -873,7 +876,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
 
-        print(f"[gateway] Process watcher started: {session_id} (every {interval}s)", flush=True)
+        logger.debug("Process watcher started: %s (every %ss)", session_id, interval)
 
         last_output_len = 0
         while True:
@@ -904,7 +907,7 @@ class GatewayRunner:
                     try:
                         await adapter.send(chat_id, message_text)
                     except Exception as e:
-                        print(f"[gateway] Watcher delivery error: {e}", flush=True)
+                        logger.error("Watcher delivery error: %s", e)
                 break
 
             elif has_new_output:
@@ -923,9 +926,9 @@ class GatewayRunner:
                     try:
                         await adapter.send(chat_id, message_text)
                     except Exception as e:
-                        print(f"[gateway] Watcher delivery error: {e}", flush=True)
+                        logger.error("Watcher delivery error: %s", e)
 
-        print(f"[gateway] Process watcher ended: {session_id}", flush=True)
+        logger.debug("Process watcher ended: %s", session_id)
 
     async def _run_agent(
         self,
@@ -1085,7 +1088,7 @@ class GatewayRunner:
                             break
                     return
                 except Exception as e:
-                    print(f"[Gateway] Progress message error: {e}")
+                    logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
         
         # We need to share the agent instance for interrupt support
@@ -1243,7 +1246,7 @@ class GatewayRunner:
                     if agent:
                         pending_event = adapter.get_pending_message(chat_id)
                         pending_text = pending_event.text if pending_event else None
-                        print(f"[gateway] ⚡ Interrupt detected from adapter, signaling agent...")
+                        logger.debug("Interrupt detected from adapter, signaling agent...")
                         agent.interrupt(pending_text)
                         break
         
@@ -1268,7 +1271,7 @@ class GatewayRunner:
                     pending = result.get("interrupt_message")
             
             if pending:
-                print(f"[gateway] 📨 Processing interrupted message: '{pending[:40]}...'")
+                logger.debug("Processing interrupted message: '%s...'", pending[:40])
                 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent

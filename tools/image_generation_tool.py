@@ -29,6 +29,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import asyncio
 import uuid
@@ -36,6 +37,8 @@ import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import fal_client
+
+logger = logging.getLogger(__name__)
 
 # Configuration for image generation
 DEFAULT_MODEL = "fal-ai/flux-2-pro"
@@ -89,7 +92,7 @@ DEBUG_DATA = {
 # Create logs directory if debug mode is enabled
 if DEBUG_MODE:
     DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    print(f"🐛 Image generation debug mode enabled - Session ID: {DEBUG_SESSION_ID}")
+    logger.debug("Image generation debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
 
 
 def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
@@ -130,10 +133,10 @@ def _save_debug_log() -> None:
         with open(debug_filepath, 'w', encoding='utf-8') as f:
             json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
         
-        print(f"🐛 Image generation debug log saved: {debug_filepath}")
+        logger.debug("Image generation debug log saved: %s", debug_filepath)
         
     except Exception as e:
-        print(f"❌ Error saving image generation debug log: {str(e)}")
+        logger.error("Error saving image generation debug log: %s", e)
 
 
 def _validate_parameters(
@@ -221,7 +224,7 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
         Dict[str, Any]: Upscaled image data or None if upscaling fails
     """
     try:
-        print(f"🔍 Upscaling image with Clarity Upscaler...")
+        logger.info("Upscaling image with Clarity Upscaler...")
         
         # Prepare arguments for upscaler
         upscaler_arguments = {
@@ -247,7 +250,7 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
         
         if result and "image" in result:
             upscaled_image = result["image"]
-            print(f"✅ Image upscaled successfully to {upscaled_image.get('width', 'unknown')}x{upscaled_image.get('height', 'unknown')}")
+            logger.info("Image upscaled successfully to %sx%s", upscaled_image.get('width', 'unknown'), upscaled_image.get('height', 'unknown'))
             return {
                 "url": upscaled_image["url"],
                 "width": upscaled_image.get("width", 0),
@@ -256,11 +259,11 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
                 "upscale_factor": UPSCALER_FACTOR
             }
         else:
-            print("❌ Upscaler returned invalid response")
+            logger.error("Upscaler returned invalid response")
             return None
             
     except Exception as e:
-        print(f"❌ Error upscaling image: {str(e)}")
+        logger.error("Error upscaling image: %s", e)
         return None
 
 
@@ -300,7 +303,7 @@ async def image_generate_tool(
     # Validate and map aspect_ratio to actual image_size
     aspect_ratio_lower = aspect_ratio.lower().strip() if aspect_ratio else DEFAULT_ASPECT_RATIO
     if aspect_ratio_lower not in ASPECT_RATIO_MAP:
-        print(f"⚠️  Invalid aspect_ratio '{aspect_ratio}', defaulting to '{DEFAULT_ASPECT_RATIO}'")
+        logger.warning("Invalid aspect_ratio '%s', defaulting to '%s'", aspect_ratio, DEFAULT_ASPECT_RATIO)
         aspect_ratio_lower = DEFAULT_ASPECT_RATIO
     image_size = ASPECT_RATIO_MAP[aspect_ratio_lower]
     
@@ -324,7 +327,7 @@ async def image_generate_tool(
     start_time = datetime.datetime.now()
     
     try:
-        print(f"🎨 Generating {num_images} image(s) with FLUX 2 Pro: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+        logger.info("Generating %s image(s) with FLUX 2 Pro: %s", num_images, prompt[:80])
         
         # Validate prompt
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
@@ -356,11 +359,11 @@ async def image_generate_tool(
         if seed is not None and isinstance(seed, int):
             arguments["seed"] = seed
         
-        print(f"🚀 Submitting generation request to FAL.ai FLUX 2 Pro...")
-        print(f"   Model: {DEFAULT_MODEL}")
-        print(f"   Aspect Ratio: {aspect_ratio_lower} → {image_size}")
-        print(f"   Steps: {validated_params['num_inference_steps']}")
-        print(f"   Guidance: {validated_params['guidance_scale']}")
+        logger.info("Submitting generation request to FAL.ai FLUX 2 Pro...")
+        logger.info("  Model: %s", DEFAULT_MODEL)
+        logger.info("  Aspect Ratio: %s -> %s", aspect_ratio_lower, image_size)
+        logger.info("  Steps: %s", validated_params['num_inference_steps'])
+        logger.info("  Guidance: %s", validated_params['guidance_scale'])
         
         # Submit request to FAL.ai
         handler = await fal_client.submit_async(
@@ -399,7 +402,7 @@ async def image_generate_tool(
                     formatted_images.append(upscaled_image)
                 else:
                     # Fall back to original image if upscaling fails
-                    print(f"⚠️ Using original image as fallback")
+                    logger.warning("Using original image as fallback")
                     original_image["upscaled"] = False
                     formatted_images.append(original_image)
         
@@ -407,7 +410,7 @@ async def image_generate_tool(
             raise ValueError("No valid image URLs returned from API")
         
         upscaled_count = sum(1 for img in formatted_images if img.get("upscaled", False))
-        print(f"✅ Generated {len(formatted_images)} image(s) in {generation_time:.1f}s ({upscaled_count} upscaled)")
+        logger.info("Generated %s image(s) in %.1fs (%s upscaled)", len(formatted_images), generation_time, upscaled_count)
         
         # Prepare successful response - minimal format
         response_data = {
@@ -428,7 +431,7 @@ async def image_generate_tool(
     except Exception as e:
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         error_msg = f"Error generating image: {str(e)}"
-        print(f"❌ {error_msg}")
+        logger.error("%s", error_msg)
         
         # Prepare error response - minimal format
         response_data = {

@@ -2,10 +2,13 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import json
+import logging
 import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
+
+logger = logging.getLogger(__name__)
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
@@ -76,8 +79,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 image = ""
 
             cwd = overrides.get("cwd") or config["cwd"]
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[FileTools] Creating new {env_type} environment for task {task_id[:8]}...", flush=True)
+            logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             terminal_env = _create_environment(
                 env_type=env_type,
@@ -91,8 +93,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
 
             _start_cleanup_thread()
-            if not os.getenv("HERMES_QUIET"):
-                print(f"[FileTools] {env_type} environment ready for task {task_id[:8]}", flush=True)
+            logger.info("%s environment ready for task %s", env_type, task_id[:8])
 
     # Build file_ops from the (guaranteed live) environment and cache it
     file_ops = ShellFileOperations(terminal_env)

@@ -30,6 +30,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -39,6 +40,8 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Checkpoint file for crash recovery (gateway only)
@@ -152,10 +155,9 @@ class ProcessRegistry:
                 return session
 
             except ImportError:
-                # ptyprocess not installed -- fall back to Popen
-                print(f"[ProcessRegistry] ptyprocess not installed, falling back to pipe mode", flush=True)
+                logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
-                print(f"[ProcessRegistry] PTY spawn failed ({e}), falling back to pipe mode", flush=True)
+                logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
         proc = subprocess.Popen(
@@ -712,7 +714,7 @@ class ProcessRegistry:
                 with self._lock:
                     self._running[session.id] = session
                 recovered += 1
-                print(f"[ProcessRegistry] Recovered detached process: {session.command[:60]} (pid={pid})", flush=True)
+                logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
         # Clear the checkpoint (will be rewritten as processes finish)
         try:

@@ -23,6 +23,7 @@ Usage:
 import copy
 import json
 import logging
+logger = logging.getLogger(__name__)
 import os
 import random
 import re
@@ -43,10 +44,9 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
     load_dotenv(dotenv_path=env_path)
-    if not os.getenv("HERMES_QUIET"):
-        print(f"✅ Loaded environment variables from {env_path}")
-elif not os.getenv("HERMES_QUIET"):
-    print(f"ℹ️  No .env file found at {env_path}. Using system environment variables.")
+    logger.info("Loaded environment variables from %s", env_path)
+else:
+    logger.info("No .env file found at %s. Using system environment variables.", env_path)
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
@@ -160,8 +160,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         _model_metadata_cache = cache
         _model_metadata_cache_time = time.time()
         
-        if not os.getenv("HERMES_QUIET"):
-            logging.debug(f"Fetched metadata for {len(cache)} models from OpenRouter")
+        logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         
         return cache
         
@@ -1195,8 +1194,7 @@ class AIAgent:
             logging.getLogger('grpc').setLevel(logging.WARNING)
             logging.getLogger('modal').setLevel(logging.WARNING)
             logging.getLogger('rex-deploy').setLevel(logging.INFO)  # Keep INFO for sandbox status
-            if not self.quiet_mode:
-                print("🔍 Verbose logging enabled (third-party library logs suppressed)")
+            logger.info("Verbose logging enabled (third-party library logs suppressed)")
         else:
             # Set logging to INFO level for important messages only
             logging.basicConfig(
@@ -2017,9 +2015,9 @@ class AIAgent:
         try:
             with open(filename, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            print(f"💾 Trajectory saved to {filename}")
+            logger.info("Trajectory saved to %s", filename)
         except Exception as e:
-            print(f"⚠️ Failed to save trajectory: {e}")
+            logger.warning("Failed to save trajectory: %s", e)
     
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:

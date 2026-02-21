@@ -45,18 +45,13 @@ import logging
 import os
 import re
 import asyncio
-import uuid
-import datetime
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
-from openai import AsyncOpenAI
-from hermes_constants import OPENROUTER_BASE_URL
+from tools.openrouter_client import get_async_client as _get_openrouter_client
+from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
-# Initialize Firecrawl client lazily (only when needed)
-# This prevents import errors when FIRECRAWL_API_KEY is not set
 _firecrawl_client = None
 
 def _get_firecrawl_client():
@@ -69,85 +64,10 @@ def _get_firecrawl_client():
         _firecrawl_client = Firecrawl(api_key=api_key)
     return _firecrawl_client
 
-# Initialize OpenRouter API client lazily (only when needed)
-_summarizer_client = None
-
-def _get_summarizer_client():
-    """Get or create the summarizer client (lazy initialization)."""
-    global _summarizer_client
-    if _summarizer_client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        _summarizer_client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_BASE_URL
-        )
-    return _summarizer_client
-
-# Configuration for LLM processing
 DEFAULT_SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
-# Debug mode configuration
-DEBUG_MODE = os.getenv("WEB_TOOLS_DEBUG", "false").lower() == "true"
-DEBUG_SESSION_ID = str(uuid.uuid4())
-DEBUG_LOG_PATH = Path("./logs")
-DEBUG_DATA = {
-    "session_id": DEBUG_SESSION_ID,
-    "start_time": datetime.datetime.now().isoformat(),
-    "debug_enabled": DEBUG_MODE,
-    "tool_calls": []
-} if DEBUG_MODE else None
-
-# Create logs directory if debug mode is enabled
-if DEBUG_MODE:
-    DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    logger.info("Debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
-
-
-def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
-    """
-    Log a debug call entry to the global debug data structure.
-    
-    Args:
-        tool_name (str): Name of the tool being called
-        call_data (Dict[str, Any]): Data about the call including parameters and results
-    """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return
-    
-    call_entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "tool_name": tool_name,
-        **call_data
-    }
-    
-    DEBUG_DATA["tool_calls"].append(call_entry)
-
-
-def _save_debug_log() -> None:
-    """
-    Save the current debug data to a JSON file in the logs directory.
-    """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return
-    
-    try:
-        debug_filename = f"web_tools_debug_{DEBUG_SESSION_ID}.json"
-        debug_filepath = DEBUG_LOG_PATH / debug_filename
-        
-        # Update end time
-        DEBUG_DATA["end_time"] = datetime.datetime.now().isoformat()
-        DEBUG_DATA["total_calls"] = len(DEBUG_DATA["tool_calls"])
-        
-        with open(debug_filepath, 'w', encoding='utf-8') as f:
-            json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
-        
-        logger.debug("Debug log saved: %s", debug_filepath)
-        
-    except Exception as e:
-        logger.error("Error saving debug log: %s", e)
+_debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
 async def process_content_with_llm(
@@ -303,7 +223,7 @@ Create a markdown summary that captures all key information in a well-organized,
 
     for attempt in range(max_retries):
         try:
-            response = await _get_summarizer_client().chat.completions.create(
+            response = await _get_openrouter_client().chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -422,7 +342,7 @@ Synthesize these into ONE cohesive, comprehensive summary that:
 Create a single, unified markdown summary."""
 
     try:
-        response = await _get_summarizer_client().chat.completions.create(
+        response = await _get_openrouter_client().chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
@@ -597,8 +517,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         debug_call_data["final_response_size"] = len(result_json)
         
         # Log debug information
-        _log_debug_call("web_search_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_search_tool", debug_call_data)
+        _debug.save()
         
         return result_json
         
@@ -607,8 +527,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
-        _log_debug_call("web_search_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_search_tool", debug_call_data)
+        _debug.save()
         
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
@@ -859,8 +779,8 @@ async def web_extract_tool(
         debug_call_data["processing_applied"].append("base64_image_removal")
         
         # Log debug information
-        _log_debug_call("web_extract_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_extract_tool", debug_call_data)
+        _debug.save()
         
         return cleaned_result
             
@@ -869,8 +789,8 @@ async def web_extract_tool(
         logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
-        _log_debug_call("web_extract_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_extract_tool", debug_call_data)
+        _debug.save()
         
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
@@ -1149,8 +1069,8 @@ async def web_crawl_tool(
         debug_call_data["processing_applied"].append("base64_image_removal")
         
         # Log debug information
-        _log_debug_call("web_crawl_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_crawl_tool", debug_call_data)
+        _debug.save()
         
         return cleaned_result
         
@@ -1159,8 +1079,8 @@ async def web_crawl_tool(
         logger.error("%s", error_msg)
         
         debug_call_data["error"] = error_msg
-        _log_debug_call("web_crawl_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("web_crawl_tool", debug_call_data)
+        _debug.save()
         
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
@@ -1187,30 +1107,8 @@ def check_nous_api_key() -> bool:
 
 
 def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information:
-                       - enabled: Whether debug mode is enabled
-                       - session_id: Current session UUID (if enabled)
-                       - log_path: Path where debug logs are saved (if enabled)
-                       - total_calls: Number of tool calls logged so far (if enabled)
-    """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return {
-            "enabled": False,
-            "session_id": None,
-            "log_path": None,
-            "total_calls": 0
-        }
-    
-    return {
-        "enabled": True,
-        "session_id": DEBUG_SESSION_ID,
-        "log_path": str(DEBUG_LOG_PATH / f"web_tools_debug_{DEBUG_SESSION_ID}.json"),
-        "total_calls": len(DEBUG_DATA["tool_calls"])
-    }
+    """Get information about the current debug session."""
+    return _debug.get_session_info()
 
 
 if __name__ == "__main__":
@@ -1249,9 +1147,9 @@ if __name__ == "__main__":
         print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
     
     # Show debug mode status
-    if DEBUG_MODE:
-        print(f"🐛 Debug mode ENABLED - Session ID: {DEBUG_SESSION_ID}")
-        print(f"   Debug logs will be saved to: ./logs/web_tools_debug_{DEBUG_SESSION_ID}.json")
+    if _debug.active:
+        print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
+        print(f"   Debug logs will be saved to: {_debug.log_dir}/web_tools_debug_{_debug.session_id}.json")
     else:
         print("🐛 Debug mode disabled (set WEB_TOOLS_DEBUG=true to enable)")
     

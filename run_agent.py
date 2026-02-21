@@ -2285,6 +2285,35 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+    def _interruptible_api_call(self, api_kwargs: dict):
+        """
+        Run the API call in a background thread so the main conversation loop
+        can detect interrupts without waiting for the full HTTP round-trip.
+        
+        Returns the API response, or raises InterruptedError if the agent was
+        interrupted while waiting.
+        """
+        result = {"response": None, "error": None}
+
+        def _call():
+            try:
+                result["response"] = self.client.chat.completions.create(**api_kwargs)
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        # Poll every 0.3s so interrupts are noticed quickly
+        while t.is_alive():
+            t.join(timeout=0.3)
+            if self._interrupt_requested:
+                # Can't cancel the HTTP request cleanly, but we can stop
+                # waiting and let the thread finish in the background.
+                raise InterruptedError("Agent interrupted during API call")
+        if result["error"] is not None:
+            raise result["error"]
+        return result["response"]
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the chat completions API call."""
         provider_preferences = {}
@@ -2778,7 +2807,7 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    response = self.client.chat.completions.create(**api_kwargs)
+                    response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -2935,6 +2964,16 @@ class AIAgent:
                     
                     break  # Success, exit retry loop
 
+                except InterruptedError:
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    print(f"{self.log_prefix}⚡ Interrupted during API call.")
+                    self._flush_messages_to_session_db(messages, conversation_history)
+                    interrupted = True
+                    final_response = "Operation interrupted."
+                    break
+
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
@@ -3053,6 +3092,10 @@ class AIAgent:
                             }
                         time.sleep(0.2)  # Check interrupt every 200ms
             
+            # If the API call was interrupted, skip response processing
+            if interrupted:
+                break
+
             try:
                 assistant_message = response.choices[0].message
                 

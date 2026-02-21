@@ -1194,43 +1194,13 @@ class _ModalEnvironment:
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute commands on a secure Linux environment.
+TERMINAL_TOOL_DESCRIPTION = """Execute commands on a Linux environment. Filesystem persists between calls.
 
-**Environment:**
-- Isolated execution environment (local, Docker, or Modal cloud based on configuration)
-- Filesystem persists between tool calls within the same task
-- Internet access available
+Background processes: Set background=true to get a session_id, then use the 'process' tool to poll/wait/kill/write.
+Working directory: Use 'workdir' for per-command cwd.
+PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
-**Command Execution:**
-- Simple commands: Just provide the 'command' parameter
-- Background processes: Set 'background': true to get a session_id for monitoring via the 'process' tool
-- Command timeout: Optional 'timeout' parameter in seconds
-- Working directory: Optional 'workdir' parameter for per-command cwd
-- PTY mode: Set 'pty': true for interactive CLI tools (Codex, Claude Code, etc.)
-
-**Examples:**
-- Run command: `{"command": "ls -la"}`
-- Background task: `{"command": "pytest -v tests/", "background": true}` -- returns session_id, use process tool to poll/wait/kill
-- With workdir: `{"command": "npm install", "workdir": "/home/user/project"}`
-- With timeout: `{"command": "long_task.sh", "timeout": 300}`
-- Interactive CLI: `{"command": "codex exec 'Add tests'", "background": true, "pty": true}`
-
-**Background Process Workflow:**
-1. Start: `terminal(command="...", background=true)` -- returns session_id
-2. Monitor: `process(action="poll", session_id="...")` -- check status + new output
-3. Wait: `process(action="wait", session_id="...", timeout=600)` -- block until done
-4. Interact: `process(action="write/submit", session_id="...", data="y")` -- send stdin
-5. Kill: `process(action="kill", session_id="...")` -- terminate
-
-**Best Practices:**
-- Use background mode for long-running tasks, then process(wait) to block until completion
-- Use workdir to run commands in specific project directories
-- Install whatever tools you need with apt-get or pip
-- Try to create or use a venv with uv or python -m venv to keep isolation from global system packages
-
-**Things to avoid:**
-- Do NOT use interactive tools (vim, nano, python repl) without pty=true -- they will hang without a pseudo-terminal.
-- Even git sometimes becomes interactive if the output is large. If you're not sure, pipe to cat.
+Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
 
 # Global state for environment lifecycle management

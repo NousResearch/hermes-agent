@@ -281,7 +281,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Opens the page and waits for it to load. Returns the final URL and page title. IMPORTANT: This should be the FIRST browser tool called - it initializes the browser session and loads the target page. Other browser tools require a page to be loaded first. NOTE: For simple information retrieval, prefer using web_search or web_extract first as they are faster and more cost-effective. Use browser tools when you need to interact with a page (click buttons, fill forms, handle dynamic content).",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need to interact with a page (click, fill forms, dynamic content).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -295,7 +295,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) that can be used with browser_click and browser_type. Use full=true to get the complete page content including all text; use full=false (default) for a compact view focused on interactive elements. Requires browser_navigate to be called first.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -32,11 +32,10 @@ import json
 import logging
 import os
 import asyncio
-import uuid
 import datetime
-from pathlib import Path
 from typing import Dict, Any, Optional, Union
 import fal_client
+from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
@@ -78,65 +77,7 @@ VALID_IMAGE_SIZES = [
 VALID_OUTPUT_FORMATS = ["jpeg", "png"]
 VALID_ACCELERATION_MODES = ["none", "regular", "high"]
 
-# Debug mode configuration
-DEBUG_MODE = os.getenv("IMAGE_TOOLS_DEBUG", "false").lower() == "true"
-DEBUG_SESSION_ID = str(uuid.uuid4())
-DEBUG_LOG_PATH = Path("./logs")
-DEBUG_DATA = {
-    "session_id": DEBUG_SESSION_ID,
-    "start_time": datetime.datetime.now().isoformat(),
-    "debug_enabled": DEBUG_MODE,
-    "tool_calls": []
-} if DEBUG_MODE else None
-
-# Create logs directory if debug mode is enabled
-if DEBUG_MODE:
-    DEBUG_LOG_PATH.mkdir(exist_ok=True)
-    logger.debug("Image generation debug mode enabled - Session ID: %s", DEBUG_SESSION_ID)
-
-
-def _log_debug_call(tool_name: str, call_data: Dict[str, Any]) -> None:
-    """
-    Log a debug call entry to the global debug data structure.
-    
-    Args:
-        tool_name (str): Name of the tool being called
-        call_data (Dict[str, Any]): Data about the call including parameters and results
-    """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return
-    
-    call_entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "tool_name": tool_name,
-        **call_data
-    }
-    
-    DEBUG_DATA["tool_calls"].append(call_entry)
-
-
-def _save_debug_log() -> None:
-    """
-    Save the current debug data to a JSON file in the logs directory.
-    """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return
-    
-    try:
-        debug_filename = f"image_tools_debug_{DEBUG_SESSION_ID}.json"
-        debug_filepath = DEBUG_LOG_PATH / debug_filename
-        
-        # Update end time
-        DEBUG_DATA["end_time"] = datetime.datetime.now().isoformat()
-        DEBUG_DATA["total_calls"] = len(DEBUG_DATA["tool_calls"])
-        
-        with open(debug_filepath, 'w', encoding='utf-8') as f:
-            json.dump(DEBUG_DATA, f, indent=2, ensure_ascii=False)
-        
-        logger.debug("Image generation debug log saved: %s", debug_filepath)
-        
-    except Exception as e:
-        logger.error("Error saving image generation debug log: %s", e)
+_debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
 
 
 def _validate_parameters(
@@ -423,8 +364,8 @@ async def image_generate_tool(
         debug_call_data["generation_time"] = generation_time
         
         # Log debug information
-        _log_debug_call("image_generate_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("image_generate_tool", debug_call_data)
+        _debug.save()
         
         return json.dumps(response_data, indent=2, ensure_ascii=False)
         
@@ -441,8 +382,8 @@ async def image_generate_tool(
         
         debug_call_data["error"] = error_msg
         debug_call_data["generation_time"] = generation_time
-        _log_debug_call("image_generate_tool", debug_call_data)
-        _save_debug_log()
+        _debug.log_call("image_generate_tool", debug_call_data)
+        _debug.save()
         
         return json.dumps(response_data, indent=2, ensure_ascii=False)
 
@@ -484,20 +425,7 @@ def get_debug_session_info() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Dictionary containing debug session information
     """
-    if not DEBUG_MODE or not DEBUG_DATA:
-        return {
-            "enabled": False,
-            "session_id": None,
-            "log_path": None,
-            "total_calls": 0
-        }
-    
-    return {
-        "enabled": True,
-        "session_id": DEBUG_SESSION_ID,
-        "log_path": str(DEBUG_LOG_PATH / f"image_tools_debug_{DEBUG_SESSION_ID}.json"),
-        "total_calls": len(DEBUG_DATA["tool_calls"])
-    }
+    return _debug.get_session_info()
 
 
 if __name__ == "__main__":
@@ -532,9 +460,9 @@ if __name__ == "__main__":
     print(f"🔍 Auto-upscaling with: {UPSCALER_MODEL} ({UPSCALER_FACTOR}x)")
     
     # Show debug mode status
-    if DEBUG_MODE:
-        print(f"🐛 Debug mode ENABLED - Session ID: {DEBUG_SESSION_ID}")
-        print(f"   Debug logs will be saved to: ./logs/image_tools_debug_{DEBUG_SESSION_ID}.json")
+    if _debug.active:
+        print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
+        print(f"   Debug logs will be saved to: ./logs/image_tools_debug_{_debug.session_id}.json")
     else:
         print("🐛 Debug mode disabled (set IMAGE_TOOLS_DEBUG=true to enable)")
     

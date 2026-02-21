@@ -717,12 +717,13 @@ def _run_browser_command(
     except Exception as e:
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     
-    # Connect via CDP to our pre-created Browserbase session (with proxies)
-    # Use --cdp flag to connect to existing session instead of creating new one
+    # Connect via CDP to our pre-created Browserbase session.
+    # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
+    # --session creates a local browser instance and silently ignores --cdp.
+    # Per-task isolation is handled by AGENT_BROWSER_SOCKET_DIR instead.
     cmd_parts = browser_cmd.split() + [
-        "--session", session_info["session_name"],
-        "--cdp", session_info["cdp_url"],  # Connect to our proxied session
-        "--json",  # Always request JSON output
+        "--cdp", session_info["cdp_url"],
+        "--json",
         command
     ] + args
     

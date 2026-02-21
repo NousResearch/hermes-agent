@@ -479,8 +479,8 @@ class GatewayRunner:
                     self._pending_approvals[session_key] = _last_pending_approval.copy()
                     # Clear the global so it doesn't leak to other sessions
                     _last_pending_approval.clear()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to check pending approvals: %s", e)
             
             # Save the full conversation to the transcript, including tool calls.
             # This preserves the complete agent loop (tool_calls, tool results,
@@ -973,8 +973,8 @@ class GatewayRunner:
                 with open(config_path, 'r') as f:
                     user_config = yaml.safe_load(f) or {}
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not load platform_toolsets config: %s", e)
         
         # Map platform enum to config key
         platform_config_key = {

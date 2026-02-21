@@ -122,8 +122,8 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
         )
         if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
             return ogg_path
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("ffmpeg OGG conversion failed: %s", e)
     return None
 
 

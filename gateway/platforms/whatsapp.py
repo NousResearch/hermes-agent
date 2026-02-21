@@ -17,9 +17,12 @@ with different backends via a bridge pattern.
 
 import asyncio
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 import sys
 sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
@@ -246,8 +249,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             "type": "group" if data.get("isGroup") else "dm",
                             "participants": data.get("participants", []),
                         }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         
         return {"name": chat_id, "type": "dm"}
     

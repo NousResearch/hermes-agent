@@ -39,8 +39,12 @@ env_path = PROJECT_ROOT / '.env'
 if env_path.exists():
     load_dotenv(dotenv_path=env_path)
 
+import logging
+
 from hermes_cli import __version__
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 
 def cmd_chat(args):
@@ -512,8 +516,8 @@ def cmd_update(args):
                 print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
             else:
                 print("  ✓ Skills are up to date")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Skills sync during update failed: %s", e)
         
         # Check for config migrations
         print()

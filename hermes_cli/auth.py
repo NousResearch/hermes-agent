@@ -16,6 +16,7 @@ Architecture:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import time
@@ -31,6 +32,8 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 try:
     import fcntl
@@ -314,8 +317,8 @@ def resolve_provider(
             state = _load_provider_state(auth_store, active)
             if state and (state.get("access_token") or state.get("refresh_token")):
                 return active
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not detect active auth provider: %s", e)
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
@@ -578,8 +581,8 @@ def fetch_nous_models(
         try:
             err = response.json()
             description = str(err.get("error_description") or err.get("error") or description)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not parse error response JSON: %s", e)
         raise AuthError(description, provider="nous", code="models_fetch_failed")
 
     payload = response.json()

@@ -36,6 +36,7 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer
+from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -2077,20 +2078,54 @@ class HermesCLI:
 
         input_area.buffer.on_text_changed += _on_text_changed
 
-        # Hint line above input: context-sensitive instructions for the
-        # current UI state (sudo prompt, approval, clarify, interrupt).
+        # --- Input processors for password masking and inline placeholder ---
+
+        # Mask input with '*' when the sudo password prompt is active
+        input_area.control.input_processors.append(
+            ConditionalProcessor(
+                PasswordProcessor(),
+                filter=Condition(lambda: bool(cli_ref._sudo_state)),
+            )
+        )
+
+        class _PlaceholderProcessor(Processor):
+            """Render grayed-out placeholder text inside the input when empty."""
+            def __init__(self, get_text):
+                self._get_text = get_text
+
+            def apply_transformation(self, ti):
+                if not ti.document.text and ti.lineno == 0:
+                    text = self._get_text()
+                    if text:
+                        return Transformation(fragments=[('class:placeholder', text)])
+                return Transformation(fragments=ti.fragments)
+
+        def _get_placeholder():
+            if cli_ref._sudo_state:
+                return "type password (hidden), Enter to skip"
+            if cli_ref._approval_state:
+                return ""
+            if cli_ref._clarify_state:
+                return ""
+            if cli_ref._agent_running:
+                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+            return ""
+
+        input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
+
+        # Hint line above input: shown only for interactive prompts that need
+        # extra instructions (sudo countdown, approval navigation, clarify).
+        # The agent-running interrupt hint is now an inline placeholder above.
         def get_hint_text():
             import time as _time
 
-            # Sudo password prompt
             if cli_ref._sudo_state:
                 remaining = max(0, int(cli_ref._sudo_deadline - _time.monotonic()))
                 return [
-                    ('class:hint', '  type password (hidden) and press Enter, or Enter to skip'),
+                    ('class:hint', '  password hidden · Enter to skip'),
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
-            # Dangerous command approval
             if cli_ref._approval_state:
                 remaining = max(0, int(cli_ref._approval_deadline - _time.monotonic()))
                 return [
@@ -2098,7 +2133,6 @@ class HermesCLI:
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
-            # Clarify question
             if cli_ref._clarify_state:
                 remaining = max(0, int(cli_ref._clarify_deadline - _time.monotonic()))
                 countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
@@ -2112,19 +2146,12 @@ class HermesCLI:
                     ('class:clarify-countdown', countdown),
                 ]
 
-            if not cli_ref._agent_running:
-                return []
-
-            # Agent is running — show interrupt hint only when buffer is empty
-            buf = input_area.buffer
-            if buf.text:
-                return [('class:hint', '  press Enter to send interrupt')]
-            return [('class:hint', '  type a message + Enter to interrupt, or Ctrl+C to cancel')]
+            return []
 
         def get_hint_height():
             if cli_ref._sudo_state or cli_ref._approval_state or cli_ref._clarify_state:
                 return 1
-            return 1 if cli_ref._agent_running else 0
+            return 0
 
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
@@ -2297,6 +2324,7 @@ class HermesCLI:
         # Style for the application
         style = PTStyle.from_dict({
             'input-area': '#FFF8DC',
+            'placeholder': '#555555 italic',
             'prompt': '#FFF8DC',
             'prompt-working': '#888888 italic',
             'hint': '#555555 italic',

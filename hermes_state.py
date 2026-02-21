@@ -24,7 +24,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     timestamp REAL NOT NULL,
-    token_count INTEGER
+    token_count INTEGER,
+    finish_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -118,12 +119,21 @@ class SessionDB:
 
         cursor.executescript(SCHEMA_SQL)
 
-        # Check schema version
+        # Check schema version and run migrations
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
             cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        # Future migrations would go here: if row["version"] < 2: ...
+        else:
+            current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            if current_version < 2:
+                # v2: add finish_reason column to messages
+                try:
+                    cursor.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 2")
+
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -222,6 +232,7 @@ class SessionDB:
         tool_calls: Any = None,
         tool_call_id: str = None,
         token_count: int = None,
+        finish_reason: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -231,8 +242,8 @@ class SessionDB:
         """
         cursor = self._conn.execute(
             """INSERT INTO messages (session_id, role, content, tool_call_id,
-               tool_calls, tool_name, timestamp, token_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               tool_calls, tool_name, timestamp, token_count, finish_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 role,
@@ -242,6 +253,7 @@ class SessionDB:
                 tool_name,
                 time.time(),
                 token_count,
+                finish_reason,
             ),
         )
         msg_id = cursor.lastrowid

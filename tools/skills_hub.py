@@ -154,8 +154,8 @@ class GitHubAuth:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.debug("gh CLI token lookup failed: %s", e)
         return None
 
     def _try_github_app(self) -> Optional[str]:
@@ -438,8 +438,8 @@ class GitHubSource(SkillSource):
             )
             if resp.status_code == 200:
                 return resp.text
-        except httpx.HTTPError:
-            pass
+        except httpx.HTTPError as e:
+            logger.debug("GitHub contents API fetch failed: %s", e)
         return None
 
     def _read_cache(self, key: str) -> Optional[list]:
@@ -461,8 +461,8 @@ class GitHubSource(SkillSource):
         cache_file = INDEX_CACHE_DIR / f"{key}.json"
         try:
             cache_file.write_text(json.dumps(data, ensure_ascii=False))
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Could not write cache: %s", e)
 
     @staticmethod
     def _meta_to_dict(meta: SkillMeta) -> dict:
@@ -826,8 +826,8 @@ class LobeHubSource(SkillSource):
             resp = httpx.get(url, timeout=15)
             if resp.status_code == 200:
                 return resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
-            pass
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug("LobeHub agent fetch failed: %s", e)
         return None
 
     @staticmethod
@@ -890,8 +890,8 @@ def _write_index_cache(key: str, data: Any) -> None:
     cache_file = INDEX_CACHE_DIR / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("Could not write cache: %s", e)
 
 
 def _skill_meta_to_dict(meta: SkillMeta) -> dict:
@@ -1037,8 +1037,8 @@ def append_audit_log(action: str, skill_name: str, source: str,
     try:
         with open(AUDIT_LOG, "a") as f:
             f.write(line)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("Could not write audit log: %s", e)
 
 
 # ---------------------------------------------------------------------------

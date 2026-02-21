@@ -277,14 +277,14 @@ class ProcessRegistry:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Process stdout reader ended: %s", e)
 
         # Process exited
         try:
             session.process.wait(timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Process wait timed out or failed: %s", e)
         session.exited = True
         session.exit_code = session.process.returncode
         self._move_to_finished(session)
@@ -351,14 +351,14 @@ class ProcessRegistry:
                     break
                 except Exception:
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("PTY stdout reader ended: %s", e)
 
         # Process exited
         try:
             pty.wait()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("PTY wait timed out or failed: %s", e)
         session.exited = True
         session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
         self._move_to_finished(session)
@@ -719,8 +719,8 @@ class ProcessRegistry:
         # Clear the checkpoint (will be rewritten as processes finish)
         try:
             CHECKPOINT_PATH.write_text("[]", encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not write checkpoint file: %s", e)
 
         return recovered
 

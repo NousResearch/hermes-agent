@@ -823,8 +823,8 @@ class HermesCLI:
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
-        except Exception:
-            pass  # SQLite session store is optional
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
         
         try:
             self.agent = AIAgent(
@@ -2130,8 +2130,8 @@ class HermesCLI:
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not close session in DB: %s", e)
             _run_cleanup()
             print("\nGoodbye! ⚕")
 

@@ -636,8 +636,8 @@ def build_skills_system_prompt() -> str:
                 match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
                 if match:
                     category_descriptions[category] = match.group(1).strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not read skill description %s: %s", desc_file, e)
     
     index_lines = []
     for category in sorted(skills_by_category.keys()):
@@ -748,8 +748,8 @@ def build_context_files_prompt(cwd: str = None) -> str:
                 if content:
                     rel_path = agents_path.relative_to(cwd_path)
                     total_agents_content += f"## {rel_path}\n\n{content}\n\n"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not read %s: %s", agents_path, e)
         
         if total_agents_content:
             total_agents_content = _truncate_content(total_agents_content, "AGENTS.md")
@@ -765,8 +765,8 @@ def build_context_files_prompt(cwd: str = None) -> str:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read .cursorrules: %s", e)
     
     # Check for .cursor/rules/*.mdc files
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
@@ -777,8 +777,8 @@ def build_context_files_prompt(cwd: str = None) -> str:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not read %s: %s", mdc_file, e)
     
     if cursorrules_content:
         cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
@@ -807,8 +807,8 @@ def build_context_files_prompt(cwd: str = None) -> str:
                 content = _truncate_content(content, "SOUL.md")
                 soul_content = f"## SOUL.md\n\nIf SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n{content}"
                 sections.append(soul_content)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
     
     # ----- Assemble -----
     if not sections:
@@ -1320,8 +1320,8 @@ class AIAgent:
                     },
                     user_id=None,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Session DB create_session failed: %s", e)
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
@@ -1730,8 +1730,8 @@ class AIAgent:
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Session DB append_message failed: %s", e)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -2048,8 +2048,8 @@ class AIAgent:
             api_key = None
             try:
                 api_key = getattr(self.client, "api_key", None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not extract API key for debug dump: %s", e)
 
             dump_payload: Dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
@@ -2085,8 +2085,8 @@ class AIAgent:
                     try:
                         error_info["response_status"] = getattr(response_obj, "status_code", None)
                         error_info["response_text"] = response_obj.text
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Could not extract error response details: %s", e)
 
                 dump_payload["error"] = error_info
 
@@ -2174,8 +2174,8 @@ class AIAgent:
         for child in self._active_children:
             try:
                 child.interrupt(message)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
@@ -2346,8 +2346,8 @@ class AIAgent:
             if self._session_db:
                 try:
                     self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 
@@ -2355,8 +2355,8 @@ class AIAgent:
         if self._session_db:
             try:
                 self._session_db.append_message(self.session_id, "user", user_message)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Session DB append_message failed: %s", e)
 
         # Main conversation loop
         api_call_count = 0
@@ -2743,8 +2743,8 @@ class AIAgent:
                                         parent_session_id=old_session_id,
                                     )
                                     self._session_db.update_system_prompt(self.session_id, active_system_prompt)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("Session DB compression split failed: %s", e)
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             continue  # Retry with compressed messages
                         else:
@@ -3175,8 +3175,8 @@ class AIAgent:
                                     parent_session_id=old_session_id,
                                 )
                                 self._session_db.update_system_prompt(self.session_id, active_system_prompt)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("Session DB compression split failed: %s", e)
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages

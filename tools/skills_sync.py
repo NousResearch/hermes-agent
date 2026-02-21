@@ -13,10 +13,13 @@ newline-delimited list of skill names that have been offered to the user.
 """
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
@@ -131,8 +134,8 @@ def sync_skills(quiet: bool = False) -> dict:
             try:
                 dest_desc.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(desc_md, dest_desc)
-            except (OSError, IOError):
-                pass
+            except (OSError, IOError) as e:
+                logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
 

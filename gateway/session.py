@@ -8,6 +8,7 @@ Handles:
 - Dynamic system prompt injection (agent knows its context)
 """
 
+import logging
 import os
 import json
 import uuid
@@ -15,6 +16,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 from .config import (
     Platform,
@@ -388,8 +391,8 @@ class SessionStore:
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Session DB operation failed: %s", e)
         
         # Create new session
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -443,8 +446,8 @@ class SessionStore:
                     self._db.update_token_counts(
                         entry.session_id, input_tokens, output_tokens
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Session DB operation failed: %s", e)
     
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
@@ -459,8 +462,8 @@ class SessionStore:
         if self._db:
             try:
                 self._db.end_session(old_entry.session_id, "session_reset")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
         
         now = datetime.now()
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -487,8 +490,8 @@ class SessionStore:
                     source=old_entry.platform.value if old_entry.platform else "unknown",
                     user_id=old_entry.origin.user_id if old_entry.origin else None,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
         
         return new_entry
     
@@ -523,8 +526,8 @@ class SessionStore:
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
@@ -539,8 +542,8 @@ class SessionStore:
                 messages = self._db.get_messages_as_conversation(session_id)
                 if messages:
                     return messages
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not load messages from DB: %s", e)
         
         # Fall back to legacy JSONL
         transcript_path = self.get_transcript_path(session_id)

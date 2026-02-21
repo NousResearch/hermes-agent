@@ -12,10 +12,13 @@ Guides users through:
 Config files are stored in ~/.hermes/ for easy access.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -488,8 +491,8 @@ def run_setup_wizard(args):
                     inference_base_url=creds.get("base_url", ""),
                     api_key=creds.get("api_key", ""),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not fetch Nous models after login: %s", e)
 
         except SystemExit:
             print_warning("Nous Portal login was cancelled or failed.")

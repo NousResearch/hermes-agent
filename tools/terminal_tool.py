@@ -231,6 +231,26 @@ def _check_disk_usage_warning():
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
 
+# Optional UI callbacks for interactive prompts. When set, these are called
+# instead of the default /dev/tty or input() readers. The CLI registers these
+# so prompts route through prompt_toolkit's event loop.
+#   _sudo_password_callback() -> str  (return password or "" to skip)
+#   _approval_callback(command, description) -> str  ("once"/"session"/"always"/"deny")
+_sudo_password_callback = None
+_approval_callback = None
+
+
+def set_sudo_password_callback(cb):
+    """Register a callback for sudo password prompts (used by CLI)."""
+    global _sudo_password_callback
+    _sudo_password_callback = cb
+
+
+def set_approval_callback(cb):
+    """Register a callback for dangerous command approval prompts (used by CLI)."""
+    global _approval_callback
+    _approval_callback = cb
+
 # =============================================================================
 # Dangerous Command Approval System
 # =============================================================================
@@ -319,16 +339,26 @@ def _prompt_dangerous_approval(command: str, description: str, timeout_seconds: 
     """
     Prompt user to approve a dangerous command (CLI only).
     
+    If an _approval_callback is registered (by the CLI), delegates to it so the
+    prompt integrates with prompt_toolkit's UI.  Otherwise falls back to the
+    raw input() approach (works outside the TUI, e.g. tests).
+    
     Returns: 'once', 'session', 'always', or 'deny'
     """
     import sys
     import threading
     
+    # Use the registered callback when available (prompt_toolkit-compatible)
+    if _approval_callback is not None:
+        try:
+            return _approval_callback(command, description)
+        except Exception:
+            return "deny"
+
     # Pause spinner if one is running
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     
     try:
-        # Use simple ASCII art for compatibility (no ANSI color codes)
         print()
         print(f"  ⚠️  DANGEROUS COMMAND: {description}")
         print(f"      {command[:80]}{'...' if len(command) > 80 else ''}")
@@ -484,12 +514,20 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     - Any error occurs
     
     Only works in interactive mode (HERMES_INTERACTIVE=1).
-    Reads directly from /dev/tty with echo disabled to avoid conflicts
-    with prompt_toolkit's patch_stdout / Application input handling.
+    If a _sudo_password_callback is registered (by the CLI), delegates to it
+    so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
+    directly from /dev/tty with echo disabled.
     """
     import sys
     import time as time_module
     
+    # Use the registered callback when available (prompt_toolkit-compatible)
+    if _sudo_password_callback is not None:
+        try:
+            return _sudo_password_callback() or ""
+        except Exception:
+            return ""
+
     result = {"password": None, "done": False}
     
     def read_password_thread():
@@ -500,11 +538,9 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             import termios
             tty_fd = os.open("/dev/tty", os.O_RDONLY)
             old_attrs = termios.tcgetattr(tty_fd)
-            # Disable echo (ECHO) but keep canonical mode (ICANON) for line buffering
             new_attrs = termios.tcgetattr(tty_fd)
             new_attrs[3] = new_attrs[3] & ~termios.ECHO
             termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-            # Read one line (up to newline)
             chars = []
             while True:
                 b = os.read(tty_fd, 1)

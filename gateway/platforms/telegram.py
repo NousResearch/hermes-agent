@@ -30,7 +30,8 @@ except ImportError:
     ContextTypes = Any
 
 import sys
-sys.path.insert(0, str(__file__).rsplit("/", 3)[0])
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

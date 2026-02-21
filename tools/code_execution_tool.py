@@ -31,6 +31,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 # Availability gate: UDS requires a POSIX OS
+logger = logging.getLogger(__name__)
+
 SANDBOX_AVAILABLE = sys.platform != "win32"
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
@@ -488,8 +490,8 @@ def execute_code(
         try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not clean temp dir: %s", e)
         try:
             os.unlink(sock_path)
         except OSError:
@@ -503,8 +505,8 @@ def _kill_process_group(proc, escalate: bool = False):
     except (ProcessLookupError, PermissionError):
         try:
             proc.kill()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not kill process: %s", e)
 
     if escalate:
         # Give the process 5s to exit after SIGTERM, then SIGKILL
@@ -516,8 +518,8 @@ def _kill_process_group(proc, escalate: bool = False):
             except (ProcessLookupError, PermissionError):
                 try:
                     proc.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not kill process: %s", e)
 
 
 def _load_config() -> dict:

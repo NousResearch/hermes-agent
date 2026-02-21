@@ -8,8 +8,11 @@ Uses discord.py library for:
 """
 
 import asyncio
+import logging
 import os
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import discord
@@ -177,8 +180,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
                     reference = ref_msg
-                except Exception:
-                    pass  # Ignore if we can't find the referenced message
+                except Exception as e:
+                    logger.debug("Could not fetch reply-to message: %s", e)
             
             for i, chunk in enumerate(chunks):
                 msg = await channel.send(
@@ -363,8 +366,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Send a followup to close the interaction if needed
             try:
                 await interaction.followup.send("Processing complete~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -373,8 +376,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("New conversation started~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="reset", description="Reset your Hermes session")
         async def slash_reset(interaction: discord.Interaction):
@@ -383,8 +386,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Session reset~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="model", description="Show or change the model")
         @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
@@ -394,8 +397,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Done~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
@@ -405,8 +408,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Done~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="retry", description="Retry your last message")
         async def slash_retry(interaction: discord.Interaction):
@@ -415,8 +418,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Retrying~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="undo", description="Remove the last exchange")
         async def slash_undo(interaction: discord.Interaction):
@@ -425,8 +428,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Done~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="status", description="Show Hermes session status")
         async def slash_status(interaction: discord.Interaction):
@@ -435,8 +438,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Status sent~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
@@ -445,8 +448,8 @@ class DiscordAdapter(BasePlatformAdapter):
             await self.handle_message(event)
             try:
                 await interaction.followup.send("Stop requested~", ephemeral=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""

@@ -31,6 +31,33 @@ hermes          # Start chatting!
 
 ---
 
+## Getting Started
+
+Hermes supports multiple inference providers. Pick one to get going:
+
+**Option A — Nous Portal (subscription):**
+```bash
+hermes login        # Opens browser to authenticate with Nous Portal
+hermes              # Start chatting!
+```
+
+**Option B — OpenRouter (pay-per-use, 100+ models):**
+```bash
+hermes model        # Interactive provider & model selector
+                    # → choose OpenRouter, paste your API key, pick a model
+hermes              # Start chatting!
+```
+
+**Option C — Custom endpoint (VLLM, SGLang, etc.):**
+```bash
+hermes model        # → choose Custom endpoint, enter URL + API key + model name
+hermes              # Start chatting!
+```
+
+You can switch providers and models at any time with `hermes model`.
+
+---
+
 ## Updating
 
 **Quick update (installer version):**
@@ -117,23 +144,15 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 
 ### Inference Providers
 
-You need at least one way to connect to an LLM:
+You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
 
-| Method | Description | Setup |
-|--------|-------------|-------|
-| **Nous Portal** | Nous Research subscription with OAuth login | `hermes login` |
-| **OpenRouter** (recommended for flexibility) | Pay-per-use access to 100+ models | `OPENROUTER_API_KEY` in `.env` |
-| **Custom Endpoint** | Any OpenAI-compatible API (VLLM, SGLang, etc.) | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `.env` |
+| Provider | Setup |
+|----------|-------|
+| **Nous Portal** | `hermes login` (OAuth, subscription-based) |
+| **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
-The setup wizard (`hermes setup`) walks you through choosing a provider. You can also log in directly:
-
-```bash
-hermes login                    # Authenticate with Nous Portal
-hermes login --provider nous    # Same, explicit
-hermes logout                   # Clear stored credentials
-```
-
-**Note:** Even when using Nous Portal or a custom endpoint as your main provider, some tools (vision analysis, web summarization, Mixture of Agents) use OpenRouter independently. Adding an `OPENROUTER_API_KEY` enables these tools.
+**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 
 ### Optional API Keys
 
@@ -281,19 +300,28 @@ See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 ## Commands
 
 ```bash
+# Chat
 hermes                    # Interactive chat (default)
 hermes chat -q "Hello"    # Single query mode
-hermes chat --provider nous  # Chat using Nous Portal
-hermes setup              # Configure provider, API keys, and settings
+
+# Provider & model management
+hermes model              # Switch provider and model interactively
 hermes login              # Authenticate with Nous Portal (OAuth)
 hermes logout             # Clear stored OAuth credentials
+
+# Configuration
+hermes setup              # Full setup wizard (provider, terminal, messaging, etc.)
 hermes config             # View/edit configuration
 hermes config check       # Check for missing config (useful after updates)
 hermes config migrate     # Interactively add missing options
 hermes status             # Show configuration status (incl. auth)
 hermes doctor             # Diagnose issues
-hermes update             # Update to latest version (prompts for new config)
+
+# Maintenance
+hermes update             # Update to latest version
 hermes uninstall          # Uninstall (can keep configs for later reinstall)
+
+# Messaging, skills, cron
 hermes gateway            # Start messaging gateway
 hermes skills search k8s  # Search skill registries
 hermes skills install ... # Install a skill (with security scan)

@@ -73,6 +73,271 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
+def cmd_model(args):
+    """Select default model — starts with provider selection, then model picker."""
+    from hermes_cli.auth import (
+        resolve_provider, get_provider_auth_state, PROVIDER_REGISTRY,
+        _prompt_model_selection, _save_model_choice, _update_config_for_provider,
+        resolve_nous_runtime_credentials, fetch_nous_models, AuthError, format_auth_error,
+        _login_nous, ProviderConfig,
+    )
+    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+
+    config = load_config()
+    current_model = config.get("model")
+    if isinstance(current_model, dict):
+        current_model = current_model.get("default", "")
+    current_model = current_model or "(not set)"
+
+    active = resolve_provider("auto")
+
+    # Map active provider to a display name
+    provider_labels = {
+        "openrouter": "OpenRouter",
+        "nous": "Nous Portal",
+    }
+    active_label = provider_labels.get(active, "Custom endpoint")
+
+    print()
+    print(f"  Current model:    {current_model}")
+    print(f"  Active provider:  {active_label}")
+    print()
+
+    # Step 1: Provider selection — put active provider first with marker
+    providers = [
+        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
+        ("nous", "Nous Portal (Nous Research subscription)"),
+        ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
+    ]
+
+    # Reorder so the active provider is at the top
+    active_key = active if active in ("openrouter", "nous") else "custom"
+    ordered = []
+    for key, label in providers:
+        if key == active_key:
+            ordered.insert(0, (key, f"{label}  ← currently active"))
+        else:
+            ordered.append((key, label))
+    ordered.append(("cancel", "Cancel"))
+
+    provider_idx = _prompt_provider_choice([label for _, label in ordered])
+    if provider_idx is None or ordered[provider_idx][0] == "cancel":
+        print("No change.")
+        return
+
+    selected_provider = ordered[provider_idx][0]
+
+    # Step 2: Provider-specific setup + model selection
+    if selected_provider == "openrouter":
+        _model_flow_openrouter(config, current_model)
+    elif selected_provider == "nous":
+        _model_flow_nous(config, current_model)
+    elif selected_provider == "custom":
+        _model_flow_custom(config)
+
+
+def _prompt_provider_choice(choices):
+    """Show provider selection menu. Returns index or None."""
+    try:
+        from simple_term_menu import TerminalMenu
+        menu_items = [f"  {c}" for c in choices]
+        menu = TerminalMenu(
+            menu_items, cursor_index=0,
+            menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
+            menu_highlight_style=("fg_green",),
+            cycle_cursor=True, clear_screen=False,
+            title="Select provider:",
+        )
+        idx = menu.show()
+        print()
+        return idx
+    except ImportError:
+        pass
+
+    # Fallback: numbered list
+    print("Select provider:")
+    for i, c in enumerate(choices, 1):
+        print(f"  {i}. {c}")
+    print()
+    while True:
+        try:
+            val = input(f"Choice [1-{len(choices)}]: ").strip()
+            if not val:
+                return None
+            idx = int(val) - 1
+            if 0 <= idx < len(choices):
+                return idx
+            print(f"Please enter 1-{len(choices)}")
+        except ValueError:
+            print("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+
+
+def _model_flow_openrouter(config, current_model=""):
+    """OpenRouter provider: ensure API key, then pick model."""
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice
+    from hermes_cli.config import get_env_value, save_env_value
+
+    api_key = get_env_value("OPENROUTER_API_KEY")
+    if not api_key:
+        print("No OpenRouter API key configured.")
+        print("Get one at: https://openrouter.ai/keys")
+        print()
+        try:
+            key = input("OpenRouter API key (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not key:
+            print("Cancelled.")
+            return
+        save_env_value("OPENROUTER_API_KEY", key)
+        print("API key saved.")
+        print()
+
+    OPENROUTER_MODELS = [
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-opus-4.5",
+        "openai/gpt-5.2",
+        "openai/gpt-5.2-codex",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+        "z-ai/glm-4.7",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.1",
+    ]
+
+    selected = _prompt_model_selection(OPENROUTER_MODELS, current_model=current_model)
+    if selected:
+        # Clear any custom endpoint and set provider to openrouter
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _save_model_choice(selected)
+        # Update config provider
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = "openrouter"
+            model["base_url"] = "https://openrouter.ai/api/v1"
+        save_config(cfg)
+        print(f"Default model set to: {selected} (via OpenRouter)")
+    else:
+        print("No change.")
+
+
+def _model_flow_nous(config, current_model=""):
+    """Nous Portal provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_provider_auth_state, _prompt_model_selection, _save_model_choice,
+        resolve_nous_runtime_credentials, fetch_nous_models,
+        AuthError, format_auth_error, _login_nous, PROVIDER_REGISTRY,
+    )
+    import argparse
+
+    state = get_provider_auth_state("nous")
+    if not state or not state.get("access_token"):
+        print("Not logged into Nous Portal. Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+        # login_nous already handles model selection, so we're done
+        return
+
+    # Already logged in — fetch models and select
+    print("Fetching models from Nous Portal...")
+    try:
+        creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
+        model_ids = fetch_nous_models(
+            inference_base_url=creds.get("base_url", ""),
+            api_key=creds.get("api_key", ""),
+        )
+    except Exception as exc:
+        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        print(f"Could not fetch models: {msg}")
+        return
+
+    if not model_ids:
+        print("No models returned by the inference API.")
+        return
+
+    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        print(f"Default model set to: {selected} (via Nous Portal)")
+    else:
+        print("No change.")
+
+
+def _model_flow_custom(config):
+    """Custom endpoint: collect URL, API key, and model name."""
+    from hermes_cli.auth import _save_model_choice
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    current_url = get_env_value("OPENAI_BASE_URL") or ""
+    current_key = get_env_value("OPENAI_API_KEY") or ""
+
+    print("Custom OpenAI-compatible endpoint configuration:")
+    if current_url:
+        print(f"  Current URL: {current_url}")
+    if current_key:
+        print(f"  Current key: {current_key[:8]}...")
+    print()
+
+    try:
+        base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
+        api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not base_url and not current_url:
+        print("No URL provided. Cancelled.")
+        return
+
+    # Validate URL format
+    effective_url = base_url or current_url
+    if not effective_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    if base_url:
+        save_env_value("OPENAI_BASE_URL", base_url)
+    if api_key:
+        save_env_value("OPENAI_API_KEY", api_key)
+
+    if model_name:
+        _save_model_choice(model_name)
+
+        # Update config to reflect custom provider
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = "auto"
+            model["base_url"] = effective_url
+        save_config(cfg)
+
+        print(f"Default model set to: {model_name} (via {effective_url})")
+    else:
+        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+
 def cmd_login(args):
     """Authenticate Hermes CLI with a provider."""
     from hermes_cli.auth import login_command
@@ -283,6 +548,7 @@ Examples:
     hermes setup                  Run setup wizard
     hermes login                  Authenticate with an inference provider
     hermes logout                 Clear stored authentication
+    hermes model                  Select default model
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -335,7 +601,17 @@ For more help on a command:
         help="Verbose output"
     )
     chat_parser.set_defaults(func=cmd_chat)
-    
+
+    # =========================================================================
+    # model command
+    # =========================================================================
+    model_parser = subparsers.add_parser(
+        "model",
+        help="Select default model and provider",
+        description="Interactively select your inference provider and default model"
+    )
+    model_parser.set_defaults(func=cmd_model)
+
     # =========================================================================
     # gateway command
     # =========================================================================

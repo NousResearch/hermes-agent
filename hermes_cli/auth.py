@@ -851,6 +851,79 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
+def _prompt_model_selection(model_ids: List[str]) -> Optional[str]:
+    """Interactive model selection after login. Returns chosen model ID or None."""
+    print(f"Available models ({len(model_ids)}):")
+    for i, mid in enumerate(model_ids, 1):
+        print(f"  {i}. {mid}")
+    print(f"  {len(model_ids) + 1}. Custom model name")
+    print(f"  {len(model_ids) + 2}. Skip (keep current)")
+    print()
+
+    # Try arrow-key menu first, fall back to number input
+    try:
+        from simple_term_menu import TerminalMenu
+        choices = [f"  {mid}" for mid in model_ids]
+        choices.append("  Custom model name")
+        choices.append("  Skip (keep current)")
+        menu = TerminalMenu(
+            choices,
+            cursor_index=0,
+            menu_cursor="-> ",
+            menu_cursor_style=("fg_green", "bold"),
+            menu_highlight_style=("fg_green",),
+            cycle_cursor=True,
+            clear_screen=False,
+            title="Select default model:",
+        )
+        idx = menu.show()
+        if idx is None:
+            return None
+        print()
+        if idx < len(model_ids):
+            return model_ids[idx]
+        elif idx == len(model_ids):
+            custom = input("Enter model name: ").strip()
+            return custom if custom else None
+        return None
+    except ImportError:
+        pass
+
+    # Fallback: number-based selection
+    while True:
+        try:
+            choice = input(f"Select model [1-{len(model_ids) + 2}] (default: skip): ").strip()
+            if not choice:
+                return None
+            idx = int(choice)
+            if 1 <= idx <= len(model_ids):
+                return model_ids[idx - 1]
+            elif idx == len(model_ids) + 1:
+                custom = input("Enter model name: ").strip()
+                return custom if custom else None
+            elif idx == len(model_ids) + 2:
+                return None
+            print(f"Please enter a number between 1 and {len(model_ids) + 2}")
+        except ValueError:
+            print("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+
+def _save_model_choice(model_id: str) -> None:
+    """Save the selected model to config.yaml and .env."""
+    from hermes_cli.config import save_config, load_config, save_env_value
+
+    config = load_config()
+    # Handle both string and dict model formats
+    if isinstance(config.get("model"), dict):
+        config["model"]["default"] = model_id
+    else:
+        config["model"] = model_id
+    save_config(config)
+    save_env_value("LLM_MODEL", model_id)
+
+
 def login_command(args) -> None:
     """Run OAuth device code login for the selected provider."""
     provider_id = getattr(args, "provider", None) or "nous"
@@ -1008,9 +1081,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
             print()
             if model_ids:
-                print(f"Available models ({len(model_ids)}):")
-                for mid in model_ids:
-                    print(f"  - {mid}")
+                selected_model = _prompt_model_selection(model_ids)
+                if selected_model:
+                    _save_model_choice(selected_model)
+                    print(f"Default model set to: {selected_model}")
             else:
                 print("No models were returned by the inference API.")
         except Exception as exc:

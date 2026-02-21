@@ -95,8 +95,9 @@ _cleanup_done = False
 # =============================================================================
 
 # Session inactivity timeout (seconds) - cleanup if no activity for this long
-# Default: 2 minutes. Can be configured via environment variable.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "120"))
+# Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
+# especially when subagents are doing multi-step browser tasks.
+BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -104,6 +105,8 @@ _session_last_activity: Dict[str, float] = {}
 # Background cleanup thread state
 _cleanup_thread = None
 _cleanup_running = False
+# Protects _session_last_activity AND _active_sessions for thread safety
+# (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
 
 
@@ -576,6 +579,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     
     Creates a Browserbase session with proxies enabled if one doesn't exist.
     Also starts the inactivity cleanup thread and updates activity tracking.
+    Thread-safe: multiple subagents can call this concurrently.
     
     Args:
         task_id: Unique identifier for the task
@@ -592,13 +596,16 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     # Update activity timestamp for this session
     _update_session_activity(task_id)
     
-    # Check if we already have a session for this task
-    if task_id in _active_sessions:
-        return _active_sessions[task_id]
+    with _cleanup_lock:
+        # Check if we already have a session for this task
+        if task_id in _active_sessions:
+            return _active_sessions[task_id]
     
-    # Create a new Browserbase session with proxies
+    # Create session outside the lock (network call - don't hold lock during I/O)
     session_info = _create_browserbase_session(task_id)
-    _active_sessions[task_id] = session_info
+    
+    with _cleanup_lock:
+        _active_sessions[task_id] = session_info
     
     return session_info
 
@@ -642,52 +649,11 @@ def _get_browserbase_config() -> Dict[str, str]:
     }
 
 
-_stale_daemons_cleaned = False
-
-def _kill_stale_agent_browser_daemons():
-    """Kill any orphaned agent-browser daemon processes from previous runs.
-    
-    Uses multiple patterns to catch daemons from different agent-browser versions,
-    since the daemon process name/args can vary between releases.
-    """
-    global _stale_daemons_cleaned
-    if _stale_daemons_cleaned:
-        return
-    _stale_daemons_cleaned = True
-
-    patterns = [
-        "agent-browser.*daemon",
-        "agent-browser/.*dist/daemon",
-    ]
-    killed_pids = set()
-
-    for pattern in patterns:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", pattern],
-                capture_output=True, text=True, timeout=5
-            )
-            pids = result.stdout.strip().split()
-            for pid in pids:
-                if pid and pid not in killed_pids:
-                    try:
-                        os.kill(int(pid), signal.SIGTERM)
-                        killed_pids.add(pid)
-                    except (ProcessLookupError, ValueError, PermissionError):
-                        pass
-        except Exception:
-            pass
-
-    if killed_pids and not os.getenv("HERMES_QUIET"):
-        print(f"[browser_tool] Cleaned up {len(killed_pids)} stale daemon process(es)", file=sys.stderr)
-
-
 def _find_agent_browser() -> str:
     """
     Find the agent-browser CLI executable.
     
     Checks in order: PATH, local node_modules/.bin/, npx fallback.
-    Also kills any stale daemon processes from prior runs on first call.
     
     Returns:
         Path to agent-browser executable
@@ -695,7 +661,6 @@ def _find_agent_browser() -> str:
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
-    _kill_stale_agent_browser_daemons()
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
@@ -1546,17 +1511,26 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         print(f"[browser_tool] cleanup_browser called for task_id: {task_id}", file=sys.stderr)
         print(f"[browser_tool] Active sessions: {list(_active_sessions.keys())}", file=sys.stderr)
     
-    if task_id in _active_sessions:
-        session_info = _active_sessions[task_id]
+    # Check if session exists (under lock), but don't remove yet -
+    # _run_browser_command needs it to build the close command.
+    with _cleanup_lock:
+        session_info = _active_sessions.get(task_id)
+    
+    if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
         print(f"[browser_tool] Found session for task {task_id}: bb_session_id={bb_session_id}", file=sys.stderr)
         
-        # Try to close via agent-browser first
+        # Try to close via agent-browser first (needs session in _active_sessions)
         try:
             _run_browser_command(task_id, "close", [], timeout=10)
             print(f"[browser_tool] agent-browser close command completed for task {task_id}", file=sys.stderr)
         except Exception as e:
             print(f"[browser_tool] agent-browser close failed for task {task_id}: {e}", file=sys.stderr)
+        
+        # Now remove from tracking under lock
+        with _cleanup_lock:
+            _active_sessions.pop(task_id, None)
+            _session_last_activity.pop(task_id, None)
         
         # Close the Browserbase session immediately via API
         try:
@@ -1567,23 +1541,27 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         except Exception as e:
             print(f"[browser_tool] Exception during BrowserBase session close: {e}", file=sys.stderr)
         
-        # Clean up per-task socket directory
+        # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
         if session_name:
             socket_dir = os.path.join(tempfile.gettempdir(), f"agent-browser-{session_name}")
             if os.path.exists(socket_dir):
+                # agent-browser writes {session}.pid in the socket dir
+                pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+                if os.path.isfile(pid_file):
+                    try:
+                        daemon_pid = int(open(pid_file).read().strip())
+                        os.kill(daemon_pid, signal.SIGTERM)
+                        if not os.getenv("HERMES_QUIET"):
+                            print(f"[browser_tool] Killed daemon pid {daemon_pid} for {session_name}", file=sys.stderr)
+                    except (ProcessLookupError, ValueError, PermissionError, OSError):
+                        pass
                 shutil.rmtree(socket_dir, ignore_errors=True)
         
-        del _active_sessions[task_id]
         if not os.getenv("HERMES_QUIET"):
             print(f"[browser_tool] Removed task {task_id} from active sessions", file=sys.stderr)
     elif not os.getenv("HERMES_QUIET"):
         print(f"[browser_tool] No active session found for task_id: {task_id}", file=sys.stderr)
-    
-    # Clean up activity tracking
-    with _cleanup_lock:
-        if task_id in _session_last_activity:
-            del _session_last_activity[task_id]
 
 
 def cleanup_all_browsers() -> None:
@@ -1592,12 +1570,10 @@ def cleanup_all_browsers() -> None:
     
     Useful for cleanup on shutdown.
     """
-    for task_id in list(_active_sessions.keys()):
-        cleanup_browser(task_id)
-    
-    # Clear any remaining activity tracking
     with _cleanup_lock:
-        _session_last_activity.clear()
+        task_ids = list(_active_sessions.keys())
+    for task_id in task_ids:
+        cleanup_browser(task_id)
 
 
 def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
@@ -1607,7 +1583,8 @@ def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
     Returns:
         Dict mapping task_id to session info (session_name, bb_session_id, cdp_url)
     """
-    return _active_sessions.copy()
+    with _cleanup_lock:
+        return _active_sessions.copy()
 
 
 # ============================================================================

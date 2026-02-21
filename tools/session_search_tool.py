@@ -22,28 +22,11 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 
-from openai import AsyncOpenAI
-from hermes_constants import OPENROUTER_BASE_URL
+from tools.openrouter_client import get_async_client as _get_client
 
 SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 2000
-
-_summarizer_client = None
-
-
-def _get_client() -> AsyncOpenAI:
-    """Lazy-init the summarizer client (shared with web_tools pattern)."""
-    global _summarizer_client
-    if _summarizer_client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY not set")
-        _summarizer_client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_BASE_URL,
-        )
-    return _summarizer_client
 
 
 def _format_conversation(messages: List[Dict[str, Any]]) -> str:

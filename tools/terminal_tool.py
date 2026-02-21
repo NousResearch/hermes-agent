@@ -483,41 +483,57 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     - Any error occurs
     
     Only works in interactive mode (HERMES_INTERACTIVE=1).
-    Uses getpass for hidden input with threading for timeout support.
+    Reads directly from /dev/tty with echo disabled to avoid conflicts
+    with prompt_toolkit's patch_stdout / Application input handling.
     """
-    import getpass
     import sys
     import time as time_module
     
-    # ANSI escape codes for terminal control
-    CLEAR_LINE = "\033[2K"      # Clear entire line
-    CURSOR_START = "\r"         # Move cursor to start of line
-    
-    # Result container for thread
     result = {"password": None, "done": False}
     
-    def get_password_thread():
-        """Thread function to get password with getpass (hidden input)."""
+    def read_password_thread():
+        """Read password from /dev/tty with echo disabled."""
+        tty_fd = None
+        old_attrs = None
         try:
-            result["password"] = getpass.getpass("  Password (hidden): ")
-        except (EOFError, KeyboardInterrupt):
+            import termios
+            tty_fd = os.open("/dev/tty", os.O_RDONLY)
+            old_attrs = termios.tcgetattr(tty_fd)
+            # Disable echo (ECHO) but keep canonical mode (ICANON) for line buffering
+            new_attrs = termios.tcgetattr(tty_fd)
+            new_attrs[3] = new_attrs[3] & ~termios.ECHO
+            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+            # Read one line (up to newline)
+            chars = []
+            while True:
+                b = os.read(tty_fd, 1)
+                if not b or b in (b"\n", b"\r"):
+                    break
+                chars.append(b)
+            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+        except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
             result["password"] = ""
         finally:
+            if tty_fd is not None and old_attrs is not None:
+                try:
+                    import termios as _termios
+                    _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
+                except Exception:
+                    pass
+            if tty_fd is not None:
+                try:
+                    os.close(tty_fd)
+                except Exception:
+                    pass
             result["done"] = True
     
     try:
-        # Pause the spinner animation while prompting for password
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time_module.sleep(0.2)  # Give spinner time to pause
+        time_module.sleep(0.2)
         
-        # Clear any spinner/animation on current line
-        sys.stdout.write(CURSOR_START + CLEAR_LINE)
-        sys.stdout.flush()
-        
-        # Print a clear visual break with empty lines for separation
-        print("\n")  # Extra spacing
+        print()
         print("┌" + "─" * 58 + "┐")
         print("│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│")
         print("├" + "─" * 58 + "┤")
@@ -526,18 +542,15 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
         print("└" + "─" * 58 + "┘")
         print()
-        sys.stdout.flush()
+        print("  Password (hidden): ", end="", flush=True)
         
-        # Start password input in a thread so we can timeout
-        password_thread = threading.Thread(target=get_password_thread, daemon=True)
+        password_thread = threading.Thread(target=read_password_thread, daemon=True)
         password_thread.start()
-        
-        # Wait for either completion or timeout
         password_thread.join(timeout=timeout_seconds)
         
         if result["done"]:
-            # Got input (or user pressed Enter/Ctrl+C)
             password = result["password"] or ""
+            print()  # newline after hidden input
             if password:
                 print("  ✓ Password received (cached for this session)")
             else:
@@ -546,9 +559,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             sys.stdout.flush()
             return password
         else:
-            # Timeout - thread is still waiting for input
             print("\n  ⏱ Timeout - continuing without sudo")
-            print("    (Press Enter to dismiss the password prompt)")
+            print("    (Press Enter to dismiss)")
             print()
             sys.stdout.flush()
             return ""
@@ -564,7 +576,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         sys.stdout.flush()
         return ""
     finally:
-        # Always resume the spinner when done
         if "HERMES_SPINNER_PAUSE" in os.environ:
             del os.environ["HERMES_SPINNER_PAUSE"]
 

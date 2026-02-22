@@ -1374,9 +1374,12 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
 | `~/.hermes/hermes-agent/` | Installation directory |
-| `hermes_cli/` | CLI implementation |
-| `hermes_cli/auth.py` | Multi-provider auth system |
-| `tools/` | Tool implementations |
+| `agent/` | Agent internals (context compressor, prompt builder, display, etc.) |
+| `hermes_cli/` | CLI implementation (banner, commands, callbacks, config, auth) |
+| `tools/` | Tool implementations + central registry (`tools/registry.py`) |
+| `tools/environments/` | Terminal execution backends (local, docker, ssh, singularity, modal) |
+| `tools/approval.py` | Dangerous command detection + per-session approval state |
+| `model_tools.py` | Tool orchestration (thin layer over `tools/registry.py`) |
 | `skills/` | Bundled skill sources (copied to `~/.hermes/skills/` on install) |
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `gateway/` | Messaging platform adapters |

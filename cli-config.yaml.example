@@ -169,6 +169,15 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Periodic memory nudge: remind the agent to consider saving memories
+  # every N user turns. Set to 0 to disable. Only active when memory is enabled.
+  nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
+
+  # Memory flush: give the agent one turn to save memories before context is
+  # lost (compression, /new, /reset, exit). Set to 0 to disable.
+  # For exit/reset, only fires if the session had at least this many user turns.
+  flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

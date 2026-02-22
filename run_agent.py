@@ -373,12 +373,16 @@ class AIAgent:
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._memory_nudge_interval = 10
+        self._memory_flush_min_turns = 6
         if not skip_memory:
             try:
                 from hermes_cli.config import load_config as _load_mem_config
                 mem_config = _load_mem_config().get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+                self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
@@ -404,6 +408,7 @@ class AIAgent:
             quiet_mode=self.quiet_mode,
         )
         self.compression_enabled = compression_enabled
+        self._user_turn_count = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -1195,12 +1200,114 @@ class AIAgent:
 
         return msg
 
+    def flush_memories(self, messages: list = None, min_turns: int = None):
+        """Give the model one turn to persist memories before context is lost.
+
+        Called before compression, session reset, or CLI exit. Injects a flush
+        message, makes one API call, executes any memory tool calls, then
+        strips all flush artifacts from the message list.
+
+        Args:
+            messages: The current conversation messages. If None, uses
+                      self._session_messages (last run_conversation state).
+            min_turns: Minimum user turns required to trigger the flush.
+                       None = use config value (flush_min_turns).
+                       0 = always flush (used for compression).
+        """
+        if self._memory_flush_min_turns == 0 and min_turns is None:
+            return
+        if "memory" not in self.valid_tool_names or not self._memory_store:
+            return
+        effective_min = min_turns if min_turns is not None else self._memory_flush_min_turns
+        if self._user_turn_count < effective_min:
+            return
+
+        if messages is None:
+            messages = getattr(self, '_session_messages', None)
+        if not messages or len(messages) < 3:
+            return
+
+        flush_content = (
+            "[System: The session is being compressed. "
+            "Please save anything worth remembering to your memories.]"
+        )
+        flush_msg = {"role": "user", "content": flush_content}
+        messages.append(flush_msg)
+
+        try:
+            # Build API messages for the flush call
+            api_messages = []
+            for msg in messages:
+                api_msg = msg.copy()
+                if msg.get("role") == "assistant":
+                    reasoning = msg.get("reasoning")
+                    if reasoning:
+                        api_msg["reasoning_content"] = reasoning
+                api_msg.pop("reasoning", None)
+                api_messages.append(api_msg)
+
+            if self._cached_system_prompt:
+                api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
+
+            # Make one API call with only the memory tool available
+            memory_tool_def = None
+            for t in (self.tools or []):
+                if t.get("function", {}).get("name") == "memory":
+                    memory_tool_def = t
+                    break
+
+            if not memory_tool_def:
+                messages.pop()  # remove flush msg
+                return
+
+            api_kwargs = {
+                "model": self.model,
+                "messages": api_messages,
+                "tools": [memory_tool_def],
+                "temperature": 0.3,
+                "max_tokens": 1024,
+            }
+
+            response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
+
+            if response.choices:
+                assistant_message = response.choices[0].message
+                if assistant_message.tool_calls:
+                    # Execute only memory tool calls
+                    for tc in assistant_message.tool_calls:
+                        if tc.function.name == "memory":
+                            try:
+                                args = json.loads(tc.function.arguments)
+                                from tools.memory_tool import memory_tool as _memory_tool
+                                result = _memory_tool(
+                                    action=args.get("action"),
+                                    target=args.get("target", "memory"),
+                                    content=args.get("content"),
+                                    old_text=args.get("old_text"),
+                                    store=self._memory_store,
+                                )
+                                if not self.quiet_mode:
+                                    print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
+                            except Exception as e:
+                                logger.debug("Memory flush tool call failed: %s", e)
+        except Exception as e:
+            logger.debug("Memory flush API call failed: %s", e)
+        finally:
+            # Strip flush artifacts: remove everything from the flush message onward
+            while messages and messages[-1] is not flush_msg and len(messages) > 0:
+                messages.pop()
+            if messages and messages[-1] is flush_msg:
+                messages.pop()
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        # Pre-compression memory flush: let the model save memories before they're lost
+        self.flush_memories(messages, min_turns=0)
+
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
         todo_snapshot = self._todo_store.format_for_injection()
@@ -1489,6 +1596,20 @@ class AIAgent:
             for prefill_msg in self.prefill_messages:
                 messages.append(prefill_msg.copy())
         
+        # Track user turns for memory flush and periodic nudge logic
+        self._user_turn_count += 1
+
+        # Periodic memory nudge: remind the model to consider saving memories
+        if (self._memory_nudge_interval > 0
+                and self._user_turn_count % self._memory_nudge_interval == 0
+                and self._user_turn_count > 0
+                and "memory" in self.valid_tool_names
+                and self._memory_store):
+            user_message += (
+                "\n\n[System: You've had several exchanges in this session. "
+                "Consider whether there's anything worth saving to your memories.]"
+            )
+
         # Add user message
         messages.append({
             "role": "user",

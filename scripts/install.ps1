@@ -579,7 +579,7 @@ function Start-GatewayIfConfigured {
 
     Write-Host ""
     Write-Info "Messaging platform token detected!"
-    Write-Info "The gateway needs to be running for Hermes to send/receive messages."
+    Write-Info "The gateway handles messaging platforms and cron job execution."
     Write-Host ""
     $response = Read-Host "Would you like to start the gateway now? [Y/n]"
 
@@ -639,8 +639,8 @@ function Write-Completion {
     Write-Host "View/edit configuration"
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Run messaging gateway"
+    Write-Host "   hermes gateway install " -NoNewline -ForegroundColor Green
+    Write-Host "Install gateway service (messaging + cron)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""

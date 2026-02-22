@@ -6,12 +6,12 @@ This module provides scheduled task execution, allowing the agent to:
 - Self-schedule reminders and follow-up tasks
 - Execute tasks in isolated sessions (no prior context)
 
-Usage:
-    # Run due jobs (for system cron integration)
-    python -c "from cron import tick; tick()"
-    
-    # Or via CLI
-    python cli.py --cron-daemon
+Cron jobs are executed automatically by the gateway daemon:
+    hermes gateway install    # Install as system service (recommended)
+    hermes gateway            # Or run in foreground
+
+The gateway ticks the scheduler every 60 seconds. A file lock prevents
+duplicate execution if multiple processes overlap.
 """
 
 from cron.jobs import (
@@ -22,7 +22,7 @@ from cron.jobs import (
     update_job,
     JOBS_FILE,
 )
-from cron.scheduler import tick, run_daemon
+from cron.scheduler import tick
 
 __all__ = [
     "create_job",
@@ -31,6 +31,5 @@ __all__ = [
     "remove_job",
     "update_job",
     "tick",
-    "run_daemon",
     "JOBS_FILE",
 ]

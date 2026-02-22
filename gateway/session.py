@@ -219,6 +219,10 @@ class SessionEntry:
     output_tokens: int = 0
     total_tokens: int = 0
     
+    # Set when a session was created because the previous one expired;
+    # consumed once by the message handler to inject a notice into context
+    was_auto_reset: bool = False
+    
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -388,11 +392,14 @@ class SessionStore:
                 return entry
             else:
                 # Session is being reset -- end the old one in SQLite
+                was_auto_reset = True
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")
                     except Exception as e:
                         logger.debug("Session DB operation failed: %s", e)
+        else:
+            was_auto_reset = False
         
         # Create new session
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -406,6 +413,7 @@ class SessionStore:
             display_name=source.chat_name,
             platform=source.platform,
             chat_type=source.chat_type,
+            was_auto_reset=was_auto_reset,
         )
         
         self._entries[session_key] = entry

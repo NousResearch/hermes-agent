@@ -22,9 +22,19 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 
-from tools.openrouter_client import get_async_client as _get_client
+from openai import AsyncOpenAI, OpenAI
 
-SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
+from agent.auxiliary_client import get_text_auxiliary_client
+
+# Resolve the auxiliary client at import time so we have the model slug.
+# We build an AsyncOpenAI from the same credentials for async summarization.
+_aux_client, _SUMMARIZER_MODEL = get_text_auxiliary_client()
+_async_aux_client: AsyncOpenAI | None = None
+if _aux_client is not None:
+    _async_aux_client = AsyncOpenAI(
+        api_key=_aux_client.api_key,
+        base_url=str(_aux_client.base_url),
+    )
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 2000
 
@@ -126,11 +136,15 @@ async def _summarize_session(
         f"Summarize this conversation with focus on: {query}"
     )
 
+    if _async_aux_client is None or _SUMMARIZER_MODEL is None:
+        logging.warning("No auxiliary model available for session summarization")
+        return None
+
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = await _get_client().chat.completions.create(
-                model=SUMMARIZER_MODEL,
+            response = await _async_aux_client.chat.completions.create(
+                model=_SUMMARIZER_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -252,8 +266,8 @@ def session_search(
 
 
 def check_session_search_requirements() -> bool:
-    """Requires SQLite state database and OpenRouter API key."""
-    if not os.getenv("OPENROUTER_API_KEY"):
+    """Requires SQLite state database and an auxiliary text model."""
+    if _async_aux_client is None:
         return False
     try:
         from hermes_state import DEFAULT_DB_PATH
@@ -316,5 +330,4 @@ registry.register(
         limit=args.get("limit", 3),
         db=kw.get("db")),
     check_fn=check_session_search_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
 )

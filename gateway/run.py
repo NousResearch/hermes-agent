@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -402,8 +403,26 @@ class GatewayRunner:
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context)
         
+        # If the previous session expired and was auto-reset, prepend a notice
+        # so the agent knows this is a fresh conversation (not an intentional /reset).
+        if getattr(session_entry, 'was_auto_reset', False):
+            context_prompt = (
+                "[System note: The user's previous session expired due to inactivity. "
+                "This is a fresh conversation with no prior context.]\n\n"
+                + context_prompt
+            )
+            session_entry.was_auto_reset = False
+        
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        
+        # First-message onboarding for brand-new messaging platform users
+        if not history:
+            context_prompt += (
+                "\n\n[System note: This is the user's very first message in this session. "
+                "Briefly introduce yourself and mention that /help shows available commands. "
+                "Keep the introduction concise -- one or two sentences max.]"
+            )
         
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -1342,15 +1361,32 @@ def _start_cron_ticker(stop_event: threading.Event, interval: int = 60):
     
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
+
+    Every 60th tick (~once per hour) the image/audio cache is pruned so
+    stale temp files don't accumulate.
     """
     from cron.scheduler import tick as cron_tick
+    from gateway.platforms.base import cleanup_image_cache
+
+    IMAGE_CACHE_EVERY = 60  # ticks — once per hour at default 60s interval
 
     logger.info("Cron ticker started (interval=%ds)", interval)
+    tick_count = 0
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+
+        tick_count += 1
+        if tick_count % IMAGE_CACHE_EVERY == 0:
+            try:
+                removed = cleanup_image_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Image cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Image cache cleanup error: %s", e)
+
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
 
@@ -1363,6 +1399,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
+    # Configure rotating file log so gateway output is persisted for debugging
+    log_dir = Path.home() / '.hermes' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        log_dir / 'gateway.log',
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+    )
+    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.INFO)
+
     runner = GatewayRunner(config)
     
     # Set up signal handlers

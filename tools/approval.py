@@ -281,7 +281,12 @@ def check_dangerous_command(command: str, env_type: str,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
-        return {"approved": False, "message": "BLOCKED: User denied this potentially dangerous command. Do NOT retry this command - the user has explicitly rejected it."}
+        return {
+            "approved": False,
+            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
 
     if choice == "session":
         approve_session(session_key, pattern_key)

@@ -44,6 +44,8 @@ def run_doctor(args):
     should_fix = getattr(args, 'fix', False)
     
     issues = []
+    manual_issues = []  # issues that can't be auto-fixed
+    fixed_count = 0
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -135,8 +137,15 @@ def run_doctor(args):
             check_ok(".env file exists (in project directory)")
         else:
             check_fail("~/.hermes/.env file missing")
-            check_info("Run 'hermes setup' to create one")
-            issues.append("Run 'hermes setup' to create .env")
+            if should_fix:
+                env_path.parent.mkdir(parents=True, exist_ok=True)
+                env_path.touch()
+                check_ok("Created empty ~/.hermes/.env")
+                check_info("Run 'hermes setup' to configure API keys")
+                fixed_count += 1
+            else:
+                check_info("Run 'hermes setup' to create one")
+                issues.append("Run 'hermes setup' to create .env")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
@@ -147,7 +156,17 @@ def run_doctor(args):
         if fallback_config.exists():
             check_ok("cli-config.yaml exists (in project directory)")
         else:
-            check_warn("config.yaml not found", "(using defaults)")
+            example_config = PROJECT_ROOT / 'cli-config.yaml.example'
+            if should_fix and example_config.exists():
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(example_config), str(config_path))
+                check_ok("Created ~/.hermes/config.yaml from cli-config.yaml.example")
+                fixed_count += 1
+            elif should_fix:
+                check_warn("config.yaml not found and no example to copy from")
+                manual_issues.append("Create ~/.hermes/config.yaml manually")
+            else:
+                check_warn("config.yaml not found", "(using defaults)")
     
     # =========================================================================
     # Check: Directory structure
@@ -159,7 +178,26 @@ def run_doctor(args):
     if hermes_home.exists():
         check_ok("~/.hermes directory exists")
     else:
-        check_warn("~/.hermes not found", "(will be created on first use)")
+        if should_fix:
+            hermes_home.mkdir(parents=True, exist_ok=True)
+            check_ok("Created ~/.hermes directory")
+            fixed_count += 1
+        else:
+            check_warn("~/.hermes not found", "(will be created on first use)")
+    
+    # Check expected subdirectories
+    expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
+    for subdir_name in expected_subdirs:
+        subdir_path = hermes_home / subdir_name
+        if subdir_path.exists():
+            check_ok(f"~/.hermes/{subdir_name}/ exists")
+        else:
+            if should_fix:
+                subdir_path.mkdir(parents=True, exist_ok=True)
+                check_ok(f"Created ~/.hermes/{subdir_name}/")
+                fixed_count += 1
+            else:
+                check_warn(f"~/.hermes/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -175,14 +213,25 @@ def run_doctor(args):
         check_warn("~/.hermes/SOUL.md not found", "(create it to give Hermes a custom personality)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
-            soul_path.write_text("# Hermes Agent Persona\n\n<!-- Edit this file to customize how Hermes communicates. -->\n", encoding="utf-8")
-            check_ok("Created ~/.hermes/SOUL.md")
+            soul_path.write_text(
+                "# Hermes Agent Persona\n\n"
+                "<!-- Edit this file to customize how Hermes communicates. -->\n\n"
+                "You are Hermes, a helpful AI assistant.\n",
+                encoding="utf-8",
+            )
+            check_ok("Created ~/.hermes/SOUL.md with basic template")
+            fixed_count += 1
     
     logs_dir = PROJECT_ROOT / "logs"
     if logs_dir.exists():
-        check_ok("logs/ directory exists")
+        check_ok("logs/ directory exists (project root)")
     else:
-        check_warn("logs/ not found", "(will be created on first use)")
+        if should_fix:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            check_ok("Created logs/ directory")
+            fixed_count += 1
+        else:
+            check_warn("logs/ not found", "(will be created on first use)")
     
     # Check memory directory
     memories_dir = hermes_home / "memories"
@@ -205,6 +254,7 @@ def run_doctor(args):
         if should_fix:
             memories_dir.mkdir(parents=True, exist_ok=True)
             check_ok("Created ~/.hermes/memories/")
+            fixed_count += 1
     
     # Check SQLite session store
     state_db_path = hermes_home / "state.db"
@@ -299,6 +349,7 @@ def run_doctor(args):
     
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
+        print("  Checking OpenRouter API...", end="", flush=True)
         try:
             import httpx
             response = httpx.get(
@@ -307,20 +358,21 @@ def run_doctor(args):
                 timeout=10
             )
             if response.status_code == 200:
-                check_ok("OpenRouter API")
+                print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
             elif response.status_code == 401:
-                check_fail("OpenRouter API", "(invalid API key)")
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
                 issues.append("Check OPENROUTER_API_KEY in .env")
             else:
-                check_fail("OpenRouter API", f"(HTTP {response.status_code})")
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
         except Exception as e:
-            check_fail("OpenRouter API", f"({e})")
+            print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
             issues.append("Check network connectivity")
     else:
         check_warn("OpenRouter API", "(not configured)")
     
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
+        print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
             response = httpx.get(
@@ -332,14 +384,14 @@ def run_doctor(args):
                 timeout=10
             )
             if response.status_code == 200:
-                check_ok("Anthropic API")
+                print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
             elif response.status_code == 401:
-                check_fail("Anthropic API", "(invalid API key)")
+                print(f"\r  {color('✗', Colors.RED)} Anthropic API {color('(invalid API key)', Colors.DIM)}                 ")
             else:
-                # Note: Anthropic may not have /models endpoint
-                check_warn("Anthropic API", "(couldn't verify)")
+                msg = "(couldn't verify)"
+                print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
         except Exception as e:
-            check_warn("Anthropic API", f"({e})")
+            print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
     
     # =========================================================================
     # Check: Submodules
@@ -440,17 +492,28 @@ def run_doctor(args):
     # Summary
     # =========================================================================
     print()
-    if issues:
-        print(color("─" * 60, Colors.YELLOW))
-        print(color(f"  Found {len(issues)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
+    remaining_issues = issues + manual_issues
+    if should_fix and fixed_count > 0:
+        print(color("─" * 60, Colors.GREEN))
+        print(color(f"  Fixed {fixed_count} issue(s).", Colors.GREEN, Colors.BOLD), end="")
+        if remaining_issues:
+            print(color(f" {len(remaining_issues)} issue(s) require manual intervention.", Colors.YELLOW, Colors.BOLD))
+        else:
+            print()
         print()
-        for i, issue in enumerate(issues, 1):
+        if remaining_issues:
+            for i, issue in enumerate(remaining_issues, 1):
+                print(f"  {i}. {issue}")
+            print()
+    elif remaining_issues:
+        print(color("─" * 60, Colors.YELLOW))
+        print(color(f"  Found {len(remaining_issues)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
+        print()
+        for i, issue in enumerate(remaining_issues, 1):
             print(f"  {i}. {issue}")
         print()
-        
-        if should_fix:
-            print(color("  Attempting auto-fix is not yet implemented.", Colors.DIM))
-            print(color("  Please resolve issues manually.", Colors.DIM))
+        if not should_fix:
+            print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))

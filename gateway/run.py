@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import signal
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -153,8 +154,8 @@ class GatewayRunner:
                 logger.error("✗ %s error: %s", platform.value, e)
         
         if connected_count == 0:
-            logger.warning("No platforms connected. Check your configuration.")
-            return False
+            logger.warning("No messaging platforms connected.")
+            logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
@@ -169,7 +170,8 @@ class GatewayRunner:
             "platforms": [p.value for p in self.adapters.keys()],
         })
         
-        logger.info("Gateway running with %s platform(s)", connected_count)
+        if connected_count > 0:
+            logger.info("Gateway running with %s platform(s)", connected_count)
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -1315,6 +1317,25 @@ class GatewayRunner:
         return response
 
 
+def _start_cron_ticker(stop_event: threading.Event, interval: int = 60):
+    """
+    Background thread that ticks the cron scheduler at a regular interval.
+    
+    Runs inside the gateway process so cronjobs fire automatically without
+    needing a separate `hermes cron daemon` or system cron entry.
+    """
+    from cron.scheduler import tick as cron_tick
+
+    logger.info("Cron ticker started (interval=%ds)", interval)
+    while not stop_event.is_set():
+        try:
+            cron_tick(verbose=False)
+        except Exception as e:
+            logger.debug("Cron tick error: %s", e)
+        stop_event.wait(timeout=interval)
+    logger.info("Cron ticker stopped")
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -1334,7 +1355,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
-            # Windows doesn't support add_signal_handler
             pass
     
     # Start the gateway
@@ -1342,8 +1362,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     if not success:
         return False
     
+    # Start background cron ticker so scheduled jobs fire automatically
+    cron_stop = threading.Event()
+    cron_thread = threading.Thread(
+        target=_start_cron_ticker,
+        args=(cron_stop,),
+        daemon=True,
+        name="cron-ticker",
+    )
+    cron_thread.start()
+    
     # Wait for shutdown
     await runner.wait_for_shutdown()
+    
+    # Stop cron ticker cleanly
+    cron_stop.set()
+    cron_thread.join(timeout=5)
+    
     return True
 
 

@@ -1,12 +1,15 @@
 """
 Cron subcommand for hermes CLI.
 
-Handles: hermes cron [list|daemon|tick]
+Handles: hermes cron [list|status|tick]
+
+Cronjobs are executed automatically by the gateway daemon (hermes gateway).
+Install the gateway as a service for background execution:
+    hermes gateway install
 """
 
 import sys
 from pathlib import Path
-from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -22,7 +25,7 @@ def cron_list(show_all: bool = False):
     
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
-        print(color("Create one with: hermes cron add <schedule> <prompt>", Colors.DIM))
+        print(color("Create one with the /cron add command in chat, or via Telegram.", Colors.DIM))
         return
     
     print()
@@ -38,7 +41,6 @@ def cron_list(show_all: bool = False):
         enabled = job.get("enabled", True)
         next_run = job.get("next_run_at", "?")
         
-        # Repeat info
         repeat_info = job.get("repeat", {})
         repeat_times = repeat_info.get("times")
         repeat_completed = repeat_info.get("completed", 0)
@@ -48,13 +50,11 @@ def cron_list(show_all: bool = False):
         else:
             repeat_str = "∞"
         
-        # Delivery targets
         deliver = job.get("deliver", ["local"])
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
         
-        # Status indicator
         if not enabled:
             status = color("[disabled]", Colors.RED)
         else:
@@ -67,32 +67,51 @@ def cron_list(show_all: bool = False):
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
         print()
-
-
-def cron_daemon(interval: int = 60):
-    """Run the cron daemon."""
-    from cron.scheduler import start_daemon
     
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│              ⚕ Hermes Cron Daemon                      │", Colors.CYAN))
-    print(color("├─────────────────────────────────────────────────────────┤", Colors.CYAN))
-    print(color("│  Press Ctrl+C to stop                                   │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    print()
-    
-    try:
-        start_daemon(interval=interval)
-    except KeyboardInterrupt:
+    # Warn if gateway isn't running
+    from hermes_cli.gateway import find_gateway_pids
+    if not find_gateway_pids():
+        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+        print(color("     Start it with: hermes gateway install", Colors.DIM))
         print()
-        print(color("Cron daemon stopped.", Colors.YELLOW))
 
 
 def cron_tick():
-    """Run due jobs once (for system cron integration)."""
+    """Run due jobs once and exit."""
     from cron.scheduler import tick
+    tick(verbose=True)
+
+
+def cron_status():
+    """Show cron execution status."""
+    from cron.jobs import list_jobs
+    from hermes_cli.gateway import find_gateway_pids
     
-    print(f"[{datetime.now().isoformat()}] Running cron tick...")
-    tick()
+    print()
+    
+    pids = find_gateway_pids()
+    if pids:
+        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        print(f"  PID: {', '.join(map(str, pids))}")
+    else:
+        print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+        print()
+        print("  To enable automatic execution:")
+        print("    hermes gateway install    # Install as system service (recommended)")
+        print("    hermes gateway            # Or run in foreground")
+    
+    print()
+    
+    jobs = list_jobs(include_disabled=False)
+    if jobs:
+        next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
+        print(f"  {len(jobs)} active job(s)")
+        if next_runs:
+            print(f"  Next run: {min(next_runs)}")
+    else:
+        print("  No active jobs")
+    
+    print()
 
 
 def cron_command(args):
@@ -103,14 +122,13 @@ def cron_command(args):
         show_all = getattr(args, 'all', False)
         cron_list(show_all)
     
-    elif subcmd == "daemon":
-        interval = getattr(args, 'interval', 60)
-        cron_daemon(interval)
-    
     elif subcmd == "tick":
         cron_tick()
     
+    elif subcmd == "status":
+        cron_status()
+    
     else:
         print(f"Unknown cron command: {subcmd}")
-        print("Usage: hermes cron [list|daemon|tick]")
+        print("Usage: hermes cron [list|status|tick]")
         sys.exit(1)

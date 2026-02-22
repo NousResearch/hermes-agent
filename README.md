@@ -316,12 +316,17 @@ hermes doctor             # Diagnose issues
 hermes update             # Update to latest version
 hermes uninstall          # Uninstall (can keep configs for later reinstall)
 
-# Messaging, skills, cron
-hermes gateway            # Start messaging gateway
+# Gateway (messaging + cron scheduler)
+hermes gateway            # Run gateway in foreground
+hermes gateway install    # Install as system service (messaging + cron)
+hermes gateway status     # Check service status
+
+# Skills, cron, misc
 hermes skills search k8s  # Search skill registries
 hermes skills install ... # Install a skill (with security scan)
 hermes skills list        # List installed skills
 hermes cron list          # View scheduled jobs
+hermes cron status        # Check if cron scheduler is running
 hermes pairing list       # View/manage DM pairing codes
 hermes version            # Show version info
 ```
@@ -505,7 +510,7 @@ sessions/
 Schedule tasks to run automatically:
 
 ```bash
-# In the CLI
+# In the CLI (/cron slash commands)
 /cron add 30m "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "0 9 * * *" "Morning briefing"
@@ -513,13 +518,19 @@ Schedule tasks to run automatically:
 /cron remove <job_id>
 ```
 
-The agent can also self-schedule using `schedule_cronjob` tool.
+The agent can also self-schedule using the `schedule_cronjob` tool from any platform (CLI, Telegram, Discord, etc.).
 
-**Run the scheduler:**
+**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions:
+
 ```bash
-hermes cron daemon         # Built-in daemon
-# Or add to system cron for reliability
+hermes gateway install     # Install as system service (recommended)
+hermes gateway             # Or run in foreground
+
+hermes cron list           # View scheduled jobs
+hermes cron status         # Check if gateway is running
 ```
+
+Even if no messaging platforms are configured, the gateway stays running for cron. A file lock prevents duplicate execution if multiple processes overlap.
 
 ### 🛡️ Exec Approval (Messaging Platforms)
 

@@ -202,8 +202,10 @@ The unified `hermes` command provides all functionality:
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest (checks for new config) |
 | `hermes uninstall` | Uninstall (can keep configs for reinstall) |
-| `hermes gateway` | Start messaging gateway |
+| `hermes gateway` | Start gateway (messaging + cron scheduler) |
+| `hermes gateway install` | Install gateway as system service |
 | `hermes cron list` | View scheduled jobs |
+| `hermes cron status` | Check if cron scheduler is running |
 | `hermes version` | Show version info |
 | `hermes pairing list/approve/revoke` | Manage DM pairing codes |
 

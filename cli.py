@@ -277,8 +277,8 @@ from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
-# Cron job system for scheduled tasks
-from cron import create_job, list_jobs, remove_job, get_job, run_daemon as run_cron_daemon, tick as cron_tick
+# Cron job system for scheduled tasks (CRUD only — execution is handled by the gateway)
+from cron import create_job, list_jobs, remove_job, get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
@@ -2475,8 +2475,6 @@ def main(
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
-    cron_daemon: bool = False,
-    cron_tick_once: bool = False,
     gateway: bool = False,
 ):
     """
@@ -2495,37 +2493,18 @@ def main(
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
-        cron_daemon: Run as cron daemon (check and execute due jobs continuously)
-        cron_tick_once: Run due cron jobs once and exit (for system cron integration)
     
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
-        python cli.py --cron-daemon              # Run cron scheduler daemon
-        python cli.py --cron-tick-once           # Check and run due jobs once
     """
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
     
-    # Handle cron daemon mode (runs before CLI initialization)
-    if cron_daemon:
-        print("Starting Hermes Cron Daemon...")
-        print("Jobs will be checked every 60 seconds.")
-        print("Press Ctrl+C to stop.\n")
-        run_cron_daemon(check_interval=60, verbose=True)
-        return
-    
-    # Handle cron tick (single run for system cron integration)
-    if cron_tick_once:
-        jobs_run = cron_tick(verbose=True)
-        if jobs_run:
-            print(f"Executed {jobs_run} job(s)")
-        return
-    
-    # Handle gateway mode (messaging platforms)
+    # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
         from gateway.run import start_gateway

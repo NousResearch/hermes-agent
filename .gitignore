@@ -1,7 +1,5 @@
 /venv/
 /_pycache/
-hecate/
-hecate-lib/
 *.pyc*
 __pycache__/
 .venv/

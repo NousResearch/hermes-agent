@@ -700,13 +700,13 @@ if DISCORD_AVAILABLE:
 
             await interaction.response.edit_message(embed=embed, view=self)
 
-            # Store the approval decision for the gateway to pick up
+            # Store the approval decision
             try:
-                from tools.terminal_tool import _session_approved_patterns
+                from tools.approval import approve_permanent
                 if action == "allow_once":
                     pass  # One-time approval handled by gateway
                 elif action == "allow_always":
-                    _session_approved_patterns.add(self.approval_id)
+                    approve_permanent(self.approval_id)
             except ImportError:
                 pass
 

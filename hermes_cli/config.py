@@ -286,6 +286,13 @@ OPTIONAL_ENV_VARS = {
         "url": "https://github.com/settings/tokens",
         "password": True,
     },
+    "GATEWAY_ALLOW_ALL_USERS": {
+        "description": "Allow all users to interact with messaging bots (true/false). Default: false (deny unless allowlisted).",
+        "prompt": "Allow all users (true/false)",
+        "url": None,
+        "password": False,
+        "advanced": True,
+    },
 }
 
 
@@ -311,35 +318,46 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _set_nested(config: dict, dotted_key: str, value):
+    """Set a value at an arbitrarily nested dotted key path.
+
+    Creates intermediate dicts as needed, e.g. ``_set_nested(c, "a.b.c", 1)``
+    ensures ``c["a"]["b"]["c"] == 1``.
+    """
+    parts = dotted_key.split(".")
+    current = config
+    for part in parts[:-1]:
+        if part not in current or not isinstance(current.get(part), dict):
+            current[part] = {}
+        current = current[part]
+    current[parts[-1]] = value
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
-    Check which config fields are missing or outdated.
+    Check which config fields are missing or outdated (recursive).
     
-    Returns list of missing/outdated fields.
+    Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
+    present in defaults but absent from the user's loaded config.
     """
     config = load_config()
     missing = []
-    
-    # Check for new top-level keys in DEFAULT_CONFIG
-    for key, default_value in DEFAULT_CONFIG.items():
-        if key.startswith('_'):
-            continue  # Skip internal keys
-        if key not in config:
-            missing.append({
-                "key": key,
-                "default": default_value,
-                "description": f"New config section: {key}",
-            })
-        elif isinstance(default_value, dict):
-            # Check nested keys
-            for subkey, subvalue in default_value.items():
-                if subkey not in config.get(key, {}):
-                    missing.append({
-                        "key": f"{key}.{subkey}",
-                        "default": subvalue,
-                        "description": f"New config option: {key}.{subkey}",
-                    })
-    
+
+    def _check(defaults: dict, current: dict, prefix: str = ""):
+        for key, default_value in defaults.items():
+            if key.startswith('_'):
+                continue
+            full_key = key if not prefix else f"{prefix}.{key}"
+            if key not in current:
+                missing.append({
+                    "key": full_key,
+                    "default": default_value,
+                    "description": f"New config option: {full_key}",
+                })
+            elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
+                _check(default_value, current[key], full_key)
+
+    _check(DEFAULT_CONFIG, config)
     return missing
 
 
@@ -450,16 +468,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             key = field["key"]
             default = field["default"]
             
-            # Add with default value
-            if "." in key:
-                # Nested key
-                parent, child = key.split(".", 1)
-                if parent not in config:
-                    config[parent] = {}
-                config[parent][child] = default
-            else:
-                config[key] = default
-            
+            _set_nested(config, key, default)
             results["config_added"].append(key)
             if not quiet:
                 print(f"  ✓ Added {key} = {default}")
@@ -476,12 +485,31 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     return results
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base*, preserving nested defaults.
+
+    Keys in *override* take precedence. If both values are dicts the merge
+    recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will
+    keep the default ``tts.elevenlabs.model_id`` intact.
+    """
+    result = base.copy()
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
     config_path = get_config_path()
     
-    # Deep copy to avoid mutating DEFAULT_CONFIG
     config = copy.deepcopy(DEFAULT_CONFIG)
     
     if config_path.exists():
@@ -489,12 +517,7 @@ def load_config() -> Dict[str, Any]:
             with open(config_path) as f:
                 user_config = yaml.safe_load(f) or {}
             
-            # Deep merge user values over defaults
-            for key, value in user_config.items():
-                if isinstance(value, dict) and key in config and isinstance(config[key], dict):
-                    config[key].update(value)
-                else:
-                    config[key] = value
+            config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     

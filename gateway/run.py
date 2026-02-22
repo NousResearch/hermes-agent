@@ -113,6 +113,21 @@ class GatewayRunner:
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
         
+        # Warn if no user allowlists are configured and open access is not opted in
+        _any_allowlist = any(
+            os.getenv(v)
+            for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+                       "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+                       "GATEWAY_ALLOWED_USERS")
+        )
+        _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+        if not _any_allowlist and not _allow_all:
+            logger.warning(
+                "No user allowlists configured. All unauthorized users will be denied. "
+                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
+                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+            )
+        
         # Discover and load event hooks
         self.hooks.discover_and_load()
         
@@ -261,9 +276,11 @@ class GatewayRunner:
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
         
-        # If no allowlists configured and no pairing approvals, allow all (backward compatible)
+        # If no allowlists configured: default-deny unless explicitly opted in.
+        # Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env for open access.
         if not platform_allowlist and not global_allowlist:
-            return True
+            allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+            return allow_all
         
         # Check if user is in any allowlist
         allowed_ids = set()
@@ -353,9 +370,9 @@ class GatewayRunner:
                 cmd = approval["command"]
                 pattern_key = approval.get("pattern_key", "")
                 logger.info("User approved dangerous command: %s...", cmd[:60])
-                # Approve for session and re-run via terminal_tool with force=True
-                from tools.terminal_tool import terminal_tool, _session_approved_patterns
-                _session_approved_patterns.add(pattern_key)
+                from tools.terminal_tool import terminal_tool
+                from tools.approval import approve_session
+                approve_session(session_key_preview, pattern_key)
                 result = terminal_tool(command=cmd, force=True)
                 return f"✅ Command approved and executed.\n\n```\n{result[:3500]}\n```"
             elif user_text in ("no", "n", "deny", "cancel", "nope"):
@@ -474,13 +491,11 @@ class GatewayRunner:
                 logger.error("Process watcher setup error: %s", e)
 
             # Check if the agent encountered a dangerous command needing approval
-            # The terminal tool stores the last pending approval globally
             try:
-                from tools.terminal_tool import _last_pending_approval
-                if _last_pending_approval:
-                    self._pending_approvals[session_key] = _last_pending_approval.copy()
-                    # Clear the global so it doesn't leak to other sessions
-                    _last_pending_approval.clear()
+                from tools.approval import pop_pending
+                pending = pop_pending(session_key)
+                if pending:
+                    self._pending_approvals[session_key] = pending
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             
@@ -538,8 +553,12 @@ class GatewayRunner:
             return response
             
         except Exception as e:
-            logger.error("Agent error: %s", e)
-            return f"Sorry, I encountered an error: {str(e)}"
+            logger.exception("Agent error in session %s", session_key)
+            return (
+                "Sorry, I encountered an unexpected error. "
+                "The details have been logged for debugging. "
+                "Try again or use /reset to start a fresh session."
+            )
         finally:
             # Clear session env
             self._clear_session_env()

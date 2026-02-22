@@ -501,3 +501,56 @@ if __name__ == "__main__":
     print("  export IMAGE_TOOLS_DEBUG=true")
     print("  # Debug logs capture all image generation calls and results")
     print("  # Logs saved to: ./logs/image_tools_debug_UUID.json")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+IMAGE_GENERATE_SCHEMA = {
+    "name": "image_generate",
+    "description": "Generate high-quality images from text prompts using FLUX 2 Pro model with automatic 2x upscaling. Creates detailed, artistic images that are automatically upscaled for hi-rez results. Returns a single upscaled image URL. Display it using markdown: ![description](URL)",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "The text prompt describing the desired image. Be detailed and descriptive."
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": ["landscape", "square", "portrait"],
+                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "default": "landscape"
+            }
+        },
+        "required": ["prompt"]
+    }
+}
+
+
+def _handle_image_generate(args, **kw):
+    prompt = args.get("prompt", "")
+    if not prompt:
+        return json.dumps({"error": "prompt is required for image generation"})
+    return image_generate_tool(
+        prompt=prompt,
+        aspect_ratio=args.get("aspect_ratio", "landscape"),
+        num_inference_steps=50,
+        guidance_scale=4.5,
+        num_images=1,
+        output_format="png",
+        seed=None,
+    )
+
+
+registry.register(
+    name="image_generate",
+    toolset="image_gen",
+    schema=IMAGE_GENERATE_SCHEMA,
+    handler=_handle_image_generate,
+    check_fn=check_image_generation_requirements,
+    requires_env=["FAL_KEY"],
+    is_async=True,
+)

@@ -1193,3 +1193,60 @@ if __name__ == "__main__":
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
     print(f"\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+WEB_SEARCH_SCHEMA = {
+    "name": "web_search",
+    "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query to look up on the web"
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+WEB_EXTRACT_SCHEMA = {
+    "name": "web_extract",
+    "description": "Extract content from web page URLs. Pages under 5000 chars return raw content; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. Use browser tools only when pages require interaction or dynamic content.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of URLs to extract content from (max 5 URLs per call)",
+                "maxItems": 5
+            }
+        },
+        "required": ["urls"]
+    }
+}
+
+registry.register(
+    name="web_search",
+    toolset="web",
+    schema=WEB_SEARCH_SCHEMA,
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
+    check_fn=check_firecrawl_api_key,
+    requires_env=["FIRECRAWL_API_KEY"],
+)
+registry.register(
+    name="web_extract",
+    toolset="web",
+    schema=WEB_EXTRACT_SCHEMA,
+    handler=lambda args, **kw: web_extract_tool(
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+    check_fn=check_firecrawl_api_key,
+    requires_env=["FIRECRAWL_API_KEY"],
+    is_async=True,
+)

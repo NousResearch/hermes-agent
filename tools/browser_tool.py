@@ -1640,3 +1640,93 @@ if __name__ == "__main__":
     print("  from tools.browser_tool import browser_navigate, browser_snapshot")
     print("  result = browser_navigate('https://example.com', task_id='my_task')")
     print("  snapshot = browser_snapshot(task_id='my_task')")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+_BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
+
+registry.register(
+    name="browser_navigate",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
+    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_snapshot",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
+    handler=lambda args, **kw: browser_snapshot(
+        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_click",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_click"],
+    handler=lambda args, **kw: browser_click(**args, task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_type",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_type"],
+    handler=lambda args, **kw: browser_type(**args, task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_scroll",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
+    handler=lambda args, **kw: browser_scroll(**args, task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_back",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_back"],
+    handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_press",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_press"],
+    handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_close",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_close"],
+    handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_get_images",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
+    handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)
+registry.register(
+    name="browser_vision",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_vision"],
+    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+)

@@ -416,3 +416,38 @@ if __name__ == "__main__":
     config = _load_tts_config()
     provider = _get_provider(config)
     print(f"  Configured provider: {provider}")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+TTS_SCHEMA = {
+    "name": "text_to_speech",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "The text to convert to speech. Keep under 4000 characters."
+            },
+            "output_path": {
+                "type": "string",
+                "description": "Optional custom file path to save the audio. Defaults to ~/voice-memos/<timestamp>.mp3"
+            }
+        },
+        "required": ["text"]
+    }
+}
+
+registry.register(
+    name="text_to_speech",
+    toolset="tts",
+    schema=TTS_SCHEMA,
+    handler=lambda args, **kw: text_to_speech_tool(
+        text=args.get("text", ""),
+        output_path=args.get("output_path")),
+    check_fn=check_tts_requirements,
+)

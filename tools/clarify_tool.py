@@ -123,3 +123,18 @@ CLARIFY_SCHEMA = {
         "required": ["question"],
     },
 }
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="clarify",
+    toolset="clarify",
+    schema=CLARIFY_SCHEMA,
+    handler=lambda args, **kw: clarify_tool(
+        question=args.get("question", ""),
+        choices=args.get("choices"),
+        callback=kw.get("callback")),
+    check_fn=check_clarify_requirements,
+)

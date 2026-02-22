@@ -1980,3 +1980,69 @@ if __name__ == "__main__":
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+TERMINAL_SCHEMA = {
+    "name": "terminal",
+    "description": TERMINAL_TOOL_DESCRIPTION,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The command to execute on the VM"
+            },
+            "background": {
+                "type": "boolean",
+                "description": "Whether to run the command in the background (default: false)",
+                "default": False
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Command timeout in seconds (optional)",
+                "minimum": 1
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+            },
+            "check_interval": {
+                "type": "integer",
+                "description": "Seconds between automatic status checks for background processes (gateway/messaging only, minimum 30). When set, I'll proactively report progress.",
+                "minimum": 30
+            },
+            "pty": {
+                "type": "boolean",
+                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                "default": False
+            }
+        },
+        "required": ["command"]
+    }
+}
+
+
+def _handle_terminal(args, **kw):
+    return terminal_tool(
+        command=args.get("command"),
+        background=args.get("background", False),
+        timeout=args.get("timeout"),
+        task_id=kw.get("task_id"),
+        workdir=args.get("workdir"),
+        check_interval=args.get("check_interval"),
+        pty=args.get("pty", False),
+    )
+
+
+registry.register(
+    name="terminal",
+    toolset="terminal",
+    schema=TERMINAL_SCHEMA,
+    handler=_handle_terminal,
+    check_fn=check_terminal_requirements,
+)

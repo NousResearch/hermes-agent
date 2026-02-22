@@ -590,6 +590,35 @@ class GatewayRunner:
         session_key = f"agent:main:{source.platform.value}:" + \
                       (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
         
+        # Memory flush before reset: load the old transcript and let a
+        # temporary agent save memories before the session is wiped.
+        try:
+            old_entry = self.session_store._sessions.get(session_key)
+            if old_entry:
+                old_history = self.session_store.load_transcript(old_entry.session_id)
+                if old_history:
+                    from run_agent import AIAgent
+                    loop = asyncio.get_event_loop()
+                    def _do_flush():
+                        tmp_agent = AIAgent(
+                            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                            max_iterations=5,
+                            quiet_mode=True,
+                            enabled_toolsets=["memory"],
+                            session_id=old_entry.session_id,
+                        )
+                        # Build simple message list from transcript
+                        msgs = []
+                        for m in old_history:
+                            role = m.get("role")
+                            content = m.get("content")
+                            if role in ("user", "assistant") and content:
+                                msgs.append({"role": role, "content": content})
+                        tmp_agent.flush_memories(msgs)
+                    await loop.run_in_executor(None, _do_flush)
+        except Exception as e:
+            logger.debug("Gateway memory flush on reset failed: %s", e)
+        
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
         

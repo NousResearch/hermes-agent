@@ -37,6 +37,12 @@ SESSION_SEARCH_GUIDANCE = (
     "them to repeat themselves."
 )
 
+SKILLS_GUIDANCE = (
+    "After completing a complex task (5+ tool calls), fixing a tricky error, "
+    "or discovering a non-trivial workflow, consider saving the approach as a "
+    "skill with skill_manage so you can reuse it next time."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
@@ -64,11 +70,30 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
+def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
+    """Read the description from a SKILL.md frontmatter, capped at max_chars."""
+    try:
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        match = re.search(
+            r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---",
+            raw, re.MULTILINE | re.DOTALL,
+        )
+        if match:
+            desc = match.group(1).strip().strip("'\"")
+            if len(desc) > max_chars:
+                desc = desc[:max_chars - 3] + "..."
+            return desc
+    except Exception:
+        pass
+    return ""
+
+
 def build_skills_system_prompt() -> str:
     """Build a compact skill index for the system prompt.
 
-    Scans ~/.hermes/skills/ for SKILL.md files grouped by category so the
-    model can match skills at a glance without extra tool calls.
+    Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
+    Includes per-skill descriptions from frontmatter so the model can
+    match skills by meaning, not just name.
     """
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     skills_dir = hermes_home / "skills"
@@ -76,7 +101,9 @@ def build_skills_system_prompt() -> str:
     if not skills_dir.exists():
         return ""
 
-    skills_by_category = {}
+    # Collect skills with descriptions, grouped by category
+    # Each entry: (skill_name, description)
+    skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
@@ -86,11 +113,13 @@ def build_skills_system_prompt() -> str:
         else:
             category = "general"
             skill_name = skill_file.parent.name
-        skills_by_category.setdefault(category, []).append(skill_name)
+        desc = _read_skill_description(skill_file)
+        skills_by_category.setdefault(category, []).append((skill_name, desc))
 
     if not skills_by_category:
         return ""
 
+    # Read category-level descriptions from DESCRIPTION.md
     category_descriptions = {}
     for category in skills_by_category:
         desc_file = skills_dir / category / "DESCRIPTION.md"
@@ -105,13 +134,21 @@ def build_skills_system_prompt() -> str:
 
     index_lines = []
     for category in sorted(skills_by_category.keys()):
-        desc = category_descriptions.get(category, "")
-        names = ", ".join(sorted(set(skills_by_category[category])))
-        if desc:
-            index_lines.append(f"  {category}: {desc}")
+        cat_desc = category_descriptions.get(category, "")
+        if cat_desc:
+            index_lines.append(f"  {category}: {cat_desc}")
         else:
             index_lines.append(f"  {category}:")
-        index_lines.append(f"    skills: {names}")
+        # Deduplicate and sort skills within each category
+        seen = set()
+        for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+            if name in seen:
+                continue
+            seen.add(name)
+            if desc:
+                index_lines.append(f"    - {name}: {desc}")
+            else:
+                index_lines.append(f"    - {name}")
 
     return (
         "## Skills (mandatory)\n"

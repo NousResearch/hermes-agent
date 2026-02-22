@@ -1,15 +1,17 @@
 """
 Cron job scheduler - executes due jobs.
 
-This module provides:
-- tick(): Run all due jobs once (for system cron integration)
-- run_daemon(): Run continuously, checking every 60 seconds
+Provides tick() which checks for due jobs and runs them. The gateway
+calls this every 60 seconds from a background thread.
+
+Uses a file-based lock (~/.hermes/cron/.tick.lock) so only one tick
+runs at a time if multiple processes overlap.
 """
 
+import fcntl
 import logging
 import os
 import sys
-import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,10 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+
+# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
+_LOCK_DIR = Path.home() / ".hermes" / "cron"
+_LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def run_job(job: dict) -> tuple[bool, str, Optional[str]]:
@@ -105,86 +111,56 @@ def tick(verbose: bool = True) -> int:
     """
     Check and run all due jobs.
     
-    This is designed to be called by system cron every minute:
-        */1 * * * * cd ~/hermes-agent && python -c "from cron import tick; tick()"
+    Uses a file lock so only one tick runs at a time, even if the gateway's
+    in-process ticker and a standalone daemon or manual tick overlap.
     
     Args:
         verbose: Whether to print status messages
     
     Returns:
-        Number of jobs executed
+        Number of jobs executed (0 if another tick is already running)
     """
-    due_jobs = get_due_jobs()
-    
-    if verbose and not due_jobs:
-        logger.info("%s - No jobs due", datetime.now().strftime('%H:%M:%S'))
-        return 0
-    
-    if verbose:
-        logger.info("%s - %s job(s) due", datetime.now().strftime('%H:%M:%S'), len(due_jobs))
-    
-    executed = 0
-    for job in due_jobs:
-        try:
-            success, output, error = run_job(job)
-            
-            # Save output to file
-            output_file = save_job_output(job["id"], output)
-            if verbose:
-                logger.info("Output saved to: %s", output_file)
-            
-            # Mark job as run (handles repeat counting, next_run computation)
-            mark_job_run(job["id"], success, error)
-            executed += 1
-            
-        except Exception as e:
-            logger.error("Error processing job %s: %s", job['id'], e)
-            mark_job_run(job["id"], False, str(e))
-    
-    return executed
+    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def run_daemon(check_interval: int = 60, verbose: bool = True):
-    """
-    Run the cron daemon continuously.
-    
-    Checks for due jobs every `check_interval` seconds.
-    
-    Args:
-        check_interval: Seconds between checks (default: 60)
-        verbose: Whether to print status messages
-    """
-    logger.info("Starting daemon (checking every %ss)", check_interval)
-    logger.info("Press Ctrl+C to stop")
-    
     try:
-        while True:
+        lock_fd = open(_LOCK_FILE, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        # Another tick is already running — skip silently
+        logger.debug("Tick skipped — another instance holds the lock")
+        return 0
+
+    try:
+        due_jobs = get_due_jobs()
+
+        if verbose and not due_jobs:
+            logger.info("%s - No jobs due", datetime.now().strftime('%H:%M:%S'))
+            return 0
+
+        if verbose:
+            logger.info("%s - %s job(s) due", datetime.now().strftime('%H:%M:%S'), len(due_jobs))
+
+        executed = 0
+        for job in due_jobs:
             try:
-                tick(verbose=verbose)
+                success, output, error = run_job(job)
+
+                output_file = save_job_output(job["id"], output)
+                if verbose:
+                    logger.info("Output saved to: %s", output_file)
+
+                mark_job_run(job["id"], success, error)
+                executed += 1
+
             except Exception as e:
-                logger.error("Tick error: %s", e)
-            
-            time.sleep(check_interval)
-            
-    except KeyboardInterrupt:
-        logger.info("Daemon stopped")
+                logger.error("Error processing job %s: %s", job['id'], e)
+                mark_job_run(job["id"], False, str(e))
+
+        return executed
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 if __name__ == "__main__":
-    # Allow running directly: python cron/scheduler.py [daemon|tick]
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Hermes Cron Scheduler")
-    parser.add_argument("mode", choices=["daemon", "tick"], default="tick", nargs="?",
-                        help="Mode: 'tick' to run once, 'daemon' to run continuously")
-    parser.add_argument("--interval", type=int, default=60,
-                        help="Check interval in seconds for daemon mode")
-    parser.add_argument("--quiet", "-q", action="store_true",
-                        help="Suppress status messages")
-    
-    args = parser.parse_args()
-    
-    if args.mode == "daemon":
-        run_daemon(check_interval=args.interval, verbose=not args.quiet)
-    else:
-        tick(verbose=not args.quiet)
+    tick(verbose=True)

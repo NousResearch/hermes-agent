@@ -17,7 +17,7 @@ Usage:
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
-    hermes cron daemon         # Run cron daemon
+    hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
     hermes version             # Show version
     hermes update              # Update to latest version
@@ -808,12 +808,11 @@ For more help on a command:
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
     
-    # cron daemon
-    cron_daemon = cron_subparsers.add_parser("daemon", help="Run cron daemon")
-    cron_daemon.add_argument("--interval", type=int, default=60, help="Check interval in seconds")
+    # cron status
+    cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
     
-    # cron tick
-    cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once (for system cron)")
+    # cron tick (mostly for debugging)
+    cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     
     cron_parser.set_defaults(func=cmd_cron)
     

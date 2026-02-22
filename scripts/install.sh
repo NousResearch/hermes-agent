@@ -797,7 +797,7 @@ print_success() {
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
     echo -e "   ${GREEN}hermes config${NC}       View/edit configuration"
     echo -e "   ${GREEN}hermes config edit${NC}  Open config in editor"
-    echo -e "   ${GREEN}hermes gateway${NC}      Run messaging gateway"
+    echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
     echo ""
     

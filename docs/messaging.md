@@ -341,6 +341,8 @@ Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, 
 
 ## Cron Job Delivery
 
+Cron jobs are executed automatically by the gateway daemon. When the gateway is running (via `hermes gateway` or `hermes gateway install`), it ticks the scheduler every 60 seconds and runs due jobs.
+
 When scheduling cron jobs, you can specify where the output should be delivered:
 
 ```

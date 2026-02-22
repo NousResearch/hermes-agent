@@ -7,7 +7,6 @@ Each module provides specialized functionality for different capabilities:
 
 - web_tools: Web search, content extraction, and crawling
 - terminal_tool: Command execution using mini-swe-agent (local/docker/modal backends)
-- terminal_hecate: Command execution on MorphCloud/Hecate cloud VMs (alternative backend)
 - vision_tools: Image analysis and understanding
 - mixture_of_agents_tool: Multi-model collaborative reasoning
 - image_generation_tool: Text-to-image generation with upscaling
@@ -34,13 +33,6 @@ from .terminal_tool import (
     register_task_env_overrides,
     clear_task_env_overrides,
     TERMINAL_TOOL_DESCRIPTION
-)
-
-# Alternative terminal tool (Hecate/MorphCloud cloud VMs)
-from .terminal_hecate import (
-    terminal_hecate_tool,
-    check_hecate_requirements,
-    TERMINAL_HECATE_DESCRIPTION
 )
 
 from .vision_tools import (
@@ -184,10 +176,6 @@ __all__ = [
     'register_task_env_overrides',
     'clear_task_env_overrides',
     'TERMINAL_TOOL_DESCRIPTION',
-    # Terminal tools (Hecate/MorphCloud backend)
-    'terminal_hecate_tool',
-    'check_hecate_requirements',
-    'TERMINAL_HECATE_DESCRIPTION',
     # Vision tools
     'vision_analyze_tool',
     'check_vision_requirements',

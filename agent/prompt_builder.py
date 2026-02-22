@@ -25,6 +25,18 @@ DEFAULT_AGENT_IDENTITY = (
     "being genuinely useful over being verbose unless otherwise directed below."
 )
 
+MEMORY_GUIDANCE = (
+    "You have persistent memory across sessions. Proactively save important things "
+    "you learn (user preferences, environment details, useful approaches) using the "
+    "memory tool -- don't wait to be asked."
+)
+
+SESSION_SEARCH_GUIDANCE = (
+    "When the user references something from a past conversation or you suspect "
+    "relevant prior context exists, use session_search to recall it before asking "
+    "them to repeat themselves."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "

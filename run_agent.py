@@ -58,7 +58,10 @@ import requests
 from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS
+from agent.prompt_builder import (
+    DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE,
+)
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
     estimate_tokens_rough, estimate_messages_tokens_rough,
@@ -1025,6 +1028,15 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
         prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        # Tool-aware behavioral guidance: only inject when the tools are loaded
+        tool_guidance = []
+        if "memory" in self.valid_tool_names:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        if "session_search" in self.valid_tool_names:
+            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if tool_guidance:
+            prompt_parts.append(" ".join(tool_guidance))
 
         caller_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
         if caller_prompt:

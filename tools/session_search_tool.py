@@ -279,21 +279,19 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search and recall past conversations. Finds matching sessions using "
-        "full-text search, then provides a focused summary of each matching "
-        "conversation.\n\n"
-        "Use this when you need to recall:\n"
-        "- A solution or approach from a previous session\n"
-        "- Something the user said or asked about before\n"
-        "- A command, file path, or technical detail from past work\n"
-        "- The outcome of a previous task\n\n"
-        "Supports search syntax:\n"
-        "  Keywords: docker deployment\n"
-        "  Phrases: '\"exact phrase\"'\n"
-        "  Boolean: docker OR kubernetes, python NOT java\n"
-        "  Prefix: deploy*\n\n"
-        "Returns summaries (not raw transcripts) of the top matching sessions, "
-        "focused on your search topic. Max 3 sessions per search."
+        "Search your long-term memory of past conversations. This is your recall -- "
+        "every past session is searchable, and this tool summarizes what happened.\n\n"
+        "USE THIS PROACTIVELY when:\n"
+        "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
+        "- The user asks about a topic you worked on before but don't have in current context\n"
+        "- The user references a project, person, or concept that seems familiar but isn't in memory\n"
+        "- You want to check if you've solved a similar problem before\n"
+        "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
+        "Don't hesitate to search -- it's fast and cheap. Better to search and confirm "
+        "than to guess or ask the user to repeat themselves.\n\n"
+        "Search syntax: keywords (docker deployment), phrases (\"exact match\"), "
+        "boolean (python NOT java), prefix (deploy*). Returns summaries of the "
+        "top matching sessions focused on your query."
     ),
     "parameters": {
         "type": "object",

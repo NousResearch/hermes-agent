@@ -51,24 +51,15 @@ import signal
 import subprocess
 import shutil
 import sys
-import asyncio
 import tempfile
 import threading
 import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from hermes_constants import OPENROUTER_CHAT_URL
+from agent.auxiliary_client import get_vision_auxiliary_client
 
 logger = logging.getLogger(__name__)
-
-# Try to import httpx for async LLM calls
-try:
-    import httpx
-    HTTPX_AVAILABLE = True
-except ImportError:
-    HTTPX_AVAILABLE = False
-
 
 # ============================================================================
 # Configuration
@@ -83,8 +74,8 @@ DEFAULT_SESSION_TIMEOUT = 300
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
-# Model for task-aware extraction
-EXTRACTION_MODEL = "google/gemini-3-flash-preview"
+# Resolve vision auxiliary client for extraction/vision tasks
+_aux_vision_client, EXTRACTION_MODEL = get_vision_auxiliary_client()
 
 # Track active sessions per task
 # Now stores tuple of (session_name, browserbase_session_id, cdp_url)
@@ -782,87 +773,49 @@ def _run_browser_command(
         return {"success": False, "error": str(e)}
 
 
-async def _extract_relevant_content(
+def _extract_relevant_content(
     snapshot_text: str,
     user_task: Optional[str] = None
 ) -> str:
+    """Use LLM to extract relevant content from a snapshot based on the user's task.
+
+    Falls back to simple truncation when no auxiliary vision model is configured.
     """
-    Use LLM to extract relevant content from a snapshot based on the user's task.
-    
-    This provides task-aware summarization that preserves meaningful text content
-    (paragraphs, prices, descriptions) relevant to what the user is trying to accomplish.
-    
-    Args:
-        snapshot_text: The full snapshot text
-        user_task: The user's current task/goal (optional)
-        
-    Returns:
-        Summarized/extracted content
-    """
-    if not HTTPX_AVAILABLE:
-        # Fall back to simple truncation
+    if _aux_vision_client is None or EXTRACTION_MODEL is None:
         return _truncate_snapshot(snapshot_text)
-    
-    # Get API key
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return _truncate_snapshot(snapshot_text)
-    
-    # Build extraction prompt
+
     if user_task:
-        extraction_prompt = f"""You are a content extractor for a browser automation agent.
-
-The user's task is: {user_task}
-
-Given the following page snapshot (accessibility tree representation), extract and summarize the most relevant information for completing this task. Focus on:
-1. Interactive elements (buttons, links, inputs) that might be needed
-2. Text content relevant to the task (prices, descriptions, headings, important info)
-3. Navigation structure if relevant
-
-Keep ref IDs (like [ref=e5]) for interactive elements so the agent can use them.
-
-Page Snapshot:
-{snapshot_text}
-
-Provide a concise summary that preserves actionable information and relevant content."""
+        extraction_prompt = (
+            f"You are a content extractor for a browser automation agent.\n\n"
+            f"The user's task is: {user_task}\n\n"
+            f"Given the following page snapshot (accessibility tree representation), "
+            f"extract and summarize the most relevant information for completing this task. Focus on:\n"
+            f"1. Interactive elements (buttons, links, inputs) that might be needed\n"
+            f"2. Text content relevant to the task (prices, descriptions, headings, important info)\n"
+            f"3. Navigation structure if relevant\n\n"
+            f"Keep ref IDs (like [ref=e5]) for interactive elements so the agent can use them.\n\n"
+            f"Page Snapshot:\n{snapshot_text}\n\n"
+            f"Provide a concise summary that preserves actionable information and relevant content."
+        )
     else:
-        extraction_prompt = f"""Summarize this page snapshot, preserving:
-1. All interactive elements with their ref IDs (like [ref=e5])
-2. Key text content and headings
-3. Important information visible on the page
-
-Page Snapshot:
-{snapshot_text}
-
-Provide a concise summary focused on interactive elements and key content."""
+        extraction_prompt = (
+            f"Summarize this page snapshot, preserving:\n"
+            f"1. All interactive elements with their ref IDs (like [ref=e5])\n"
+            f"2. Key text content and headings\n"
+            f"3. Important information visible on the page\n\n"
+            f"Page Snapshot:\n{snapshot_text}\n\n"
+            f"Provide a concise summary focused on interactive elements and key content."
+        )
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                OPENROUTER_CHAT_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": EXTRACTION_MODEL,
-                    "messages": [
-                        {"role": "user", "content": extraction_prompt}
-                    ],
-                    "max_tokens": 4000,
-                    "temperature": 0.1
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
-            else:
-                # Fall back to truncation on API error
-                return _truncate_snapshot(snapshot_text)
-                
+        response = _aux_vision_client.chat.completions.create(
+            model=EXTRACTION_MODEL,
+            messages=[{"role": "user", "content": extraction_prompt}],
+            max_tokens=4000,
+            temperature=0.1,
+        )
+        return response.choices[0].message.content
     except Exception:
-        # Fall back to truncation on any error
         return _truncate_snapshot(snapshot_text)
 
 
@@ -991,16 +944,7 @@ def browser_snapshot(
         
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
-            # Run async extraction
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            snapshot_text = loop.run_until_complete(
-                _extract_relevant_content(snapshot_text, user_task)
-            )
+            snapshot_text = _extract_relevant_content(snapshot_text, user_task)
         elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
             snapshot_text = _truncate_snapshot(snapshot_text)
         
@@ -1286,12 +1230,12 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
     
     effective_task_id = task_id or "default"
     
-    # Check for OpenRouter API key
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
+    # Check auxiliary vision client
+    if _aux_vision_client is None or EXTRACTION_MODEL is None:
         return json.dumps({
             "success": False,
-            "error": "OPENROUTER_API_KEY not set. Vision analysis requires this API key."
+            "error": "Browser vision unavailable: no auxiliary vision model configured. "
+                     "Set OPENROUTER_API_KEY or configure Nous Portal to enable browser vision."
         }, ensure_ascii=False)
     
     # Create a temporary file for the screenshot
@@ -1325,110 +1269,36 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         image_base64 = base64.b64encode(image_data).decode("ascii")
         data_url = f"data:image/png;base64,{image_base64}"
         
-        # Prepare the vision prompt
-        vision_prompt = f"""You are analyzing a screenshot of a web browser.
+        vision_prompt = (
+            f"You are analyzing a screenshot of a web browser.\n\n"
+            f"User's question: {question}\n\n"
+            f"Provide a detailed and helpful answer based on what you see in the screenshot. "
+            f"If there are interactive elements, describe them. If there are verification challenges "
+            f"or CAPTCHAs, describe what type they are and what action might be needed. "
+            f"Focus on answering the user's specific question."
+        )
 
-User's question: {question}
-
-Provide a detailed and helpful answer based on what you see in the screenshot. 
-If there are interactive elements, describe them. If there are verification challenges 
-or CAPTCHAs, describe what type they are and what action might be needed.
-Focus on answering the user's specific question."""
-
-        # Call OpenRouter/Gemini for vision analysis
-        if HTTPX_AVAILABLE:
-            import asyncio
-            
-            async def analyze_screenshot():
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        OPENROUTER_CHAT_URL,
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "google/gemini-3-flash-preview",
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": vision_prompt},
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": data_url}
-                                        }
-                                    ]
-                                }
-                            ],
-                            "max_tokens": 2000,
-                            "temperature": 0.1
-                        }
-                    )
-                    
-                    if response.status_code != 200:
-                        return {
-                            "success": False,
-                            "error": f"Vision API error: {response.status_code} - {response.text[:200]}"
-                        }
-                    
-                    result_data = response.json()
-                    analysis = result_data["choices"][0]["message"]["content"]
-                    return {
-                        "success": True,
-                        "analysis": analysis
-                    }
-            
-            # Run the async function
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            vision_result = loop.run_until_complete(analyze_screenshot())
-            return json.dumps(vision_result, ensure_ascii=False)
-        
-        else:
-            # Fallback: use synchronous requests
-            response = requests.post(
-                OPENROUTER_CHAT_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "google/gemini-3-flash-preview",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": vision_prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url}
-                                }
-                            ]
-                        }
+        # Use the sync auxiliary vision client directly
+        response = _aux_vision_client.chat.completions.create(
+            model=EXTRACTION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": vision_prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
-                    "max_tokens": 2000,
-                    "temperature": 0.1
-                },
-                timeout=60
-            )
-            
-            if response.status_code != 200:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Vision API error: {response.status_code} - {response.text[:200]}"
-                }, ensure_ascii=False)
-            
-            result_data = response.json()
-            analysis = result_data["choices"][0]["message"]["content"]
-            return json.dumps({
-                "success": True,
-                "analysis": analysis
-            }, ensure_ascii=False)
+                }
+            ],
+            max_tokens=2000,
+            temperature=0.1,
+        )
+        
+        analysis = response.choices[0].message.content
+        return json.dumps({
+            "success": True,
+            "analysis": analysis,
+        }, ensure_ascii=False)
     
     except Exception as e:
         return json.dumps({

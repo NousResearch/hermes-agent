@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import re
 from typing import Dict, List, Optional, Any
 
 try:
@@ -47,6 +48,16 @@ from gateway.platforms.base import (
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available."""
     return TELEGRAM_AVAILABLE
+
+
+# Matches every character that MarkdownV2 requires to be backslash-escaped
+# when it appears outside a code span or fenced code block.
+_MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+
+
+def _escape_mdv2(text: str) -> str:
+    """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
+    return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -167,7 +178,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=chunk,
-                        parse_mode=ParseMode.MARKDOWN,
+                        parse_mode=ParseMode.MARKDOWN_V2,
                         reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                         message_thread_id=int(thread_id) if thread_id else None,
                     )
@@ -297,14 +308,81 @@ class TelegramAdapter(BasePlatformAdapter):
     
     def format_message(self, content: str) -> str:
         """
-        Format message for Telegram.
-        
-        Telegram uses a subset of markdown. We'll use the simpler
-        Markdown mode (not MarkdownV2) for compatibility.
+        Convert standard markdown to Telegram MarkdownV2 format.
+
+        Protected regions (code blocks, inline code) are extracted first so
+        their contents are never modified.  Standard markdown constructs
+        (headers, bold, italic, links) are translated to MarkdownV2 syntax,
+        and all remaining special characters are escaped.
         """
-        # Basic escaping for Telegram Markdown
-        # In Markdown mode (not V2), only certain characters need escaping
-        return content
+        if not content:
+            return content
+
+        placeholders: dict = {}
+        counter = [0]
+
+        def _ph(value: str) -> str:
+            """Stash *value* behind a placeholder token that survives escaping."""
+            key = f"\x00PH{counter[0]}\x00"
+            counter[0] += 1
+            placeholders[key] = value
+            return key
+
+        text = content
+
+        # 1) Protect fenced code blocks (``` ... ```)
+        text = re.sub(
+            r'(```(?:[^\n]*\n)?[\s\S]*?```)',
+            lambda m: _ph(m.group(0)),
+            text,
+        )
+
+        # 2) Protect inline code (`...`)
+        text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
+
+        # 3) Convert markdown links – escape the display text; inside the URL
+        #    only ')' and '\' need escaping per the MarkdownV2 spec.
+        def _convert_link(m):
+            display = _escape_mdv2(m.group(1))
+            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+            return _ph(f'[{display}]({url})')
+
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
+
+        # 4) Convert markdown headers (## Title) → bold *Title*
+        def _convert_header(m):
+            inner = m.group(1).strip()
+            # Strip redundant bold markers that may appear inside a header
+            inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
+            return _ph(f'*{_escape_mdv2(inner)}*')
+
+        text = re.sub(
+            r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
+        )
+
+        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
+        text = re.sub(
+            r'\*\*(.+?)\*\*',
+            lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
+            text,
+        )
+
+        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        text = re.sub(
+            r'\*([^*]+)\*',
+            lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
+            text,
+        )
+
+        # 7) Escape remaining special characters in plain text
+        text = _escape_mdv2(text)
+
+        # 8) Restore placeholders in reverse insertion order so that
+        #    nested references (a placeholder inside another) resolve correctly.
+        for key in reversed(list(placeholders.keys())):
+            text = text.replace(key, placeholders[key])
+
+        return text
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages."""

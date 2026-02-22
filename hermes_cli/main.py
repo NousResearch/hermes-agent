@@ -47,8 +47,66 @@ from hermes_constants import OPENROUTER_BASE_URL
 logger = logging.getLogger(__name__)
 
 
+def _has_any_provider_configured() -> bool:
+    """Check if at least one inference provider is usable."""
+    from hermes_cli.config import get_env_path, get_hermes_home
+
+    # Check env vars (may be set by .env or shell)
+    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
+        return True
+
+    # Check .env file for keys
+    env_file = get_env_path()
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                val = val.strip().strip("'\"")
+                if key.strip() in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY") and val:
+                    return True
+        except Exception:
+            pass
+
+    # Check for Nous Portal OAuth credentials
+    auth_file = get_hermes_home() / "auth.json"
+    if auth_file.exists():
+        try:
+            import json
+            auth = json.loads(auth_file.read_text())
+            active = auth.get("active_provider")
+            if active:
+                state = auth.get("providers", {}).get(active, {})
+                if state.get("access_token") or state.get("refresh_token"):
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    # First-run guard: check if any provider is configured before launching
+    if not _has_any_provider_configured():
+        print()
+        print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
+        print()
+        print("  Run:  hermes setup")
+        print()
+        try:
+            reply = input("Run setup now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = "n"
+        if reply in ("", "y", "yes"):
+            cmd_setup(args)
+            return
+        print()
+        print("You can run 'hermes setup' at any time to configure.")
+        sys.exit(1)
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -219,20 +277,10 @@ def _model_flow_openrouter(config, current_model=""):
         print("API key saved.")
         print()
 
-    OPENROUTER_MODELS = [
-        "anthropic/claude-opus-4.6",
-        "anthropic/claude-sonnet-4.5",
-        "anthropic/claude-opus-4.5",
-        "openai/gpt-5.2",
-        "openai/gpt-5.2-codex",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
-        "z-ai/glm-4.7",
-        "moonshotai/kimi-k2.5",
-        "minimax/minimax-m2.1",
-    ]
+    from hermes_cli.models import model_ids
+    openrouter_models = model_ids()
 
-    selected = _prompt_model_selection(OPENROUTER_MODELS, current_model=current_model)
+    selected = _prompt_model_selection(openrouter_models, current_model=current_model)
     if selected:
         # Clear any custom endpoint and set provider to openrouter
         if get_env_value("OPENAI_BASE_URL"):

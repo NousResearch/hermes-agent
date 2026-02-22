@@ -611,46 +611,27 @@ def run_setup_wizard(args):
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
         else:
-            # Static list for OpenRouter / fallback
-            model_choices = [
-                "anthropic/claude-opus-4.6 (recommended)",
-                "anthropic/claude-sonnet-4.5",
-                "anthropic/claude-opus-4.5",
-                "openai/gpt-5.2",
-                "openai/gpt-5.2-codex",
-                "google/gemini-3-pro-preview",
-                "google/gemini-3-flash-preview",
-                "z-ai/glm-4.7",
-                "moonshotai/kimi-k2.5",
-                "minimax/minimax-m2.1",
+            # Static list for OpenRouter / fallback (from canonical list)
+            from hermes_cli.models import model_ids, menu_labels
+
+            ids = model_ids()
+            model_choices = menu_labels() + [
                 "Custom model",
-                f"Keep current ({current_model})"
+                f"Keep current ({current_model})",
             ]
 
-            model_idx = prompt_choice("Select default model:", model_choices, 11)
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
 
-            model_map = {
-                0: "anthropic/claude-opus-4.6",
-                1: "anthropic/claude-sonnet-4.5",
-                2: "anthropic/claude-opus-4.5",
-                3: "openai/gpt-5.2",
-                4: "openai/gpt-5.2-codex",
-                5: "google/gemini-3-pro-preview",
-                6: "google/gemini-3-flash-preview",
-                7: "z-ai/glm-4.7",
-                8: "moonshotai/kimi-k2.5",
-                9: "minimax/minimax-m2.1",
-            }
-
-            if model_idx in model_map:
-                config['model'] = model_map[model_idx]
-                save_env_value("LLM_MODEL", model_map[model_idx])
-            elif model_idx == 10:  # Custom
+            if model_idx < len(ids):
+                config['model'] = ids[model_idx]
+                save_env_value("LLM_MODEL", ids[model_idx])
+            elif model_idx == len(ids):  # Custom
                 custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
                 if custom:
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
-            # else: Keep current (model_idx == 11)
+            # else: Keep current
     
     # =========================================================================
     # Step 4: Terminal Backend

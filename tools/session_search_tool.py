@@ -39,6 +39,26 @@ MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 2000
 
 
+def _format_timestamp(ts) -> str:
+    """Convert a Unix timestamp (float/int) or ISO string to a human-readable date."""
+    if ts is None:
+        return "unknown"
+    try:
+        if isinstance(ts, (int, float)):
+            from datetime import datetime
+            dt = datetime.fromtimestamp(ts)
+            return dt.strftime("%B %d, %Y at %I:%M %p")
+        if isinstance(ts, str):
+            if ts.replace(".", "").replace("-", "").isdigit():
+                from datetime import datetime
+                dt = datetime.fromtimestamp(float(ts))
+                return dt.strftime("%B %d, %Y at %I:%M %p")
+            return ts
+    except Exception:
+        pass
+    return str(ts)
+
+
 def _format_conversation(messages: List[Dict[str, Any]]) -> str:
     """Format session messages into a readable transcript for summarization."""
     parts = []
@@ -126,12 +146,12 @@ async def _summarize_session(
     )
 
     source = session_meta.get("source", "unknown")
-    started = session_meta.get("started_at", "unknown")
+    started = _format_timestamp(session_meta.get("started_at"))
 
     user_prompt = (
         f"Search topic: {query}\n"
         f"Session source: {source}\n"
-        f"Session started: {started}\n\n"
+        f"Session date: {started}\n\n"
         f"CONVERSATION TRANSCRIPT:\n{conversation_text}\n\n"
         f"Summarize this conversation with focus on: {query}"
     )
@@ -243,9 +263,9 @@ def session_search(
                 if summary:
                     summaries.append({
                         "session_id": session_id,
+                        "when": _format_timestamp(match_info.get("session_started")),
                         "source": match_info.get("source", "unknown"),
                         "model": match_info.get("model"),
-                        "session_started": match_info.get("session_started"),
                         "summary": summary,
                     })
 

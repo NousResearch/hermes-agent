@@ -275,6 +275,16 @@ import fire
 # Import the agent and tool systems
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
+
+# Extracted CLI modules (Phase 3)
+from hermes_cli.banner import (
+    cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
+    VERSION, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    get_available_skills as _get_available_skills,
+    build_welcome_banner,
+)
+from hermes_cli.commands import COMMANDS, SlashCommandCompleter
+from hermes_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
 # Cron job system for scheduled tasks (CRUD only — execution is handled by the gateway)

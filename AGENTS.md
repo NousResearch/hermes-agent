@@ -244,11 +244,11 @@ This is intentional: CLI users are in a terminal and expect the agent to work in
 
 ### Security (User Allowlists):
 
-**IMPORTANT**: Without an allowlist, anyone who finds your bot can use it!
+**IMPORTANT**: By default, the gateway denies all users who are not in an allowlist or paired via DM.
 
 The gateway checks `{PLATFORM}_ALLOWED_USERS` environment variables:
 - If set: Only listed user IDs can interact with the bot
-- If unset: All users are allowed (dangerous with terminal access!)
+- If unset: All users are denied unless `GATEWAY_ALLOW_ALL_USERS=true` is set
 
 Users can find their IDs:
 - **Telegram**: Message [@userinfobot](https://t.me/userinfobot)

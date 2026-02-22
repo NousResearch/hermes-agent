@@ -26,6 +26,42 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
+# Shared tool list for CLI and all messaging platform toolsets.
+# Messaging platforms add "send_message" on top of this list.
+# Edit this once to update all platforms simultaneously.
+_HERMES_CORE_TOOLS = [
+    # Web
+    "web_search", "web_extract",
+    # Terminal + process management
+    "terminal", "process",
+    # File manipulation
+    "read_file", "write_file", "patch", "search_files",
+    # Vision + image generation
+    "vision_analyze", "image_generate",
+    # MoA
+    "mixture_of_agents",
+    # Skills
+    "skills_list", "skill_view", "skill_manage",
+    # Browser automation
+    "browser_navigate", "browser_snapshot", "browser_click",
+    "browser_type", "browser_scroll", "browser_back",
+    "browser_press", "browser_close", "browser_get_images",
+    "browser_vision",
+    # Text-to-speech
+    "text_to_speech",
+    # Planning & memory
+    "todo", "memory",
+    # Session history search
+    "session_search",
+    # Clarifying questions
+    "clarify",
+    # Code execution + delegation
+    "execute_code", "delegate_task",
+    # Cronjob management
+    "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+]
+
+
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
@@ -165,212 +201,40 @@ TOOLSETS = {
     },
     
     # ==========================================================================
-    # CLI-specific toolsets (only available when running via cli.py)
+    # Full Hermes toolsets (CLI + messaging platforms)
+    #
+    # All platforms share the same core tools. Messaging platforms add
+    # send_message for cross-channel messaging. Defined via _HERMES_CORE_TOOLS
+    # to avoid duplicating the tool list for each platform.
     # ==========================================================================
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": [
-            # Web tools
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision
-            "vision_analyze",
-            # Image generation
-            "image_generate",
-            # MoA
-            "mixture_of_agents",
-            # Skills
-            "skills_list", "skill_view", "skill_manage",
-            # Browser
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
-            # Text-to-speech
-            "text_to_speech",
-            # Planning & task management
-            "todo",
-            # Persistent memory
-            "memory",
-            # Session history search
-            "session_search",
-            # Clarifying questions
-            "clarify",
-            # Code execution sandbox (programmatic tool calling)
-            "execute_code",
-            # Subagent delegation
-            "delegate_task",
-            # Cronjob management (CLI-only)
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob"
-        ],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     
-    # ==========================================================================
-    # Messaging Platform-Specific Toolsets
-    # ==========================================================================
-    
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": [
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Web tools
-            "web_search", "web_extract",
-            # Vision - analyze images sent by users
-            "vision_analyze",
-            # Image generation
-            "image_generate",
-            # Text-to-speech
-            "text_to_speech",
-            # Browser automation (requires Browserbase API key)
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
-            # Skills - access knowledge base
-            "skills_list", "skill_view", "skill_manage",
-            # Planning & task management
-            "todo",
-            # Persistent memory
-            "memory",
-            # Session history search
-            "session_search",
-            # Code execution sandbox (programmatic tool calling)
-            "execute_code",
-            # Subagent delegation
-            "delegate_task",
-            # Cronjob management - let users schedule tasks
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
-            # Cross-channel messaging
-            "send_message"
-        ],
+        "tools": _HERMES_CORE_TOOLS + ["send_message"],
         "includes": []
     },
     
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": [
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Web tools
-            "web_search", "web_extract",
-            # Vision - analyze images sent by users
-            "vision_analyze",
-            # Image generation
-            "image_generate",
-            # Text-to-speech
-            "text_to_speech",
-            # Browser automation (requires Browserbase API key)
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
-            # Skills - access knowledge base
-            "skills_list", "skill_view", "skill_manage",
-            # Planning & task management
-            "todo",
-            # Persistent memory
-            "memory",
-            # Session history search
-            "session_search",
-            # Code execution sandbox (programmatic tool calling)
-            "execute_code",
-            # Subagent delegation
-            "delegate_task",
-            # Cronjob management - let users schedule tasks
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
-            # Cross-channel messaging
-            "send_message"
-        ],
+        "tools": _HERMES_CORE_TOOLS + ["send_message"],
         "includes": []
     },
     
     "hermes-whatsapp": {
         "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
-        "tools": [
-            # Web tools
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision
-            "vision_analyze",
-            # Image generation
-            "image_generate",
-            # Text-to-speech
-            "text_to_speech",
-            # Browser automation (requires Browserbase API key)
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
-            # Skills
-            "skills_list", "skill_view", "skill_manage",
-            # Planning & task management
-            "todo",
-            # Persistent memory
-            "memory",
-            # Session history search
-            "session_search",
-            # Code execution sandbox (programmatic tool calling)
-            "execute_code",
-            # Subagent delegation
-            "delegate_task",
-            # Cronjob management
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
-            # Cross-channel messaging
-            "send_message"
-        ],
+        "tools": _HERMES_CORE_TOOLS + ["send_message"],
         "includes": []
     },
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": [
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Web tools
-            "web_search", "web_extract",
-            # Vision - analyze images sent by users
-            "vision_analyze",
-            # Image generation
-            "image_generate",
-            # Text-to-speech
-            "text_to_speech",
-            # Browser automation (requires Browserbase API key)
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
-            "browser_vision",
-            # Skills - access knowledge base
-            "skills_list", "skill_view", "skill_manage",
-            # Planning & task management
-            "todo",
-            # Persistent memory
-            "memory",
-            # Session history search
-            "session_search",
-            # Code execution sandbox (programmatic tool calling)
-            "execute_code",
-            # Subagent delegation
-            "delegate_task",
-            # Cronjob management - let users schedule tasks
-            "schedule_cronjob", "list_cronjobs", "remove_cronjob",
-            # Cross-channel messaging
-            "send_message"
-        ],
+        "tools": _HERMES_CORE_TOOLS + ["send_message"],
         "includes": []
     },
     

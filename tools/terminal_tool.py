@@ -255,19 +255,17 @@ def set_approval_callback(cb):
 # Dangerous Command Approval System
 # =============================================================================
 
-# Session-cached dangerous command approvals (pattern -> approved)
-_session_approved_patterns: set = set()
-
-# Last approval-required command (for gateway to pick up)
-# Set by _check_dangerous_command when in ask mode, read by gateway
-_last_pending_approval: dict = {}
+from tools import approval as _approval
 
 # Dangerous command patterns (regex, description)
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+(-[^\s]*)?r', "recursive delete"),
+    (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
+    (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
     (r'\bdd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
@@ -279,16 +277,31 @@ DANGEROUS_PATTERNS = [
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':()\s*{\s*:\s*\|\s*:&\s*}\s*;:', "fork bomb"),
+    # Indirect execution via command launchers
+    (r'\b(bash|sh|zsh)\s+-c\s+', "shell command via -c flag"),
+    (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
+    # Pipe-to-shell (remote code execution)
+    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    # Destructive find/xargs patterns
+    (r'\bxargs\s+.*\brm\b', "xargs with rm"),
+    (r'\bfind\b.*-exec\s+rm\b', "find -exec rm"),
+    (r'\bfind\b.*-delete\b', "find -delete"),
 ]
 
 
 def _load_permanent_allowlist() -> set:
-    """Load permanently allowed command patterns from config."""
+    """Load permanently allowed command patterns from config.
+
+    Also syncs them into the approval module so is_approved() works for
+    patterns that were added via 'always' in a previous session.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        patterns = config.get("command_allowlist", [])
-        return set(patterns) if patterns else set()
+        patterns = set(config.get("command_allowlist", []) or [])
+        if patterns:
+            _approval.load_permanent(patterns)
+        return patterns
     except Exception:
         return set()
 
@@ -325,14 +338,8 @@ def _detect_dangerous_command(command: str) -> tuple:
 
 def _is_command_approved(pattern_key: str) -> bool:
     """Check if a pattern is approved (session or permanent)."""
-    if pattern_key in _session_approved_patterns:
-        return True
-    
-    permanent = _load_permanent_allowlist()
-    if pattern_key in permanent:
-        return True
-    
-    return False
+    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    return _approval.is_approved(session_key, pattern_key)
 
 
 def _prompt_dangerous_approval(command: str, description: str, timeout_seconds: int = 60) -> str:
@@ -446,12 +453,12 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
         # Messaging context - return approval_required so the gateway can
         # prompt the user interactively instead of just blocking
-        global _last_pending_approval
-        _last_pending_approval = {
+        session_key = os.getenv("HERMES_SESSION_KEY", "default")
+        _approval.submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,
             "description": description,
-        }
+        })
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -467,14 +474,13 @@ def _check_dangerous_command(command: str, env_type: str) -> dict:
     if choice == "deny":
         return {"approved": False, "message": "BLOCKED: User denied this potentially dangerous command. Do NOT retry this command - the user has explicitly rejected it."}
     
-    # Handle approval
+    session_key = os.getenv("HERMES_SESSION_KEY", "default")
     if choice == "session":
-        _session_approved_patterns.add(pattern_key)
+        _approval.approve_session(session_key, pattern_key)
     elif choice == "always":
-        _session_approved_patterns.add(pattern_key)
-        permanent = _load_permanent_allowlist()
-        permanent.add(pattern_key)
-        _save_permanent_allowlist(permanent)
+        _approval.approve_session(session_key, pattern_key)
+        _approval.approve_permanent(pattern_key)
+        _save_permanent_allowlist(_load_permanent_allowlist() | {pattern_key})
     
     return {"approved": True, "message": None}
 

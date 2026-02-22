@@ -41,7 +41,8 @@ hermes-agent/
 ├── skills/               # Knowledge documents
 ├── cli.py                # Interactive CLI (Rich UI)
 ├── run_agent.py          # Agent runner with AIAgent class
-├── model_tools.py        # Tool schemas and handlers
+├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
+├── tools/registry.py     # Central tool registry (schemas, handlers, dispatch)
 ├── toolsets.py           # Tool groupings
 ├── toolset_distributions.py  # Probability-based tool selection
 └── batch_runner.py       # Parallel batch processing
@@ -59,14 +60,16 @@ hermes-agent/
 ## File Dependency Chain
 
 ```
-tools/*.py → tools/__init__.py → model_tools.py → toolsets.py → toolset_distributions.py
-                                       ↑
-run_agent.py ──────────────────────────┘
-cli.py → run_agent.py (uses AIAgent with quiet_mode=True)
-batch_runner.py → run_agent.py + toolset_distributions.py
+tools/registry.py  (no deps — imported by all tool files)
+       ↑
+tools/*.py  (each calls registry.register() at import time)
+       ↑
+model_tools.py  (imports tools/registry + triggers tool discovery)
+       ↑
+run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-Always ensure consistency between tools, model_tools.py, and toolsets.py when changing any of them.
+Each tool file co-locates its schema, handler, and registration. `model_tools.py` is a thin orchestration layer.
 
 ---
 
@@ -459,51 +462,21 @@ terminal(command="pytest -v tests/", background=true)
 - In the gateway, sessions with active background processes are exempt from idle reset
 - The process registry checkpoints to `~/.hermes/processes.json` for crash recovery
 
-Files: `tools/process_registry.py` (registry), `model_tools.py` (tool definition + handler), `tools/terminal_tool.py` (spawn integration)
+Files: `tools/process_registry.py` (registry + handler), `tools/terminal_tool.py` (spawn integration)
 
 ---
 
 ## Adding New Tools
 
-Follow this strict order to maintain consistency:
+Adding a tool requires changes in **2 files** (the tool file and `toolsets.py`):
 
-1. Create `tools/your_tool.py` with:
-   - Handler function (sync or async) returning a JSON string via `json.dumps()`
-   - `check_*_requirements()` function to verify dependencies (e.g., API keys)
-   - Schema definition following OpenAI function-calling format
-
-2. Export in `tools/__init__.py`:
-   - Import the handler and check function
-   - Add to `__all__` list
-
-3. Register in `model_tools.py`:
-   - Add to `TOOLSET_REQUIREMENTS` if it needs API keys
-   - Create `get_*_tool_definitions()` function or add to existing
-   - Add routing in `handle_function_call()` dispatcher
-   - Update `get_all_tool_names()` with the tool name
-   - Update `get_toolset_for_tool()` mapping
-   - Update `get_available_toolsets()` and `check_toolset_requirements()`
-
-4. Add to toolset in `toolsets.py`:
-   - Add to existing toolset or create new one in TOOLSETS dict
-
-5. If the tool requires an API key:
-   - Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
-   - The tool will be auto-disabled if the key is missing
-
-6. Add `"todo"` to the relevant platform toolsets (`hermes-cli`, `hermes-telegram`, etc.)
-
-7. Optionally add to `toolset_distributions.py` for batch processing
-
-**Special case: tools that need agent-level state** (like `todo`):
-If your tool needs access to the AIAgent instance (e.g., in-memory state per session), intercept it directly in `run_agent.py`'s tool dispatch loop *before* `handle_function_call()`. Add a fallback error in `handle_function_call()` for safety. See `todo_tool.py` and the `if function_name == "todo":` block in `run_agent.py` for the pattern. For RL environments, add the same intercept in `environments/agent_loop.py`.
-
-### Tool Implementation Pattern
+1. **Create `tools/your_tool.py`** with handler, schema, check function, and registry call:
 
 ```python
 # tools/example_tool.py
 import json
 import os
+from tools.registry import registry
 
 def check_example_requirements() -> bool:
     """Check if required API keys/dependencies are available."""
@@ -516,24 +489,46 @@ def example_tool(param: str, task_id: str = None) -> str:
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+EXAMPLE_SCHEMA = {
+    "name": "example_tool",
+    "description": "Does something useful.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "param": {"type": "string", "description": "The parameter"}
+        },
+        "required": ["param"]
+    }
+}
+
+registry.register(
+    name="example_tool",
+    toolset="example",
+    schema=EXAMPLE_SCHEMA,
+    handler=lambda args, **kw: example_tool(
+        param=args.get("param", ""), task_id=kw.get("task_id")),
+    check_fn=check_example_requirements,
+    requires_env=["EXAMPLE_API_KEY"],
+)
 ```
 
-All tool handlers MUST return a JSON string. Never return raw dicts.
+2. **Add to `toolsets.py`**: Add `"example_tool"` to `_HERMES_CORE_TOOLS` if it should be in all platform toolsets, or create a new toolset entry.
+
+3. **Add discovery import** in `model_tools.py`'s `_discover_tools()` list: `"tools.example_tool"`.
+
+That's it. The registry handles schema collection, dispatch, availability checking, and error wrapping automatically. No edits to `TOOLSET_REQUIREMENTS`, `handle_function_call()`, `get_all_tool_names()`, or any other data structure.
+
+**Optional:** Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` for the setup wizard, and to `toolset_distributions.py` for batch processing.
+
+**Special case: tools that need agent-level state** (like `todo`, `memory`):
+These are intercepted by `run_agent.py`'s tool dispatch loop *before* `handle_function_call()`. The registry still holds their schemas, but dispatch returns a stub error as a safety fallback. See `todo_tool.py` for the pattern.
+
+All tool handlers MUST return a JSON string. The registry's `dispatch()` wraps all exceptions in `{"error": "..."}` automatically.
 
 ### Dynamic Tool Availability
 
-Tools are automatically disabled when their API keys are missing:
-
-```python
-# In model_tools.py
-TOOLSET_REQUIREMENTS = {
-    "web": {"env_vars": ["FIRECRAWL_API_KEY"]},
-    "browser": {"env_vars": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]},
-    "creative": {"env_vars": ["FAL_KEY"]},
-}
-```
-
-The `check_tool_availability()` function determines which tools to include.
+Tools declare their requirements at registration time via `check_fn` and `requires_env`. The registry checks `check_fn()` when building tool definitions -- tools whose check fails are silently excluded.
 
 ### Stateful Tools
 

@@ -15,8 +15,18 @@ source venv/bin/activate  # Before running any Python commands
 
 ```
 hermes-agent/
-├── hermes_cli/           # Unified CLI commands
+├── agent/                # Agent internals (extracted from run_agent.py)
+│   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── context_compressor.py # Auto context compression
+│   ├── prompt_caching.py     # Anthropic prompt caching
+│   ├── prompt_builder.py     # System prompt assembly (identity, skills index, context files)
+│   ├── display.py            # KawaiiSpinner, tool preview formatting
+│   └── trajectory.py         # Trajectory saving helpers
+├── hermes_cli/           # CLI implementation
 │   ├── main.py           # Entry point, command dispatcher
+│   ├── banner.py         # Welcome banner, ASCII art, skills summary
+│   ├── commands.py       # Slash command definitions + autocomplete
+│   ├── callbacks.py      # Interactive prompt callbacks (clarify, sudo, approval)
 │   ├── setup.py          # Interactive setup wizard
 │   ├── config.py         # Config management & migration
 │   ├── status.py         # Status display
@@ -26,23 +36,28 @@ hermes-agent/
 │   ├── cron.py           # Cron job management
 │   └── skills_hub.py     # Skills Hub CLI + /skills slash command
 ├── tools/                # Tool implementations
-│   ├── skills_guard.py         # Security scanner for external skills
-│   ├── skills_hub.py           # Source adapters, GitHub auth, lock file (library)
-│   ├── todo_tool.py            # Planning & task management (in-memory TodoStore)
-│   ├── process_registry.py     # Background process management (spawn, poll, wait, kill)
-│   ├── transcription_tools.py  # Speech-to-text (Whisper API)
+│   ├── registry.py            # Central tool registry (schemas, handlers, dispatch)
+│   ├── approval.py            # Dangerous command detection + per-session approval
+│   ├── environments/          # Terminal execution backends
+│   │   ├── base.py            # BaseEnvironment ABC
+│   │   ├── local.py           # Local execution with interrupt support
+│   │   ├── docker.py          # Docker container execution
+│   │   ├── ssh.py             # SSH remote execution
+│   │   ├── singularity.py     # Singularity/Apptainer + SIF management
+│   │   └── modal.py           # Modal cloud execution
+│   ├── terminal_tool.py       # Terminal orchestration (sudo, lifecycle, factory)
+│   ├── todo_tool.py           # Planning & task management
+│   ├── process_registry.py    # Background process management
+│   └── ...                    # Other tool files
 ├── gateway/              # Messaging platform adapters
-│   ├── pairing.py        # DM pairing code system
-│   ├── hooks.py          # Event hook system
-│   ├── sticker_cache.py  # Telegram sticker vision cache
-│   ├── platforms/
-│   │   └── slack.py          # Slack adapter (slack-bolt)
+│   ├── platforms/        # Platform-specific adapters (telegram, discord, slack, whatsapp)
+│   └── ...
 ├── cron/                 # Scheduler implementation
-├── skills/               # Knowledge documents
-├── cli.py                # Interactive CLI (Rich UI)
-├── run_agent.py          # Agent runner with AIAgent class
+├── environments/         # RL training environments (Atropos integration)
+├── skills/               # Bundled skill sources
+├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
+├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
-├── tools/registry.py     # Central tool registry (schemas, handlers, dispatch)
 ├── toolsets.py           # Tool groupings
 ├── toolset_distributions.py  # Probability-based tool selection
 └── batch_runner.py       # Parallel batch processing

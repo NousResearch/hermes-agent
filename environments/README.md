@@ -41,7 +41,7 @@ This directory contains the integration layer between **hermes-agent's** tool-ca
 
 **HermesAgentBaseEnv** (`hermes_base_env.py`) extends BaseEnv with hermes-agent specifics:
 - Sets `os.environ["TERMINAL_ENV"]` to configure the terminal backend (local, docker, modal, ssh, singularity)
-- Resolves hermes-agent toolsets via `_resolve_tools_for_group()` (calls `get_tool_definitions()` from `model_tools.py`)
+- Resolves hermes-agent toolsets via `_resolve_tools_for_group()` (calls `get_tool_definitions()` which queries `tools/registry.py`)
 - Implements `collect_trajectory()` which runs the full agent loop and computes rewards
 - Supports two-phase operation (Phase 1: OpenAI server, Phase 2: VLLM ManagedServer)
 - Applies monkey patches for async-safe tool operation at import time
@@ -60,7 +60,7 @@ Concrete environments inherit from `HermesAgentBaseEnv` and implement:
 `HermesAgentLoop` is the reusable multi-turn agent engine. It runs the same pattern as hermes-agent's `run_agent.py`:
 
 1. Send messages + tools to the API via `server.chat_completion()`
-2. If the response contains `tool_calls`, execute each one via `handle_function_call()` from `model_tools.py`
+2. If the response contains `tool_calls`, execute each one via `handle_function_call()` (which delegates to `tools/registry.py`'s `dispatch()`)
 3. Append tool results to the conversation and go back to step 1
 4. If the response has no tool_calls, the agent is done
 

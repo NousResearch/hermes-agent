@@ -621,7 +621,7 @@ Hermes-Agent/
 │       ├── quarantine/
 │       ├── audit.log
 │       └── taps.json
-├── model_tools.py               # MODIFY — register new hub tools
+├── model_tools.py               # ADD discovery import for new tool module
 └── toolsets.py                   # MODIFY — add skills_hub toolset
 ```
 
@@ -633,7 +633,7 @@ Hermes-Agent/
 | `tools/skills_guard.py` | ~300 | Medium — pattern matching, report generation, trust scoring |
 | `hermes_cli/skills_hub.py` | ~400 | Medium — argparse, Rich output, user prompts, tap management |
 | `tools/skills_tool.py` changes | ~50 | Low — pyyaml upgrade, `assets/` support, `compatibility` field |
-| `model_tools.py` changes | ~80 | Low — register tools, add handler |
+| `model_tools.py` changes | ~1 | Low — add discovery import line |
 | `toolsets.py` changes | ~10 | Low — add toolset entry |
 | **Total** | **~1,340** | |
 
@@ -690,7 +690,7 @@ Fix any issues (likely just the `tags` and `related_skills` fields, which should
 - [ ] `hermes skills search` CLI command
 - [ ] `hermes skills install` from GitHub repos (with quarantine + scan)
 - [ ] Lock file management
-- [ ] Wire into model_tools.py and toolsets.py
+- [ ] Add registry.register() calls in tool file + discovery import in model_tools.py + toolset in toolsets.py
 
 ### Phase 2: Registry Sources — 1-2 days
 - [ ] ClawHub HTTP API adapter (search + install)

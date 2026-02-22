@@ -58,58 +58,224 @@ async def web_search(query: str) -> dict:
 
 ## Tool Registration
 
-Tools are registered in `model_tools.py`:
+Each tool file self-registers via `tools/registry.py`:
 
 ```python
-# model_tools.py
-TOOL_SCHEMAS = [
-    *WEB_TOOL_SCHEMAS,
-    *TERMINAL_TOOL_SCHEMAS,
-    *BROWSER_TOOL_SCHEMAS,
-    # ...
-]
+# tools/example_tool.py
+from tools.registry import registry
 
-TOOL_HANDLERS = {
-    "web_search": web_search,
-    "terminal": terminal_tool,
-    "browser_navigate": browser_navigate,
-    # ...
+EXAMPLE_SCHEMA = {
+    "name": "example_tool",
+    "description": "Does something useful.",
+    "parameters": { ... }
 }
+
+registry.register(
+    name="example_tool",
+    toolset="example",
+    schema=EXAMPLE_SCHEMA,
+    handler=lambda args, **kw: example_tool(args.get("param", "")),
+    check_fn=check_example_requirements,
+    requires_env=["EXAMPLE_API_KEY"],
+)
 ```
+
+`model_tools.py` is a thin orchestration layer that imports all tool modules (triggering registration), then delegates to the registry for schema collection and dispatch.
 
 ## Toolsets
 
-Tools are grouped into **toolsets** for logical organization (see `toolsets.py`):
-
-```python
-TOOLSETS = {
-    "web": {
-        "description": "Web search and content extraction",
-        "tools": ["web_search", "web_extract", "web_crawl"]
-    },
-    "terminal": {
-        "description": "Command execution",
-        "tools": ["terminal", "process"]
-    },
-    "todo": {
-        "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"]
-    },
-    "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"]
-    },
-    # ...
-}
-```
+Tools are grouped into **toolsets** for logical organization (see `toolsets.py`). All platforms share a `_HERMES_CORE_TOOLS` list; messaging platforms add `send_message`.
 
 ## Adding a New Tool
 
-1. Create handler function in `tools/your_tool.py`
-2. Define JSON schema following OpenAI format
-3. Register in `model_tools.py` (schemas and handlers)
-4. Add to appropriate toolset in `toolsets.py`
-5. Update `tools/__init__.py` exports
+### Overview
+
+Adding a tool touches 3 files:
+
+1. **`tools/your_tool.py`** -- handler, schema, check function, `registry.register()` call
+2. **`toolsets.py`** -- add tool name to `_HERMES_CORE_TOOLS` (or a specific toolset)
+3. **`model_tools.py`** -- add `"tools.your_tool"` to the `_discover_tools()` list
+
+### Step 1: Create the tool file
+
+Every tool file follows the same structure: handler function, availability check, schema constant, and registry registration.
+
+```python
+# tools/weather_tool.py
+"""Weather Tool -- look up current weather for a location."""
+
+import json
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# --- Availability check ---
+
+def check_weather_requirements() -> bool:
+    """Return True if the tool's dependencies are available."""
+    return bool(os.getenv("WEATHER_API_KEY"))
+
+
+# --- Handler ---
+
+def weather_tool(location: str, units: str = "metric") -> str:
+    """Fetch weather for a location. Returns JSON string."""
+    api_key = os.getenv("WEATHER_API_KEY")
+    if not api_key:
+        return json.dumps({"error": "WEATHER_API_KEY not configured"})
+    try:
+        # ... call weather API ...
+        return json.dumps({"location": location, "temp": 22, "units": units})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# --- Schema ---
+
+WEATHER_SCHEMA = {
+    "name": "weather",
+    "description": "Get current weather for a location.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": "City name or coordinates (e.g. 'London' or '51.5,-0.1')"
+            },
+            "units": {
+                "type": "string",
+                "enum": ["metric", "imperial"],
+                "description": "Temperature units (default: metric)",
+                "default": "metric"
+            }
+        },
+        "required": ["location"]
+    }
+}
+
+
+# --- Registration ---
+
+from tools.registry import registry
+
+registry.register(
+    name="weather",
+    toolset="weather",
+    schema=WEATHER_SCHEMA,
+    handler=lambda args, **kw: weather_tool(
+        location=args.get("location", ""),
+        units=args.get("units", "metric")),
+    check_fn=check_weather_requirements,
+    requires_env=["WEATHER_API_KEY"],
+)
+```
+
+**Key rules:**
+
+- Handlers MUST return a JSON string (via `json.dumps()`), never raw dicts.
+- Errors MUST be returned as `{"error": "message"}`, never raised as exceptions. The registry's `dispatch()` also wraps unexpected exceptions automatically.
+- The `check_fn` is called when building tool definitions -- if it returns `False`, the tool is silently excluded from the schema sent to the LLM.
+- The `handler` receives `(args: dict, **kwargs)` where `args` is the LLM's tool call arguments and `kwargs` may include `task_id`, `user_task`, `store`, etc. depending on what the caller passes.
+
+### Step 2: Add to a toolset
+
+In `toolsets.py`, add the tool name to the appropriate place:
+
+```python
+# If it should be available on all platforms (CLI + messaging):
+_HERMES_CORE_TOOLS = [
+    ...
+    "weather",  # <-- add here
+]
+
+# Or create a new standalone toolset:
+"weather": {
+    "description": "Weather lookup tools",
+    "tools": ["weather"],
+    "includes": []
+},
+```
+
+### Step 3: Add discovery import
+
+In `model_tools.py`, add the module to the `_discover_tools()` list:
+
+```python
+def _discover_tools():
+    _modules = [
+        ...
+        "tools.weather_tool",  # <-- add here
+    ]
+```
+
+This import triggers the `registry.register()` call at the bottom of the tool file.
+
+### Async handlers
+
+If your handler needs to call async code (e.g., `aiohttp`, async SDK), mark it with `is_async=True`:
+
+```python
+async def weather_tool_async(location: str) -> str:
+    async with aiohttp.ClientSession() as session:
+        ...
+    return json.dumps(result)
+
+registry.register(
+    name="weather",
+    toolset="weather",
+    schema=WEATHER_SCHEMA,
+    handler=lambda args, **kw: weather_tool_async(args.get("location", "")),
+    check_fn=check_weather_requirements,
+    is_async=True,  # <-- registry calls _run_async() automatically
+)
+```
+
+The registry handles async bridging transparently via `_run_async()` -- you never call `asyncio.run()` yourself. This works correctly in CLI mode (no event loop), the gateway (running async loop), and RL environments (Atropos event loop + thread pool wrapping).
+
+### Handlers that need task_id
+
+Tools that manage per-session state (terminal, browser, file ops) receive `task_id` via `**kwargs`:
+
+```python
+def _handle_weather(args, **kw):
+    task_id = kw.get("task_id")  # may be None in CLI mode
+    return weather_tool(args.get("location", ""), task_id=task_id)
+
+registry.register(
+    name="weather",
+    ...
+    handler=_handle_weather,
+)
+```
+
+Use a named function instead of a lambda when the arg unpacking is complex.
+
+### Agent-loop intercepted tools
+
+Some tools (todo, memory, session_search, delegate_task) need access to per-session agent state (TodoStore, MemoryStore, etc.) that doesn't flow through `handle_function_call`. These are intercepted by `run_agent.py` before reaching the registry. The registry still holds their schemas (so they appear in the tool list), but `dispatch()` returns a fallback error if the intercept is bypassed. See `todo_tool.py` for the pattern.
+
+### Optional: setup wizard integration
+
+If your tool requires an API key, add it to `hermes_cli/config.py`'s `OPTIONAL_ENV_VARS` dict so the setup wizard can prompt for it:
+
+```python
+OPTIONAL_ENV_VARS = {
+    ...
+    "WEATHER_API_KEY": {
+        "description": "Weather API key for weather lookup",
+        "prompt": "Weather API key",
+        "url": "https://weatherapi.com/",
+        "tools": ["weather"],
+        "password": True,
+    },
+}
+```
+
+### Optional: batch processing
+
+Add to `toolset_distributions.py` if the tool should be available in specific batch processing distributions.
 
 ## Stateful Tools
 

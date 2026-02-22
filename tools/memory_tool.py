@@ -374,14 +374,24 @@ def check_memory_requirements() -> bool:
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Manage persistent memory (visible in system prompt). Targets: "
-        "'memory' (your notes) or 'user' (user profile).\n"
-        "Actions: add, replace, remove. For replace/remove, old_text "
-        "is a short unique snippet to identify the entry.\n"
-        "Usage indicator in system prompt shows capacity. When >80%, "
-        "consolidate/replace before adding. Prefer replacing over removing.\n"
-        "Write: non-obvious facts, user preferences, tool quirks. "
-        "Skip: trivial info, things in skills, re-discoverable content."
+        "Save important information to persistent memory that survives across sessions. "
+        "Your memory appears in your system prompt at session start -- it's how you "
+        "remember things about the user and your environment between conversations.\n\n"
+        "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
+        "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
+        "- You discover something about the environment (OS, installed tools, project structure)\n"
+        "- User corrects you or says 'remember this' / 'don't do that again'\n"
+        "- You learn a convention, API quirk, or workflow specific to this user's setup\n"
+        "- You completed something - log it like a diary entry\n"
+        "- After completing a complex task, save a brief note about what was done\n\n"
+        "- If you've discovered a new way to do something, solved a problem that could be necessary later, save it as a skill with the skill tool\n\n"
+        "TWO TARGETS:\n"
+        "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
+        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
+        "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
+        "remove (delete -- old_text identifies it).\n"
+        "Capacity shown in system prompt. When >80%, consolidate entries before adding new ones.\n\n"
+        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps."
     ),
     "parameters": {
         "type": "object",

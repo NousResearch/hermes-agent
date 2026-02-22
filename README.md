@@ -250,15 +250,15 @@ Pairing codes expire after 1 hour, are rate-limited, and use cryptographic rando
 
 ### Security (Important!)
 
-**Without an allowlist, anyone who finds your bot can use it!**
+**By default, the gateway denies all users who are not in an allowlist or paired via DM.** This is the safe default for a bot with terminal access.
 
 ```bash
 # Restrict to specific users (recommended):
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
 
-# Or allow all users in a specific platform:
-# (Leave the variable unset - NOT recommended for bots with terminal access)
+# Or explicitly allow all users (NOT recommended for bots with terminal access):
+GATEWAY_ALLOW_ALL_USERS=true
 ```
 
 ### Working Directory
@@ -1346,6 +1346,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
 | `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
+| `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |
 
 **Agent Behavior:**
 | Variable | Description |

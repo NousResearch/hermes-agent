@@ -100,6 +100,36 @@ from toolsets import resolve_toolset, validate_toolset
 
 
 # =============================================================================
+# Async Bridging
+# =============================================================================
+
+def _run_async(coro):
+    """Run an async coroutine from a sync context.
+
+    If the current thread already has a running event loop (e.g., inside
+    the gateway's async stack or Atropos's event loop), we spin up a
+    disposable thread so asyncio.run() can create its own loop without
+    conflicting.
+
+    This is the single source of truth for sync->async bridging in tool
+    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
+    outer thread-pool wrapping as defense-in-depth, but each handler is
+    self-protecting via this function.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result(timeout=300)
+    return asyncio.run(coro)
+
+
+# =============================================================================
 # Tool Availability Checking
 # =============================================================================
 
@@ -1515,21 +1545,8 @@ def handle_web_function_call(function_name: str, function_args: Dict[str, Any]) 
     
     elif function_name == "web_extract":
         urls = function_args.get("urls", [])
-        # Limit URLs to prevent abuse
         urls = urls[:5] if isinstance(urls, list) else []
-        # Run async function -- use existing loop if available (Atropos),
-        # otherwise create one (normal CLI)
-        try:
-            loop = asyncio.get_running_loop()
-            # Already in an async context (Atropos) -- run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(
-                    lambda: asyncio.run(web_extract_tool(urls, "markdown"))
-                ).result(timeout=120)
-        except RuntimeError:
-            # No running loop (normal CLI) -- use asyncio.run directly
-            return asyncio.run(web_extract_tool(urls, "markdown"))
+        return _run_async(web_extract_tool(urls, "markdown"))
     
     else:
         return json.dumps({"error": f"Unknown web function: {function_name}"}, ensure_ascii=False)
@@ -1633,8 +1650,7 @@ def handle_vision_function_call(function_name: str, function_args: Dict[str, Any
 
         full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
         
-        # Run async function in event loop
-        return asyncio.run(vision_analyze_tool(image_url, full_prompt, "google/gemini-3-flash-preview"))
+        return _run_async(vision_analyze_tool(image_url, full_prompt, "google/gemini-3-flash-preview"))
     
     else:
         return json.dumps({"error": f"Unknown vision function: {function_name}"}, ensure_ascii=False)
@@ -1657,8 +1673,7 @@ def handle_moa_function_call(function_name: str, function_args: Dict[str, Any]) 
         if not user_prompt:
             return json.dumps({"error": "user_prompt is required for MoA processing"}, ensure_ascii=False)
         
-        # Run async function in event loop
-        return asyncio.run(mixture_of_agents_tool(user_prompt=user_prompt))
+        return _run_async(mixture_of_agents_tool(user_prompt=user_prompt))
     
     else:
         return json.dumps({"error": f"Unknown MoA function: {function_name}"}, ensure_ascii=False)
@@ -1683,38 +1698,15 @@ def handle_image_function_call(function_name: str, function_args: Dict[str, Any]
         
         aspect_ratio = function_args.get("aspect_ratio", "landscape")
         
-        # Use fixed internal defaults for all other parameters (not exposed to model)
-        num_inference_steps = 50
-        guidance_scale = 4.5
-        num_images = 1
-        output_format = "png"
-        seed = None
-        
-        # Run async function in event loop with proper handling for multiprocessing
-        try:
-            # Try to get existing event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                # If closed, create a new one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            # No event loop in current thread, create one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Run the coroutine in the event loop
-        result = loop.run_until_complete(image_generate_tool(
+        return _run_async(image_generate_tool(
             prompt=prompt,
             aspect_ratio=aspect_ratio,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            num_images=num_images,
-            output_format=output_format,
-            seed=seed
+            num_inference_steps=50,
+            guidance_scale=4.5,
+            num_images=1,
+            output_format="png",
+            seed=None,
         ))
-        
-        return result
     
     else:
         return json.dumps({"error": f"Unknown image generation function: {function_name}"}, ensure_ascii=False)
@@ -1869,65 +1861,31 @@ def handle_rl_function_call(
     Returns:
         str: Function result as JSON string
     """
-    # Run async functions in event loop
-    import asyncio
-    
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    if function_name == "rl_list_environments":
-        return loop.run_until_complete(rl_list_environments())
-    
-    elif function_name == "rl_select_environment":
-        return loop.run_until_complete(
-            rl_select_environment(name=function_args.get("name", ""))
-        )
-    
-    elif function_name == "rl_get_current_config":
-        return loop.run_until_complete(rl_get_current_config())
-    
-    elif function_name == "rl_edit_config":
-        return loop.run_until_complete(
-            rl_edit_config(
-                field=function_args.get("field", ""),
-                value=function_args.get("value")
-            )
-        )
-    
-    elif function_name == "rl_start_training":
-        return loop.run_until_complete(rl_start_training())
-    
-    elif function_name == "rl_check_status":
-        return loop.run_until_complete(
-            rl_check_status(run_id=function_args.get("run_id", ""))
-        )
-    
-    elif function_name == "rl_stop_training":
-        return loop.run_until_complete(
-            rl_stop_training(run_id=function_args.get("run_id", ""))
-        )
-    
-    elif function_name == "rl_get_results":
-        return loop.run_until_complete(
-            rl_get_results(run_id=function_args.get("run_id", ""))
-        )
-    
-    elif function_name == "rl_list_runs":
-        return loop.run_until_complete(rl_list_runs())
-    
-    elif function_name == "rl_test_inference":
-        return loop.run_until_complete(
-            rl_test_inference(
-                num_steps=function_args.get("num_steps", 3),
-                group_size=function_args.get("group_size", 16),
-                models=function_args.get("models"),
-            )
-        )
-    
-    return json.dumps({"error": f"Unknown RL function: {function_name}"}, ensure_ascii=False)
+    rl_dispatch = {
+        "rl_list_environments": lambda: rl_list_environments(),
+        "rl_select_environment": lambda: rl_select_environment(
+            name=function_args.get("name", "")),
+        "rl_get_current_config": lambda: rl_get_current_config(),
+        "rl_edit_config": lambda: rl_edit_config(
+            field=function_args.get("field", ""),
+            value=function_args.get("value")),
+        "rl_start_training": lambda: rl_start_training(),
+        "rl_check_status": lambda: rl_check_status(
+            run_id=function_args.get("run_id", "")),
+        "rl_stop_training": lambda: rl_stop_training(
+            run_id=function_args.get("run_id", "")),
+        "rl_get_results": lambda: rl_get_results(
+            run_id=function_args.get("run_id", "")),
+        "rl_list_runs": lambda: rl_list_runs(),
+        "rl_test_inference": lambda: rl_test_inference(
+            num_steps=function_args.get("num_steps", 3),
+            group_size=function_args.get("group_size", 16),
+            models=function_args.get("models")),
+    }
+    handler = rl_dispatch.get(function_name)
+    if not handler:
+        return json.dumps({"error": f"Unknown RL function: {function_name}"}, ensure_ascii=False)
+    return _run_async(handler())
 
 
 def handle_file_function_call(
@@ -2074,27 +2032,6 @@ def handle_send_message_function_call(function_name, function_args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps({"error": f"Send failed: {e}"})
-
-
-def _run_async(coro):
-    """Run an async coroutine from a sync context.
-
-    If the current thread already has a running event loop (e.g. inside
-    the gateway's async stack), we spin up a disposable thread so
-    asyncio.run() can create its own loop without conflicting.
-    """
-    import asyncio
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=30)
-    return asyncio.run(coro)
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message):

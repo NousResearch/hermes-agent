@@ -57,51 +57,32 @@ import requests
 
 from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 
-# =============================================================================
-# Default Agent Identity & Platform Hints
-# =============================================================================
-
-# The default identity prompt is prepended to every conversation so the agent
-# knows who it is and behaves consistently across platforms.
-DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below."
+# Agent internals extracted to agent/ package for modularity
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS
+from agent.model_metadata import (
+    fetch_model_metadata, get_model_context_length,
+    estimate_tokens_rough, estimate_messages_tokens_rough,
+)
+from agent.context_compressor import ContextCompressor
+from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt
+from agent.display import (
+    KawaiiSpinner, build_tool_preview as _build_tool_preview,
+    get_cute_tool_message as _get_cute_tool_message_impl,
+    KAWAII_SEARCH, KAWAII_READ, KAWAII_TERMINAL, KAWAII_BROWSER,
+    KAWAII_CREATE, KAWAII_SKILL, KAWAII_THINK, KAWAII_GENERIC,
+)
+from agent.trajectory import (
+    convert_scratchpad_to_think, has_incomplete_scratchpad,
+    save_trajectory as _save_trajectory_to_file,
 )
 
-# Platform-specific formatting hints appended to the system prompt.
-# These tell the agent how to format its output for the current interface.
-PLATFORM_HINTS = {
-    "whatsapp": (
-        "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render."
-    ),
-    "telegram": (
-        "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render."
-    ),
-    "discord": (
-        "You are in a Discord server or group chat communicating with your user."
-    ),
-    "cli": (
-        "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
-    ),
-}
-
 # =============================================================================
-# Model Context Management
+# Model Context Management  (extracted to agent/model_metadata.py)
+# The functions below are re-imported above; these stubs maintain the
+# module-level names for any internal references that use the unqualified name.
 # =============================================================================
 
-# Cache for model metadata from OpenRouter
-_model_metadata_cache: Dict[str, Dict[str, Any]] = {}
-_model_metadata_cache_time: float = 0
-_MODEL_CACHE_TTL = 3600  # 1 hour cache TTL
-
-# Default context lengths for common models (fallback if API fails)
 DEFAULT_CONTEXT_LENGTHS = {
     "anthropic/claude-opus-4": 200000,
     "anthropic/claude-opus-4.5": 200000,

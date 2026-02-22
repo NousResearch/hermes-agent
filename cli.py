@@ -1088,6 +1088,11 @@ class HermesCLI:
     
     def reset_conversation(self):
         """Reset the conversation history."""
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
         self.conversation_history = []
         print("(^_^)b Conversation reset!")
     
@@ -1482,6 +1487,12 @@ class HermesCLI:
         elif cmd_lower == "/config":
             self.show_config()
         elif cmd_lower == "/clear":
+            # Flush memories before clearing
+            if self.agent and self.conversation_history:
+                try:
+                    self.agent.flush_memories(self.conversation_history)
+                except Exception:
+                    pass
             # Clear terminal screen using Rich (portable, no shell needed)
             self.console.clear()
             # Reset conversation
@@ -2452,6 +2463,12 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
+            # Flush memories before exit (only for substantial conversations)
+            if self.agent and self.conversation_history:
+                try:
+                    self.agent.flush_memories(self.conversation_history)
+                except Exception:
+                    pass
             # Unregister terminal_tool callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)

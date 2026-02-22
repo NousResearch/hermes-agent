@@ -727,3 +727,88 @@ class ProcessRegistry:
 
 # Module-level singleton
 process_registry = ProcessRegistry()
+
+
+# ---------------------------------------------------------------------------
+# Registry -- the "process" tool schema + handler
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+PROCESS_SCHEMA = {
+    "name": "process",
+    "description": (
+        "Manage background processes started with terminal(background=true). "
+        "Actions: 'list' (show all), 'poll' (check status + new output), "
+        "'log' (full output with pagination), 'wait' (block until done or timeout), "
+        "'kill' (terminate), 'write' (send raw stdin data without newline), "
+        "'submit' (send data + Enter, for answering prompts)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit"],
+                "description": "Action to perform on background processes"
+            },
+            "session_id": {
+                "type": "string",
+                "description": "Process session ID (from terminal background output). Required for all actions except 'list'."
+            },
+            "data": {
+                "type": "string",
+                "description": "Text to send to process stdin (for 'write' and 'submit' actions)"
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Max seconds to block for 'wait' action. Returns partial output on timeout.",
+                "minimum": 1
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Line offset for 'log' action (default: last 200 lines)"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max lines to return for 'log' action",
+                "minimum": 1
+            }
+        },
+        "required": ["action"]
+    }
+}
+
+
+def _handle_process(args, **kw):
+    import json as _json
+    task_id = kw.get("task_id")
+    action = args.get("action", "")
+    session_id = args.get("session_id", "")
+
+    if action == "list":
+        return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
+    elif action in ("poll", "log", "wait", "kill", "write", "submit"):
+        if not session_id:
+            return _json.dumps({"error": f"session_id is required for {action}"}, ensure_ascii=False)
+        if action == "poll":
+            return _json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+        elif action == "log":
+            return _json.dumps(process_registry.read_log(
+                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)), ensure_ascii=False)
+        elif action == "wait":
+            return _json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
+        elif action == "kill":
+            return _json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+        elif action == "write":
+            return _json.dumps(process_registry.write_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+        elif action == "submit":
+            return _json.dumps(process_registry.submit_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+    return _json.dumps({"error": f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit"}, ensure_ascii=False)
+
+
+registry.register(
+    name="process",
+    toolset="terminal",
+    schema=PROCESS_SCHEMA,
+    handler=_handle_process,
+)

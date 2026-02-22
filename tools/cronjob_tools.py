@@ -377,3 +377,39 @@ if __name__ == "__main__":
     print("\nTesting list_cronjobs:")
     result = list_cronjobs()
     print(result)
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="schedule_cronjob",
+    toolset="cronjob",
+    schema=SCHEDULE_CRONJOB_SCHEMA,
+    handler=lambda args, **kw: schedule_cronjob(
+        prompt=args.get("prompt", ""),
+        schedule=args.get("schedule", ""),
+        name=args.get("name"),
+        repeat=args.get("repeat"),
+        deliver=args.get("deliver"),
+        task_id=kw.get("task_id")),
+    check_fn=check_cronjob_requirements,
+)
+registry.register(
+    name="list_cronjobs",
+    toolset="cronjob",
+    schema=LIST_CRONJOBS_SCHEMA,
+    handler=lambda args, **kw: list_cronjobs(
+        include_disabled=args.get("include_disabled", False),
+        task_id=kw.get("task_id")),
+    check_fn=check_cronjob_requirements,
+)
+registry.register(
+    name="remove_cronjob",
+    toolset="cronjob",
+    schema=REMOVE_CRONJOB_SCHEMA,
+    handler=lambda args, **kw: remove_cronjob(
+        job_id=args.get("job_id", ""),
+        task_id=kw.get("task_id")),
+    check_fn=check_cronjob_requirements,
+)

@@ -581,3 +581,18 @@ EXECUTE_CODE_SCHEMA = {
         "required": ["code"],
     },
 }
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="execute_code",
+    toolset="code_execution",
+    schema=EXECUTE_CODE_SCHEMA,
+    handler=lambda args, **kw: execute_code(
+        code=args.get("code", ""),
+        task_id=kw.get("task_id"),
+        enabled_tools=kw.get("enabled_tools")),
+    check_fn=check_sandbox_requirements,
+)

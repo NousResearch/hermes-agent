@@ -511,3 +511,34 @@ if __name__ == "__main__":
     print("  export MOA_TOOLS_DEBUG=true")
     print("  # Debug logs capture all MoA processing steps and metrics")
     print("  # Logs saved to: ./logs/moa_tools_debug_UUID.json")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+MOA_SCHEMA = {
+    "name": "mixture_of_agents",
+    "description": "Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls (4 reference models + 1 aggregator) with maximum reasoning effort — use sparingly for genuinely difficult problems. Best for: complex math, advanced algorithms, multi-step analytical reasoning, problems benefiting from diverse perspectives.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "user_prompt": {
+                "type": "string",
+                "description": "The complex query or problem to solve using multiple AI models. Should be a challenging problem that benefits from diverse perspectives and collaborative reasoning."
+            }
+        },
+        "required": ["user_prompt"]
+    }
+}
+
+registry.register(
+    name="mixture_of_agents",
+    toolset="moa",
+    schema=MOA_SCHEMA,
+    handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
+    check_fn=check_moa_requirements,
+    requires_env=["OPENROUTER_API_KEY"],
+    is_async=True,
+)

@@ -542,3 +542,23 @@ SKILL_MANAGE_SCHEMA = {
         "required": ["action", "name"],
     },
 }
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="skill_manage",
+    toolset="skills",
+    schema=SKILL_MANAGE_SCHEMA,
+    handler=lambda args, **kw: skill_manage(
+        action=args.get("action", ""),
+        name=args.get("name", ""),
+        content=args.get("content"),
+        category=args.get("category"),
+        file_path=args.get("file_path"),
+        file_content=args.get("file_content"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False)),
+)

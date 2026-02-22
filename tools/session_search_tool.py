@@ -301,3 +301,20 @@ SESSION_SEARCH_SCHEMA = {
         "required": ["query"],
     },
 }
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="session_search",
+    toolset="session_search",
+    schema=SESSION_SEARCH_SCHEMA,
+    handler=lambda args, **kw: session_search(
+        query=args.get("query", ""),
+        role_filter=args.get("role_filter"),
+        limit=args.get("limit", 3),
+        db=kw.get("db")),
+    check_fn=check_session_search_requirements,
+    requires_env=["OPENROUTER_API_KEY"],
+)

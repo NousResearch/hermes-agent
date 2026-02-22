@@ -424,3 +424,46 @@ if __name__ == "__main__":
     print("  export VISION_TOOLS_DEBUG=true")
     print("  # Debug logs capture all vision analysis calls and results")
     print("  # Logs saved to: ./logs/vision_tools_debug_UUID.json")
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+VISION_ANALYZE_SCHEMA = {
+    "name": "vision_analyze",
+    "description": "Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_url": {
+                "type": "string",
+                "description": "Image URL (http/https) or local file path to analyze."
+            },
+            "question": {
+                "type": "string",
+                "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question."
+            }
+        },
+        "required": ["image_url", "question"]
+    }
+}
+
+
+def _handle_vision_analyze(args, **kw):
+    image_url = args.get("image_url", "")
+    question = args.get("question", "")
+    full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
+    return vision_analyze_tool(image_url, full_prompt, "google/gemini-3-flash-preview")
+
+
+registry.register(
+    name="vision_analyze",
+    toolset="vision",
+    schema=VISION_ANALYZE_SCHEMA,
+    handler=_handle_vision_analyze,
+    check_fn=check_vision_requirements,
+    requires_env=["OPENROUTER_API_KEY"],
+    is_async=True,
+)

@@ -184,3 +184,113 @@ FILE_TOOLS = [
 def get_file_tools():
     """Get the list of file tool definitions."""
     return FILE_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Schemas + Registry
+# ---------------------------------------------------------------------------
+from tools.registry import registry
+
+
+def _check_file_reqs():
+    """Lazy wrapper to avoid circular import with tools/__init__.py."""
+    from tools import check_file_requirements
+    return check_file_requirements()
+
+READ_FILE_SCHEMA = {
+    "name": "read_file",
+    "description": "Read a file with line numbers and pagination. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Images (png/jpg/gif/webp) returned as base64. Use offset and limit for large files.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+        },
+        "required": ["path"]
+    }
+}
+
+WRITE_FILE_SCHEMA = {
+    "name": "write_file",
+    "description": "Write content to a file, completely replacing existing content. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+            "content": {"type": "string", "description": "Complete content to write to the file"}
+        },
+        "required": ["path", "content"]
+    }
+}
+
+PATCH_SCHEMA = {
+    "name": "patch",
+    "description": "Targeted find-and-replace edits in files. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
+            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
+            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
+            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
+            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
+            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+        },
+        "required": ["mode"]
+    }
+}
+
+SEARCH_FILES_SCHEMA = {
+    "name": "search_files",
+    "description": "Search file contents or find files by name. Ripgrep-backed, faster than grep/rg/find in the terminal.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Results sorted by modification time.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
+            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
+            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
+            "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
+            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
+            "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
+            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+        },
+        "required": ["pattern"]
+    }
+}
+
+
+def _handle_read_file(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+
+
+def _handle_write_file(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
+
+
+def _handle_patch(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return patch_tool(
+        mode=args.get("mode", "replace"), path=args.get("path"),
+        old_string=args.get("old_string"), new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+
+
+def _handle_search_files(args, **kw):
+    tid = kw.get("task_id") or "default"
+    target_map = {"grep": "content", "find": "files"}
+    raw_target = args.get("target", "content")
+    target = target_map.get(raw_target, raw_target)
+    return search_tool(
+        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+
+
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs)
+registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs)
+registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs)
+registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs)

@@ -410,8 +410,21 @@ MEMORY_SCHEMA = {
 }
 
 
+# --- Registry ---
+from tools.registry import registry
 
-
+registry.register(
+    name="memory",
+    toolset="memory",
+    schema=MEMORY_SCHEMA,
+    handler=lambda args, **kw: memory_tool(
+        action=args.get("action", ""),
+        target=args.get("target", "memory"),
+        content=args.get("content"),
+        old_text=args.get("old_text"),
+        store=kw.get("store")),
+    check_fn=check_memory_requirements,
+)
 
 
 

@@ -421,3 +421,22 @@ DELEGATE_TASK_SCHEMA = {
         "required": [],
     },
 }
+
+
+# --- Registry ---
+from tools.registry import registry
+
+registry.register(
+    name="delegate_task",
+    toolset="delegation",
+    schema=DELEGATE_TASK_SCHEMA,
+    handler=lambda args, **kw: delegate_task(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        toolsets=args.get("toolsets"),
+        tasks=args.get("tasks"),
+        model=args.get("model"),
+        max_iterations=args.get("max_iterations"),
+        parent_agent=kw.get("parent_agent")),
+    check_fn=check_delegate_requirements,
+)

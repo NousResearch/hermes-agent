@@ -8,11 +8,17 @@ Routes messages to the appropriate destination based on:
 - Local (always saved to files)
 """
 
+import logging
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
+
+logger = logging.getLogger(__name__)
+
+MAX_PLATFORM_OUTPUT = 4000
+TRUNCATED_VISIBLE = 3800
 
 from .config import Platform, GatewayConfig
 from .session import SessionSource
@@ -245,6 +251,15 @@ class DeliveryRouter:
             "timestamp": timestamp
         }
     
+    def _save_full_output(self, content: str, job_id: str) -> Path:
+        """Save full cron output to disk and return the file path."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path.home() / ".hermes" / "cron" / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{job_id}_{timestamp}.txt"
+        path.write_text(content)
+        return path
+
     async def _deliver_to_platform(
         self,
         target: DeliveryTarget,
@@ -260,8 +275,16 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Call the adapter's send method
-        # Adapters should implement: async def send(chat_id: str, content: str) -> Dict
+        # Guard: truncate oversized cron output to stay within platform limits
+        if len(content) > MAX_PLATFORM_OUTPUT:
+            job_id = (metadata or {}).get("job_id", "unknown")
+            saved_path = self._save_full_output(content, job_id)
+            logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
+            content = (
+                content[:TRUNCATED_VISIBLE]
+                + f"\n\n... [truncated, full output saved to {saved_path}]"
+            )
+        
         return await adapter.send(target.chat_id, content, metadata=metadata)
 
 

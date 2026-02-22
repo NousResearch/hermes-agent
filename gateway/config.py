@@ -8,12 +8,15 @@ Handles loading and validating configuration for:
 - Delivery preferences
 """
 
+import logging
 import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class Platform(Enum):
@@ -264,6 +267,40 @@ def load_gateway_config() -> GatewayConfig:
     # Override with environment variables
     _apply_env_overrides(config)
     
+    # --- Validate loaded values ---
+    policy = config.default_reset_policy
+
+    if not (0 <= policy.at_hour <= 23):
+        logger.warning(
+            "Invalid at_hour=%s (must be 0-23). Using default 4.", policy.at_hour
+        )
+        policy.at_hour = 4
+
+    if policy.idle_minutes is None or policy.idle_minutes <= 0:
+        logger.warning(
+            "Invalid idle_minutes=%s (must be positive). Using default 1440.",
+            policy.idle_minutes,
+        )
+        policy.idle_minutes = 1440
+
+    # Warn about empty bot tokens — platforms that loaded an empty string
+    # won't connect and the cause can be confusing without a log line.
+    _token_env_names = {
+        Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+        Platform.DISCORD: "DISCORD_BOT_TOKEN",
+        Platform.SLACK: "SLACK_BOT_TOKEN",
+    }
+    for platform, pconfig in config.platforms.items():
+        if not pconfig.enabled:
+            continue
+        env_name = _token_env_names.get(platform)
+        if env_name and pconfig.token is not None and not pconfig.token.strip():
+            logger.warning(
+                "%s is enabled but %s is empty. "
+                "The adapter will likely fail to connect.",
+                platform.value, env_name,
+            )
+
     return config
 
 

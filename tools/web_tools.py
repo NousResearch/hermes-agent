@@ -47,7 +47,8 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
-from tools.openrouter_client import get_async_client as _get_openrouter_client
+from openai import AsyncOpenAI
+from agent.auxiliary_client import get_text_auxiliary_client
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -64,8 +65,16 @@ def _get_firecrawl_client():
         _firecrawl_client = Firecrawl(api_key=api_key)
     return _firecrawl_client
 
-DEFAULT_SUMMARIZER_MODEL = "google/gemini-3-flash-preview"
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
+
+# Resolve auxiliary text client at module level; build an async wrapper.
+_aux_sync_client, DEFAULT_SUMMARIZER_MODEL = get_text_auxiliary_client()
+_aux_async_client: AsyncOpenAI | None = None
+if _aux_sync_client is not None:
+    _aux_async_client = AsyncOpenAI(
+        api_key=_aux_sync_client.api_key,
+        base_url=str(_aux_sync_client.base_url),
+    )
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
@@ -223,7 +232,10 @@ Create a markdown summary that captures all key information in a well-organized,
 
     for attempt in range(max_retries):
         try:
-            response = await _get_openrouter_client().chat.completions.create(
+            if _aux_async_client is None:
+                logger.warning("No auxiliary model available for web content processing")
+                return None
+            response = await _aux_async_client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -231,12 +243,6 @@ Create a markdown summary that captures all key information in a well-organized,
                 ],
                 temperature=0.1,
                 max_tokens=max_tokens,
-                extra_body={
-                    "reasoning": {
-                        "enabled": True,
-                        "effort": "xhigh"
-                    }
-                }
             )
             return response.choices[0].message.content.strip()
         except Exception as api_error:
@@ -342,7 +348,14 @@ Synthesize these into ONE cohesive, comprehensive summary that:
 Create a single, unified markdown summary."""
 
     try:
-        response = await _get_openrouter_client().chat.completions.create(
+        if _aux_async_client is None:
+            logger.warning("No auxiliary model for synthesis, concatenating summaries")
+            fallback = "\n\n".join(summaries)
+            if len(fallback) > max_output_size:
+                fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
+            return fallback
+
+        response = await _aux_async_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
@@ -350,12 +363,6 @@ Create a single, unified markdown summary."""
             ],
             temperature=0.1,
             max_tokens=4000,
-            extra_body={
-                "reasoning": {
-                    "enabled": True,
-                    "effort": "xhigh"
-                }
-            }
         )
         final_summary = response.choices[0].message.content.strip()
         
@@ -677,8 +684,8 @@ async def web_extract_tool(
         debug_call_data["pages_extracted"] = pages_extracted
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Process each result with LLM if enabled
-        if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
+        # Process each result with LLM if enabled and auxiliary client is available
+        if use_llm_processing and _aux_async_client is not None:
             logger.info("Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
@@ -744,8 +751,8 @@ async def web_extract_tool(
                 else:
                     logger.warning("%s (no content to process)", url)
         else:
-            if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
-                logger.warning("LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
+            if use_llm_processing and _aux_async_client is None:
+                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of extracted pages for debugging (original behavior)
@@ -973,8 +980,8 @@ async def web_crawl_tool(
         debug_call_data["pages_crawled"] = pages_crawled
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Process each result with LLM if enabled
-        if use_llm_processing and os.getenv("OPENROUTER_API_KEY"):
+        # Process each result with LLM if enabled and auxiliary client is available
+        if use_llm_processing and _aux_async_client is not None:
             logger.info("Processing crawled content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
@@ -1040,8 +1047,8 @@ async def web_crawl_tool(
                 else:
                     logger.warning("%s (no content to process)", page_url)
         else:
-            if use_llm_processing and not os.getenv("OPENROUTER_API_KEY"):
-                logger.warning("LLM processing requested but OPENROUTER_API_KEY not set, returning raw content")
+            if use_llm_processing and _aux_async_client is None:
+                logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
             
             # Print summary of crawled pages for debugging (original behavior)
@@ -1096,14 +1103,9 @@ def check_firecrawl_api_key() -> bool:
     return bool(os.getenv("FIRECRAWL_API_KEY"))
 
 
-def check_nous_api_key() -> bool:
-    """
-    Check if the Nous Research API key is available in environment variables.
-    
-    Returns:
-        bool: True if API key is set, False otherwise
-    """
-    return bool(os.getenv("OPENROUTER_API_KEY"))
+def check_auxiliary_model() -> bool:
+    """Check if an auxiliary text model is available for LLM content processing."""
+    return _aux_async_client is not None
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -1120,7 +1122,7 @@ if __name__ == "__main__":
     
     # Check if API keys are available
     firecrawl_available = check_firecrawl_api_key()
-    nous_available = check_nous_api_key()
+    nous_available = check_auxiliary_model()
     
     if not firecrawl_available:
         print("❌ FIRECRAWL_API_KEY environment variable not set")
@@ -1130,12 +1132,11 @@ if __name__ == "__main__":
         print("✅ Firecrawl API key found")
     
     if not nous_available:
-        print("❌ OPENROUTER_API_KEY environment variable not set")
-        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")  
-        print("Get API key at: https://inference-api.nousresearch.com/")
-        print("⚠️  Without Nous API key, LLM content processing will be disabled")
+        print("❌ No auxiliary model available for LLM content processing")
+        print("Set OPENROUTER_API_KEY, configure Nous Portal, or set OPENAI_BASE_URL + OPENAI_API_KEY")
+        print("⚠️  Without an auxiliary model, LLM content processing will be disabled")
     else:
-        print("✅ Nous Research API key found")
+        print(f"✅ Auxiliary model available: {DEFAULT_SUMMARIZER_MODEL}")
     
     if not firecrawl_available:
         exit(1)
@@ -1143,7 +1144,7 @@ if __name__ == "__main__":
     print("🛠️  Web tools ready for use!")
     
     if nous_available:
-        print("🧠 LLM content processing available with Gemini 3 Flash Preview via OpenRouter")
+        print(f"🧠 LLM content processing available with {DEFAULT_SUMMARIZER_MODEL}")
         print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
     
     # Show debug mode status

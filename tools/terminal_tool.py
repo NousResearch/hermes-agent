@@ -359,7 +359,6 @@ Do NOT use vim/nano/interactive tools without pty=true — they hang without a p
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
-_task_workdirs: Dict[str, str] = {}  # Maps task_id to working directory
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
@@ -530,7 +529,6 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             if current_time - last_time > lifetime_seconds:
                 env = _active_environments.pop(task_id, None)
                 _last_activity.pop(task_id, None)
-                _task_workdirs.pop(task_id, None)
                 if env is not None:
                     envs_to_stop.append((task_id, env))
 
@@ -609,7 +607,7 @@ def get_active_environments_info() -> Dict[str, Any]:
     info = {
         "count": len(_active_environments),
         "task_ids": list(_active_environments.keys()),
-        "workdirs": dict(_task_workdirs),
+        "workdirs": {},
     }
     
     # Calculate total disk usage
@@ -632,7 +630,7 @@ def get_active_environments_info() -> Dict[str, Any]:
 
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
-    global _active_environments, _last_activity, _task_workdirs
+    global _active_environments, _last_activity
     
     task_ids = list(_active_environments.keys())
     cleaned = 0
@@ -661,7 +659,7 @@ def cleanup_all_environments():
 
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
-    global _active_environments, _last_activity, _task_workdirs
+    global _active_environments, _last_activity
 
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
@@ -669,7 +667,6 @@ def cleanup_vm(task_id: str):
     env = None
     with _env_lock:
         env = _active_environments.pop(task_id, None)
-        _task_workdirs.pop(task_id, None)
         _last_activity.pop(task_id, None)
 
     # Clean up per-task creation lock
@@ -782,17 +779,6 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
-        # For local environment in batch mode, create a unique subdirectory per task
-        # This prevents parallel tasks from overwriting each other's files
-        # In CLI mode (HERMES_QUIET), use the cwd directly without subdirectories
-        if env_type == "local" and not os.getenv("HERMES_QUIET"):
-            with _env_lock:
-                if effective_task_id not in _task_workdirs:
-                    task_workdir = Path(cwd) / f"hermes-{effective_task_id}-{uuid.uuid4().hex[:8]}"
-                    task_workdir.mkdir(parents=True, exist_ok=True)
-                    _task_workdirs[effective_task_id] = str(task_workdir)
-                cwd = _task_workdirs[effective_task_id]
-
         # Start cleanup thread
         _start_cleanup_thread()
 
@@ -874,11 +860,16 @@ def terminal_tool(
                         "description": approval.get("description", "dangerous command"),
                         "pattern_key": approval.get("pattern_key", ""),
                     }, ensure_ascii=False)
-                # Command was blocked - return informative message
+                # Command was blocked - include the pattern category so the caller knows why
+                desc = approval.get("description", "potentially dangerous operation")
+                fallback_msg = (
+                    f"Command denied: matches '{desc}' pattern. "
+                    "Use the approval prompt to allow it, or rephrase the command."
+                )
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": approval.get("message", "Command denied - potentially dangerous operation"),
+                    "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
 
@@ -996,11 +987,17 @@ def terminal_tool(
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
             
-            # Truncate output if too long
+            # Truncate output if too long, keeping both head and tail
             MAX_OUTPUT_CHARS = 50000
             if len(output) > MAX_OUTPUT_CHARS:
-                truncated_notice = f"\n\n... [OUTPUT TRUNCATED - showing last {MAX_OUTPUT_CHARS} chars of {len(output)} total] ..."
-                output = truncated_notice + output[-MAX_OUTPUT_CHARS:]
+                head_chars = int(MAX_OUTPUT_CHARS * 0.4)  # 40% head (error messages often appear early)
+                tail_chars = MAX_OUTPUT_CHARS - head_chars  # 60% tail (most recent/relevant output)
+                omitted = len(output) - head_chars - tail_chars
+                truncated_notice = (
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
+                    f"out of {len(output)} total] ...\n\n"
+                )
+                output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
             return json.dumps({
                 "output": output.strip() if output else "",

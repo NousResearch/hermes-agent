@@ -36,13 +36,20 @@ import base64
 from pathlib import Path
 from typing import Dict, Any, Optional
 import httpx
-from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
+from openai import AsyncOpenAI
+from agent.auxiliary_client import get_vision_auxiliary_client
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
-# Configuration for vision processing
-DEFAULT_VISION_MODEL = "google/gemini-3-flash-preview"
+# Resolve vision auxiliary client at module level; build an async wrapper.
+_aux_sync_client, DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
+_aux_async_client: AsyncOpenAI | None = None
+if _aux_sync_client is not None:
+    _aux_async_client = AsyncOpenAI(
+        api_key=_aux_sync_client.api_key,
+        base_url=str(_aux_sync_client.base_url),
+    )
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
@@ -230,9 +237,13 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         
-        # Check API key availability
-        if not os.getenv("OPENROUTER_API_KEY"):
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        # Check auxiliary vision client availability
+        if _aux_async_client is None or DEFAULT_VISION_MODEL is None:
+            return json.dumps({
+                "success": False,
+                "analysis": "Vision analysis unavailable: no auxiliary vision model configured. "
+                            "Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools."
+            }, indent=2, ensure_ascii=False)
         
         # Determine if this is a local file path or a remote URL
         local_path = Path(image_url)
@@ -291,18 +302,12 @@ async def vision_analyze_tool(
         
         logger.info("Processing image with %s...", model)
         
-        # Call the vision API with reasoning enabled
-        response = await _get_openrouter_client().chat.completions.create(
+        # Call the vision API
+        response = await _aux_async_client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=0.1,  # Low temperature for consistent analysis
-            max_tokens=2000,  # Generous limit for detailed analysis
-            extra_body={
-                "reasoning": {
-                    "enabled": True,
-                    "effort": "xhigh"
-                }
-            }
+            temperature=0.1,
+            max_tokens=2000,
         )
         
         # Extract the analysis
@@ -353,13 +358,8 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """
-    Check if all requirements for vision tools are met.
-    
-    Returns:
-        bool: True if requirements are met, False otherwise
-    """
-    return check_openrouter_api_key()
+    """Check if an auxiliary vision model is available."""
+    return _aux_async_client is not None
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -379,16 +379,15 @@ if __name__ == "__main__":
     print("👁️ Vision Tools Module")
     print("=" * 40)
     
-    # Check if API key is available
-    api_available = check_openrouter_api_key()
+    # Check if vision model is available
+    api_available = check_vision_requirements()
     
     if not api_available:
-        print("❌ OPENROUTER_API_KEY environment variable not set")
-        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
-        print("Get API key at: https://openrouter.ai/")
+        print("❌ No auxiliary vision model available")
+        print("Set OPENROUTER_API_KEY or configure Nous Portal to enable vision tools.")
         exit(1)
     else:
-        print("✅ OpenRouter API key found")
+        print(f"✅ Vision model available: {DEFAULT_VISION_MODEL}")
     
     print("🛠️ Vision tools ready for use!")
     print(f"🧠 Using model: {DEFAULT_VISION_MODEL}")
@@ -455,7 +454,8 @@ def _handle_vision_analyze(args, **kw):
     image_url = args.get("image_url", "")
     question = args.get("question", "")
     full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
-    return vision_analyze_tool(image_url, full_prompt, "google/gemini-3-flash-preview")
+    model = DEFAULT_VISION_MODEL or "google/gemini-3-flash-preview"
+    return vision_analyze_tool(image_url, full_prompt, model)
 
 
 registry.register(
@@ -464,6 +464,5 @@ registry.register(
     schema=VISION_ANALYZE_SCHEMA,
     handler=_handle_vision_analyze,
     check_fn=check_vision_requirements,
-    requires_env=["OPENROUTER_API_KEY"],
     is_async=True,
 )

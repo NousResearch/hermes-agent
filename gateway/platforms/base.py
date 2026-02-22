@@ -659,34 +659,90 @@ class BasePlatformAdapter(ABC):
     
     def truncate_message(self, content: str, max_length: int = 4096) -> List[str]:
         """
-        Split a long message into chunks.
-        
+        Split a long message into chunks, preserving code block boundaries.
+
+        When a split falls inside a triple-backtick code block, the fence is
+        closed at the end of the current chunk and reopened (with the original
+        language tag) at the start of the next chunk.  Multi-chunk responses
+        receive indicators like ``(1/3)``.
+
         Args:
             content: The full message content
             max_length: Maximum length per chunk (platform-specific)
-        
+
         Returns:
             List of message chunks
         """
         if len(content) <= max_length:
             return [content]
-        
-        chunks = []
-        while content:
-            if len(content) <= max_length:
-                chunks.append(content)
+
+        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
+        FENCE_CLOSE = "\n```"
+
+        chunks: List[str] = []
+        remaining = content
+        # When the previous chunk ended mid-code-block, this holds the
+        # language tag (possibly "") so we can reopen the fence.
+        carry_lang: Optional[str] = None
+
+        while remaining:
+            # If we're continuing a code block from the previous chunk,
+            # prepend a new opening fence with the same language tag.
+            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+
+            # How much body text we can fit after accounting for the prefix,
+            # a potential closing fence, and the chunk indicator.
+            headroom = max_length - INDICATOR_RESERVE - len(prefix) - len(FENCE_CLOSE)
+            if headroom < 1:
+                headroom = max_length // 2
+
+            # Everything remaining fits in one final chunk
+            if len(prefix) + len(remaining) <= max_length - INDICATOR_RESERVE:
+                chunks.append(prefix + remaining)
                 break
-            
-            # Try to split at a newline
-            split_idx = content.rfind("\n", 0, max_length)
-            if split_idx == -1:
-                # No newline, split at space
-                split_idx = content.rfind(" ", 0, max_length)
-            if split_idx == -1:
-                # No space either, hard split
-                split_idx = max_length
-            
-            chunks.append(content[:split_idx])
-            content = content[split_idx:].lstrip()
-        
+
+            # Find a natural split point (prefer newlines, then spaces)
+            region = remaining[:headroom]
+            split_at = region.rfind("\n")
+            if split_at < headroom // 2:
+                split_at = region.rfind(" ")
+            if split_at < 1:
+                split_at = headroom
+
+            chunk_body = remaining[:split_at]
+            remaining = remaining[split_at:].lstrip()
+
+            full_chunk = prefix + chunk_body
+
+            # Walk the chunk line-by-line to determine whether we end
+            # inside an open code block.
+            in_code = carry_lang is not None
+            lang = carry_lang or ""
+            for line in full_chunk.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    if in_code:
+                        in_code = False
+                        lang = ""
+                    else:
+                        in_code = True
+                        tag = stripped[3:].strip()
+                        lang = tag.split()[0] if tag else ""
+
+            if in_code:
+                # Close the orphaned fence so the chunk is valid on its own
+                full_chunk += FENCE_CLOSE
+                carry_lang = lang
+            else:
+                carry_lang = None
+
+            chunks.append(full_chunk)
+
+        # Append chunk indicators when the response spans multiple messages
+        if len(chunks) > 1:
+            total = len(chunks)
+            chunks = [
+                f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(chunks)
+            ]
+
         return chunks

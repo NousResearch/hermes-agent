@@ -9,13 +9,11 @@ import logging
 import os
 from typing import Any, Dict, List
 
-from openai import OpenAI
-
+from agent.auxiliary_client import get_text_auxiliary_client
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
-from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +29,6 @@ class ContextCompressor:
         self,
         model: str,
         threshold_percent: float = 0.85,
-        summary_model: str = "google/gemini-3-flash-preview",
         protect_first_n: int = 3,
         protect_last_n: int = 4,
         summary_target_tokens: int = 500,
@@ -39,7 +36,6 @@ class ContextCompressor:
     ):
         self.model = model
         self.threshold_percent = threshold_percent
-        self.summary_model = summary_model
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
@@ -53,8 +49,7 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        self.client = OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL) if api_key else None
+        self.client, self.summary_model = get_text_auxiliary_client()
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -155,6 +150,26 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if not self.quiet_mode:
             print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
             print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
+
+        # Truncation fallback when no auxiliary model is available
+        if self.client is None:
+            print("⚠️  Context compression: no auxiliary model available. Falling back to message truncation.")
+            # Keep system message(s) at the front and the protected tail;
+            # simply drop the oldest non-system messages until under threshold.
+            kept = []
+            for msg in messages:
+                if msg.get("role") == "system":
+                    kept.append(msg.copy())
+                else:
+                    break
+            tail = messages[-self.protect_last_n:]
+            kept.extend(m.copy() for m in tail)
+            self.compression_count += 1
+            if not self.quiet_mode:
+                print(f"   ✂️  Truncated: {len(messages)} → {len(kept)} messages (dropped middle turns)")
+            return kept
+
+        if not self.quiet_mode:
             print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
 
         summary = self._generate_summary(turns_to_summarize)

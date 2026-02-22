@@ -69,839 +69,11 @@ from agent.prompt_builder import build_skills_system_prompt, build_context_files
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
-    KAWAII_SEARCH, KAWAII_READ, KAWAII_TERMINAL, KAWAII_BROWSER,
-    KAWAII_CREATE, KAWAII_SKILL, KAWAII_THINK, KAWAII_GENERIC,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-
-# Model metadata functions (fetch_model_metadata, get_model_context_length,
-# estimate_tokens_rough, estimate_messages_tokens_rough) are now in
-# agent/model_metadata.py -- imported above.
-
-
-class ContextCompressor:
-    """
-    Compresses conversation context when approaching model's context limit.
-    
-    Uses similar logic to trajectory_compressor but operates in real-time:
-    1. Protects first few turns (system, initial user, first assistant response)
-    2. Protects last N turns (recent context is most relevant)
-    3. Summarizes middle turns when threshold is reached
-    
-    Token tracking uses actual counts from API responses (usage.prompt_tokens)
-    rather than estimates for accuracy.
-    """
-    
-    def __init__(
-        self,
-        model: str,
-        threshold_percent: float = 0.85,
-        summary_model: str = "google/gemini-3-flash-preview",
-        protect_first_n: int = 3,
-        protect_last_n: int = 4,
-        summary_target_tokens: int = 500,
-        quiet_mode: bool = False,
-    ):
-        """
-        Initialize the context compressor.
-        
-        Args:
-            model: The main model being used (to determine context limit)
-            threshold_percent: Trigger compression at this % of context (default 85%)
-            summary_model: Model to use for generating summaries (cheap/fast)
-            protect_first_n: Number of initial turns to always keep
-            protect_last_n: Number of recent turns to always keep
-            summary_target_tokens: Target token count for summaries
-            quiet_mode: Suppress compression notifications
-        """
-        self.model = model
-        self.threshold_percent = threshold_percent
-        self.summary_model = summary_model
-        self.protect_first_n = protect_first_n
-        self.protect_last_n = protect_last_n
-        self.summary_target_tokens = summary_target_tokens
-        self.quiet_mode = quiet_mode
-        
-        self.context_length = get_model_context_length(model)
-        self.threshold_tokens = int(self.context_length * threshold_percent)
-        self.compression_count = 0
-        
-        # Track actual token usage from API responses
-        self.last_prompt_tokens = 0
-        self.last_completion_tokens = 0
-        self.last_total_tokens = 0
-        
-        # Initialize OpenRouter client for summarization
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_BASE_URL
-        ) if api_key else None
-    
-    def update_from_response(self, usage: Dict[str, Any]):
-        """
-        Update tracked token usage from API response.
-        
-        Args:
-            usage: The usage dict from response (contains prompt_tokens, completion_tokens, total_tokens)
-        """
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
-        self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_total_tokens = usage.get("total_tokens", 0)
-    
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """
-        Check if context exceeds the compression threshold.
-        
-        Uses actual token count from API response for accuracy.
-        
-        Args:
-            prompt_tokens: Actual prompt tokens from last API response.
-                          If None, uses last tracked value.
-            
-        Returns:
-            True if compression should be triggered
-        """
-        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        return tokens >= self.threshold_tokens
-    
-    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """
-        Quick pre-flight check using rough estimate (before API call).
-        
-        Use this to avoid making an API call that would fail due to context overflow.
-        For post-response compression decisions, use should_compress() with actual tokens.
-        
-        Args:
-            messages: Current conversation messages
-            
-        Returns:
-            True if compression is likely needed
-        """
-        rough_estimate = estimate_messages_tokens_rough(messages)
-        return rough_estimate >= self.threshold_tokens
-    
-    def get_status(self) -> Dict[str, Any]:
-        """
-        Get current compression status for display/logging.
-        
-        Returns:
-            Dict with token usage and threshold info
-        """
-        return {
-            "last_prompt_tokens": self.last_prompt_tokens,
-            "threshold_tokens": self.threshold_tokens,
-            "context_length": self.context_length,
-            "usage_percent": (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0,
-            "compression_count": self.compression_count,
-        }
-    
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """
-        Generate a concise summary of conversation turns using a fast model.
-        
-        Args:
-            turns_to_summarize: List of message dicts to summarize
-            
-        Returns:
-            Summary string
-        """
-        if not self.client:
-            # Fallback if no API key
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed to save space. The assistant performed various actions and received responses."
-        
-        # Format turns for summarization
-        parts = []
-        for i, msg in enumerate(turns_to_summarize):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            
-            # Truncate very long content
-            if len(content) > 2000:
-                content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
-            
-            # Include tool call info if present
-            tool_calls = msg.get("tool_calls", [])
-            if tool_calls:
-                tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls if isinstance(tc, dict)]
-                content += f"\n[Tool calls: {', '.join(tool_names)}]"
-            
-            parts.append(f"[{role.upper()}]: {content}")
-        
-        content_to_summarize = "\n\n".join(parts)
-        
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
-
-Write from a neutral perspective describing:
-1. What actions were taken (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
-
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content_to_summarize}
----
-
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.summary_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=self.summary_target_tokens * 2,
-                timeout=30.0,
-            )
-            
-            summary = response.choices[0].message.content.strip()
-            if not summary.startswith("[CONTEXT SUMMARY]:"):
-                summary = "[CONTEXT SUMMARY]: " + summary
-            
-            return summary
-            
-        except Exception as e:
-            logging.warning(f"Failed to generate context summary: {e}")
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
-    
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
-        """
-        Compress conversation messages by summarizing middle turns.
-        
-        Algorithm:
-        1. Keep first N turns (system prompt, initial context)
-        2. Keep last N turns (recent/relevant context)
-        3. Summarize everything in between
-        4. Insert summary as a user message
-        
-        Args:
-            messages: Current conversation messages
-            current_tokens: Actual token count from API (for logging). If None, uses estimate.
-            
-        Returns:
-            Compressed message list
-        """
-        n_messages = len(messages)
-        
-        # Not enough messages to compress
-        if n_messages <= self.protect_first_n + self.protect_last_n + 1:
-            if not self.quiet_mode:
-                print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
-            return messages
-        
-        # Determine compression boundaries
-        compress_start = self.protect_first_n
-        compress_end = n_messages - self.protect_last_n
-        
-        # Nothing to compress
-        if compress_start >= compress_end:
-            return messages
-        
-        # Extract turns to summarize
-        turns_to_summarize = messages[compress_start:compress_end]
-        
-        # Use actual token count if provided, otherwise estimate
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
-        
-        if not self.quiet_mode:
-            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
-            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
-        
-        # Generate summary
-        summary = self._generate_summary(turns_to_summarize)
-        
-        # Build compressed messages
-        compressed = []
-        
-        # Keep protected head turns
-        for i in range(compress_start):
-            msg = messages[i].copy()
-            # Add notice to system message on first compression
-            if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
-            compressed.append(msg)
-        
-        # Add summary as user message
-        compressed.append({
-            "role": "user",
-            "content": summary
-        })
-        
-        # Keep protected tail turns
-        for i in range(compress_end, n_messages):
-            compressed.append(messages[i].copy())
-        
-        self.compression_count += 1
-        
-        if not self.quiet_mode:
-            # Estimate new size (actual will be known after next API call)
-            new_estimate = estimate_messages_tokens_rough(compressed)
-            saved_estimate = display_tokens - new_estimate
-            print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
-            print(f"   💡 Compression #{self.compression_count} complete")
-        
-        return compressed
-
-
-# =============================================================================
-# Anthropic Prompt Caching (system_and_3 strategy)
-# =============================================================================
-# Reduces input token costs by ~75% on multi-turn conversations by caching
-# the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
-#   1. System prompt (stable across all turns)
-#   2-4. Last 3 non-system messages (rolling window)
-#
-# Cached tokens are read at 0.1x input price. Cache writes cost 1.25x (5m TTL)
-# or 2x (1h TTL). Only applied to Claude models via OpenRouter.
-
-def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
-    """
-    Add cache_control to a single message, handling all format variations.
-
-    - tool messages: cache_control at message level (Anthropic API quirk)
-    - string content: converted to multipart content array
-    - list content: marker added to last item
-    - None content (assistant with tool_calls): message level
-    """
-    role = msg.get("role", "")
-    content = msg.get("content")
-
-    if role == "tool":
-        msg["cache_control"] = cache_marker
-        return
-
-    if content is None:
-        msg["cache_control"] = cache_marker
-        return
-
-    if isinstance(content, str):
-        msg["content"] = [{"type": "text", "text": content, "cache_control": cache_marker}]
-        return
-
-    if isinstance(content, list) and content:
-        last = content[-1]
-        if isinstance(last, dict):
-            last["cache_control"] = cache_marker
-
-
-def apply_anthropic_cache_control(
-    api_messages: List[Dict[str, Any]],
-    cache_ttl: str = "5m",
-) -> List[Dict[str, Any]]:
-    """
-    Apply system_and_3 caching strategy to messages for Anthropic models.
-
-    Places up to 4 cache_control breakpoints:
-      1. System prompt (index 0, stable across all turns)
-      2-4. Last 3 non-system messages (rolling cache frontier)
-
-    Each breakpoint tells Anthropic "cache everything from the start up to here."
-    Multiple breakpoints create a ladder of cached prefixes at different depths,
-    which provides robust cache hits even when the most recent cache entry hasn't
-    propagated yet.
-
-    Args:
-        api_messages: Fully assembled message list (system prompt first).
-        cache_ttl: "5m" (default, 1.25x write cost) or "1h" (2x write cost).
-
-    Returns:
-        Deep copy of messages with cache_control breakpoints injected.
-    """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
-
-    marker = {"type": "ephemeral"}
-    if cache_ttl == "1h":
-        marker["ttl"] = "1h"
-
-    breakpoints_used = 0
-
-    # Breakpoint 1: System prompt (always stable, gives a guaranteed minimum hit)
-    if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
-        breakpoints_used += 1
-
-    # Breakpoints 2-4: Last 3 non-system messages (rolling window)
-    remaining = 4 - breakpoints_used
-    non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
-    for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
-
-    return messages
-
-
-# =============================================================================
-# Default System Prompt Components
-# =============================================================================
-
-# Skills guidance - embeds a compact skill index in the system prompt so
-# the model can match skills at a glance without extra tool calls.
-def build_skills_system_prompt() -> str:
-    """
-    Build a dynamic skills system prompt by scanning both bundled and user skill directories.
-    
-    Returns a prompt section that lists all skill categories (with descriptions
-    from DESCRIPTION.md) and their skill names inline, so the model can
-    immediately see if a relevant skill exists and load it with a single
-    skill_view(name) call -- no discovery tool calls needed.
-    
-    Returns:
-        str: The skills system prompt section, or empty string if no skills found.
-    """
-    import os
-    from pathlib import Path
-    
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    skills_dir = hermes_home / "skills"
-    
-    if not skills_dir.exists():
-        return ""
-    
-    # Scan for SKILL.md files grouped by category
-    skills_by_category = {}
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        if len(parts) >= 2:
-            category = parts[0]
-            skill_name = parts[-2]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        skills_by_category.setdefault(category, []).append(skill_name)
-    
-    if not skills_by_category:
-        return ""
-    
-    # Load category descriptions from DESCRIPTION.md files
-    category_descriptions = {}
-    for category in skills_by_category:
-        desc_file = skills_dir / category / "DESCRIPTION.md"
-        if desc_file.exists():
-            try:
-                content = desc_file.read_text(encoding="utf-8")
-                match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
-                if match:
-                    category_descriptions[category] = match.group(1).strip()
-            except Exception as e:
-                logger.debug("Could not read skill description %s: %s", desc_file, e)
-    
-    index_lines = []
-    for category in sorted(skills_by_category.keys()):
-        desc = category_descriptions.get(category, "")
-        names = ", ".join(sorted(set(skills_by_category[category])))
-        if desc:
-            index_lines.append(f"  {category}: {desc}")
-        else:
-            index_lines.append(f"  {category}:")
-        index_lines.append(f"    skills: {names}")
-    
-    return (
-        "## Skills (mandatory)\n"
-        "Before replying, scan the skills below. If one clearly matches your task, "
-        "load it with skill_view(name) and follow its instructions. "
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "\n"
-        "<available_skills>\n"
-        + "\n".join(index_lines) + "\n"
-        "</available_skills>\n"
-        "\n"
-        "If none match, proceed normally without loading a skill."
-    )
-
-
-# =============================================================================
-# Context File Injection (SOUL.md, AGENTS.md, .cursorrules)
-# =============================================================================
-
-# Maximum characters per context file before truncation
-CONTEXT_FILE_MAX_CHARS = 20_000
-# Truncation strategy: keep 70% from the head, 20% from the tail
-CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
-CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
-
-
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
-    """
-    Truncate content if it exceeds max_chars using a head/tail strategy.
-    
-    Keeps 70% from the start and 20% from the end, with a truncation
-    marker in the middle so the model knows content was cut.
-    """
-    if len(content) <= max_chars:
-        return content
-    
-    head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
-    tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
-    head = content[:head_chars]
-    tail = content[-tail_chars:]
-    
-    marker = f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. Use file tools to read the full file.]\n\n"
-    return head + marker + tail
-
-
-def build_context_files_prompt(cwd: str = None) -> str:
-    """
-    Discover and load context files (SOUL.md, AGENTS.md, .cursorrules)
-    for injection into the system prompt.
-    
-    Discovery rules:
-    - AGENTS.md: Recursively search from cwd (only if top-level exists).
-                 Each file becomes a ## section with its relative path.
-    - .cursorrules: Check cwd for .cursorrules file and .cursor/rules/*.mdc
-    - SOUL.md: Check cwd first, then ~/.hermes/SOUL.md as global fallback
-    
-    Args:
-        cwd: Working directory to search from. Defaults to os.getcwd().
-    
-    Returns:
-        str: The context files prompt section, or empty string if none found.
-    """
-    import os
-    import glob as glob_mod
-    from pathlib import Path
-    
-    if cwd is None:
-        cwd = os.getcwd()
-    
-    cwd_path = Path(cwd).resolve()
-    sections = []
-    
-    # ----- AGENTS.md (hierarchical, recursive) -----
-    top_level_agents = None
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            top_level_agents = candidate
-            break
-    
-    if top_level_agents:
-        # Recursively find all AGENTS.md files (case-insensitive)
-        agents_files = []
-        for root, dirs, files in os.walk(cwd_path):
-            # Skip hidden directories and common non-project dirs
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
-            for f in files:
-                if f.lower() == "agents.md":
-                    agents_files.append(Path(root) / f)
-        
-        # Sort by path depth (top-level first, then deeper)
-        agents_files.sort(key=lambda p: len(p.parts))
-        
-        total_agents_content = ""
-        for agents_path in agents_files:
-            try:
-                content = agents_path.read_text(encoding="utf-8").strip()
-                if content:
-                    rel_path = agents_path.relative_to(cwd_path)
-                    total_agents_content += f"## {rel_path}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", agents_path, e)
-        
-        if total_agents_content:
-            total_agents_content = _truncate_content(total_agents_content, "AGENTS.md")
-            sections.append(total_agents_content)
-    
-    # ----- .cursorrules -----
-    cursorrules_content = ""
-    
-    # Check for .cursorrules file
-    cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
-        try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
-    
-    # Check for .cursor/rules/*.mdc files
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
-            try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
-    
-    if cursorrules_content:
-        cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
-        sections.append(cursorrules_content)
-    
-    # ----- SOUL.md (cwd first, then ~/.hermes/ fallback) -----
-    soul_content = ""
-    soul_path = None
-    
-    for name in ["SOUL.md", "soul.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            soul_path = candidate
-            break
-    
-    if not soul_path:
-        # Global fallback
-        global_soul = Path.home() / ".hermes" / "SOUL.md"
-        if global_soul.exists():
-            soul_path = global_soul
-    
-    if soul_path:
-        try:
-            content = soul_path.read_text(encoding="utf-8").strip()
-            if content:
-                content = _truncate_content(content, "SOUL.md")
-                soul_content = f"## SOUL.md\n\nIf SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n{content}"
-                sections.append(soul_content)
-        except Exception as e:
-            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-    
-    # ----- Assemble -----
-    if not sections:
-        return ""
-    
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
-
-
-def _build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
-    """
-    Build a short preview of a tool call's primary argument for display.
-    
-    Returns a truncated string showing the most informative argument,
-    or None if no meaningful preview is available.
-    
-    Args:
-        tool_name: Name of the tool being called
-        args: The tool call arguments dict
-        max_len: Maximum preview length before truncation
-    
-    Returns:
-        str or None: Short preview string, or None
-    """
-    # Map tool names to their primary argument key(s)
-    primary_args = {
-        "terminal": "command",
-        "web_search": "query",
-        "web_extract": "urls",
-        "read_file": "path",
-        "write_file": "path",
-        "patch": "path",
-        "search_files": "pattern",
-        "browser_navigate": "url",
-        "browser_click": "ref",
-        "browser_type": "text",
-        "image_generate": "prompt",
-        "text_to_speech": "text",
-        "vision_analyze": "question",
-        "mixture_of_agents": "user_prompt",
-        "skill_view": "name",
-        "skills_list": "category",
-        "schedule_cronjob": "name",
-    }
-    
-    # Special handling for tools with composite previews
-    if tool_name == "process":
-        action = args.get("action", "")
-        session_id = args.get("session_id", "")
-        data = args.get("data", "")
-        timeout = args.get("timeout")
-        parts = [action]
-        if session_id:
-            parts.append(session_id[:16])
-        if data:
-            parts.append(f'"{data[:20]}"')
-        if timeout and action == "wait":
-            parts.append(f"{timeout}s")
-        return " ".join(parts) if parts else None
-    
-    if tool_name == "todo":
-        todos_arg = args.get("todos")
-        merge = args.get("merge", False)
-        if todos_arg is None:
-            return "reading task list"
-        elif merge:
-            return f"updating {len(todos_arg)} task(s)"
-        else:
-            return f"planning {len(todos_arg)} task(s)"
-    
-    if tool_name == "session_search":
-        query = args.get("query", "")
-        return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
-
-    if tool_name == "memory":
-        action = args.get("action", "")
-        target = args.get("target", "")
-        if action == "add":
-            content = args.get("content", "")
-            return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
-        elif action == "replace":
-            return f"~{target}: \"{args.get('old_text', '')[:20]}\""
-        elif action == "remove":
-            return f"-{target}: \"{args.get('old_text', '')[:20]}\""
-        return action
-    
-    if tool_name == "send_message":
-        target = args.get("target", "?")
-        msg = args.get("message", "")
-        if len(msg) > 20:
-            msg = msg[:17] + "..."
-        return f"to {target}: \"{msg}\""
-    
-    if tool_name.startswith("rl_"):
-        rl_previews = {
-            "rl_list_environments": "listing envs",
-            "rl_select_environment": args.get("name", ""),
-            "rl_get_current_config": "reading config",
-            "rl_edit_config": f"{args.get('field', '')}={args.get('value', '')}",
-            "rl_start_training": "starting",
-            "rl_check_status": args.get("run_id", "")[:16],
-            "rl_stop_training": f"stopping {args.get('run_id', '')[:16]}",
-            "rl_get_results": args.get("run_id", "")[:16],
-            "rl_list_runs": "listing runs",
-            "rl_test_inference": f"{args.get('num_steps', 3)} steps",
-        }
-        return rl_previews.get(tool_name)
-
-    key = primary_args.get(tool_name)
-    if not key:
-        # Try common arg names as fallback
-        for fallback_key in ("query", "text", "command", "path", "name", "prompt"):
-            if fallback_key in args:
-                key = fallback_key
-                break
-    
-    if not key or key not in args:
-        return None
-    
-    value = args[key]
-    
-    # Handle list values (e.g., urls)
-    if isinstance(value, list):
-        value = value[0] if value else ""
-    
-    preview = str(value).strip()
-    if not preview:
-        return None
-    
-    # Truncate
-    if len(preview) > max_len:
-        preview = preview[:max_len - 3] + "..."
-    
-    return preview
-
-
-class KawaiiSpinner:
-    """
-    Animated spinner with kawaii faces for CLI feedback during tool execution.
-    Runs in a background thread and can be stopped when the operation completes.
-    
-    Uses stdout with carriage return to animate in place.
-    """
-    
-    # Different spinner animation sets
-    SPINNERS = {
-        'dots': ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-        'bounce': ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
-        'grow': ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
-        'arrows': ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
-        'star': ['✶', '✷', '✸', '✹', '✺', '✹', '✸', '✷'],
-        'moon': ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'],
-        'pulse': ['◜', '◠', '◝', '◞', '◡', '◟'],
-        'brain': ['🧠', '💭', '💡', '✨', '💫', '🌟', '💡', '💭'],
-        'sparkle': ['⁺', '˚', '*', '✧', '✦', '✧', '*', '˚'],
-    }
-    
-    # General waiting faces
-    KAWAII_WAITING = [
-        "(｡◕‿◕｡)", "(◕‿◕✿)", "٩(◕‿◕｡)۶", "(✿◠‿◠)", "( ˘▽˘)っ",
-        "♪(´ε` )", "(◕ᴗ◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "(★ω★)",
-    ]
-    
-    # Thinking-specific faces and messages
-    KAWAII_THINKING = [
-        "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( •_•)>⌐■-■", "(⌐■_■)",
-        "(´･_･`)", "◉_◉", "(°ロ°)", "( ˘⌣˘)♡", "ヽ(>∀<☆)☆",
-        "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
-    ]
-    
-    THINKING_VERBS = [
-        "pondering", "contemplating", "musing", "cogitating", "ruminating",
-        "deliberating", "mulling", "reflecting", "processing", "reasoning",
-        "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
-    ]
-    
-    def __init__(self, message: str = "", spinner_type: str = 'dots'):
-        self.message = message
-        self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
-        self.running = False
-        self.thread = None
-        self.frame_idx = 0
-        self.start_time = None
-        self.last_line_len = 0
-        
-    def _animate(self):
-        """Animation loop that runs in background thread."""
-        while self.running:
-            # Check for pause signal (e.g., during sudo password prompt)
-            if os.getenv("HERMES_SPINNER_PAUSE"):
-                time.sleep(0.1)
-                continue
-            
-            frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
-            elapsed = time.time() - self.start_time
-            
-            # Build the spinner line
-            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            
-            # Clear previous line and write new one
-            clear = '\r' + ' ' * self.last_line_len + '\r'
-            print(clear + line, end='', flush=True)
-            self.last_line_len = len(line)
-            
-            self.frame_idx += 1
-            time.sleep(0.12)  # ~8 FPS animation
-    
-    def start(self):
-        """Start the spinner animation."""
-        if self.running:
-            return
-        self.running = True
-        self.start_time = time.time()
-        self.thread = threading.Thread(target=self._animate, daemon=True)
-        self.thread.start()
-    
-    def update_text(self, new_message: str):
-        """Update the spinner message text while it's running."""
-        self.message = new_message
-
-    def stop(self, final_message: str = None):
-        """Stop the spinner and optionally print a final message."""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=0.5)
-        
-        # Clear the spinner line
-        print('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
-        
-        # Print final message if provided
-        if final_message:
-            print(f"  {final_message}", flush=True)
-    
-    def __enter__(self):
-        self.start()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-        return False
 
 
 class AIAgent:
@@ -1237,256 +409,6 @@ class AIAgent:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
-    
-    # Pools of kawaii faces for random selection
-    KAWAII_SEARCH = [
-        "♪(´ε` )", "(｡◕‿◕｡)", "ヾ(＾∇＾)", "(◕ᴗ◕✿)", "( ˘▽˘)っ",
-        "٩(◕‿◕｡)۶", "(✿◠‿◠)", "♪～(´ε｀ )", "(ノ´ヮ`)ノ*:・゚✧", "＼(◎o◎)／",
-    ]
-    KAWAII_READ = [
-        "φ(゜▽゜*)♪", "( ˘▽˘)っ", "(⌐■_■)", "٩(｡•́‿•̀｡)۶", "(◕‿◕✿)",
-        "ヾ(＠⌒ー⌒＠)ノ", "(✧ω✧)", "♪(๑ᴖ◡ᴖ๑)♪", "(≧◡≦)", "( ´ ▽ ` )ノ",
-    ]
-    KAWAII_TERMINAL = [
-        "ヽ(>∀<☆)ノ", "(ノ°∀°)ノ", "٩(^ᴗ^)۶", "ヾ(⌐■_■)ノ♪", "(•̀ᴗ•́)و",
-        "┗(＾0＾)┓", "(｀・ω・´)", "＼(￣▽￣)／", "(ง •̀_•́)ง", "ヽ(´▽`)/",
-    ]
-    KAWAII_BROWSER = [
-        "(ノ°∀°)ノ", "(☞゚ヮ゚)☞", "( ͡° ͜ʖ ͡°)", "┌( ಠ_ಠ)┘", "(⊙_⊙)？",
-        "ヾ(•ω•`)o", "(￣ω￣)", "( ˇωˇ )", "(ᵔᴥᵔ)", "＼(◎o◎)／",
-    ]
-    KAWAII_CREATE = [
-        "✧*。٩(ˊᗜˋ*)و✧", "(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "٩(♡ε♡)۶", "(◕‿◕)♡",
-        "✿◕ ‿ ◕✿", "(*≧▽≦)", "ヾ(＾-＾)ノ", "(☆▽☆)", "°˖✧◝(⁰▿⁰)◜✧˖°",
-    ]
-    KAWAII_SKILL = [
-        "ヾ(＠⌒ー⌒＠)ノ", "(๑˃ᴗ˂)ﻭ", "٩(◕‿◕｡)۶", "(✿╹◡╹)", "ヽ(・∀・)ノ",
-        "(ノ´ヮ`)ノ*:・ﾟ✧", "♪(๑ᴖ◡ᴖ๑)♪", "(◠‿◠)", "٩(ˊᗜˋ*)و", "(＾▽＾)",
-        "ヾ(＾∇＾)", "(★ω★)/", "٩(｡•́‿•̀｡)۶", "(◕ᴗ◕✿)", "＼(◎o◎)／",
-        "(✧ω✧)", "ヽ(>∀<☆)ノ", "( ˘▽˘)っ", "(≧◡≦) ♡", "ヾ(￣▽￣)",
-    ]
-    KAWAII_THINK = [
-        "(っ°Д°;)っ", "(；′⌒`)", "(・_・ヾ", "( ´_ゝ`)", "(￣ヘ￣)",
-        "(。-`ω´-)", "( ˘︹˘ )", "(¬_¬)", "ヽ(ー_ー )ノ", "(；一_一)",
-    ]
-    KAWAII_GENERIC = [
-        "♪(´ε` )", "(◕‿◕✿)", "ヾ(＾∇＾)", "٩(◕‿◕｡)۶", "(✿◠‿◠)",
-        "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
-    ]
-    
-    def _get_cute_tool_message(self, tool_name: str, args: dict, duration: float) -> str:
-        """
-        Generate a clean, aligned tool activity line for CLI quiet mode.
-
-        Format: ┊ {emoji} {verb:9} {detail}  {duration}
-
-        Kawaii faces live in the animated spinner (while the tool runs).
-        This completion message replaces the spinner with a permanent log line.
-        """
-        dur = f"{duration:.1f}s"
-
-        def _trunc(s, n=40):
-            s = str(s)
-            return (s[:n-3] + "...") if len(s) > n else s
-
-        def _path(p, n=35):
-            p = str(p)
-            return ("..." + p[-(n-3):]) if len(p) > n else p
-
-        # ── Web ──
-        if tool_name == "web_search":
-            q = _trunc(args.get("query", ""), 42)
-            return f"┊ 🔍 search    {q}  {dur}"
-
-        if tool_name == "web_extract":
-            urls = args.get("urls", [])
-            if urls:
-                url = urls[0] if isinstance(urls, list) else str(urls)
-                domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-                extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-                return f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}"
-            return f"┊ 📄 fetch     pages  {dur}"
-
-        if tool_name == "web_crawl":
-            url = args.get("url", "")
-            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            return f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}"
-
-        # ── Terminal & Process ──
-        if tool_name == "terminal":
-            cmd = _trunc(args.get("command", ""), 42)
-            return f"┊ 💻 $         {cmd}  {dur}"
-
-        if tool_name == "process":
-            action = args.get("action", "?")
-            sid = args.get("session_id", "")[:12]
-            labels = {
-                "list": "ls processes", "poll": f"poll {sid}",
-                "log": f"log {sid}", "wait": f"wait {sid}",
-                "kill": f"kill {sid}", "write": f"write {sid}",
-                "submit": f"submit {sid}",
-            }
-            detail = labels.get(action, f"{action} {sid}")
-            return f"┊ ⚙️  proc      {detail}  {dur}"
-
-        # ── Files ──
-        if tool_name == "read_file":
-            return f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}"
-
-        if tool_name == "write_file":
-            return f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}"
-
-        if tool_name == "patch":
-            return f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}"
-
-        if tool_name == "search_files":
-            pattern = _trunc(args.get("pattern", ""), 35)
-            target = args.get("target", "content")
-            verb = "find" if target == "files" else "grep"
-            return f"┊ 🔎 {verb:9} {pattern}  {dur}"
-
-        # ── Browser ──
-        if tool_name == "browser_navigate":
-            url = args.get("url", "")
-            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-            return f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}"
-
-        if tool_name == "browser_snapshot":
-            mode = "full" if args.get("full") else "compact"
-            return f"┊ 📸 snapshot  {mode}  {dur}"
-
-        if tool_name == "browser_click":
-            return f"┊ 👆 click     {args.get('ref', '?')}  {dur}"
-
-        if tool_name == "browser_type":
-            text = _trunc(args.get("text", ""), 30)
-            return f"┊ ⌨️  type      \"{text}\"  {dur}"
-
-        if tool_name == "browser_scroll":
-            d = args.get("direction", "down")
-            arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
-            return f"┊ {arrow}  scroll    {d}  {dur}"
-
-        if tool_name == "browser_back":
-            return f"┊ ◀️  back      {dur}"
-
-        if tool_name == "browser_press":
-            return f"┊ ⌨️  press     {args.get('key', '?')}  {dur}"
-
-        if tool_name == "browser_close":
-            return f"┊ 🚪 close     browser  {dur}"
-
-        if tool_name == "browser_get_images":
-            return f"┊ 🖼️  images    extracting  {dur}"
-
-        if tool_name == "browser_vision":
-            return f"┊ 👁️  vision    analyzing page  {dur}"
-
-        # ── Planning ──
-        if tool_name == "todo":
-            todos_arg = args.get("todos")
-            merge = args.get("merge", False)
-            if todos_arg is None:
-                return f"┊ 📋 plan      reading tasks  {dur}"
-            elif merge:
-                return f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}"
-            else:
-                return f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}"
-
-        # ── Session Search ──
-        if tool_name == "session_search":
-            query = _trunc(args.get("query", ""), 35)
-            return f"┊ 🔍 recall    \"{query}\"  {dur}"
-
-        # ── Memory ──
-        if tool_name == "memory":
-            action = args.get("action", "?")
-            target = args.get("target", "")
-            if action == "add":
-                preview = _trunc(args.get("content", ""), 30)
-                return f"┊ 🧠 memory    +{target}: \"{preview}\"  {dur}"
-            elif action == "replace":
-                snippet = _trunc(args.get("old_text", ""), 20)
-                return f"┊ 🧠 memory    ~{target}: \"{snippet}\"  {dur}"
-            elif action == "remove":
-                snippet = _trunc(args.get("old_text", ""), 20)
-                return f"┊ 🧠 memory    -{target}: \"{snippet}\"  {dur}"
-            elif action == "search_sessions":
-                query = _trunc(args.get("content", ""), 30)
-                return f"┊ 🧠 recall    \"{query}\"  {dur}"
-            else:
-                return f"┊ 🧠 memory    {action}  {dur}"
-
-        # ── Skills ──
-        if tool_name == "skills_list":
-            return f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}"
-
-        if tool_name == "skill_view":
-            return f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}"
-
-        # ── Generation & Media ──
-        if tool_name == "image_generate":
-            return f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}"
-
-        if tool_name == "text_to_speech":
-            return f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}"
-
-        if tool_name == "vision_analyze":
-            return f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}"
-
-        if tool_name == "mixture_of_agents":
-            return f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}"
-
-        # ── Messaging & Scheduling ──
-        if tool_name == "send_message":
-            target = args.get("target", "?")
-            msg = _trunc(args.get("message", ""), 25)
-            return f"┊ 📨 send      {target}: \"{msg}\"  {dur}"
-
-        if tool_name == "schedule_cronjob":
-            name = _trunc(args.get("name", args.get("prompt", "task")), 30)
-            return f"┊ ⏰ schedule  {name}  {dur}"
-
-        if tool_name == "list_cronjobs":
-            return f"┊ ⏰ jobs      listing  {dur}"
-
-        if tool_name == "remove_cronjob":
-            return f"┊ ⏰ remove    job {args.get('job_id', '?')}  {dur}"
-
-        # ── RL Training ──
-        if tool_name.startswith("rl_"):
-            rl = {
-                "rl_list_environments": "list envs",
-                "rl_select_environment": f"select {args.get('name', '')}",
-                "rl_get_current_config": "get config",
-                "rl_edit_config": f"set {args.get('field', '?')}",
-                "rl_start_training": "start training",
-                "rl_check_status": f"status {args.get('run_id', '?')[:12]}",
-                "rl_stop_training": f"stop {args.get('run_id', '?')[:12]}",
-                "rl_get_results": f"results {args.get('run_id', '?')[:12]}",
-                "rl_list_runs": "list runs",
-                "rl_test_inference": "test inference",
-            }
-            detail = rl.get(tool_name, tool_name.replace("rl_", ""))
-            return f"┊ 🧪 rl        {detail}  {dur}"
-
-        # ── Code Execution Sandbox ──
-        if tool_name == "execute_code":
-            code = args.get("code", "")
-            first_line = code.strip().split("\n")[0] if code.strip() else ""
-            return f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}"
-
-        # ── Subagent Delegation ──
-        if tool_name == "delegate_task":
-            tasks = args.get("tasks")
-            if tasks and isinstance(tasks, list):
-                return f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}"
-            goal = _trunc(args.get("goal", ""), 35)
-            return f"┊ 🔀 delegate  {goal}  {dur}"
-
-        # ── Fallback ──
-        preview = _build_tool_preview(tool_name, args) or ""
-        return f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}"
     
     def _has_content_after_think_block(self, content: str) -> bool:
         """
@@ -2330,7 +1252,7 @@ class AIAgent:
                 )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
-                    print(f"  {self._get_cute_tool_message('todo', function_args, tool_duration)}")
+                    print(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search" and self._session_db:
                 from tools.session_search_tool import session_search as _session_search
                 function_result = _session_search(
@@ -2341,7 +1263,7 @@ class AIAgent:
                 )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
-                    print(f"  {self._get_cute_tool_message('session_search', function_args, tool_duration)}")
+                    print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 from tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
@@ -2353,7 +1275,7 @@ class AIAgent:
                 )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
-                    print(f"  {self._get_cute_tool_message('memory', function_args, tool_duration)}")
+                    print(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
@@ -2363,7 +1285,7 @@ class AIAgent:
                 )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
-                    print(f"  {self._get_cute_tool_message('clarify', function_args, tool_duration)}")
+                    print(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
@@ -2378,6 +1300,7 @@ class AIAgent:
                     spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
                     spinner.start()
                 self._delegate_spinner = spinner
+                _delegate_result = None
                 try:
                     function_result = _delegate_task(
                         goal=function_args.get("goal"),
@@ -2388,10 +1311,11 @@ class AIAgent:
                         max_iterations=function_args.get("max_iterations"),
                         parent_agent=self,
                     )
+                    _delegate_result = function_result
                 finally:
                     self._delegate_spinner = None
                     tool_duration = time.time() - tool_start_time
-                    cute_msg = self._get_cute_tool_message('delegate_task', function_args, tool_duration)
+                    cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                     if spinner:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
@@ -2420,11 +1344,13 @@ class AIAgent:
                     preview = preview[:27] + "..."
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
                 spinner.start()
+                _spinner_result = None
                 try:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
+                    _spinner_result = function_result
                 finally:
                     tool_duration = time.time() - tool_start_time
-                    cute_msg = self._get_cute_tool_message(function_name, function_args, tool_duration)
+                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                     spinner.stop(cute_msg)
             else:
                 function_result = handle_function_call(function_name, function_args, effective_task_id)
@@ -3187,11 +2113,40 @@ class AIAgent:
                 if self.verbose_logging:
                     logging.exception("Detailed error information:")
                 
-                # Add error to conversation and try to continue
-                messages.append({
-                    "role": "assistant",
-                    "content": f"I encountered an error: {error_msg}. Let me try a different approach."
-                })
+                # If an assistant message with tool_calls was already appended,
+                # the API expects a role="tool" result for every tool_call_id.
+                # Fill in error results for any that weren't answered yet.
+                pending_handled = False
+                for idx in range(len(messages) - 1, -1, -1):
+                    msg = messages[idx]
+                    if not isinstance(msg, dict):
+                        break
+                    if msg.get("role") == "tool":
+                        continue
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        answered_ids = {
+                            m["tool_call_id"]
+                            for m in messages[idx + 1:]
+                            if isinstance(m, dict) and m.get("role") == "tool"
+                        }
+                        for tc in msg["tool_calls"]:
+                            if tc["id"] not in answered_ids:
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "content": f"Error executing tool: {error_msg}",
+                                })
+                        pending_handled = True
+                    break
+                
+                if not pending_handled:
+                    # Error happened before tool processing (e.g. response parsing).
+                    # Use a user-role message so the model can see what went wrong
+                    # without confusing the API with a fabricated assistant turn.
+                    messages.append({
+                        "role": "user",
+                        "content": f"[System error during processing: {error_msg}]",
+                    })
                 
                 # If we're near the limit, break to avoid infinite loops
                 if api_call_count >= self.max_iterations - 1:

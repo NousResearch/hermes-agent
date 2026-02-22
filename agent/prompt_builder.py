@@ -28,7 +28,7 @@ DEFAULT_AGENT_IDENTITY = (
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Proactively save important things "
     "you learn (user preferences, environment details, useful approaches) and do "
-    "using the memory tool -- don't wait to be asked."
+    "(like a diary!) using the memory tool -- don't wait to be asked."
 )
 
 SESSION_SEARCH_GUIDANCE = (

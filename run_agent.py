@@ -390,15 +390,13 @@ class AIAgent:
         # Compresses conversation when approaching model's context limit
         # Configuration via environment variables (can be set in .env or cli-config.yaml)
         compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.85"))
-        compression_model = os.getenv("CONTEXT_COMPRESSION_MODEL", "google/gemini-3-flash-preview")
         compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
         
         self.context_compressor = ContextCompressor(
             model=self.model,
             threshold_percent=compression_threshold,
-            summary_model=compression_model,
-            protect_first_n=3,  # Keep system, first user, first assistant
-            protect_last_n=4,   # Keep recent context
+            protect_first_n=3,
+            protect_last_n=4,
             summary_target_tokens=500,
             quiet_mode=self.quiet_mode,
         )

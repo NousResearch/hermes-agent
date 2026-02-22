@@ -60,7 +60,7 @@ from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
@@ -392,6 +392,15 @@ class AIAgent:
                     self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
+        
+        # Skills config: nudge interval for skill creation reminders
+        self._skill_nudge_interval = 15
+        try:
+            from hermes_cli.config import load_config as _load_skills_config
+            skills_config = _load_skills_config().get("skills", {})
+            self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 15))
+        except Exception:
+            pass
         
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -1040,6 +1049,8 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "skill_manage" in self.valid_tool_names:
+            tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -1658,6 +1669,19 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # Periodic skill creation nudge after many tool-calling iterations
+            if (self._skill_nudge_interval > 0
+                    and api_call_count > 0
+                    and api_call_count % self._skill_nudge_interval == 0
+                    and "skill_manage" in self.valid_tool_names):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[System: This task has involved many steps. "
+                        "If you've discovered a reusable workflow, consider saving it as a skill.]"
+                    ),
+                })
             
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages

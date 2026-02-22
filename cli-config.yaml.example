@@ -179,6 +179,18 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Skills Configuration
+# =============================================================================
+# Skills are reusable procedures the agent can load and follow. The agent can
+# also create new skills after completing complex tasks.
+#
+skills:
+  # Nudge the agent to create skills after complex tasks.
+  # Every N tool-calling iterations, remind the model to consider saving a skill.
+  # Set to 0 to disable.
+  creation_nudge_interval: 15
+
+# =============================================================================
 # Agent Behavior
 # =============================================================================
 agent:

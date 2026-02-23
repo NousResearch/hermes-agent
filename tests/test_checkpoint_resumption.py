@@ -105,6 +105,16 @@ def monitor_checkpoint_during_run(checkpoint_file: Path, duration: int = 30) -> 
     return snapshots
 
 
+def _cleanup_test_artifacts(*paths):
+    """Remove test-generated files and directories."""
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        elif p.is_file():
+            p.unlink(missing_ok=True)
+
+
 def test_current_implementation():
     """Test the current checkpoint implementation."""
     print("\n" + "=" * 70)
@@ -167,6 +177,8 @@ def test_current_implementation():
         print(f"❌ Error during run: {e}")
         traceback.print_exc()
         return False
+    finally:
+        _cleanup_test_artifacts(dataset_file, output_dir)
     
     elapsed = time.time() - start_time
     
@@ -220,9 +232,9 @@ def test_interruption_and_resume():
     
     print(f"\n▶️  Starting first run (will process 5 prompts, then simulate interruption)...")
     
+    temp_dataset = Path("tests/test_data/checkpoint_test_resume_partial.jsonl")
     try:
         # Create a modified dataset with only first 5 prompts for initial run
-        temp_dataset = Path("tests/test_data/checkpoint_test_resume_partial.jsonl")
         with open(dataset_file, 'r') as f:
             lines = f.readlines()[:5]
         with open(temp_dataset, 'w') as f:
@@ -292,6 +304,8 @@ def test_interruption_and_resume():
         print(f"❌ Error during test: {e}")
         traceback.print_exc()
         return False
+    finally:
+        _cleanup_test_artifacts(dataset_file, temp_dataset, output_dir)
 
 
 def test_simulated_crash():

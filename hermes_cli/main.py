@@ -1002,6 +1002,21 @@ For more help on a command:
     skills_parser.set_defaults(func=cmd_skills)
 
     # =========================================================================
+    # tools command
+    # =========================================================================
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="Configure which tools are enabled per platform",
+        description="Interactive tool configuration — enable/disable tools for CLI, Telegram, Discord, etc."
+    )
+
+    def cmd_tools(args):
+        from hermes_cli.tools_config import tools_command
+        tools_command(args)
+
+    tools_parser.set_defaults(func=cmd_tools)
+
+    # =========================================================================
     # sessions command
     # =========================================================================
     sessions_parser = subparsers.add_parser(

@@ -134,10 +134,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
-    title = color(f"Tools for {platform_label}", Colors.YELLOW)
-    hint = color("  Press SPACE to toggle, ENTER on Continue when done.", Colors.DIM)
-    print(title)
-    print(hint)
+    print(color(f"Tools for {platform_label}", Colors.YELLOW))
+    print(color("  SPACE to toggle, ENTER to confirm.", Colors.DIM))
     print()
 
     labels = []
@@ -152,7 +150,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     try:
         from simple_term_menu import TerminalMenu
 
-        menu_items = [f"  {label}" for label in labels] + ["  Continue →"]
+        menu_items = [f"  {label}" for label in labels]
         preselected = [menu_items[i] for i in pre_selected_indices if i < len(menu_items)]
 
         menu = TerminalMenu(
@@ -173,10 +171,9 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         menu.show()
 
         if menu.chosen_menu_entries is None:
-            return enabled  # Escape pressed, keep current
+            return enabled
 
-        continue_idx = len(CONFIGURABLE_TOOLSETS)
-        selected_indices = [i for i in (menu.chosen_menu_indices or []) if i != continue_idx]
+        selected_indices = list(menu.chosen_menu_indices or [])
 
         return {CONFIGURABLE_TOOLSETS[i][0] for i in selected_indices}
 
@@ -187,15 +184,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             for i, label in enumerate(labels):
                 marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
                 print(f"  {marker} {i + 1}. {label}")
-            print(f"      {len(labels) + 1}. {color('Continue →', Colors.GREEN)}")
             print()
             try:
-                val = input(color("  Toggle # (or Enter to continue): ", Colors.DIM)).strip()
+                val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
                 if not val:
                     break
                 idx = int(val) - 1
-                if idx == len(labels):
-                    break
                 if 0 <= idx < len(labels):
                     if idx in selected:
                         selected.discard(idx)

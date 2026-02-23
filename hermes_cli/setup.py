@@ -158,13 +158,13 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         pre_selected = []
     
     print(color(title, Colors.YELLOW))
-    print_info("Press SPACE to select items, then ENTER on Continue.")
+    print_info("SPACE to toggle, ENTER to confirm.")
     print()
     
     try:
         from simple_term_menu import TerminalMenu
         
-        menu_items = [f"  {item}" for item in items] + ["  Continue →"]
+        menu_items = [f"  {item}" for item in items]
         
         # Map pre-selected indices to the actual menu entry strings
         preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
@@ -172,7 +172,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         terminal_menu = TerminalMenu(
             menu_items,
             multi_select=True,
-            show_multi_select_hint=True,
+            show_multi_select_hint=False,
             multi_select_cursor="[✓] ",
             multi_select_select_on_accept=False,
             multi_select_empty_ok=True,
@@ -187,12 +187,9 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         terminal_menu.show()
         
         if terminal_menu.chosen_menu_entries is None:
-            # User pressed Escape
             return []
         
-        # Filter out the "Continue →" entry and return original indices
-        continue_idx = len(items)
-        selected = [i for i in terminal_menu.chosen_menu_indices if i != continue_idx]
+        selected = list(terminal_menu.chosen_menu_indices or [])
         return selected
         
     except ImportError:
@@ -203,16 +200,13 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
             for i, item in enumerate(items):
                 marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
                 print(f"  {marker} {i + 1}. {item}")
-            print(f"      {len(items) + 1}. {color('Continue →', Colors.GREEN)}")
             print()
             
             try:
-                value = input(color("  Toggle item # (or Enter to continue): ", Colors.DIM)).strip()
+                value = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
                 if not value:
                     break
                 idx = int(value) - 1
-                if idx == len(items):
-                    break
                 if 0 <= idx < len(items):
                     if idx in selected:
                         selected.discard(idx)

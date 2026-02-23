@@ -513,6 +513,16 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+        @tree.command(name="sethome", description="Set this chat as the home channel")
+        async def slash_sethome(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/sethome")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
         @tree.command(name="stop", description="Stop the running Hermes agent")
         async def slash_stop(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)

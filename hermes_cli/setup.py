@@ -139,6 +139,100 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
+def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
+    """
+    Display a multi-select checklist and return the indices of selected items.
+    
+    Each item in `items` is a display string. `pre_selected` is a list of
+    indices that should be checked by default. A "Continue →" option is
+    appended at the end — the user toggles items with Space and confirms
+    with Enter on "Continue →".
+    
+    Falls back to a numbered toggle interface when simple_term_menu is
+    unavailable.
+    
+    Returns:
+        List of selected indices (not including the Continue option).
+    """
+    if pre_selected is None:
+        pre_selected = []
+    
+    print(color(title, Colors.YELLOW))
+    print_info("Select the tools you want, then choose Continue.")
+    print()
+    
+    try:
+        from simple_term_menu import TerminalMenu
+        
+        menu_items = [f"  {item}" for item in items] + ["  Continue →"]
+        
+        # Build preselected indices string (e.g. "0,2,4")
+        preselected = [str(i) for i in pre_selected]
+        
+        terminal_menu = TerminalMenu(
+            menu_items,
+            multi_select=True,
+            show_multi_select_hint=True,
+            multi_select_cursor="[✓] ",
+            multi_select_cursor_brackets_style=("", ""),
+            multi_select_select_on_accept=False,
+            multi_select_empty_ok=True,
+            preselected_entries=preselected if preselected else None,
+            menu_cursor="→ ",
+            menu_cursor_style=("fg_green", "bold"),
+            menu_highlight_style=("fg_green",),
+            cycle_cursor=True,
+            clear_screen=False,
+        )
+        
+        terminal_menu.show()
+        
+        if terminal_menu.chosen_menu_entries is None:
+            # User pressed Escape
+            return []
+        
+        # Filter out the "Continue →" entry and return original indices
+        continue_idx = len(items)
+        selected = [i for i in terminal_menu.chosen_menu_indices if i != continue_idx]
+        return selected
+        
+    except ImportError:
+        # Fallback: numbered toggle interface
+        selected = set(pre_selected)
+        
+        while True:
+            for i, item in enumerate(items):
+                marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
+                print(f"  {marker} {i + 1}. {item}")
+            print(f"      {len(items) + 1}. {color('Continue →', Colors.GREEN)}")
+            print()
+            
+            try:
+                value = input(color("  Toggle item # (or Enter to continue): ", Colors.DIM)).strip()
+                if not value:
+                    break
+                idx = int(value) - 1
+                if idx == len(items):
+                    break
+                if 0 <= idx < len(items):
+                    if idx in selected:
+                        selected.discard(idx)
+                    else:
+                        selected.add(idx)
+                else:
+                    print_error(f"Enter a number between 1 and {len(items) + 1}")
+            except ValueError:
+                print_error("Enter a number")
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return []
+            
+            # Clear and redraw (simple approach)
+            print()
+        
+        return sorted(selected)
+
+
 def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
     # Tool availability summary
@@ -268,8 +362,12 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
     
-    # Check if this is an existing installation with config
-    is_existing = get_env_value("OPENROUTER_API_KEY") is not None or get_config_path().exists()
+    # Check if this is an existing installation with config (any provider or config file)
+    is_existing = (
+        get_env_value("OPENROUTER_API_KEY") is not None
+        or get_env_value("OPENAI_BASE_URL") is not None
+        or get_config_path().exists()
+    )
     
     # Import migration helpers
     from hermes_cli.config import (
@@ -375,27 +473,43 @@ def run_setup_wizard(args):
                 else:
                     print_warning(f"  Skipped {var['name']}")
         
-        # Handle missing optional env vars
-        if missing_optional:
+        # Handle missing optional env vars — use a checkbox to let the
+        # user pick which tools to configure, then prompt for keys.
+        # Filter out "advanced" vars (handled elsewhere, e.g. provider step).
+        missing_tool_vars = [v for v in missing_optional if not v.get("advanced")]
+        
+        if missing_tool_vars:
             print()
             print_header("Optional Tools (Quick Setup)")
             
-            for var in missing_optional:
+            # Build checklist labels from the missing vars
+            checklist_labels = []
+            for var in missing_tool_vars:
                 tools = var.get("tools", [])
-                tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
+                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
+                checklist_labels.append(f"{var['name']}{tools_str}")
+            
+            selected_indices = prompt_checklist(
+                "Which missing tools would you like to configure?",
+                checklist_labels,
+            )
+            
+            # Prompt for keys only for selected tools
+            for idx in selected_indices:
+                var = missing_tool_vars[idx]
+                print()
+                print(color(f"  {var['name']}", Colors.CYAN))
+                if var.get("url"):
+                    print_info(f"  Get key at: {var['url']}")
                 
-                if prompt_yes_no(f"Configure {var['name']}{tools_str}?", False):
-                    if var.get("url"):
-                        print_info(f"  Get key at: {var['url']}")
-                    
-                    if var.get("password"):
-                        value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-                    else:
-                        value = prompt(f"  {var.get('prompt', var['name'])}")
-                    
-                    if value:
-                        save_env_value(var["name"], value)
-                        print_success(f"  Saved")
+                if var.get("password"):
+                    value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
+                else:
+                    value = prompt(f"  {var.get('prompt', var['name'])}")
+                
+                if value:
+                    save_env_value(var["name"], value)
+                    print_success(f"  Saved {var['name']}")
         
         # Handle missing config fields
         if missing_config:
@@ -440,6 +554,9 @@ def run_setup_wizard(args):
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
 
+    # Detect if any provider is already configured
+    has_any_provider = bool(active_oauth or existing_custom or existing_or)
+    
     # Build "keep current" label
     if active_oauth and active_oauth in PROVIDER_REGISTRY:
         keep_label = f"Keep current ({PROVIDER_REGISTRY[active_oauth].name})"
@@ -448,16 +565,24 @@ def run_setup_wizard(args):
     elif existing_or:
         keep_label = "Keep current (OpenRouter)"
     else:
-        keep_label = "Keep current"
+        keep_label = None  # No provider configured — don't show "Keep current"
 
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
-        keep_label,
     ]
-
-    provider_idx = prompt_choice("Select your inference provider:", provider_choices, 3)
+    if keep_label:
+        provider_choices.append(keep_label)
+    
+    # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
+    default_provider = len(provider_choices) - 1 if has_any_provider else 1
+    
+    if not has_any_provider:
+        print_warning("An inference provider is required for Hermes to work.")
+        print()
+    
+    provider_idx = prompt_choice("Select your inference provider:", provider_choices, default_provider)
 
     # Track which provider was selected for model step
     selected_provider = None  # "nous", "openrouter", "custom", or None (keep)
@@ -557,7 +682,7 @@ def run_setup_wizard(args):
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
         print_success("Custom endpoint configured")
-    # else: provider_idx == 3, keep current
+    # else: provider_idx == 3 (Keep current) — only shown when a provider already exists
 
     # =========================================================================
     # Step 1b: OpenRouter API Key for tools (if not already set)
@@ -1087,62 +1212,113 @@ def run_setup_wizard(args):
         print_info("━" * 50)
     
     # =========================================================================
-    # Step 8: Additional Tools (Optional)
+    # Step 8: Additional Tools (Checkbox Selection)
     # =========================================================================
-    print_header("Additional Tools (Optional)")
-    print_info("These tools extend the agent's capabilities.")
-    print_info("Without their API keys, the corresponding features will be disabled.")
+    print_header("Additional Tools")
+    print_info("Select which tools you'd like to configure.")
+    print_info("You can always add more later with 'hermes setup'.")
     print()
     
-    # Firecrawl - Web scraping
-    print_info("─" * 50)
-    print(color("  Web Search & Scraping (Firecrawl)", Colors.CYAN))
-    print_info("  Enables: web_search, web_extract tools")
-    print_info("  Use case: Search the web, read webpage content")
-    if get_env_value('FIRECRAWL_API_KEY'):
-        print_success("  Status: Configured ✓")
-        if prompt_yes_no("  Update Firecrawl API key?", False):
-            api_key = prompt("    API key", password=True)
-            if api_key:
-                save_env_value("FIRECRAWL_API_KEY", api_key)
-                print_success("    Updated")
-    else:
-        print_warning("  Status: Not configured (tools will be disabled)")
-        if prompt_yes_no("  Set up Firecrawl?", False):
-            print_info("    Get your API key at: https://firecrawl.dev/")
-            api_key = prompt("    API key", password=True)
+    # Define tool categories for the checklist.
+    # Each entry: (display_label, setup_function_key, check_keys)
+    # check_keys = env vars that indicate this tool is already configured
+    TOOL_CATEGORIES = [
+        {
+            "label": "🔍 Web Search & Scraping (Firecrawl)",
+            "key": "firecrawl",
+            "check": ["FIRECRAWL_API_KEY"],
+        },
+        {
+            "label": "🌐 Browser Automation (Browserbase)",
+            "key": "browserbase",
+            "check": ["BROWSERBASE_API_KEY"],
+        },
+        {
+            "label": "🎨 Image Generation (FAL / FLUX)",
+            "key": "fal",
+            "check": ["FAL_KEY"],
+        },
+        {
+            "label": "🎤 Voice Transcription & TTS (OpenAI Whisper + TTS)",
+            "key": "openai_voice",
+            "check": ["HERMES_OPENAI_API_KEY"],
+        },
+        {
+            "label": "🗣️ Premium Text-to-Speech (ElevenLabs)",
+            "key": "elevenlabs",
+            "check": ["ELEVENLABS_API_KEY"],
+        },
+        {
+            "label": "🧪 RL Training (Tinker + WandB)",
+            "key": "rl_training",
+            "check": ["TINKER_API_KEY", "WANDB_API_KEY"],
+        },
+        {
+            "label": "🔧 Skills Hub (GitHub token for higher rate limits)",
+            "key": "github",
+            "check": ["GITHUB_TOKEN"],
+        },
+    ]
+    
+    # Pre-select tools that are already configured
+    pre_selected = []
+    for i, cat in enumerate(TOOL_CATEGORIES):
+        if all(get_env_value(k) for k in cat["check"]):
+            pre_selected.append(i)
+    
+    checklist_labels = [cat["label"] for cat in TOOL_CATEGORIES]
+    selected_indices = prompt_checklist(
+        "Which tools would you like to enable?",
+        checklist_labels,
+        pre_selected=pre_selected,
+    )
+    
+    selected_keys = {TOOL_CATEGORIES[i]["key"] for i in selected_indices}
+    
+    # Now prompt for API keys only for the tools the user selected
+    
+    if "firecrawl" in selected_keys:
+        print()
+        print(color("  ─── Web Search & Scraping (Firecrawl) ───", Colors.CYAN))
+        print_info("  Get your API key at: https://firecrawl.dev/")
+        existing = get_env_value('FIRECRAWL_API_KEY')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    Firecrawl API key", password=True)
+                if api_key:
+                    save_env_value("FIRECRAWL_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    Firecrawl API key", password=True)
             if api_key:
                 save_env_value("FIRECRAWL_API_KEY", api_key)
                 print_success("    Configured ✓")
-    print()
     
-    # Browserbase - Browser automation
-    print_info("─" * 50)
-    print(color("  Browser Automation (Browserbase)", Colors.CYAN))
-    print_info("  Enables: browser_navigate, browser_click, etc.")
-    print_info("  Use case: Interact with web pages, fill forms, screenshots")
-    if get_env_value('BROWSERBASE_API_KEY'):
-        print_success("  Status: Configured ✓")
-        if prompt_yes_no("  Update Browserbase credentials?", False):
-            api_key = prompt("    API key", password=True)
-            project_id = prompt("    Project ID")
-            if api_key:
-                save_env_value("BROWSERBASE_API_KEY", api_key)
-            if project_id:
-                save_env_value("BROWSERBASE_PROJECT_ID", project_id)
-            print_success("    Updated")
-    else:
-        print_warning("  Status: Not configured (tools will be disabled)")
-        if prompt_yes_no("  Set up Browserbase?", False):
-            print_info("    Get credentials at: https://browserbase.com/")
-            api_key = prompt("    API key", password=True)
-            project_id = prompt("    Project ID")
+    if "browserbase" in selected_keys:
+        print()
+        print(color("  ─── Browser Automation (Browserbase) ───", Colors.CYAN))
+        print_info("  Get credentials at: https://browserbase.com/")
+        existing = get_env_value('BROWSERBASE_API_KEY')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update credentials?", False):
+                api_key = prompt("    API key", password=True)
+                project_id = prompt("    Project ID")
+                if api_key:
+                    save_env_value("BROWSERBASE_API_KEY", api_key)
+                if project_id:
+                    save_env_value("BROWSERBASE_PROJECT_ID", project_id)
+                print_success("    Updated")
+        else:
+            api_key = prompt("    Browserbase API key", password=True)
+            project_id = prompt("    Browserbase Project ID")
             if api_key:
                 save_env_value("BROWSERBASE_API_KEY", api_key)
             if project_id:
                 save_env_value("BROWSERBASE_PROJECT_ID", project_id)
             
-            # Check if Node.js dependencies are installed (required for browser tools)
+            # Auto-install Node.js deps if possible
             import shutil
             node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
             if not node_modules.exists() and shutil.which("npm"):
@@ -1159,92 +1335,91 @@ def run_setup_wizard(args):
             elif not node_modules.exists():
                 print_warning("    Node.js not found — browser tools require: npm install (in the hermes-agent directory)")
             
-            print_success("    Configured ✓")
-    print()
-    
-    # FAL - Image generation
-    print_info("─" * 50)
-    print(color("  Image Generation (FAL)", Colors.CYAN))
-    print_info("  Enables: image_generate tool")
-    print_info("  Use case: Generate images from text prompts (FLUX)")
-    if get_env_value('FAL_KEY'):
-        print_success("  Status: Configured ✓")
-        if prompt_yes_no("  Update FAL API key?", False):
-            api_key = prompt("    API key", password=True)
             if api_key:
-                save_env_value("FAL_KEY", api_key)
-                print_success("    Updated")
-    else:
-        print_warning("  Status: Not configured (tool will be disabled)")
-        if prompt_yes_no("  Set up FAL?", False):
-            print_info("    Get your API key at: https://fal.ai/")
-            api_key = prompt("    API key", password=True)
-            if api_key:
-                save_env_value("FAL_KEY", api_key)
                 print_success("    Configured ✓")
-    print()
     
-    # ElevenLabs - Premium TTS
-    print_info("─" * 50)
-    print(color("  Text-to-Speech - ElevenLabs (Premium)", Colors.CYAN))
-    print_info("  Enables: Premium TTS voices (Edge TTS is free and works without a key)")
-    print_info("  Use case: High-quality, customizable voice synthesis")
-    if get_env_value('ELEVENLABS_API_KEY'):
-        print_success("  Status: Configured ✓")
-        if prompt_yes_no("  Update ElevenLabs API key?", False):
-            api_key = prompt("    API key", password=True)
-            if api_key:
-                save_env_value("ELEVENLABS_API_KEY", api_key)
-                print_success("    Updated")
-    else:
-        print_warning("  Status: Not configured (free Edge TTS will be used by default)")
-        if prompt_yes_no("  Set up ElevenLabs?", False):
-            print_info("    Get your API key at: https://elevenlabs.io/")
-            api_key = prompt("    API key", password=True)
-            if api_key:
-                save_env_value("ELEVENLABS_API_KEY", api_key)
-                print_success("    Configured ✓")
-    print()
-    
-    # Tinker + WandB - RL Training
-    print_info("─" * 50)
-    print(color("  RL Training (Tinker + WandB)", Colors.CYAN))
-    print_info("  Enables: rl_start_training, rl_check_status, rl_get_results tools")
-    print_info("  Use case: Run reinforcement learning training via Tinker API")
-    tinker_configured = get_env_value('TINKER_API_KEY')
-    wandb_configured = get_env_value('WANDB_API_KEY')
-    
-    # Check Python version requirement upfront
-    rl_python_ok = sys.version_info >= (3, 11)
-    if not rl_python_ok:
-        print_warning(f"  Requires Python 3.11+ (current: {sys.version_info.major}.{sys.version_info.minor})")
-    
-    if tinker_configured and wandb_configured:
-        print_success("  Status: Configured ✓")
-        if prompt_yes_no("  Update RL training credentials?", False):
-            api_key = prompt("    Tinker API key", password=True)
-            if api_key:
-                save_env_value("TINKER_API_KEY", api_key)
-            wandb_key = prompt("    WandB API key", password=True)
-            if wandb_key:
-                save_env_value("WANDB_API_KEY", wandb_key)
-            print_success("    Updated")
-    else:
-        if tinker_configured:
-            print_warning("  Status: Tinker configured, WandB missing")
-        elif wandb_configured:
-            print_warning("  Status: WandB configured, Tinker missing")
+    if "fal" in selected_keys:
+        print()
+        print(color("  ─── Image Generation (FAL) ───", Colors.CYAN))
+        print_info("  Get your API key at: https://fal.ai/")
+        existing = get_env_value('FAL_KEY')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    FAL API key", password=True)
+                if api_key:
+                    save_env_value("FAL_KEY", api_key)
+                    print_success("    Updated")
         else:
-            print_warning("  Status: Not configured (tools will be disabled)")
+            api_key = prompt("    FAL API key", password=True)
+            if api_key:
+                save_env_value("FAL_KEY", api_key)
+                print_success("    Configured ✓")
+    
+    if "openai_voice" in selected_keys:
+        print()
+        print(color("  ─── Voice Transcription & TTS (OpenAI) ───", Colors.CYAN))
+        print_info("  Used for Whisper speech-to-text and OpenAI TTS voices.")
+        print_info("  Get your API key at: https://platform.openai.com/api-keys")
+        existing = get_env_value('HERMES_OPENAI_API_KEY')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    OpenAI API key", password=True)
+                if api_key:
+                    save_env_value("HERMES_OPENAI_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    OpenAI API key", password=True)
+            if api_key:
+                save_env_value("HERMES_OPENAI_API_KEY", api_key)
+                print_success("    Configured ✓")
+    
+    if "elevenlabs" in selected_keys:
+        print()
+        print(color("  ─── Premium TTS (ElevenLabs) ───", Colors.CYAN))
+        print_info("  High-quality voice synthesis. Free Edge TTS works without a key.")
+        print_info("  Get your API key at: https://elevenlabs.io/")
+        existing = get_env_value('ELEVENLABS_API_KEY')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    ElevenLabs API key", password=True)
+                if api_key:
+                    save_env_value("ELEVENLABS_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    ElevenLabs API key", password=True)
+            if api_key:
+                save_env_value("ELEVENLABS_API_KEY", api_key)
+                print_success("    Configured ✓")
+    
+    if "rl_training" in selected_keys:
+        print()
+        print(color("  ─── RL Training (Tinker + WandB) ───", Colors.CYAN))
         
-        if prompt_yes_no("  Set up RL Training?", False):
-            # Check Python version before proceeding
-            if not rl_python_ok:
-                print_error(f"    Python 3.11+ required (current: {sys.version_info.major}.{sys.version_info.minor})")
-                print_info("    Upgrade Python and reinstall to enable RL training tools")
+        rl_python_ok = sys.version_info >= (3, 11)
+        if not rl_python_ok:
+            print_error(f"  Requires Python 3.11+ (current: {sys.version_info.major}.{sys.version_info.minor})")
+            print_info("  Upgrade Python and reinstall to enable RL training tools")
+        else:
+            print_info("  Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
+            print_info("  Get WandB key at: https://wandb.ai/authorize")
+            
+            tinker_existing = get_env_value('TINKER_API_KEY')
+            wandb_existing = get_env_value('WANDB_API_KEY')
+            
+            if tinker_existing and wandb_existing:
+                print_success("  Already configured ✓")
+                if prompt_yes_no("  Update credentials?", False):
+                    api_key = prompt("    Tinker API key", password=True)
+                    if api_key:
+                        save_env_value("TINKER_API_KEY", api_key)
+                    wandb_key = prompt("    WandB API key", password=True)
+                    if wandb_key:
+                        save_env_value("WANDB_API_KEY", wandb_key)
+                    print_success("    Updated")
             else:
-                print_info("    Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
-                print_info("    Get WandB key at: https://wandb.ai/authorize")
                 api_key = prompt("    Tinker API key", password=True)
                 if api_key:
                     save_env_value("TINKER_API_KEY", api_key)
@@ -1252,7 +1427,7 @@ def run_setup_wizard(args):
                 if wandb_key:
                     save_env_value("WANDB_API_KEY", wandb_key)
                 
-                # Check if tinker-atropos submodule is installed
+                # Auto-install tinker-atropos submodule if missing
                 try:
                     __import__("tinker_atropos")
                 except ImportError:
@@ -1261,7 +1436,6 @@ def run_setup_wizard(args):
                         print_info("    Installing tinker-atropos submodule...")
                         import subprocess
                         import shutil
-                        # Prefer uv for speed, fall back to pip
                         uv_bin = shutil.which("uv")
                         if uv_bin:
                             result = subprocess.run(
@@ -1288,35 +1462,25 @@ def run_setup_wizard(args):
                 else:
                     print_warning("    Partially configured (both keys required)")
     
-    # =========================================================================
-    # Step 9: Skills Hub (Optional)
-    # =========================================================================
-    print_header("Skills Hub (Optional)")
-    print_info("A GitHub token enables higher API rate limits for skill search/install,")
-    print_info("and is required for publishing skills via GitHub PRs.")
-    print()
-
-    github_configured = get_env_value('GITHUB_TOKEN')
-    if github_configured:
-        print_success("  GitHub token: configured ✓")
-        choice = prompt("  Reconfigure? (y/N)", default="n")
-        if choice.lower() == 'y':
-            token = prompt("    GitHub Token (ghp_...)", password=True)
-            if token:
-                save_env_value("GITHUB_TOKEN", token)
-                print_success("    Updated")
-    else:
-        print_warning("  GitHub token: not configured (60 req/hr rate limit)")
-        choice = prompt("  Configure now? (y/N)", default="n")
-        if choice.lower() == 'y':
-            print_info("  Get a token at: https://github.com/settings/tokens")
-            print_info("  Recommended: Fine-grained token with Contents + Pull Requests permissions")
+    if "github" in selected_keys:
+        print()
+        print(color("  ─── Skills Hub (GitHub) ───", Colors.CYAN))
+        print_info("  Enables higher API rate limits for skill search/install")
+        print_info("  and publishing skills via GitHub PRs.")
+        print_info("  Get a token at: https://github.com/settings/tokens")
+        existing = get_env_value('GITHUB_TOKEN')
+        if existing:
+            print_success("  Already configured ✓")
+            if prompt_yes_no("  Update token?", False):
+                token = prompt("    GitHub Token (ghp_...)", password=True)
+                if token:
+                    save_env_value("GITHUB_TOKEN", token)
+                    print_success("    Updated")
+        else:
             token = prompt("    GitHub Token", password=True)
             if token:
                 save_env_value("GITHUB_TOKEN", token)
                 print_success("    Configured ✓")
-            else:
-                print_info("    Skipped — you can add it later in ~/.hermes/.env")
 
     # =========================================================================
     # Save config and show summary

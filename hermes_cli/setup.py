@@ -158,7 +158,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         pre_selected = []
     
     print(color(title, Colors.YELLOW))
-    print_info("Select the tools you want, then choose Continue.")
+    print_info("Press SPACE to select items, then ENTER on Continue.")
     print()
     
     try:

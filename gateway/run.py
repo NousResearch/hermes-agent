@@ -36,6 +36,20 @@ if _env_path.exists():
 # Also try project .env as fallback
 load_dotenv()
 
+# Bridge config.yaml values into the environment so os.getenv() picks them up.
+# Values already set in the environment (from .env or shell) take precedence.
+_config_path = Path.home() / '.hermes' / 'config.yaml'
+if _config_path.exists():
+    try:
+        import yaml as _yaml
+        with open(_config_path) as _f:
+            _cfg = _yaml.safe_load(_f) or {}
+        for _key, _val in _cfg.items():
+            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
+                os.environ[_key] = str(_val)
+    except Exception:
+        pass  # Non-fatal; gateway can still run with .env values
+
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
 

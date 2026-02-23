@@ -141,34 +141,41 @@ REQUIRED_ENV_VARS = {}
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
+    # ── Provider (handled in provider selection, not shown in checklists) ──
     "OPENROUTER_API_KEY": {
         "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
-        "advanced": True,  # Handled in provider selection, not in tool checklist
+        "category": "provider",
+        "advanced": True,
     },
+
+    # ── Tool API keys ──
     "FIRECRAWL_API_KEY": {
         "description": "Firecrawl API key for web search and scraping",
         "prompt": "Firecrawl API key",
         "url": "https://firecrawl.dev/",
         "tools": ["web_search", "web_extract"],
         "password": True,
+        "category": "tool",
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for browser automation",
-        "prompt": "Browserbase API key", 
+        "prompt": "Browserbase API key",
         "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click", "etc."],
+        "tools": ["browser_navigate", "browser_click"],
         "password": True,
+        "category": "tool",
     },
     "BROWSERBASE_PROJECT_ID": {
         "description": "Browserbase project ID",
         "prompt": "Browserbase project ID",
         "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click", "etc."],
+        "tools": ["browser_navigate", "browser_click"],
         "password": False,
+        "category": "tool",
     },
     "FAL_KEY": {
         "description": "FAL API key for image generation",
@@ -176,6 +183,7 @@ OPTIONAL_ENV_VARS = {
         "url": "https://fal.ai/",
         "tools": ["image_generate"],
         "password": True,
+        "category": "tool",
     },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",
@@ -183,6 +191,7 @@ OPTIONAL_ENV_VARS = {
         "url": "https://tinker-console.thinkingmachines.ai/keys",
         "tools": ["rl_start_training", "rl_check_status", "rl_stop_training"],
         "password": True,
+        "category": "tool",
     },
     "WANDB_API_KEY": {
         "description": "Weights & Biases API key for experiment tracking",
@@ -190,6 +199,7 @@ OPTIONAL_ENV_VARS = {
         "url": "https://wandb.ai/authorize",
         "tools": ["rl_get_results", "rl_check_status"],
         "password": True,
+        "category": "tool",
     },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
@@ -197,97 +207,110 @@ OPTIONAL_ENV_VARS = {
         "url": "https://platform.openai.com/api-keys",
         "tools": ["voice_transcription", "openai_tts"],
         "password": True,
+        "category": "tool",
     },
-    "SLACK_BOT_TOKEN": {
-        "description": "Slack bot integration",
-        "prompt": "Slack Bot Token (xoxb-...)",
-        "url": "https://api.slack.com/apps",
-        "tools": ["slack"],
-        "password": True,
-    },
-    "SLACK_APP_TOKEN": {
-        "description": "Slack Socket Mode connection",
-        "prompt": "Slack App Token (xapp-...)",
-        "url": "https://api.slack.com/apps",
-        "tools": ["slack"],
-        "password": True,
-    },
-    # Messaging platform tokens
-    "TELEGRAM_BOT_TOKEN": {
-        "description": "Telegram bot token from @BotFather",
-        "prompt": "Telegram bot token",
-        "url": "https://t.me/BotFather",
-        "password": True,
-    },
-    "TELEGRAM_ALLOWED_USERS": {
-        "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
-        "prompt": "Allowed Telegram user IDs (comma-separated)",
-        "url": "https://t.me/userinfobot",
-        "password": False,
-    },
-    "DISCORD_BOT_TOKEN": {
-        "description": "Discord bot token from Developer Portal",
-        "prompt": "Discord bot token",
-        "url": "https://discord.com/developers/applications",
-        "password": True,
-    },
-    "DISCORD_ALLOWED_USERS": {
-        "description": "Comma-separated Discord user IDs allowed to use the bot",
-        "prompt": "Allowed Discord user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-    },
-    # Text-to-speech (premium providers)
     "ELEVENLABS_API_KEY": {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
         "password": True,
-    },
-    # Terminal configuration
-    "MESSAGING_CWD": {
-        "description": "Working directory for terminal commands via messaging (Telegram/Discord/etc). CLI always uses current directory.",
-        "prompt": "Messaging working directory (default: home)",
-        "url": None,
-        "password": False,
-    },
-    "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access",
-        "prompt": "Sudo password",
-        "url": None,
-        "password": True,
-    },
-    # Agent configuration
-    "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 60)",
-        "prompt": "Max iterations",
-        "url": None,
-        "password": False,
-    },
-    "HERMES_TOOL_PROGRESS": {
-        "description": "Send tool progress messages in messaging channels (true/false)",
-        "prompt": "Enable tool progress messages",
-        "url": None,
-        "password": False,
-    },
-    "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
-        "prompt": "Progress mode (all/new)",
-        "url": None,
-        "password": False,
+        "category": "tool",
     },
     "GITHUB_TOKEN": {
         "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
         "prompt": "GitHub Token",
         "url": "https://github.com/settings/tokens",
         "password": True,
+        "category": "tool",
+    },
+
+    # ── Messaging platforms ──
+    "TELEGRAM_BOT_TOKEN": {
+        "description": "Telegram bot token from @BotFather",
+        "prompt": "Telegram bot token",
+        "url": "https://t.me/BotFather",
+        "password": True,
+        "category": "messaging",
+    },
+    "TELEGRAM_ALLOWED_USERS": {
+        "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",
+        "prompt": "Allowed Telegram user IDs (comma-separated)",
+        "url": "https://t.me/userinfobot",
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_BOT_TOKEN": {
+        "description": "Discord bot token from Developer Portal",
+        "prompt": "Discord bot token",
+        "url": "https://discord.com/developers/applications",
+        "password": True,
+        "category": "messaging",
+    },
+    "DISCORD_ALLOWED_USERS": {
+        "description": "Comma-separated Discord user IDs allowed to use the bot",
+        "prompt": "Allowed Discord user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "SLACK_BOT_TOKEN": {
+        "description": "Slack bot integration",
+        "prompt": "Slack Bot Token (xoxb-...)",
+        "url": "https://api.slack.com/apps",
+        "password": True,
+        "category": "messaging",
+    },
+    "SLACK_APP_TOKEN": {
+        "description": "Slack Socket Mode connection",
+        "prompt": "Slack App Token (xapp-...)",
+        "url": "https://api.slack.com/apps",
+        "password": True,
+        "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {
-        "description": "Allow all users to interact with messaging bots (true/false). Default: false (deny unless allowlisted).",
+        "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
         "url": None,
         "password": False,
+        "category": "messaging",
         "advanced": True,
+    },
+
+    # ── Agent settings ──
+    "MESSAGING_CWD": {
+        "description": "Working directory for terminal commands via messaging",
+        "prompt": "Messaging working directory (default: home)",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "SUDO_PASSWORD": {
+        "description": "Sudo password for terminal commands requiring root access",
+        "prompt": "Sudo password",
+        "url": None,
+        "password": True,
+        "category": "setting",
+    },
+    "HERMES_MAX_ITERATIONS": {
+        "description": "Maximum tool-calling iterations per conversation (default: 60)",
+        "prompt": "Max iterations",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "HERMES_TOOL_PROGRESS": {
+        "description": "Send tool progress messages in messaging channels (true/false)",
+        "prompt": "Enable tool progress messages",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "HERMES_TOOL_PROGRESS_MODE": {
+        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
+        "prompt": "Progress mode (all/new)",
+        "url": None,
+        "password": False,
+        "category": "setting",
     },
 }
 

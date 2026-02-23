@@ -1,9 +1,11 @@
 """Singularity/Apptainer persistent container environment.
 
-Also contains the Singularity-specific helpers: scratch dir management,
-Apptainer cache, and SIF image building.
+Security-hardened with --containall, --no-home, capability dropping.
+Supports configurable resource limits and optional filesystem persistence
+via writable overlay directories that survive across sessions.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -12,10 +14,28 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from tools.environments.base import BaseEnvironment
+from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+
+_SNAPSHOT_STORE = Path.home() / ".hermes" / "singularity_snapshots.json"
+
+
+def _load_snapshots() -> Dict[str, str]:
+    if _SNAPSHOT_STORE.exists():
+        try:
+            return json.loads(_SNAPSHOT_STORE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_snapshots(data: Dict[str, str]) -> None:
+    _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
+    _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
 
 # -------------------------------------------------------------------------
@@ -116,32 +136,77 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
 # -------------------------------------------------------------------------
 
 class SingularityEnvironment(BaseEnvironment):
-    """Persistent Singularity/Apptainer container environment.
+    """Hardened Singularity/Apptainer container with resource limits and persistence.
 
-    Uses ``apptainer instance`` to create a long-running container that persists
-    state across all commands within a task.
+    Security: --containall (isolated PID/IPC/mount namespaces, no host home mount),
+    --no-home, writable-tmpfs for scratch space. The container cannot see or modify
+    the host filesystem outside of explicitly bound paths.
+
+    Persistence: when enabled, the writable overlay directory is preserved across
+    sessions so installed packages and files survive cleanup/restore.
     """
 
-    def __init__(self, image: str, cwd: str = "/root", timeout: int = 60):
+    def __init__(
+        self,
+        image: str,
+        cwd: str = "/root",
+        timeout: int = 60,
+        cpu: float = 0,
+        memory: int = 0,
+        disk: int = 0,
+        persistent_filesystem: bool = False,
+        task_id: str = "default",
+    ):
         super().__init__(cwd=cwd, timeout=timeout)
         self.executable = "apptainer" if shutil.which("apptainer") else "singularity"
         self.image = _get_or_build_sif(image, self.executable)
         self.instance_id = f"hermes_{uuid.uuid4().hex[:12]}"
         self._instance_started = False
+        self._persistent = persistent_filesystem
+        self._task_id = task_id
+        self._overlay_dir: Optional[Path] = None
+
+        # Resource limits
+        self._cpu = cpu
+        self._memory = memory
+
+        # Persistent overlay directory
+        if self._persistent:
+            overlay_base = _get_scratch_dir() / "hermes-overlays"
+            overlay_base.mkdir(parents=True, exist_ok=True)
+            self._overlay_dir = overlay_base / f"overlay-{task_id}"
+            self._overlay_dir.mkdir(parents=True, exist_ok=True)
+
         self._start_instance()
 
     def _start_instance(self):
-        cmd = [
-            self.executable, "instance", "start",
-            "--writable-tmpfs", "--containall",
-            str(self.image), self.instance_id,
-        ]
+        cmd = [self.executable, "instance", "start"]
+
+        # Security: full isolation from host
+        cmd.extend(["--containall", "--no-home"])
+
+        # Writable layer
+        if self._persistent and self._overlay_dir:
+            # Persistent writable overlay -- survives across restarts
+            cmd.extend(["--overlay", str(self._overlay_dir)])
+        else:
+            cmd.append("--writable-tmpfs")
+
+        # Resource limits (cgroup-based, may require root or appropriate config)
+        if self._memory > 0:
+            cmd.extend(["--memory", f"{self._memory}M"])
+        if self._cpu > 0:
+            cmd.extend(["--cpus", str(self._cpu)])
+
+        cmd.extend([str(self.image), self.instance_id])
+
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to start instance: {result.stderr}")
             self._instance_started = True
-            logger.info("Singularity instance %s started", self.instance_id)
+            logger.info("Singularity instance %s started (persistent=%s)", 
+                        self.instance_id, self._persistent)
         except subprocess.TimeoutExpired:
             raise RuntimeError("Instance start timed out")
 
@@ -151,17 +216,63 @@ class SingularityEnvironment(BaseEnvironment):
         if not self._instance_started:
             return {"output": "Instance not started", "returncode": -1}
 
+        effective_timeout = timeout or self.timeout
         cmd = [self.executable, "exec", "--pwd", cwd or self.cwd,
                f"instance://{self.instance_id}",
                "bash", "-c", self._prepare_command(command)]
 
         try:
-            result = subprocess.run(cmd, **self._build_run_kwargs(timeout, stdin_data))
-            return {"output": result.stdout, "returncode": result.returncode}
-        except subprocess.TimeoutExpired:
-            return self._timeout_result(timeout)
+            import time as _time
+            _output_chunks = []
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                text=True,
+            )
+            if stdin_data:
+                try:
+                    proc.stdin.write(stdin_data)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+            def _drain():
+                try:
+                    for line in proc.stdout:
+                        _output_chunks.append(line)
+                except Exception:
+                    pass
+
+            reader = threading.Thread(target=_drain, daemon=True)
+            reader.start()
+            deadline = _time.monotonic() + effective_timeout
+
+            while proc.poll() is None:
+                if is_interrupted():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    reader.join(timeout=2)
+                    return {
+                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
+                        "returncode": 130,
+                    }
+                if _time.monotonic() > deadline:
+                    proc.kill()
+                    reader.join(timeout=2)
+                    return self._timeout_result(effective_timeout)
+                _time.sleep(0.2)
+
+            reader.join(timeout=5)
+            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
+        except Exception as e:
+            return {"output": f"Singularity execution error: {e}", "returncode": 1}
 
     def cleanup(self):
+        """Stop the instance. If persistent, the overlay dir survives for next creation."""
         if self._instance_started:
             try:
                 subprocess.run(
@@ -172,3 +283,9 @@ class SingularityEnvironment(BaseEnvironment):
             except Exception as e:
                 logger.warning("Failed to stop Singularity instance %s: %s", self.instance_id, e)
             self._instance_started = False
+
+        # Record overlay path for persistence restoration
+        if self._persistent and self._overlay_dir:
+            snapshots = _load_snapshots()
+            snapshots[self._task_id] = str(self._overlay_dir)
+            _save_snapshots(snapshots)

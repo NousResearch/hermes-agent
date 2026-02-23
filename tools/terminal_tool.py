@@ -49,20 +49,7 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-_interrupt_event = threading.Event()
-
-
-def set_interrupt_event(active: bool) -> None:
-    """Called by the agent to signal or clear the interrupt."""
-    if active:
-        _interrupt_event.set()
-    else:
-        _interrupt_event.clear()
-
-
-def is_interrupted() -> bool:
-    """Check if an interrupt has been requested."""
-    return _interrupt_event.is_set()
+from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
 
 
 # Add mini-swe-agent to path if not installed
@@ -459,11 +446,18 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": int(os.getenv("TERMINAL_SSH_PORT", "22")),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),  # Path to private key (optional, uses ssh-agent if empty)
+        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        # Container resource config (applies to docker, singularity, modal -- ignored for local/ssh)
+        "container_cpu": float(os.getenv("TERMINAL_CONTAINER_CPU", "1")),
+        "container_memory": int(os.getenv("TERMINAL_CONTAINER_MEMORY", "5120")),     # MB (default 5GB)
+        "container_disk": int(os.getenv("TERMINAL_CONTAINER_DISK", "51200")),        # MB (default 50GB)
+        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
     }
 
 
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_config: dict = None):
+def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
+                        ssh_config: dict = None, container_config: dict = None,
+                        task_id: str = "default"):
     """
     Create an execution environment from mini-swe-agent.
     
@@ -473,25 +467,49 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
+        container_config: Resource config for container backends (cpu, memory, disk, persistent)
+        task_id: Task identifier for environment reuse and snapshot keying
         
     Returns:
         Environment instance with execute() method
     """
+    cc = container_config or {}
+    cpu = cc.get("container_cpu", 1)
+    memory = cc.get("container_memory", 5120)
+    disk = cc.get("container_disk", 51200)
+    persistent = cc.get("container_persistent", True)
+
     if env_type == "local":
-        # Use our custom LocalEnvironment with sudo support and non-blocking stdin
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        # Use custom Docker wrapper with sudo support and non-blocking stdin
-        return _DockerEnvironment(image=image, cwd=cwd, timeout=timeout)
+        return _DockerEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=cpu, memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
     
     elif env_type == "singularity":
-        # Use custom Singularity environment with better space management
-        return _SingularityEnvironment(image=image, cwd=cwd, timeout=timeout)
+        return _SingularityEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=cpu, memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
     
     elif env_type == "modal":
-        # Use custom Modal wrapper with sudo support
-        return _ModalEnvironment(image=image, cwd=cwd, timeout=timeout)
+        sandbox_kwargs = {}
+        if cpu > 0:
+            sandbox_kwargs["cpu"] = cpu
+        if memory > 0:
+            sandbox_kwargs["memory"] = memory
+        if disk > 0:
+            sandbox_kwargs["ephemeral_disk"] = disk
+        
+        return _ModalEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            modal_sandbox_kwargs=sandbox_kwargs,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
     
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
@@ -502,7 +520,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int, ssh_c
             port=ssh_config.get("port", 22),
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
-            timeout=timeout
+            timeout=timeout,
         )
     
     else:
@@ -830,12 +848,23 @@ def terminal_tool(
                                 "key": config.get("ssh_key", ""),
                             }
 
+                        container_config = None
+                        if env_type in ("docker", "singularity", "modal"):
+                            container_config = {
+                                "container_cpu": config.get("container_cpu", 1),
+                                "container_memory": config.get("container_memory", 5120),
+                                "container_disk": config.get("container_disk", 51200),
+                                "container_persistent": config.get("container_persistent", True),
+                            }
+
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
                             cwd=cwd,
                             timeout=effective_timeout,
-                            ssh_config=ssh_config
+                            ssh_config=ssh_config,
+                            container_config=container_config,
+                            task_id=effective_task_id,
                         )
                     except ImportError as e:
                         return json.dumps({

@@ -1161,8 +1161,8 @@ class GatewayRunner:
             enabled_toolsets = [default_toolset]
         
         # Check if tool progress notifications are enabled
-        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "").lower() in ("1", "true", "yes")
-        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "new")  # "all" or "new" (only new tools)
+        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "true").lower() in ("1", "true", "yes")
+        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "all")  # "all" or "new" (only new tools)
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None

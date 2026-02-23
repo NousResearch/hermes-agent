@@ -166,8 +166,8 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         
         menu_items = [f"  {item}" for item in items] + ["  Continue →"]
         
-        # Build preselected indices string (e.g. "0,2,4")
-        preselected = [str(i) for i in pre_selected]
+        # Map pre-selected indices to the actual menu entry strings
+        preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]
         
         terminal_menu = TerminalMenu(
             menu_items,
@@ -999,12 +999,12 @@ def run_setup_wizard(args):
     print_info("Send status messages when the agent uses tools.")
     print_info("Example: '💻 ls -la...' or '🔍 web_search...'")
     
-    current_progress = get_env_value('HERMES_TOOL_PROGRESS') or 'false'
+    current_progress = get_env_value('HERMES_TOOL_PROGRESS') or 'true'
     if prompt_yes_no("Enable tool progress messages?", current_progress.lower() in ('1', 'true', 'yes')):
         save_env_value("HERMES_TOOL_PROGRESS", "true")
         
         # Progress mode
-        current_mode = get_env_value('HERMES_TOOL_PROGRESS_MODE') or 'new'
+        current_mode = get_env_value('HERMES_TOOL_PROGRESS_MODE') or 'all'
         print_info("  Mode options:")
         print_info("    'new' - Only when switching tools (less spam)")
         print_info("    'all' - Every tool call")
@@ -1019,26 +1019,21 @@ def run_setup_wizard(args):
     # Step 6: Context Compression
     # =========================================================================
     print_header("Context Compression")
-    print_info("Automatically summarize old messages when context gets too long.")
+    print_info("Automatically summarizes old messages when context gets too long.")
+    print_info("Higher threshold = compress later (use more context). Lower = compress sooner.")
     
-    compression = config.get('compression', {})
-    current_enabled = compression.get('enabled', True)
+    config.setdefault('compression', {})['enabled'] = True
     
-    if prompt_yes_no(f"Enable context compression?", current_enabled):
-        config.setdefault('compression', {})['enabled'] = True
-        
-        current_threshold = compression.get('threshold', 0.85)
-        threshold_str = prompt(f"Compression threshold (0.5-0.95)", str(current_threshold))
-        try:
-            threshold = float(threshold_str)
-            if 0.5 <= threshold <= 0.95:
-                config['compression']['threshold'] = threshold
-        except ValueError:
-            pass
-        
-        print_success("Context compression enabled")
-    else:
-        config.setdefault('compression', {})['enabled'] = False
+    current_threshold = config.get('compression', {}).get('threshold', 0.85)
+    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
+    try:
+        threshold = float(threshold_str)
+        if 0.5 <= threshold <= 0.95:
+            config['compression']['threshold'] = threshold
+    except ValueError:
+        pass
+    
+    print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}")
     
     # =========================================================================
     # Step 7: Messaging Platforms (Optional)

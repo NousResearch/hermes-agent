@@ -73,7 +73,7 @@ def _deliver_result(job: dict, content: str) -> None:
             # Fall back to home channel
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if not chat_id:
-                logger.warning("Job '%s' deliver=%s but no chat_id or home channel", job["id"], deliver)
+                logger.warning("Job '%s' deliver=%s but no chat_id or home channel. Set via: hermes config set %s_HOME_CHANNEL <channel_id>", job["id"], deliver, platform_name.upper())
                 return
 
     from tools.send_message_tool import _send_to_platform

@@ -1329,8 +1329,8 @@ class GatewayRunner:
                     if content:
                         # Tag cross-platform mirror messages so the agent knows their origin
                         if msg.get("mirror"):
-                            source = msg.get("mirror_source", "another session")
-                            content = f"[Delivered from {source}] {content}"
+                            mirror_src = msg.get("mirror_source", "another session")
+                            content = f"[Delivered from {mirror_src}] {content}"
                         agent_history.append({"role": role, "content": content})
             
             result = agent.run_conversation(message, conversation_history=agent_history)

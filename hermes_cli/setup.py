@@ -472,43 +472,72 @@ def run_setup_wizard(args):
                 else:
                     print_warning(f"  Skipped {var['name']}")
         
-        # Handle missing optional env vars — use a checkbox to let the
-        # user pick which tools to configure, then prompt for keys.
-        # Filter out "advanced" vars (handled elsewhere, e.g. provider step).
-        missing_tool_vars = [v for v in missing_optional if not v.get("advanced")]
-        
-        if missing_tool_vars:
+        # Split missing optional vars by category
+        missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
+        missing_messaging = [v for v in missing_optional if v.get("category") == "messaging" and not v.get("advanced")]
+        # Settings are silently applied with defaults in quick mode
+
+        # ── Tool API keys (checklist) ──
+        if missing_tools:
             print()
-            print_header("Optional Tools (Quick Setup)")
-            
-            # Build checklist labels from the missing vars
+            print_header("Tool API Keys")
+
             checklist_labels = []
-            for var in missing_tool_vars:
+            for var in missing_tools:
                 tools = var.get("tools", [])
                 tools_str = f" → {', '.join(tools[:2])}" if tools else ""
-                checklist_labels.append(f"{var['name']}{tools_str}")
-            
+                checklist_labels.append(f"{var.get('description', var['name'])}{tools_str}")
+
             selected_indices = prompt_checklist(
-                "Which missing tools would you like to configure?",
+                "Which tools would you like to configure?",
                 checklist_labels,
             )
-            
-            # Prompt for keys only for selected tools
+
             for idx in selected_indices:
-                var = missing_tool_vars[idx]
+                var = missing_tools[idx]
                 print()
                 print(color(f"  {var['name']}", Colors.CYAN))
                 if var.get("url"):
                     print_info(f"  Get key at: {var['url']}")
-                
+
                 if var.get("password"):
                     value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
                 else:
                     value = prompt(f"  {var.get('prompt', var['name'])}")
-                
+
                 if value:
                     save_env_value(var["name"], value)
                     print_success(f"  Saved {var['name']}")
+
+        # ── Messaging platforms (ask per-platform, not a flat list) ──
+        if missing_messaging:
+            print()
+            print_header("Messaging Platforms")
+            print_info("Connect Hermes to messaging apps to chat from anywhere.")
+            print_info("You can configure these later with 'hermes setup'.")
+
+            # Group by platform
+            platforms = {}
+            for var in missing_messaging:
+                name = var["name"]
+                if "TELEGRAM" in name:
+                    platforms.setdefault("Telegram", []).append(var)
+                elif "DISCORD" in name:
+                    platforms.setdefault("Discord", []).append(var)
+                elif "SLACK" in name:
+                    platforms.setdefault("Slack", []).append(var)
+
+            for platform_name, vars_list in platforms.items():
+                print()
+                if prompt_yes_no(f"  Set up {platform_name}?", False):
+                    for var in vars_list:
+                        if var.get("password"):
+                            value = prompt(f"    {var.get('prompt', var['name'])}", password=True)
+                        else:
+                            value = prompt(f"    {var.get('prompt', var['name'])}")
+                        if value:
+                            save_env_value(var["name"], value)
+                            print_success(f"    Saved {var['name']}")
         
         # Handle missing config fields
         if missing_config:

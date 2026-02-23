@@ -29,7 +29,7 @@ from tools.web_tools import (
     web_extract_tool, 
     web_crawl_tool,
     check_firecrawl_api_key,
-    check_nous_api_key,
+    check_auxiliary_model,
     get_debug_session_info
 )
 
@@ -126,7 +126,7 @@ class WebToolsTester:
             self.log_result("Firecrawl API Key", "passed", "Found")
         
         # Check Nous API key (optional)
-        if not check_nous_api_key():
+        if not check_auxiliary_model():
             self.log_result("Nous API Key", "skipped", "NOUS_API_KEY not set (LLM tests will be skipped)")
             self.test_llm = False
         else:
@@ -576,7 +576,7 @@ class WebToolsTester:
             "results": self.test_results,
             "environment": {
                 "firecrawl_api_key": check_firecrawl_api_key(),
-                "nous_api_key": check_nous_api_key(),
+                "nous_api_key": check_auxiliary_model(),
                 "debug_mode": get_debug_session_info()["enabled"]
             }
         }

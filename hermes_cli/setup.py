@@ -174,7 +174,6 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
             multi_select=True,
             show_multi_select_hint=True,
             multi_select_cursor="[✓] ",
-            multi_select_cursor_brackets_style=("", ""),
             multi_select_select_on_accept=False,
             multi_select_empty_ok=True,
             preselected_entries=preselected if preselected else None,

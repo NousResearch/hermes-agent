@@ -253,43 +253,54 @@ class GatewayRunner:
         Check if a user is authorized to use the bot.
         
         Checks in order:
-        1. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        2. DM pairing approved list
-        3. If no allowlists AND no pairing approvals exist, allow all (open access)
+        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        3. DM pairing approved list
+        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
+        5. Default: deny
         """
         user_id = source.user_id
         if not user_id:
-            return False  # Can't verify unknown users
-        
-        # Check platform-specific allowlist first
+            return False
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
         }
-        
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""))
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "")
-        
+        platform_allow_all_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+        }
+
+        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
+            return True
+
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
-        
-        # If no allowlists configured: default-deny unless explicitly opted in.
-        # Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env for open access.
+
+        # Check platform-specific and global allowlists
+        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+
         if not platform_allowlist and not global_allowlist:
-            allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
-            return allow_all
-        
+            # No allowlists configured -- check global allow-all flag
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+
         # Check if user is in any allowlist
         allowed_ids = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(","))
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
         if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(","))
-        
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
         return user_id in allowed_ids
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:

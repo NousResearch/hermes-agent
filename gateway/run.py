@@ -202,6 +202,16 @@ class GatewayRunner:
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
+        
+        # Build initial channel directory for send_message name resolution
+        try:
+            from gateway.channel_directory import build_channel_directory
+            directory = build_channel_directory(self.adapters)
+            ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
+            logger.info("Channel directory built: %d target(s)", ch_count)
+        except Exception as e:
+            logger.warning("Channel directory build failed: %s", e)
+        
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -220,6 +230,10 @@ class GatewayRunner:
         
         self.adapters.clear()
         self._shutdown_event.set()
+        
+        from gateway.status import remove_pid_file
+        remove_pid_file()
+        
         logger.info("Gateway stopped")
     
     async def wait_for_shutdown(self) -> None:
@@ -387,6 +401,9 @@ class GatewayRunner:
         if command == "undo":
             return await self._handle_undo_command(event)
         
+        if command in ["set-home", "sethome"]:
+            return await self._handle_set_home_command(event)
+        
         # Check for pending exec approval responses
         session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
         if session_key_preview in self._pending_approvals:
@@ -441,13 +458,29 @@ class GatewayRunner:
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         
-        # First-message onboarding for brand-new messaging platform users
-        if not history:
+        # First-message onboarding -- only on the very first interaction ever
+        if not history and not self.session_store.has_any_sessions():
             context_prompt += (
-                "\n\n[System note: This is the user's very first message in this session. "
+                "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
             )
+        
+        # One-time prompt if no home channel is set for this platform
+        if not history and source.platform and source.platform != Platform.LOCAL:
+            platform_name = source.platform.value
+            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+            if not os.getenv(env_key):
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    await adapter.send(
+                        source.chat_id,
+                        f"📬 No home channel is set for {platform_name.title()}. "
+                        f"A home channel is where Hermes delivers cron job results "
+                        f"and cross-platform messages.\n\n"
+                        f"Type /set-home to make this chat your home channel, "
+                        f"or ignore to skip."
+                    )
         
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -712,6 +745,7 @@ class GatewayRunner:
             "`/personality [name]` — Set a personality\n"
             "`/retry` — Retry your last message\n"
             "`/undo` — Remove the last exchange\n"
+            "`/set-home` — Set this chat as the home channel\n"
             "`/help` — Show this message"
         )
     
@@ -816,6 +850,36 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
+    
+    async def _handle_set_home_command(self, event: MessageEvent) -> str:
+        """Handle /set-home command -- set the current chat as the platform's home channel."""
+        source = event.source
+        platform_name = source.platform.value if source.platform else "unknown"
+        chat_id = source.chat_id
+        chat_name = source.chat_name or chat_id
+        
+        env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+        
+        # Save to config.yaml
+        try:
+            import yaml
+            config_path = Path.home() / '.hermes' / 'config.yaml'
+            user_config = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    user_config = yaml.safe_load(f) or {}
+            user_config[env_key] = chat_id
+            with open(config_path, 'w') as f:
+                yaml.dump(user_config, f, default_flow_style=False)
+            # Also set in the current environment so it takes effect immediately
+            os.environ[env_key] = str(chat_id)
+        except Exception as e:
+            return f"Failed to save home channel: {e}"
+        
+        return (
+            f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
+            f"Cron jobs and cross-platform messages will be delivered here."
+        )
     
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
@@ -1254,6 +1318,10 @@ class GatewayRunner:
                     # Simple text message - just need role and content
                     content = msg.get("content")
                     if content:
+                        # Tag cross-platform mirror messages so the agent knows their origin
+                        if msg.get("mirror"):
+                            source = msg.get("mirror_source", "another session")
+                            content = f"[Delivered from {source}] {content}"
                         agent_history.append({"role": role, "content": content})
             
             result = agent.run_conversation(message, conversation_history=agent_history)
@@ -1409,20 +1477,21 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
 
-    Every 60th tick (~once per hour) the image/audio cache is pruned so
-    stale temp files don't accumulate.
+    Also refreshes the channel directory every 5 minutes and prunes the
+    image/audio cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache
 
-    IMAGE_CACHE_EVERY = 60  # ticks — once per hour at default 60s interval
+    IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
+    CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -1433,6 +1502,14 @@ def _start_cron_ticker(stop_event: threading.Event, interval: int = 60):
             logger.debug("Cron tick error: %s", e)
 
         tick_count += 1
+
+        if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
+            try:
+                from gateway.channel_directory import build_channel_directory
+                build_channel_directory(adapters)
+            except Exception as e:
+                logger.debug("Channel directory refresh error: %s", e)
+
         if tick_count % IMAGE_CACHE_EVERY == 0:
             try:
                 removed = cleanup_image_cache(max_age_hours=24)
@@ -1483,11 +1560,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     if not success:
         return False
     
+    # Write PID file so CLI can detect gateway is running
+    import atexit
+    from gateway.status import write_pid_file, remove_pid_file
+    write_pid_file()
+    atexit.register(remove_pid_file)
+    
     # Start background cron ticker so scheduled jobs fire automatically
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
+        kwargs={"adapters": runner.adapters},
         daemon=True,
         name="cron-ticker",
     )

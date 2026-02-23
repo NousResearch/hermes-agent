@@ -921,9 +921,26 @@ def run_setup_wizard(args):
             else:
                 print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
             
-            home_channel = prompt("Home channel ID (optional, for cron delivery)")
-            if home_channel:
-                save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+            # Home channel setup with better guidance
+            print()
+            print_info("📬 Home Channel: where Hermes delivers cron job results,")
+            print_info("   cross-platform messages, and notifications.")
+            print_info("   For Telegram DMs, this is your user ID (same as above).")
+            
+            first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
+            if first_user_id:
+                if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
+                    save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
+                    print_success(f"Telegram home channel set to {first_user_id}")
+                else:
+                    home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
+                    if home_channel:
+                        save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+            else:
+                print_info("   You can also set this later by typing /set-home in your Telegram chat.")
+                home_channel = prompt("Home channel ID (leave empty to set later)")
+                if home_channel:
+                    save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
     
     # Check/update existing Telegram allowlist
     elif existing_telegram:
@@ -958,14 +975,23 @@ def run_setup_wizard(args):
             print_info("   1. Enable Developer Mode in Discord settings")
             print_info("   2. Right-click your name → Copy ID")
             print()
-            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+            print_info("   You can also use Discord usernames (resolved on gateway start).")
+            print()
+            allowed_users = prompt("Allowed user IDs or usernames (comma-separated, leave empty for open access)")
             if allowed_users:
                 save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Discord allowlist configured")
             else:
                 print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
             
-            home_channel = prompt("Home channel ID (optional, for cron delivery)")
+            # Home channel setup with better guidance
+            print()
+            print_info("📬 Home Channel: where Hermes delivers cron job results,")
+            print_info("   cross-platform messages, and notifications.")
+            print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
+            print_info("   (requires Developer Mode in Discord settings)")
+            print_info("   You can also set this later by typing /set-home in a Discord channel.")
+            home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
             if home_channel:
                 save_env_value("DISCORD_HOME_CHANNEL", home_channel)
     
@@ -1039,6 +1065,25 @@ def run_setup_wizard(args):
         print_info("Start the gateway after setup to bring your bots online:")
         print_info("   hermes gateway              # Run in foreground")
         print_info("   hermes gateway install      # Install as background service (Linux)")
+        
+        # Check if any home channels are missing
+        missing_home = []
+        if get_env_value('TELEGRAM_BOT_TOKEN') and not get_env_value('TELEGRAM_HOME_CHANNEL'):
+            missing_home.append("Telegram")
+        if get_env_value('DISCORD_BOT_TOKEN') and not get_env_value('DISCORD_HOME_CHANNEL'):
+            missing_home.append("Discord")
+        if get_env_value('SLACK_BOT_TOKEN') and not get_env_value('SLACK_HOME_CHANNEL'):
+            missing_home.append("Slack")
+        
+        if missing_home:
+            print()
+            print_info(f"⚠️  No home channel set for: {', '.join(missing_home)}")
+            print_info("   Without a home channel, cron jobs and cross-platform")
+            print_info("   messages can't be delivered to those platforms.")
+            print_info("   Set one later with /set-home in your chat, or:")
+            for plat in missing_home:
+                print_info(f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>")
+        
         print_info("━" * 50)
     
     # =========================================================================

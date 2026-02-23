@@ -119,6 +119,12 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
     else:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+        # Mirror the delivered content into the target's gateway session
+        try:
+            from gateway.mirror import mirror_to_session
+            mirror_to_session(platform_name, chat_id, content, source_label="cron")
+        except Exception:
+            pass
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:

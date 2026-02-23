@@ -76,7 +76,12 @@ class LocalEnvironment(BaseEnvironment):
             while proc.poll() is None:
                 if _interrupt_event.is_set():
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(pgid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
                     reader.join(timeout=2)

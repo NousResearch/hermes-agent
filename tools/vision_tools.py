@@ -234,6 +234,10 @@ async def vision_analyze_tool(
     should_cleanup = True
     
     try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return json.dumps({"success": False, "error": "Interrupted"})
+
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         

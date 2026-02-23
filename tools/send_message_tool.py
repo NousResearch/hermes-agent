@@ -92,6 +92,10 @@ def _handle_send(args):
                 f"Try using a numeric channel ID instead."
             })
 
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return json.dumps({"error": "Interrupted"})
+
     try:
         from gateway.config import load_gateway_config, Platform
         config = load_gateway_config()

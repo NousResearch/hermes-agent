@@ -465,11 +465,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
     
     try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return json.dumps({"error": "Interrupted", "success": False})
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
         
-        # Use Firecrawl's v2 search functionality WITHOUT scraping
-        # We only want search result metadata, not scraped content
-        # Docs: https://docs.firecrawl.dev/features/search
         response = _get_firecrawl_client().search(
             query=query,
             limit=limit
@@ -601,7 +602,12 @@ async def web_extract_tool(
         # Batch scraping adds complexity without much benefit for small numbers of URLs
         results: List[Dict[str, Any]] = []
         
+        from tools.interrupt import is_interrupted as _is_interrupted
         for url in urls:
+            if _is_interrupted():
+                results.append({"url": url, "error": "Interrupted", "title": ""})
+                continue
+
             try:
                 logger.info("Scraping: %s", url)
                 scrape_result = _get_firecrawl_client().scrape(
@@ -876,7 +882,10 @@ async def web_crawl_tool(
         if instructions:
             logger.info("Instructions parameter ignored (not supported in crawl API)")
         
-        # Use the crawl method which waits for completion automatically
+        from tools.interrupt import is_interrupted as _is_int
+        if _is_int():
+            return json.dumps({"error": "Interrupted", "success": False})
+
         try:
             crawl_result = _get_firecrawl_client().crawl(
                 url=url,

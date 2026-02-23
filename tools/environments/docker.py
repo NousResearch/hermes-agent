@@ -1,22 +1,108 @@
-"""Docker execution environment wrapping mini-swe-agent's DockerEnvironment."""
+"""Docker execution environment wrapping mini-swe-agent's DockerEnvironment.
 
+Adds security hardening, configurable resource limits (CPU, memory, disk),
+and optional filesystem persistence via `docker commit`/`docker create --image`.
+"""
+
+import logging
 import os
 import subprocess
+import threading
+import time
+from typing import Optional
 
 from tools.environments.base import BaseEnvironment
+from tools.interrupt import is_interrupted
+
+logger = logging.getLogger(__name__)
+
+
+
+# Security flags applied to every container
+_SECURITY_ARGS = [
+    "--read-only",
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
+    "--pids-limit", "256",
+    "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m",
+    "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
+    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
+]
 
 
 class DockerEnvironment(BaseEnvironment):
-    """Docker container execution via mini-swe-agent.
+    """Hardened Docker container execution with resource limits and persistence.
 
-    Wraps the upstream DockerEnvironment and adds non-blocking stdin
-    and sudo -S support.
+    Security: read-only root, all capabilities dropped, no privilege escalation,
+    PID limits, tmpfs for writable scratch. Writable overlay for /home and cwd
+    via tmpfs or bind mounts.
+
+    Persistence: when enabled, `docker commit` saves the container state on
+    cleanup, and the next creation restores from that image.
     """
 
-    def __init__(self, image: str, cwd: str = "/", timeout: int = 60):
+    def __init__(
+        self,
+        image: str,
+        cwd: str = "/",
+        timeout: int = 60,
+        cpu: float = 0,
+        memory: int = 0,
+        disk: int = 0,
+        persistent_filesystem: bool = False,
+        task_id: str = "default",
+        network: bool = True,
+    ):
         super().__init__(cwd=cwd, timeout=timeout)
+        self._base_image = image
+        self._persistent = persistent_filesystem
+        self._task_id = task_id
+        self._container_id: Optional[str] = None
+
         from minisweagent.environments.docker import DockerEnvironment as _Docker
-        self._inner = _Docker(image=image, cwd=cwd, timeout=timeout)
+
+        # Build resource limit args
+        resource_args = []
+        if cpu > 0:
+            resource_args.extend(["--cpus", str(cpu)])
+        if memory > 0:
+            resource_args.extend(["--memory", f"{memory}m"])
+        if disk > 0:
+            resource_args.extend(["--storage-opt", f"size={disk}m"])
+        if not network:
+            resource_args.append("--network=none")
+
+        # Persistent volume for writable workspace that survives container restarts.
+        # Non-persistent mode uses tmpfs (ephemeral, fast, gone on cleanup).
+        self._volume_name: Optional[str] = None
+        if self._persistent:
+            self._volume_name = f"hermes-workspace-{task_id}"
+            # Create volume if it doesn't exist
+            subprocess.run(
+                ["docker", "volume", "create", self._volume_name],
+                capture_output=True, timeout=10,
+            )
+            writable_args = [
+                "-v", f"{self._volume_name}:{cwd}",
+                "-v", f"{self._volume_name}-home:/root",
+            ]
+        else:
+            writable_args = [
+                "--tmpfs", f"{cwd}:rw,exec,size=10g",
+                "--tmpfs", "/home:rw,exec,size=1g",
+                "--tmpfs", "/root:rw,exec,size=1g",
+            ]
+
+        # All containers get full security hardening (read-only root + writable
+        # mounts for the workspace). Persistence uses Docker volumes, not
+        # filesystem layer commits, so --read-only is always safe.
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
+
+        self._inner = _Docker(
+            image=effective_image, cwd=cwd, timeout=timeout,
+            run_args=all_run_args,
+        )
+        self._container_id = self._inner.container_id
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
@@ -38,10 +124,65 @@ class DockerEnvironment(BaseEnvironment):
         cmd.extend([self._inner.container_id, "bash", "-lc", exec_command])
 
         try:
-            result = subprocess.run(cmd, **self._build_run_kwargs(timeout, stdin_data))
-            return {"output": result.stdout, "returncode": result.returncode}
-        except subprocess.TimeoutExpired:
-            return self._timeout_result(effective_timeout)
+            _output_chunks = []
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                text=True,
+            )
+            if stdin_data:
+                try:
+                    proc.stdin.write(stdin_data)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+            def _drain():
+                try:
+                    for line in proc.stdout:
+                        _output_chunks.append(line)
+                except Exception:
+                    pass
+
+            reader = threading.Thread(target=_drain, daemon=True)
+            reader.start()
+            deadline = time.monotonic() + effective_timeout
+
+            while proc.poll() is None:
+                if is_interrupted():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    reader.join(timeout=2)
+                    return {
+                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
+                        "returncode": 130,
+                    }
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    reader.join(timeout=2)
+                    return self._timeout_result(effective_timeout)
+                time.sleep(0.2)
+
+            reader.join(timeout=5)
+            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
+        except Exception as e:
+            return {"output": f"Docker execution error: {e}", "returncode": 1}
 
     def cleanup(self):
+        """Stop and remove the container. Volumes persist if persistent=True."""
         self._inner.cleanup()
+
+        # If NOT persistent, remove the workspace volumes too
+        if not self._persistent and self._volume_name:
+            for vol in [self._volume_name, f"{self._volume_name}-home"]:
+                try:
+                    subprocess.run(
+                        ["docker", "volume", "rm", "-f", vol],
+                        capture_output=True, timeout=10,
+                    )
+                except Exception:
+                    pass

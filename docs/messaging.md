@@ -538,6 +538,16 @@ tail -f ~/.hermes/logs/gateway.log
 python cli.py --gateway
 ```
 
+## Interrupting the Agent
+
+Send any message while the agent is working to interrupt it. The message becomes the next prompt after the agent stops. Key behaviors:
+
+- **In-progress terminal commands are killed immediately** -- SIGTERM first, SIGKILL after 1 second if the process resists. Works on local, Docker, SSH, Singularity, and Modal backends.
+- **Tool calls are cancelled** -- if the model generated multiple tool calls in one batch, only the currently-executing one runs. The rest are skipped.
+- **Multiple messages are combined** -- if you send "Stop!" then "Do X instead" while the agent is stopping, both messages are joined into one prompt (separated by newline).
+- **`/stop` command** -- interrupts without queuing a follow-up message.
+- **Priority processing** -- interrupt signals bypass command parsing and session creation for minimal latency.
+
 ## Storage Locations
 
 | Path | Purpose |

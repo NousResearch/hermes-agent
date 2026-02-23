@@ -80,11 +80,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         
         try:
-            # Set up intents
+            # Set up intents -- members intent needed for username-to-ID resolution
             intents = Intents.default()
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
+            intents.members = True
             
             # Create bot
             self._client = commands.Bot(
@@ -92,24 +93,30 @@ class DiscordAdapter(BasePlatformAdapter):
                 intents=intents,
             )
             
-            # Parse allowed user IDs for button authorization
+            # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
             if allowed_env:
                 self._allowed_user_ids = {
                     uid.strip() for uid in allowed_env.split(",") if uid.strip()
                 }
             
+            adapter_self = self  # capture for closure
+            
             # Register event handlers
             @self._client.event
             async def on_ready():
-                print(f"[{self.name}] Connected as {self._client.user}")
+                print(f"[{adapter_self.name}] Connected as {adapter_self._client.user}")
+                
+                # Resolve any usernames in the allowed list to numeric IDs
+                await adapter_self._resolve_allowed_usernames()
+                
                 # Sync slash commands with Discord
                 try:
-                    synced = await self._client.tree.sync()
-                    print(f"[{self.name}] Synced {len(synced)} slash command(s)")
+                    synced = await adapter_self._client.tree.sync()
+                    print(f"[{adapter_self.name}] Synced {len(synced)} slash command(s)")
                 except Exception as e:
-                    print(f"[{self.name}] Slash command sync failed: {e}")
-                self._ready_event.set()
+                    print(f"[{adapter_self.name}] Slash command sync failed: {e}")
+                adapter_self._ready_event.set()
             
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -341,6 +348,70 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
     
+    async def _resolve_allowed_usernames(self) -> None:
+        """
+        Resolve non-numeric entries in DISCORD_ALLOWED_USERS to Discord user IDs.
+
+        Users can specify usernames (e.g. "teknium") or display names instead of
+        raw numeric IDs.  After resolution, the env var and internal set are updated
+        so authorization checks work with IDs only.
+        """
+        if not self._allowed_user_ids or not self._client:
+            return
+
+        numeric_ids = set()
+        to_resolve = set()
+
+        for entry in self._allowed_user_ids:
+            if entry.isdigit():
+                numeric_ids.add(entry)
+            else:
+                to_resolve.add(entry.lower())
+
+        if not to_resolve:
+            return
+
+        print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
+        resolved_count = 0
+
+        for guild in self._client.guilds:
+            # Fetch full member list (requires members intent)
+            try:
+                members = guild.members
+                if len(members) < guild.member_count:
+                    members = [m async for m in guild.fetch_members(limit=None)]
+            except Exception as e:
+                logger.warning("Failed to fetch members for guild %s: %s", guild.name, e)
+                continue
+
+            for member in members:
+                name_lower = member.name.lower()
+                display_lower = member.display_name.lower()
+                global_lower = (member.global_name or "").lower()
+
+                matched = name_lower in to_resolve or display_lower in to_resolve or global_lower in to_resolve
+                if matched:
+                    uid = str(member.id)
+                    numeric_ids.add(uid)
+                    resolved_count += 1
+                    matched_name = name_lower if name_lower in to_resolve else (
+                        display_lower if display_lower in to_resolve else global_lower
+                    )
+                    to_resolve.discard(matched_name)
+                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
+
+            if not to_resolve:
+                break
+
+        if to_resolve:
+            print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
+
+        # Update internal set and env var so gateway auth checks use IDs
+        self._allowed_user_ids = numeric_ids
+        os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        if resolved_count:
+            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+
     def format_message(self, content: str) -> str:
         """
         Format message for Discord.

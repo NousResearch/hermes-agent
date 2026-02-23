@@ -472,7 +472,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Also add disabled toolsets so they show in the banner
     for item in unavailable_toolsets:
         # Map the internal toolset ID to display name
-        toolset_id = item["id"]
+        toolset_id = item["name"]
         display_name = f"{toolset_id}_tools" if not toolset_id.endswith("_tools") else toolset_id
         if display_name not in toolsets_dict:
             toolsets_dict[display_name] = []

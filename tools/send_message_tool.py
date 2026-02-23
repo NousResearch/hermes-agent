@@ -68,16 +68,20 @@ def send_message_tool(args, **kw):
     if not pconfig or not pconfig.enabled:
         return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/gateway.json or environment variables."})
 
+    used_home_channel = False
     if not chat_id:
         home = config.get_home_channel(platform)
         if home:
             chat_id = home.chat_id
+            used_home_channel = True
         else:
-            return json.dumps({"error": f"No chat_id specified and no home channel configured for {platform_name}. Use format 'platform:chat_id'."})
+            return json.dumps({"error": f"No home channel set for {platform_name} to determine where to send the message. Either specify a channel directly with '{platform_name}:CHANNEL_ID', or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"})
 
     try:
         from model_tools import _run_async
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))
+        if used_home_channel and isinstance(result, dict) and result.get("success"):
+            result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
         return json.dumps(result)
     except Exception as e:
         return json.dumps({"error": f"Send failed: {e}"})

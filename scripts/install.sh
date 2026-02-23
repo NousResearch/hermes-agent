@@ -31,6 +31,7 @@ REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 HERMES_HOME="$HOME/.hermes"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_VERSION="3.11"
+NODE_VERSION="22"
 
 # Options
 USE_VENV=true
@@ -262,198 +263,258 @@ check_git() {
 }
 
 check_node() {
-    log_info "Checking Node.js (optional, for browser tools)..."
-    
+    log_info "Checking Node.js (for browser tools)..."
+
     if command -v node &> /dev/null; then
-        NODE_VERSION=$(node --version)
-        log_success "Node.js $NODE_VERSION found"
+        local found_ver=$(node --version)
+        log_success "Node.js $found_ver found"
         HAS_NODE=true
         return 0
     fi
-    
-    log_warn "Node.js not found (browser tools will be limited)"
-    log_info "To install Node.js (optional):"
-    
-    case "$OS" in
-        linux)
-            case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
-                    log_info "  sudo apt install -y nodejs"
-                    ;;
-                fedora)
-                    log_info "  sudo dnf install nodejs"
-                    ;;
-                arch)
-                    log_info "  sudo pacman -S nodejs npm"
-                    ;;
-                *)
-                    log_info "  https://nodejs.org/en/download/"
-                    ;;
-            esac
-            ;;
-        macos)
-            log_info "  brew install node"
-            log_info "  Or: https://nodejs.org/en/download/"
-            ;;
-    esac
-    
-    HAS_NODE=false
-    # Don't exit - Node is optional
-}
 
-check_ripgrep() {
-    log_info "Checking ripgrep (optional, for faster file search)..."
-    
-    if command -v rg &> /dev/null; then
-        RG_VERSION=$(rg --version | head -1)
-        log_success "$RG_VERSION found"
-        HAS_RIPGREP=true
+    # Check our own managed install from a previous run
+    if [ -x "$HERMES_HOME/node/bin/node" ]; then
+        export PATH="$HERMES_HOME/node/bin:$PATH"
+        local found_ver=$("$HERMES_HOME/node/bin/node" --version)
+        log_success "Node.js $found_ver found (Hermes-managed)"
+        HAS_NODE=true
         return 0
     fi
-    
-    log_warn "ripgrep not found (file search will use grep fallback)"
-    
-    # Offer to install
-    echo ""
-    read -p "Would you like to install ripgrep? (faster search, recommended) [Y/n] " -n 1 -r
-    echo
-    
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        log_info "Installing ripgrep..."
-        
-        # Check if we can use sudo
-        CAN_SUDO=false
-        if command -v sudo &> /dev/null; then
-            if sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
-                CAN_SUDO=true
-            fi
-        fi
-        
-        case "$OS" in
-            linux)
-                if [ "$CAN_SUDO" = true ]; then
-                    case "$DISTRO" in
-                        ubuntu|debian)
-                            if sudo apt install -y ripgrep 2>/dev/null; then
-                                log_success "ripgrep installed"
-                                HAS_RIPGREP=true
-                                return 0
-                            fi
-                            ;;
-                        fedora)
-                            if sudo dnf install -y ripgrep 2>/dev/null; then
-                                log_success "ripgrep installed"
-                                HAS_RIPGREP=true
-                                return 0
-                            fi
-                            ;;
-                        arch)
-                            if sudo pacman -S --noconfirm ripgrep 2>/dev/null; then
-                                log_success "ripgrep installed"
-                                HAS_RIPGREP=true
-                                return 0
-                            fi
-                            ;;
-                    esac
-                else
-                    log_warn "sudo not available - cannot auto-install system packages"
-                    if command -v cargo &> /dev/null; then
-                        log_info "Trying cargo install (no sudo required)..."
-                        if cargo install ripgrep 2>/dev/null; then
-                            log_success "ripgrep installed via cargo"
-                            HAS_RIPGREP=true
-                            return 0
-                        fi
-                    fi
-                fi
-                ;;
-            macos)
-                if command -v brew &> /dev/null; then
-                    if brew install ripgrep 2>/dev/null; then
-                        log_success "ripgrep installed"
-                        HAS_RIPGREP=true
-                        return 0
-                    fi
-                fi
-                ;;
-        esac
-        log_warn "Auto-install failed. You can install manually later:"
-    else
-        log_info "Skipping ripgrep installation. To install manually:"
-    fi
-    
-    # Show manual install instructions
-    case "$OS" in
-        linux)
-            case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "  sudo apt install ripgrep"
-                    ;;
-                fedora)
-                    log_info "  sudo dnf install ripgrep"
-                    ;;
-                arch)
-                    log_info "  sudo pacman -S ripgrep"
-                    ;;
-                *)
-                    log_info "  https://github.com/BurntSushi/ripgrep#installation"
-                    ;;
-            esac
-            if command -v cargo &> /dev/null; then
-                log_info "  Or without sudo: cargo install ripgrep"
-            fi
-            ;;
-        macos)
-            log_info "  brew install ripgrep"
-            ;;
-    esac
-    
-    HAS_RIPGREP=false
-    # Don't exit - ripgrep is optional (grep fallback exists)
+
+    log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
+    install_node
 }
 
-check_ffmpeg() {
-    log_info "Checking ffmpeg (optional, for TTS voice messages)..."
-    
-    if command -v ffmpeg &> /dev/null; then
-        local ffmpeg_version=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
-        log_success "ffmpeg found: $ffmpeg_version"
-        HAS_FFMPEG=true
-        return
+install_node() {
+    local arch=$(uname -m)
+    local node_arch
+    case "$arch" in
+        x86_64)        node_arch="x64"    ;;
+        aarch64|arm64) node_arch="arm64"  ;;
+        armv7l)        node_arch="armv7l" ;;
+        *)
+            log_warn "Unsupported architecture ($arch) for Node.js auto-install"
+            log_info "Install manually: https://nodejs.org/en/download/"
+            HAS_NODE=false
+            return 0
+            ;;
+    esac
+
+    local node_os
+    case "$OS" in
+        linux) node_os="linux"  ;;
+        macos) node_os="darwin" ;;
+        *)
+            log_warn "Unsupported OS for Node.js auto-install"
+            HAS_NODE=false
+            return 0
+            ;;
+    esac
+
+    # Resolve the latest v22.x.x tarball name from the index page
+    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
+    local tarball_name
+    tarball_name=$(curl -fsSL "$index_url" \
+        | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+        | head -1)
+
+    # Fallback to .tar.gz if .tar.xz not available
+    if [ -z "$tarball_name" ]; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
+            | head -1)
     fi
-    
-    log_warn "ffmpeg not found"
-    log_info "ffmpeg is needed for Telegram voice bubbles when using the default Edge TTS provider."
-    log_info "Without it, Edge TTS audio is sent as a file instead of a voice bubble."
-    log_info "(OpenAI and ElevenLabs TTS produce Opus natively and don't need ffmpeg.)"
-    log_info ""
-    log_info "To install ffmpeg:"
-    
+
+    if [ -z "$tarball_name" ]; then
+        log_warn "Could not find Node.js $NODE_VERSION binary for $node_os-$node_arch"
+        log_info "Install manually: https://nodejs.org/en/download/"
+        HAS_NODE=false
+        return 0
+    fi
+
+    local download_url="${index_url}${tarball_name}"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    log_info "Downloading $tarball_name..."
+    if ! curl -fsSL "$download_url" -o "$tmp_dir/$tarball_name"; then
+        log_warn "Download failed"
+        rm -rf "$tmp_dir"
+        HAS_NODE=false
+        return 0
+    fi
+
+    log_info "Extracting to ~/.hermes/node/..."
+    if [[ "$tarball_name" == *.tar.xz ]]; then
+        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+    else
+        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+    fi
+
+    local extracted_dir
+    extracted_dir=$(ls -d "$tmp_dir"/node-v* 2>/dev/null | head -1)
+
+    if [ ! -d "$extracted_dir" ]; then
+        log_warn "Extraction failed"
+        rm -rf "$tmp_dir"
+        HAS_NODE=false
+        return 0
+    fi
+
+    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
+    rm -rf "$HERMES_HOME/node"
+    mv "$extracted_dir" "$HERMES_HOME/node"
+    rm -rf "$tmp_dir"
+
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+
+    export PATH="$HERMES_HOME/node/bin:$PATH"
+
+    local installed_ver
+    installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null)
+    log_success "Node.js $installed_ver installed to ~/.hermes/node/"
+    HAS_NODE=true
+}
+
+install_system_packages() {
+    # Detect what's missing
+    HAS_RIPGREP=false
+    HAS_FFMPEG=false
+    local need_ripgrep=false
+    local need_ffmpeg=false
+
+    log_info "Checking ripgrep (fast file search)..."
+    if command -v rg &> /dev/null; then
+        log_success "$(rg --version | head -1) found"
+        HAS_RIPGREP=true
+    else
+        need_ripgrep=true
+    fi
+
+    log_info "Checking ffmpeg (TTS voice messages)..."
+    if command -v ffmpeg &> /dev/null; then
+        local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+        log_success "ffmpeg $ffmpeg_ver found"
+        HAS_FFMPEG=true
+    else
+        need_ffmpeg=true
+    fi
+
+    # Nothing to install — done
+    if [ "$need_ripgrep" = false ] && [ "$need_ffmpeg" = false ]; then
+        return 0
+    fi
+
+    # Build a human-readable description + package list
+    local desc_parts=()
+    local pkgs=()
+    if [ "$need_ripgrep" = true ]; then
+        desc_parts+=("ripgrep for faster file search")
+        pkgs+=("ripgrep")
+    fi
+    if [ "$need_ffmpeg" = true ]; then
+        desc_parts+=("ffmpeg for TTS voice messages")
+        pkgs+=("ffmpeg")
+    fi
+    local description
+    description=$(IFS=" and "; echo "${desc_parts[*]}")
+
+    # ── macOS: brew ──
+    if [ "$OS" = "macos" ]; then
+        if command -v brew &> /dev/null; then
+            log_info "Installing ${pkgs[*]} via Homebrew..."
+            if brew install "${pkgs[@]}"; then
+                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                return 0
+            fi
+        fi
+        log_warn "Could not auto-install (brew not found or install failed)"
+        log_info "Install manually: brew install ${pkgs[*]}"
+        return 0
+    fi
+
+    # ── Linux: resolve package manager command ──
+    local pkg_install=""
+    case "$DISTRO" in
+        ubuntu|debian) pkg_install="apt install -y"   ;;
+        fedora)        pkg_install="dnf install -y"   ;;
+        arch)          pkg_install="pacman -S --noconfirm" ;;
+    esac
+
+    if [ -n "$pkg_install" ]; then
+        local install_cmd="$pkg_install ${pkgs[*]}"
+
+        # Already root — just install
+        if [ "$(id -u)" -eq 0 ]; then
+            log_info "Installing ${pkgs[*]}..."
+            if $install_cmd; then
+                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                return 0
+            fi
+        # Passwordless sudo — just install
+        elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+            log_info "Installing ${pkgs[*]}..."
+            if sudo $install_cmd; then
+                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                return 0
+            fi
+        # sudo needs password — ask once for everything
+        elif command -v sudo &> /dev/null; then
+            echo ""
+            read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if sudo $install_cmd; then
+                    [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                    [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    # ── Fallback for ripgrep: cargo ──
+    if [ "$need_ripgrep" = true ] && [ "$HAS_RIPGREP" = false ]; then
+        if command -v cargo &> /dev/null; then
+            log_info "Trying cargo install ripgrep (no sudo needed)..."
+            if cargo install ripgrep; then
+                log_success "ripgrep installed via cargo"
+                HAS_RIPGREP=true
+            fi
+        fi
+    fi
+
+    # ── Show manual instructions for anything still missing ──
+    if [ "$HAS_RIPGREP" = false ] && [ "$need_ripgrep" = true ]; then
+        log_warn "ripgrep not installed (file search will use grep fallback)"
+        show_manual_install_hint "ripgrep"
+    fi
+    if [ "$HAS_FFMPEG" = false ] && [ "$need_ffmpeg" = true ]; then
+        log_warn "ffmpeg not installed (TTS voice messages will be limited)"
+        show_manual_install_hint "ffmpeg"
+    fi
+}
+
+show_manual_install_hint() {
+    local pkg="$1"
+    log_info "To install $pkg manually:"
     case "$OS" in
         linux)
             case "$DISTRO" in
-                ubuntu|debian)
-                    log_info "  sudo apt install ffmpeg"
-                    ;;
-                fedora)
-                    log_info "  sudo dnf install ffmpeg"
-                    ;;
-                arch)
-                    log_info "  sudo pacman -S ffmpeg"
-                    ;;
-                *)
-                    log_info "  https://ffmpeg.org/download.html"
-                    ;;
+                ubuntu|debian) log_info "  sudo apt install $pkg" ;;
+                fedora)        log_info "  sudo dnf install $pkg" ;;
+                arch)          log_info "  sudo pacman -S $pkg"   ;;
+                *)             log_info "  Use your package manager or visit the project homepage" ;;
             esac
             ;;
-        macos)
-            log_info "  brew install ffmpeg"
-            ;;
+        macos) log_info "  brew install $pkg" ;;
     esac
-    
-    HAS_FFMPEG=false
-    # Don't exit - ffmpeg is optional
 }
 
 # ============================================================================
@@ -808,12 +869,12 @@ print_success() {
     echo "   source ~/.bashrc   # or ~/.zshrc"
     echo ""
     
-    # Show Node.js warning if not installed
+    # Show Node.js warning if auto-install failed
     if [ "$HAS_NODE" = false ]; then
         echo -e "${YELLOW}"
-        echo "Note: Node.js was not found. Browser automation tools"
-        echo "will have limited functionality. Install Node.js later"
-        echo "if you need full browser support."
+        echo "Note: Node.js could not be installed automatically."
+        echo "Browser tools need Node.js. Install manually:"
+        echo "  https://nodejs.org/en/download/"
         echo -e "${NC}"
     fi
     
@@ -839,8 +900,7 @@ main() {
     check_python
     check_git
     check_node
-    check_ripgrep
-    check_ffmpeg
+    install_system_packages
     
     clone_repo
     setup_venv

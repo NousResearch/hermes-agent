@@ -133,19 +133,22 @@ DEFAULT_CONFIG = {
 # Config Migration System
 # =============================================================================
 
-# Required environment variables with metadata for migration prompts
-REQUIRED_ENV_VARS = {
-    "OPENROUTER_API_KEY": {
-        "description": "OpenRouter API key (required for vision, web scraping, and tools)",
-        "prompt": "OpenRouter API key",
-        "url": "https://openrouter.ai/keys",
-        "required": True,
-        "password": True,
-    },
-}
+# Required environment variables with metadata for migration prompts.
+# LLM provider is required but handled in the setup wizard's provider
+# selection step (Nous Portal / OpenRouter / Custom endpoint), so this
+# dict is intentionally empty — no single env var is universally required.
+REQUIRED_ENV_VARS = {}
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
+    "OPENROUTER_API_KEY": {
+        "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
+        "prompt": "OpenRouter API key",
+        "url": "https://openrouter.ai/keys",
+        "password": True,
+        "tools": ["vision_analyze", "mixture_of_agents"],
+        "advanced": True,  # Handled in provider selection, not in tool checklist
+    },
     "FIRECRAWL_API_KEY": {
         "description": "Firecrawl API key for web search and scraping",
         "prompt": "Firecrawl API key",
@@ -187,13 +190,6 @@ OPTIONAL_ENV_VARS = {
         "url": "https://wandb.ai/authorize",
         "tools": ["rl_get_results", "rl_check_status"],
         "password": True,
-    },
-    "OPENAI_BASE_URL": {
-        "description": "Custom OpenAI-compatible API endpoint (for VLLM/SGLang/etc.)",
-        "prompt": "OpenAI-compatible base URL (only if running your own endpoint)",
-        "url": None,
-        "password": False,
-        "advanced": True,  # Hide from standard migrate flow
     },
     "HERMES_OPENAI_API_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",

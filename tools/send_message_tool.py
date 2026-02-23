@@ -1,51 +1,96 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Works in both CLI and gateway contexts.
+(Telegram, Discord, Slack). Supports listing available targets and resolving
+human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
-    "description": "Send a message to a user or channel on any connected messaging platform. Use this when the user asks you to send something to a different platform, or when delivering notifications/alerts to a specific destination.",
+    "description": (
+        "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "IMPORTANT: When the user asks to send to a specific channel or person "
+        "(not just a bare platform name), call send_message(action='list') FIRST to see "
+        "available targets, then send to the correct one.\n"
+        "If the user just says a platform name like 'send to telegram', send directly "
+        "to the home channel without listing first."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["send", "list"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+            },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel) or 'platform:chat_id' (specific chat). Examples: 'telegram', 'discord:123456789', 'slack:C01234ABCDE'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'"
             },
             "message": {
                 "type": "string",
                 "description": "The message text to send"
             }
         },
-        "required": ["target", "message"]
+        "required": []
     }
 }
 
 
 def send_message_tool(args, **kw):
-    """Handle cross-channel send_message tool calls.
+    """Handle cross-channel send_message tool calls."""
+    action = args.get("action", "send")
 
-    Sends a message directly to the target platform using its API.
-    Works in both CLI and gateway contexts -- does not require the
-    gateway to be running. Loads credentials from the gateway config
-    (env vars / ~/.hermes/gateway.json).
-    """
+    if action == "list":
+        return _handle_list()
+
+    return _handle_send(args)
+
+
+def _handle_list():
+    """Return formatted list of available messaging targets."""
+    try:
+        from gateway.channel_directory import format_directory_for_display
+        return json.dumps({"targets": format_directory_for_display()})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load channel directory: {e}"})
+
+
+def _handle_send(args):
+    """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required"})
+        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
     chat_id = parts[1].strip() if len(parts) > 1 else None
+
+    # Resolve human-friendly channel names to numeric IDs
+    if chat_id and not chat_id.lstrip("-").isdigit():
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, chat_id)
+            if resolved:
+                chat_id = resolved
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{chat_id}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{chat_id}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -75,13 +120,28 @@ def send_message_tool(args, **kw):
             chat_id = home.chat_id
             used_home_channel = True
         else:
-            return json.dumps({"error": f"No home channel set for {platform_name} to determine where to send the message. Either specify a channel directly with '{platform_name}:CHANNEL_ID', or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"})
+            return json.dumps({
+                "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+            })
 
     try:
         from model_tools import _run_async
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        # Mirror the sent message into the target's gateway session
+        if isinstance(result, dict) and result.get("success"):
+            try:
+                from gateway.mirror import mirror_to_session
+                source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
+                if mirror_to_session(platform_name, chat_id, message, source_label=source_label):
+                    result["mirrored"] = True
+            except Exception:
+                pass
+
         return json.dumps(result)
     except Exception as e:
         return json.dumps({"error": f"Send failed: {e}"})
@@ -155,6 +215,18 @@ async def _send_slack(token, chat_id, message):
         return {"error": f"Slack send failed: {e}"}
 
 
+def _check_send_message():
+    """Gate send_message on gateway running (always available on messaging platforms)."""
+    platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+    if platform and platform != "local":
+        return True
+    try:
+        from gateway.status import is_gateway_running
+        return is_gateway_running()
+    except Exception:
+        return False
+
+
 # --- Registry ---
 from tools.registry import registry
 
@@ -163,4 +235,5 @@ registry.register(
     toolset="messaging",
     schema=SEND_MESSAGE_SCHEMA,
     handler=send_message_tool,
+    check_fn=_check_send_message,
 )

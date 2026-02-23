@@ -367,6 +367,11 @@ class SessionStore:
         
         return False
     
+    def has_any_sessions(self) -> bool:
+        """Check if any sessions have ever been created (across all platforms)."""
+        self._load()
+        return len(self._entries) > 1  # >1 because the current new session is already in _entries
+    
     def get_or_create_session(
         self, 
         source: SessionSource,

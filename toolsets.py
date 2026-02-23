@@ -27,7 +27,6 @@ from typing import List, Dict, Any, Set, Optional
 
 
 # Shared tool list for CLI and all messaging platform toolsets.
-# Messaging platforms add "send_message" on top of this list.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
@@ -59,6 +58,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+    # Cross-platform messaging (gated on gateway running via check_fn)
+    "send_message",
 ]
 
 
@@ -204,8 +205,8 @@ TOOLSETS = {
     # Full Hermes toolsets (CLI + messaging platforms)
     #
     # All platforms share the same core tools. Messaging platforms add
-    # send_message for cross-channel messaging. Defined via _HERMES_CORE_TOOLS
-    # to avoid duplicating the tool list for each platform.
+    # All platforms share the same core tools (including send_message,
+    # which is gated on gateway running via its check_fn).
     # ==========================================================================
     
     "hermes-cli": {
@@ -216,25 +217,25 @@ TOOLSETS = {
     
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS + ["send_message"],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _HERMES_CORE_TOOLS + ["send_message"],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     
     "hermes-whatsapp": {
         "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
-        "tools": _HERMES_CORE_TOOLS + ["send_message"],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS + ["send_message"],
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
     

@@ -90,6 +90,14 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#
+# --- Container resource limits (docker, singularity, modal -- ignored for local/ssh) ---
+# These settings apply to all container backends. They control the resources
+# allocated to the sandbox and whether its filesystem persists across sessions.
+#   container_cpu: 1              # CPU cores (default: 1)
+#   container_memory: 5120        # Memory in MB (default: 5120 = 5GB)
+#   container_disk: 51200         # Disk in MB (default: 51200 = 50GB)
+#   container_persistent: true    # Persist filesystem across sessions (default: true)
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)

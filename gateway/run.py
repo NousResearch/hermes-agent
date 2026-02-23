@@ -375,6 +375,24 @@ class GatewayRunner:
                         )
             return None
         
+        # PRIORITY: If an agent is already running for this session, interrupt it
+        # immediately. This is before command parsing to minimize latency -- the
+        # user's "stop" message reaches the agent as fast as possible.
+        _quick_key = (
+            f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+            if source.chat_type != "dm"
+            else f"agent:main:{source.platform.value}:dm"
+        )
+        if _quick_key in self._running_agents:
+            running_agent = self._running_agents[_quick_key]
+            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+            running_agent.interrupt(event.text)
+            if _quick_key in self._pending_messages:
+                self._pending_messages[_quick_key] += "\n" + event.text
+            else:
+                self._pending_messages[_quick_key] = event.text
+            return None
+        
         # Check for commands
         command = event.get_command()
         if command in ["new", "reset"]:
@@ -426,15 +444,6 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
-        
-        # Check if there's already a running agent for this session
-        if session_key in self._running_agents:
-            running_agent = self._running_agents[session_key]
-            logger.debug("Interrupting running agent for session %s...", session_key[:20])
-            running_agent.interrupt(event.text)
-            # Store the new message to be processed after current agent finishes
-            self._pending_messages[session_key] = event.text
-            return None  # Don't respond yet - let the interrupt handle it
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)

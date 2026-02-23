@@ -50,7 +50,8 @@ else:
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
-from tools.terminal_tool import cleanup_vm, set_interrupt_event as _set_terminal_interrupt
+from tools.terminal_tool import cleanup_vm
+from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
 import requests
@@ -266,6 +267,7 @@ class AIAgent:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
             client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         
+        self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
             self.client = OpenAI(**client_kwargs)
             if not self.quiet_mode:
@@ -1015,8 +1017,8 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
-        # Signal the terminal tool to kill any running subprocess immediately
-        _set_terminal_interrupt(True)
+        # Signal all tools to abort any in-flight operations immediately
+        _set_interrupt(True)
         # Propagate interrupt to any running child agents (subagent delegation)
         for child in self._active_children:
             try:
@@ -1061,7 +1063,7 @@ class AIAgent:
             self._todo_store.write(last_todo_response, merge=False)
             if not self.quiet_mode:
                 print(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
-        _set_terminal_interrupt(False)
+        _set_interrupt(False)
     
     @property
     def is_interrupted(self) -> bool:
@@ -1148,8 +1150,9 @@ class AIAgent:
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.
         
-        Returns the API response, or raises InterruptedError if the agent was
-        interrupted while waiting.
+        On interrupt, closes the HTTP client to cancel the in-flight request
+        (stops token generation and avoids wasting money), then rebuilds the
+        client for future calls.
         """
         result = {"response": None, "error": None}
 
@@ -1161,12 +1164,19 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
-        # Poll every 0.3s so interrupts are noticed quickly
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
-                # Can't cancel the HTTP request cleanly, but we can stop
-                # waiting and let the thread finish in the background.
+                # Force-close the HTTP connection to stop token generation
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+                # Rebuild the client for future calls (cheap, no network)
+                try:
+                    self.client = OpenAI(**self._client_kwargs)
+                except Exception:
+                    pass
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
             raise result["error"]
@@ -1392,6 +1402,23 @@ class AIAgent:
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str) -> None:
         """Execute tool calls from the assistant message and append results to messages."""
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
+            # SAFETY: check interrupt BEFORE starting each tool.
+            # If the user sent "stop" during a previous tool's execution,
+            # do NOT start any more tools -- skip them all immediately.
+            if self._interrupt_requested:
+                remaining_calls = assistant_message.tool_calls[i-1:]
+                if remaining_calls:
+                    print(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)")
+                for skipped_tc in remaining_calls:
+                    skip_msg = {
+                        "role": "tool",
+                        "content": "[Tool execution cancelled - user interrupted]",
+                        "tool_call_id": skipped_tc.id,
+                    }
+                    messages.append(skip_msg)
+                    self._log_msg_to_db(skip_msg)
+                break
+
             function_name = tool_call.function.name
 
             # Reset nudge counters when the relevant tool is actually used

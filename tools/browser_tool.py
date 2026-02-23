@@ -698,6 +698,10 @@ def _run_browser_command(
     except FileNotFoundError as e:
         return {"success": False, "error": str(e)}
     
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"success": False, "error": "Interrupted"}
+
     # Get session info (creates Browserbase session with proxies if needed)
     try:
         session_info = _get_session_info(task_id)

@@ -361,6 +361,20 @@ Type `/` to see an autocomplete dropdown of all commands.
 - `Ctrl+C` — interrupt agent (double-press to force exit)
 - `Ctrl+D` — exit
 
+### Interrupting the Agent
+
+**CLI:**
+- Type a message + Enter while the agent is working to interrupt and send new instructions
+- `Ctrl+C` to interrupt (press twice within 2s to force exit)
+- In-progress terminal commands are killed immediately (SIGTERM, then SIGKILL after 1s if the process resists)
+- Multiple messages typed during interrupt are combined into one prompt
+
+**Messaging Platforms (Telegram, Discord, Slack):**
+- Send any message while the agent is working to interrupt
+- Use `/stop` to interrupt without queuing a follow-up message
+- Multiple messages sent during interrupt are combined into one prompt
+- Interrupt signals are processed with highest priority (before command parsing)
+
 ---
 
 ## Features
@@ -440,6 +454,30 @@ hermes config set terminal.backend modal
 ```
 
 **Sudo Support:** If a command needs sudo, you'll be prompted for your password (cached for the session). Or set `SUDO_PASSWORD` in `~/.hermes/.env`.
+
+**Container Security (Docker, Singularity, Modal):**
+All container backends run with security hardening by default:
+- Read-only root filesystem (Docker)
+- All Linux capabilities dropped
+- No privilege escalation (`--security-opt no-new-privileges`)
+- PID limits (256 processes)
+- Full namespace isolation (`--containall` for Singularity)
+- Persistent workspace via volumes, not writable root layer
+
+**Container Resources:**
+Configure CPU, memory, disk, and persistence for all container backends:
+
+```yaml
+# In ~/.hermes/config.yaml under terminal:
+terminal:
+  backend: docker  # or singularity, modal
+  container_cpu: 1              # CPU cores (default: 1)
+  container_memory: 5120        # Memory in MB (default: 5GB)
+  container_disk: 51200         # Disk in MB (default: 50GB)
+  container_persistent: true    # Persist filesystem across sessions (default: true)
+```
+
+When `container_persistent: true`, the sandbox state (installed packages, files, config) survives across sessions. Docker uses named volumes, Singularity uses persistent overlays, and Modal uses filesystem snapshots.
 
 ### 🧠 Persistent Memory
 
@@ -1347,6 +1385,14 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |
+
+**Container Resources (Docker, Singularity, Modal):**
+| Variable | Description |
+|----------|-------------|
+| `TERMINAL_CONTAINER_CPU` | CPU cores for container backends (default: 1) |
+| `TERMINAL_CONTAINER_MEMORY` | Memory in MB for container backends (default: 5120) |
+| `TERMINAL_CONTAINER_DISK` | Disk in MB for container backends (default: 51200) |
+| `TERMINAL_CONTAINER_PERSISTENT` | Persist container filesystem across sessions (default: true) |
 
 **Agent Behavior:**
 | Variable | Description |

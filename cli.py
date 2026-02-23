@@ -225,6 +225,11 @@ def load_cli_config() -> Dict[str, Any]:
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
+        # Container resource config (docker, singularity, modal -- ignored for local/ssh)
+        "container_cpu": "TERMINAL_CONTAINER_CPU",
+        "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }
@@ -1807,11 +1812,20 @@ class HermesCLI:
                 # nothing can interleave between the box borders.
                 _cprint(f"\n{top}\n{response}\n\n{bot}")
             
-            # If we have a pending message from interrupt, re-queue it for process_loop
-            # instead of recursing (avoids unbounded recursion from rapid interrupts)
+            # Combine all interrupt messages (user may have typed multiple while waiting)
+            # and re-queue as one prompt for process_loop
             if pending_message and hasattr(self, '_pending_input'):
-                print(f"\n📨 Queued: '{pending_message[:50]}{'...' if len(pending_message) > 50 else ''}'")
-                self._pending_input.put(pending_message)
+                all_parts = [pending_message]
+                while not self._interrupt_queue.empty():
+                    try:
+                        extra = self._interrupt_queue.get_nowait()
+                        if extra:
+                            all_parts.append(extra)
+                    except queue.Empty:
+                        break
+                combined = "\n".join(all_parts)
+                print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
+                self._pending_input.put(combined)
             
             return response
             

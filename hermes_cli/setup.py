@@ -1240,7 +1240,7 @@ def run_setup_wizard(args):
         {
             "label": "🎤 Voice Transcription & TTS (OpenAI Whisper + TTS)",
             "key": "openai_voice",
-            "check": ["HERMES_OPENAI_API_KEY"],
+            "check": ["VOICE_TOOLS_OPENAI_KEY"],
         },
         {
             "label": "🗣️ Premium Text-to-Speech (ElevenLabs)",
@@ -1360,18 +1360,18 @@ def run_setup_wizard(args):
         print(color("  ─── Voice Transcription & TTS (OpenAI) ───", Colors.CYAN))
         print_info("  Used for Whisper speech-to-text and OpenAI TTS voices.")
         print_info("  Get your API key at: https://platform.openai.com/api-keys")
-        existing = get_env_value('HERMES_OPENAI_API_KEY')
+        existing = get_env_value('VOICE_TOOLS_OPENAI_KEY')
         if existing:
             print_success("  Already configured ✓")
             if prompt_yes_no("  Update API key?", False):
                 api_key = prompt("    OpenAI API key", password=True)
                 if api_key:
-                    save_env_value("HERMES_OPENAI_API_KEY", api_key)
+                    save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
                     print_success("    Updated")
         else:
             api_key = prompt("    OpenAI API key", password=True)
             if api_key:
-                save_env_value("HERMES_OPENAI_API_KEY", api_key)
+                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
                 print_success("    Configured ✓")
     
     if "elevenlabs" in selected_keys:

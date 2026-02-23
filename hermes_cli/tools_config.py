@@ -142,7 +142,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
     labels = []
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
-        labels.append(f"{ts_label}  {color(ts_desc, Colors.DIM)}")
+        labels.append(f"{ts_label}  ({ts_desc})")
 
     pre_selected_indices = [
         i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)
@@ -227,11 +227,10 @@ def tools_command(args):
         current = _get_platform_tools(config, pkey)
         count = len(current)
         total = len(CONFIGURABLE_TOOLSETS)
-        count_str = color(f"({count}/{total} enabled)", Colors.DIM)
-        platform_choices.append(f"Configure {pinfo['label']}  {count_str}")
+        platform_choices.append(f"Configure {pinfo['label']}  ({count}/{total} enabled)")
         platform_keys.append(pkey)
 
-    platform_choices.append(f"{color('Done — save and exit', Colors.GREEN)}")
+    platform_choices.append("Done — save and exit")
 
     while True:
         idx = _prompt_choice("Select a platform to configure:", platform_choices, default=0)
@@ -273,8 +272,7 @@ def tools_command(args):
         # Update the choice label with new count
         new_count = len(_get_platform_tools(config, pkey))
         total = len(CONFIGURABLE_TOOLSETS)
-        count_str = color(f"({new_count}/{total} enabled)", Colors.DIM)
-        platform_choices[idx] = f"Configure {pinfo['label']}  {count_str}"
+        platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
 
     print()
     print(color("  Tool configuration saved to ~/.hermes/config.yaml", Colors.DIM))

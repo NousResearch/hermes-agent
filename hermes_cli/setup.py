@@ -509,35 +509,53 @@ def run_setup_wizard(args):
                     save_env_value(var["name"], value)
                     print_success(f"  Saved {var['name']}")
 
-        # ── Messaging platforms (ask per-platform, not a flat list) ──
+        # ── Messaging platforms (checklist then prompt for selected) ──
         if missing_messaging:
             print()
             print_header("Messaging Platforms")
             print_info("Connect Hermes to messaging apps to chat from anywhere.")
             print_info("You can configure these later with 'hermes setup'.")
 
-            # Group by platform
+            # Group by platform (preserving order)
+            platform_order = []
             platforms = {}
             for var in missing_messaging:
                 name = var["name"]
                 if "TELEGRAM" in name:
-                    platforms.setdefault("Telegram", []).append(var)
+                    plat = "Telegram"
                 elif "DISCORD" in name:
-                    platforms.setdefault("Discord", []).append(var)
+                    plat = "Discord"
                 elif "SLACK" in name:
-                    platforms.setdefault("Slack", []).append(var)
+                    plat = "Slack"
+                else:
+                    continue
+                if plat not in platforms:
+                    platform_order.append(plat)
+                platforms.setdefault(plat, []).append(var)
 
-            for platform_name, vars_list in platforms.items():
+            platform_labels = [
+                {"Telegram": "📱 Telegram", "Discord": "💬 Discord", "Slack": "💼 Slack"}.get(p, p)
+                for p in platform_order
+            ]
+
+            selected_indices = prompt_checklist(
+                "Which platforms would you like to set up?",
+                platform_labels,
+            )
+
+            for idx in selected_indices:
+                plat = platform_order[idx]
+                vars_list = platforms[plat]
                 print()
-                if prompt_yes_no(f"  Set up {platform_name}?", False):
-                    for var in vars_list:
-                        if var.get("password"):
-                            value = prompt(f"    {var.get('prompt', var['name'])}", password=True)
-                        else:
-                            value = prompt(f"    {var.get('prompt', var['name'])}")
-                        if value:
-                            save_env_value(var["name"], value)
-                            print_success(f"    Saved {var['name']}")
+                print(color(f"  ─── {plat} ───", Colors.CYAN))
+                for var in vars_list:
+                    if var.get("password"):
+                        value = prompt(f"    {var.get('prompt', var['name'])}", password=True)
+                    else:
+                        value = prompt(f"    {var.get('prompt', var['name'])}")
+                    if value:
+                        save_env_value(var["name"], value)
+                        print_success(f"    Saved {var['name']}")
         
         # Handle missing config fields
         if missing_config:

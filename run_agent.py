@@ -447,6 +447,13 @@ class AIAgent:
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
     
+    def _strip_think_blocks(self, content: str) -> str:
+        """Remove <think>...</think> blocks from content, returning only visible text."""
+        if not content:
+            return ""
+        return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+    
+    
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """
         Extract reasoning/thinking content from an assistant message.
@@ -1387,6 +1394,12 @@ class AIAgent:
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             function_name = tool_call.function.name
 
+            # Reset nudge counters when the relevant tool is actually used
+            if function_name == "memory":
+                self._turns_since_memory = 0
+            elif function_name == "skill_manage":
+                self._iters_since_skill = 0
+
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError as e:
@@ -1631,6 +1644,9 @@ class AIAgent:
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
+        self._last_content_with_tools = None
+        self._turns_since_memory = 0
+        self._iters_since_skill = 0
         
         # Initialize conversation
         messages = conversation_history or []
@@ -1650,16 +1666,29 @@ class AIAgent:
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
 
-        # Periodic memory nudge: remind the model to consider saving memories
+        # Periodic memory nudge: remind the model to consider saving memories.
+        # Counter resets whenever the memory tool is actually used.
         if (self._memory_nudge_interval > 0
-                and self._user_turn_count % self._memory_nudge_interval == 0
-                and self._user_turn_count > 0
                 and "memory" in self.valid_tool_names
                 and self._memory_store):
+            self._turns_since_memory += 1
+            if self._turns_since_memory >= self._memory_nudge_interval:
+                user_message += (
+                    "\n\n[System: You've had several exchanges in this session. "
+                    "Consider whether there's anything worth saving to your memories.]"
+                )
+                self._turns_since_memory = 0
+
+        # Skill creation nudge: fires on the first user message after a long tool loop.
+        # The counter increments per API iteration in the tool loop and is checked here.
+        if (self._skill_nudge_interval > 0
+                and self._iters_since_skill >= self._skill_nudge_interval
+                and "skill_manage" in self.valid_tool_names):
             user_message += (
-                "\n\n[System: You've had several exchanges in this session. "
-                "Consider whether there's anything worth saving to your memories.]"
+                "\n\n[System: The previous task involved many steps. "
+                "If you discovered a reusable workflow, consider saving it as a skill.]"
             )
+            self._iters_since_skill = 0
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -1702,18 +1731,11 @@ class AIAgent:
             
             api_call_count += 1
 
-            # Periodic skill creation nudge after many tool-calling iterations
+            # Track tool-calling iterations for skill nudge.
+            # Counter resets whenever skill_manage is actually used.
             if (self._skill_nudge_interval > 0
-                    and api_call_count > 0
-                    and api_call_count % self._skill_nudge_interval == 0
                     and "skill_manage" in self.valid_tool_names):
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "[System: This task has involved many steps. "
-                        "If you've discovered a reusable workflow, consider saving it as a skill.]"
-                    ),
-                })
+                self._iters_since_skill += 1
             
             # Prepare messages for API call
             # If we have an ephemeral system prompt, prepend it to the messages
@@ -2212,6 +2234,20 @@ class AIAgent:
                     
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
+                    # If this turn has both content AND tool_calls, capture the content
+                    # as a fallback final response. Common pattern: model delivers its
+                    # answer and calls memory/skill tools as a side-effect in the same
+                    # turn. If the follow-up turn after tools is empty, we use this.
+                    turn_content = assistant_message.content or ""
+                    if turn_content and self._has_content_after_think_block(turn_content):
+                        self._last_content_with_tools = turn_content
+                        # Show intermediate commentary so the user can follow along
+                        if self.quiet_mode:
+                            clean = self._strip_think_blocks(turn_content).strip()
+                            if clean:
+                                preview = clean[:120] + "..." if len(clean) > 120 else clean
+                                print(f"  \033[2m┊ 💬 {preview}\033[0m")
+                    
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
                     
@@ -2256,13 +2292,29 @@ class AIAgent:
                             print(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
                             continue
                         else:
-                            # Max retries exceeded — keep the message history intact
-                            # and return what we have so the session is preserved.
                             print(f"{self.log_prefix}❌ Max retries (3) for empty content exceeded.")
                             self._empty_content_retries = 0
                             
-                            # Append the empty assistant message so the session
-                            # log reflects what actually happened
+                            # If a prior tool_calls turn had real content, salvage it:
+                            # rewrite that turn's content to a brief tool description,
+                            # and use the original content as the final response here.
+                            fallback = getattr(self, '_last_content_with_tools', None)
+                            if fallback:
+                                self._last_content_with_tools = None
+                                # Find the last assistant message with tool_calls and rewrite it
+                                for i in range(len(messages) - 1, -1, -1):
+                                    msg = messages[i]
+                                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                                        tool_names = []
+                                        for tc in msg["tool_calls"]:
+                                            fn = tc.get("function", {})
+                                            tool_names.append(fn.get("name", "unknown"))
+                                        msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
+                                        break
+                                final_response = fallback
+                                break
+                            
+                            # No fallback -- append the empty message as-is
                             empty_msg = {
                                 "role": "assistant",
                                 "content": final_response,

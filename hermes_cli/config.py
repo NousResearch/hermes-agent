@@ -191,7 +191,7 @@ OPTIONAL_ENV_VARS = {
         "tools": ["rl_get_results", "rl_check_status"],
         "password": True,
     },
-    "HERMES_OPENAI_API_KEY": {
+    "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
         "prompt": "OpenAI API Key (for Whisper STT + TTS)",
         "url": "https://platform.openai.com/api-keys",
@@ -622,7 +622,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("ANTHROPIC_API_KEY", "Anthropic"),
-        ("HERMES_OPENAI_API_KEY", "OpenAI (STT/TTS)"),
+        ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("FAL_KEY", "FAL"),
@@ -722,7 +722,7 @@ def set_config_value(key: str, value: str):
     """Set a configuration value."""
     # Check if it's an API key (goes to .env)
     api_keys = [
-        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'HERMES_OPENAI_API_KEY',
+        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',

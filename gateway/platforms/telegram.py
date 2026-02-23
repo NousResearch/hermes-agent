@@ -125,6 +125,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("undo", "Remove the last exchange"),
                     BotCommand("status", "Show session info"),
                     BotCommand("stop", "Stop the running agent"),
+                    BotCommand("sethome", "Set this chat as the home channel"),
                     BotCommand("help", "Show available commands"),
                 ])
             except Exception as e:

@@ -419,7 +419,7 @@ class GatewayRunner:
         if command == "undo":
             return await self._handle_undo_command(event)
         
-        if command in ["set-home", "sethome"]:
+        if command in ["sethome", "set-home"]:
             return await self._handle_set_home_command(event)
         
         # Check for pending exec approval responses
@@ -487,7 +487,7 @@ class GatewayRunner:
                         f"📬 No home channel is set for {platform_name.title()}. "
                         f"A home channel is where Hermes delivers cron job results "
                         f"and cross-platform messages.\n\n"
-                        f"Type /set-home to make this chat your home channel, "
+                        f"Type /sethome to make this chat your home channel, "
                         f"or ignore to skip."
                     )
         
@@ -754,7 +754,7 @@ class GatewayRunner:
             "`/personality [name]` — Set a personality\n"
             "`/retry` — Retry your last message\n"
             "`/undo` — Remove the last exchange\n"
-            "`/set-home` — Set this chat as the home channel\n"
+            "`/sethome` — Set this chat as the home channel\n"
             "`/help` — Show this message"
         )
     
@@ -861,7 +861,7 @@ class GatewayRunner:
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
     
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
-        """Handle /set-home command -- set the current chat as the platform's home channel."""
+        """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id

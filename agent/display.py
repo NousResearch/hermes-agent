@@ -7,6 +7,7 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 import json
 import os
 import random
+import sys
 import threading
 import time
 
@@ -160,6 +161,18 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        # Capture stdout NOW, before any redirect_stdout(devnull) from
+        # child agents can replace sys.stdout with a black hole.
+        self._out = sys.stdout
+
+    def _write(self, text: str, end: str = '\n', flush: bool = False):
+        """Write to the stdout captured at spinner creation time."""
+        try:
+            self._out.write(text + end)
+            if flush:
+                self._out.flush()
+        except (ValueError, OSError):
+            pass
 
     def _animate(self):
         while self.running:
@@ -170,7 +183,7 @@ class KawaiiSpinner:
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             clear = '\r' + ' ' * self.last_line_len + '\r'
-            print(clear + line, end='', flush=True)
+            self._write(clear + line, end='', flush=True)
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -190,9 +203,9 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        print('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
+        self._write('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
         if final_message:
-            print(f"  {final_message}", flush=True)
+            self._write(f"  {final_message}", flush=True)
 
     def __enter__(self):
         self.start()

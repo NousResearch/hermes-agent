@@ -342,10 +342,6 @@ def execute_code(
     session_tools = set(enabled_tools) if enabled_tools else set()
     sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
 
-    # Temporary debug — remove after investigating
-    with open("/tmp/hermes_exec_debug.log", "a") as _dbg:
-        _dbg.write(f"enabled_tools={enabled_tools}\nsandbox_tools={sandbox_tools}\n---\n")
-
     if not sandbox_tools:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
 

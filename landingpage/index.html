@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Agent — An AI Agent You Can Actually Live With</title>
+    <meta name="description" content="Open-source AI agent that lives on your server, learns your projects, builds its own skills, and reaches you wherever you are. By Nous Research.">
+    <meta name="theme-color" content="#0a0a0f">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Hermes Agent — AI Agent Framework">
+    <meta property="og:description" content="An open-source AI agent you can actually live with. Install it, give it your messaging accounts, and it becomes a persistent personal agent that grows with you.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://github.com/NousResearch/hermes-agent">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚕</text></svg>">
+</head>
+<body>
+    <!-- Ambient glow effects -->
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-inner">
+            <a href="#" class="nav-logo">
+                <span class="nav-symbol">⚕</span>
+                <span class="nav-brand">Hermes Agent</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#install">Install</a>
+                <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener">
+                    GitHub
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" class="external-icon"><path d="M3.5 1.5H10.5V8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 1.5L1.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </a>
+                <a href="https://discord.gg/NousResearch" target="_blank" rel="noopener">Discord</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-content">
+            <div class="hero-badge">
+                <span class="badge-dot"></span>
+                Open Source · MIT License
+            </div>
+
+            <div class="hero-ascii" aria-hidden="true">
+                <img src="hermes-agent-banner.png" alt="Hermes Agent" class="hero-logo">
+            </div>
+
+            <h1 class="hero-title">
+                An AI agent you can<br>
+                <span class="hero-gradient">actually live with.</span>
+            </h1>
+            
+            <p class="hero-subtitle">
+                Install it on a machine, give it your messaging accounts, and it becomes a 
+                persistent personal agent that grows with you — learning your projects, 
+                building its own skills, and reaching you wherever you are.
+            </p>
+
+            <div class="hero-install">
+                <div class="install-box">
+                    <code id="install-command">curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash</code>
+                    <button class="copy-btn" onclick="copyInstall()" title="Copy to clipboard">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span class="copy-text">Copy</span>
+                    </button>
+                </div>
+                <p class="install-note">Works on Linux & macOS · No Python prerequisite · Installs everything automatically</p>
+            </div>
+
+            <div class="hero-links">
+                <a href="https://github.com/NousResearch/hermes-agent" class="btn btn-primary" target="_blank" rel="noopener">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    View on GitHub
+                </a>
+                <a href="https://discord.gg/NousResearch" class="btn btn-secondary" target="_blank" rel="noopener">
+                    Join Community
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- What it is -->
+    <section class="section section-what">
+        <div class="container">
+            <p class="lead-text">
+                It's not a coding copilot tethered to an IDE or a chatbot wrapper around a single API. 
+                It's an <strong>autonomous agent</strong> that lives on your server, remembers what it learns, 
+                and gets more capable the longer it runs.
+            </p>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>What it does</h2>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">💬</div>
+                    <h3>Lives Where You Do</h3>
+                    <p>Telegram, Discord, Slack, WhatsApp, and CLI — all from a single gateway process. Voice memo transcription, cross-platform continuation. Start a conversation on Telegram, pick it up in your terminal.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🧠</div>
+                    <h3>Grows the Longer It Runs</h3>
+                    <p>Persistent memory across sessions — it learns your preferences, projects, and environment. When it solves a hard problem, it writes a skill document so it never forgets how. Skills are searchable and shareable.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">⏰</div>
+                    <h3>Scheduled Automations</h3>
+                    <p>Built-in cron scheduler with delivery to any platform. Natural language scheduling for daily reports, nightly backups, weekly audits, morning briefings — all running unattended through the gateway.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔀</div>
+                    <h3>Delegates & Parallelizes</h3>
+                    <p>Spawn isolated subagents for parallel workstreams. Each gets its own conversation and terminal. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Real Sandboxing</h3>
+                    <p>Five terminal backends: local, Docker, SSH, Singularity, and Modal. Container security hardening with read-only root, dropped capabilities, PID limits, and namespace isolation.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Full Web & Browser Control</h3>
+                    <p>Web search, page extraction, full browser automation — navigate, click, type, screenshot. Plus vision analysis, image generation, text-to-speech, and multi-model collaborative reasoning.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Terminal Demo -->
+    <section class="section section-demo" id="demo">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>See it in action</h2>
+            </div>
+            
+            <div class="terminal-window">
+                <div class="terminal-header">
+                    <div class="terminal-dots">
+                        <span class="dot dot-red"></span>
+                        <span class="dot dot-yellow"></span>
+                        <span class="dot dot-green"></span>
+                    </div>
+                    <span class="terminal-title">hermes</span>
+                </div>
+                <div class="terminal-body" id="terminal-demo">
+                    <div class="terminal-line" id="terminal-content"></div>
+                    <span class="terminal-cursor" id="terminal-cursor">█</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tools -->
+    <section class="section" id="tools">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>40+ built-in tools</h2>
+            </div>
+
+            <div class="tools-grid">
+                <div class="tool-pill">
+                    <span class="tool-emoji">🔍</span> Web Search
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">💻</span> Terminal
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">📁</span> File System
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🌐</span> Browser
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">👁</span> Vision
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🎨</span> Image Gen
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🔊</span> Text-to-Speech
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🧠</span> Memory
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">📋</span> Task Planning
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">⏰</span> Cron Jobs
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🐍</span> Code Execution
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🔀</span> Subagents
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">📚</span> Skills
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🤖</span> Multi-Model Reasoning
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">📨</span> Messaging
+                </div>
+                <div class="tool-pill">
+                    <span class="tool-emoji">🔎</span> Session Search
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Works With -->
+    <section class="section" id="platforms">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>Works with everything</h2>
+            </div>
+
+            <div class="platforms-row">
+                <div class="platform-group">
+                    <h4 class="platform-label">Chat Platforms</h4>
+                    <div class="platform-pills">
+                        <span class="platform-pill">Telegram</span>
+                        <span class="platform-pill">Discord</span>
+                        <span class="platform-pill">Slack</span>
+                        <span class="platform-pill">WhatsApp</span>
+                        <span class="platform-pill">CLI</span>
+                    </div>
+                </div>
+                <div class="platform-group">
+                    <h4 class="platform-label">LLM Providers</h4>
+                    <div class="platform-pills">
+                        <span class="platform-pill">Nous Portal</span>
+                        <span class="platform-pill">OpenRouter</span>
+                        <span class="platform-pill">Custom API</span>
+                    </div>
+                </div>
+                <div class="platform-group">
+                    <h4 class="platform-label">Execution Environments</h4>
+                    <div class="platform-pills">
+                        <span class="platform-pill">Local</span>
+                        <span class="platform-pill">Docker</span>
+                        <span class="platform-pill">SSH</span>
+                        <span class="platform-pill">Singularity</span>
+                        <span class="platform-pill">Modal</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+     <!-- Skills -->
+    <section class="section section-skills" id="skills">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>40+ built-in skills & growing</h2>
+            </div>
+
+            <p class="section-desc">
+                Skills are procedural memory — reusable approaches for recurring tasks. 
+                The agent creates them when it solves hard problems, and loads them automatically when similar tasks come up.
+                Install more from community hubs with a single command.
+            </p>
+
+            <div class="skills-categories">
+                <div class="skill-category">
+                    <h4>Built-in Skills</h4>
+                    <p class="skill-hub-desc">40+ skills bundled out of the box covering MLOps, GitHub workflows, diagramming, note-taking, and more. The agent also creates new skills on the fly as it works.</p>
+                </div>
+                <div class="skill-category">
+                    <h4>Skills Hub Integrations</h4>
+                    <div class="skill-tags">
+                        <span><a href="https://agentskills.io" target="_blank" rel="noopener">agentskills.io</a></span>
+                        <span><a href="https://github.com" target="_blank" rel="noopener">GitHub Repos</a></span>
+                        <span><a href="https://clawhub.ai" target="_blank" rel="noopener">ClawHub</a></span>
+                        <span><a href="https://lobehub.com" target="_blank" rel="noopener">LobeHub</a></span>
+                        <span>Claude Code Marketplace</span>
+                    </div>
+                    <p class="skill-hub-desc">Browse, install, and manage skills from multiple community hubs. Quarantine and audit systems keep your agent safe.</p>
+                </div>
+                <div class="skill-category">
+                    <h4>Open Standard</h4>
+                    <p class="skill-hub-desc">Skills follow the <a href="https://agentskills.io" target="_blank" rel="noopener">agentskills.io</a> open format — portable SKILL.md files that any agent can use. Create your own and share them.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Install -->
+    <section class="section section-install" id="install">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>Get started in 60 seconds</h2>
+            </div>
+            
+            <div class="install-steps">
+                <div class="install-step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h4>Install</h4>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>bash</span>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash">Copy</button>
+                            </div>
+                            <pre><code>curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash</code></pre>
+                        </div>
+                        <p class="step-note">Installs uv, Python 3.11, clones the repo, sets up everything. No sudo needed.</p>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h4>Configure</h4>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>bash</span>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes setup">Copy</button>
+                            </div>
+                            <pre><code><span class="code-comment"># Interactive setup wizard</span>
+hermes setup
+
+<span class="code-comment"># Or choose your model</span>
+hermes model</code></pre>
+                        </div>
+                        <p class="step-note">Connect to Nous Portal (OAuth), OpenRouter (API key), or your own endpoint.</p>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h4>Start chatting</h4>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>bash</span>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes">Copy</button>
+                            </div>
+                            <pre><code>hermes</code></pre>
+                        </div>
+                        <p class="step-note">That's it. Full interactive CLI with tools, memory, and skills.</p>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h4>Go multi-platform <span class="step-optional">(optional)</span></h4>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>bash</span>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes gateway">Copy</button>
+                            </div>
+                            <pre><code><span class="code-comment"># Start the messaging gateway</span>
+hermes gateway
+
+<span class="code-comment"># Install as a system service</span>
+hermes gateway install</code></pre>
+                        </div>
+                        <p class="step-note">Connect Telegram, Discord, Slack, or WhatsApp. Runs as a systemd service.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="install-windows">
+                <p>Windows? Use WSL or PowerShell:</p>
+                <div class="code-block code-block-sm">
+                    <div class="code-header">
+                        <span>powershell</span>
+                        <button class="copy-btn" onclick="copyText(this)" data-text="irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex">Copy</button>
+                    </div>
+                    <pre><code>irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- For Researchers -->
+    <section class="section section-research" id="research">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-marker">⚕</span>
+                <h2>Research-ready</h2>
+            </div>
+
+            <div class="research-grid">
+                <div class="research-card">
+                    <h4>Batch Processing</h4>
+                    <p>Generate thousands of tool-calling trajectories in parallel with automatic checkpointing. Configurable workers, batch sizes, and toolset distributions.</p>
+                </div>
+                <div class="research-card">
+                    <h4>RL Training</h4>
+                    <p>Atropos integration for reinforcement learning on agent behaviors. 11 tool-call parsers for training any model architecture.</p>
+                </div>
+                <div class="research-card">
+                    <h4>Trajectory Export</h4>
+                    <p>Export conversations in ShareGPT format for fine-tuning. Trajectory compression fits training data into token budgets.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-card">
+                    <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                        <span>View Source</span>
+                    </a>
+                </div>
+                <div class="footer-card">
+                    <a href="https://discord.gg/NousResearch" target="_blank" rel="noopener">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286z"/></svg>
+                        <span>Join Discord</span>
+                    </a>
+                </div>
+                <div class="footer-card">
+                    <a href="https://nousresearch.com" target="_blank" rel="noopener">
+                        <img src="nous-logo.png" alt="Nous Research" class="footer-nous-logo">
+                        <span>Nous Research</span>
+                    </a>
+                </div>
+                <div class="footer-card">
+                    <a href="https://agentskills.io" target="_blank" rel="noopener">
+                        <span class="footer-skills-icon">📚</span>
+                        <span>agentskills.io</span>
+                    </a>
+                </div>
+            </div>
+
+            <div class="footer-bottom">
+                <p>Built by <a href="https://nousresearch.com" target="_blank" rel="noopener">Nous Research</a> · MIT License · 2025</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

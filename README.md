@@ -92,6 +92,20 @@ rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
 
 ---
 
+## Inference Providers
+
+You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
+
+| Provider | Setup |
+|----------|-------|
+| **Nous Portal** | `hermes login` (OAuth, subscription-based) |
+| **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
+
+**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+
+---
+
 ## Configuration
 
 All your settings are stored in `~/.hermes/` for easy access:
@@ -109,18 +123,6 @@ All your settings are stored in `~/.hermes/` for easy access:
 └── logs/           # Logs
 ```
 
-### Messaging Platforms (Telegram, Discord, Slack)
-
-If you configured a messaging bot token during setup, **start the gateway** so Hermes can receive and send messages:
-
-```bash
-hermes gateway              # Run in foreground (see output)
-hermes gateway install      # Or install as a background service (Linux)
-hermes gateway start        # Start the background service
-```
-
-The installer will offer to do this automatically if it detects a bot token. See [Messaging Gateway](#messaging-gateway) below for full setup instructions.
-
 ### Managing Configuration
 
 ```bash
@@ -136,18 +138,6 @@ hermes config set terminal.backend docker
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
-### Inference Providers
-
-You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
-
-| Provider | Setup |
-|----------|-------|
-| **Nous Portal** | `hermes login` (OAuth, subscription-based) |
-| **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
-| **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
-
-**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
-
 ### Optional API Keys
 
 | Feature | Provider | Env Variable |
@@ -158,14 +148,12 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
-| Slack integration | [Slack](https://api.slack.com/apps) | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
-| Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
 
 ---
 
 ## Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, or WhatsApp.
+Chat with Hermes from Telegram, Discord, Slack, or WhatsApp. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 ### Starting the Gateway
 
@@ -177,18 +165,12 @@ hermes gateway stop         # Stop the systemd service
 hermes gateway status       # Check service status
 ```
 
-### Gateway Commands (inside chat)
-
-| Command | Description |
-|---------|-------------|
-| `/new` or `/reset` | Start fresh conversation |
-| `/status` | Show session info |
-| `/hermes` (Discord) | Slash command — ask, reset, status, stop |
+The installer will offer to set this up automatically if it detects a bot token.
 
 ### Telegram Setup
 
 1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
-2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) - it replies with your numeric ID
+2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) — it replies with your numeric ID
 3. **Configure:**
 
 ```bash
@@ -202,8 +184,10 @@ TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
 ### Discord Setup
 
 1. **Create a bot:** Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
-3. **Configure:**
+2. **Enable intents:** Bot → Privileged Gateway Intents → enable Message Content Intent
+3. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
+4. **Invite to your server:** OAuth2 → URL Generator → scopes: `bot`, `applications.commands` → permissions: Send Messages, Read Message History, Attach Files
+5. **Configure:**
 
 ```bash
 # Add to ~/.hermes/.env:
@@ -227,7 +211,41 @@ SLACK_APP_TOKEN=xapp-...
 SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
 ```
 
-5. **Start the gateway:** `hermes gateway`
+### WhatsApp Setup
+
+WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes supports two approaches:
+
+**Option A — WhatsApp Business API** (requires [Meta Business verification](https://business.facebook.com/)):
+- Production-grade, but requires a verified business account
+- Set `WHATSAPP_ENABLED=true` in `~/.hermes/.env` and configure the Business API credentials
+
+**Option B — whatsapp-web.js bridge** (personal accounts):
+1. Install Node.js if not already present
+2. Set up the bridge:
+
+```bash
+# Add to ~/.hermes/.env:
+WHATSAPP_ENABLED=true
+WHATSAPP_ALLOWED_USERS=YOUR_PHONE_NUMBER    # e.g. 15551234567
+```
+
+3. On first launch, the gateway will display a QR code — scan it with WhatsApp on your phone to link the session
+
+See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
+
+### Gateway Commands (inside chat)
+
+| Command | Description |
+|---------|-------------|
+| `/new` or `/reset` | Start fresh conversation |
+| `/model [name]` | Show or change the model |
+| `/personality [name]` | Set a personality |
+| `/retry` | Retry the last message |
+| `/undo` | Remove the last exchange |
+| `/status` | Show session info |
+| `/stop` | Stop the running agent |
+| `/sethome` | Set this chat as the home channel |
+| `/help` | Show available commands |
 
 ### DM Pairing (Alternative to Allowlists)
 
@@ -245,7 +263,7 @@ hermes pairing revoke telegram 123456789  # Remove access
 
 Pairing codes expire after 1 hour, are rate-limited, and use cryptographic randomness.
 
-### Security (Important!)
+### Security
 
 **By default, the gateway denies all users who are not in an allowlist or paired via DM.** This is the safe default for a bot with terminal access.
 
@@ -260,12 +278,17 @@ GATEWAY_ALLOW_ALL_USERS=true
 
 ### Working Directory
 
-- **CLI (`hermes`)**: Uses current directory where you run the command
-- **Messaging**: Uses `MESSAGING_CWD` (default: home directory `~`)
+| Context | Default |
+|---------|---------|
+| **CLI (`hermes`)** | Current directory where you run the command |
+| **Messaging gateway** | Home directory `~` (override with `MESSAGING_CWD`) |
+| **Docker / Singularity / Modal / SSH** | User's home directory (`~`) inside the container or remote machine |
 
+Override the terminal working directory for any backend:
 ```bash
-# Set custom messaging working directory in ~/.hermes/.env
-MESSAGING_CWD=/home/myuser/projects
+# In ~/.hermes/.env or ~/.hermes/config.yaml:
+MESSAGING_CWD=/home/myuser/projects    # Gateway sessions
+TERMINAL_CWD=/workspace                # All terminal sessions (local or container)
 ```
 
 ### Tool Progress Notifications
@@ -275,17 +298,8 @@ Get real-time updates as the agent works:
 ```bash
 # Enable in ~/.hermes/.env
 HERMES_TOOL_PROGRESS=true
-HERMES_TOOL_PROGRESS_MODE=new    # or "all" for every tool call
+HERMES_TOOL_PROGRESS_MODE=all    # or "new" for only when tool changes
 ```
-
-When enabled, you'll see messages like:
-```
-💻 `ls -la`...
-🔍 web_search...
-📄 web_extract...
-```
-
-See [docs/messaging.md](docs/messaging.md) for WhatsApp and advanced setup.
 
 ---
 
@@ -474,7 +488,12 @@ terminal:
   container_persistent: true    # Persist filesystem across sessions (default: true)
 ```
 
-When `container_persistent: true`, the sandbox state (installed packages, files, config) survives across sessions. Docker uses named volumes, Singularity uses persistent overlays, and Modal uses filesystem snapshots.
+When `container_persistent: true`, the sandbox state (installed packages, files, config) survives across sessions. Docker uses bind mounts, Singularity uses persistent overlays, and Modal uses filesystem snapshots. All persistent data is stored under `TERMINAL_SANDBOX_DIR` (default: `~/.hermes/sandboxes/`):
+
+```bash
+# Override where Docker workspaces and Singularity overlays/SIF cache are stored
+TERMINAL_SANDBOX_DIR=/mnt/fast-ssd/hermes-sandboxes
+```
 
 ### 🧠 Persistent Memory
 
@@ -1416,13 +1435,14 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `TERMINAL_CONTAINER_MEMORY` | Memory in MB for container backends (default: 5120) |
 | `TERMINAL_CONTAINER_DISK` | Disk in MB for container backends (default: 51200) |
 | `TERMINAL_CONTAINER_PERSISTENT` | Persist container filesystem across sessions (default: true) |
+| `TERMINAL_SANDBOX_DIR` | Host directory for Docker workspaces, Singularity overlays/SIF cache (default: `~/.hermes/sandboxes/`) |
 
 **Agent Behavior:**
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
 | `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
-| `HERMES_TOOL_PROGRESS_MODE` | `new` (only when tool changes) or `all` (every call) |
+| `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
 
 **Context Compression:**
 | Variable | Description |

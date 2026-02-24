@@ -50,7 +50,7 @@ class ModalEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "/root",
+        cwd: str = "~",
         timeout: int = 60,
         modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
         persistent_filesystem: bool = True,

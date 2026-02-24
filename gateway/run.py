@@ -96,6 +96,7 @@ class GatewayRunner:
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+        self._reasoning_config = self._load_reasoning_config()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -183,6 +184,36 @@ class GatewayRunner:
         except Exception:
             pass
         return ""
+
+    @staticmethod
+    def _load_reasoning_config() -> dict | None:
+        """Load reasoning effort from config or env var.
+        
+        Checks HERMES_REASONING_EFFORT env var first, then agent.reasoning_effort
+        in config.yaml. Valid: "xhigh", "high", "medium", "low", "minimal", "none".
+        Returns None to use default (xhigh).
+        """
+        effort = os.getenv("HERMES_REASONING_EFFORT", "")
+        if not effort:
+            try:
+                import yaml as _y
+                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path) as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
+            except Exception:
+                pass
+        if not effort:
+            return None
+        effort = effort.lower().strip()
+        if effort == "none":
+            return {"enabled": False}
+        valid = ("xhigh", "high", "medium", "low", "minimal")
+        if effort in valid:
+            return {"enabled": True, "effort": effort}
+        logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
+        return None
 
     async def start(self) -> bool:
         """
@@ -1352,6 +1383,7 @@ class GatewayRunner:
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
+                reasoning_config=self._reasoning_config,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 platform=platform_key,

@@ -1152,7 +1152,11 @@ class AIAgent:
         if provider_preferences:
             extra_body["provider"] = provider_preferences
 
-        if "openrouter" in self.base_url.lower():
+        _supports_reasoning = (
+            "openrouter" in self.base_url.lower()
+            or "nousresearch" in self.base_url.lower()
+        )
+        if _supports_reasoning:
             if self.reasoning_config is not None:
                 extra_body["reasoning"] = self.reasoning_config
             else:
@@ -1574,7 +1578,11 @@ class AIAgent:
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
-            if "openrouter" in self.base_url.lower():
+            _supports_reasoning = (
+                "openrouter" in self.base_url.lower()
+                or "nousresearch" in self.base_url.lower()
+            )
+            if _supports_reasoning:
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
                 else:

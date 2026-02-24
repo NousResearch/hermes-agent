@@ -90,6 +90,24 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _parse_reasoning_config(effort: str) -> dict | None:
+    """Parse a reasoning effort level into an OpenRouter reasoning config dict.
+    
+    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
+    Returns None to use the default (xhigh), or a config dict to override.
+    """
+    if not effort or not effort.strip():
+        return None
+    effort = effort.strip().lower()
+    if effort == "none":
+        return {"enabled": False}
+    valid = ("xhigh", "high", "medium", "low", "minimal")
+    if effort in valid:
+        return {"enabled": True, "effort": effort}
+    logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
+    return None
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -146,6 +164,7 @@ def load_cli_config() -> Dict[str, Any]:
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
+            "reasoning_effort": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -795,6 +814,11 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("prefill_messages_file", "")
         )
         
+        # Reasoning config (OpenRouter reasoning effort level)
+        self.reasoning_config = _parse_reasoning_config(
+            CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
+        
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -889,6 +913,7 @@ class HermesCLI:
                 quiet_mode=True,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
+                reasoning_config=self.reasoning_config,
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,

@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set
 
-from hermes_cli.config import load_config, save_config, get_env_value
+import os
+
+from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.colors import Colors, color
 
 # Toolsets shown in the configurator, grouped for display.
@@ -202,6 +204,67 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         return {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
 
 
+# Map toolset keys to the env vars they require and where to get them
+TOOLSET_ENV_REQUIREMENTS = {
+    "web":        [("FIRECRAWL_API_KEY",    "https://firecrawl.dev/")],
+    "browser":    [("BROWSERBASE_API_KEY",  "https://browserbase.com/"),
+                   ("BROWSERBASE_PROJECT_ID", None)],
+    "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "image_gen":  [("FAL_KEY",              "https://fal.ai/")],
+    "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
+    "tts":        [],  # Edge TTS is free, no key needed
+    "rl":         [("TINKER_API_KEY",       "https://tinker-console.thinkingmachines.ai/keys"),
+                   ("WANDB_API_KEY",        "https://wandb.ai/authorize")],
+}
+
+
+def _check_and_prompt_requirements(newly_enabled: Set[str]):
+    """Check if newly enabled toolsets have missing API keys and offer to set them up."""
+    for ts_key in sorted(newly_enabled):
+        requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
+        if not requirements:
+            continue
+
+        missing = [(var, url) for var, url in requirements if not get_env_value(var)]
+        if not missing:
+            continue
+
+        ts_label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+        print()
+        print(color(f"  ⚠ {ts_label} requires configuration:", Colors.YELLOW))
+
+        for var, url in missing:
+            if url:
+                print(color(f"    {var}", Colors.CYAN) + color(f"  ({url})", Colors.DIM))
+            else:
+                print(color(f"    {var}", Colors.CYAN))
+
+        print()
+        try:
+            response = input(color("  Set up now? [Y/n] ", Colors.YELLOW)).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            continue
+
+        if response in ("", "y", "yes"):
+            for var, url in missing:
+                if url:
+                    print(color(f"    Get key at: {url}", Colors.DIM))
+                try:
+                    import getpass
+                    value = getpass.getpass(color(f"    {var}: ", Colors.YELLOW))
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    break
+                if value.strip():
+                    save_env_value(var, value.strip())
+                    print(color(f"    ✓ Saved", Colors.GREEN))
+                else:
+                    print(color(f"    Skipped", Colors.DIM))
+        else:
+            print(color("    Skipped — configure later with 'hermes setup'", Colors.DIM))
+
+
 def tools_command(args):
     """Entry point for `hermes tools`."""
     config = load_config()
@@ -243,8 +306,6 @@ def tools_command(args):
         new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
 
         if new_enabled != current_enabled:
-            _save_platform_tools(config, pkey, new_enabled)
-
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
 
@@ -257,6 +318,11 @@ def tools_command(args):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
+            # Prompt for missing API keys on newly enabled toolsets
+            if added:
+                _check_and_prompt_requirements(added)
+
+            _save_platform_tools(config, pkey, new_enabled)
             print(color(f"  ✓ Saved {pinfo['label']} configuration", Colors.GREEN))
         else:
             print(color(f"  No changes to {pinfo['label']}", Colors.DIM))

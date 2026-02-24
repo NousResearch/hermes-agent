@@ -29,6 +29,7 @@ $ErrorActionPreference = "Stop"
 $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
+$NodeVersion = "22"
 
 # ============================================================================
 # Helper functions
@@ -174,111 +175,202 @@ function Test-Git {
 }
 
 function Test-Node {
-    Write-Info "Checking Node.js (optional, for browser tools)..."
-    
+    Write-Info "Checking Node.js (for browser tools)..."
+
     if (Get-Command node -ErrorAction SilentlyContinue) {
         $version = node --version
         Write-Success "Node.js $version found"
         $script:HasNode = $true
         return $true
     }
-    
-    Write-Warn "Node.js not found (browser tools will be limited)"
-    Write-Info "To install Node.js (optional):"
-    Write-Info "  https://nodejs.org/en/download/"
+
+    # Check our own managed install from a previous run
+    $managedNode = "$HermesHome\node\node.exe"
+    if (Test-Path $managedNode) {
+        $version = & $managedNode --version
+        $env:Path = "$HermesHome\node;$env:Path"
+        Write-Success "Node.js $version found (Hermes-managed)"
+        $script:HasNode = $true
+        return $true
+    }
+
+    Write-Info "Node.js not found — installing Node.js $NodeVersion LTS..."
+
+    # Try winget first (cleanest on modern Windows)
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info "Installing via winget..."
+        try {
+            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # Refresh PATH
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+            if (Get-Command node -ErrorAction SilentlyContinue) {
+                $version = node --version
+                Write-Success "Node.js $version installed via winget"
+                $script:HasNode = $true
+                return $true
+            }
+        } catch { }
+    }
+
+    # Fallback: download binary zip to ~/.hermes/node/
+    Write-Info "Downloading Node.js $NodeVersion binary..."
+    try {
+        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
+        $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
+        $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
+
+        if ($zipName) {
+            $downloadUrl = "${indexUrl}${zipName}"
+            $tmpZip = "$env:TEMP\$zipName"
+            $tmpDir = "$env:TEMP\hermes-node-extract"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpZip -UseBasicParsing
+            if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+            Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+
+            $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
+            if ($extractedDir) {
+                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
+                Move-Item $extractedDir.FullName "$HermesHome\node"
+                $env:Path = "$HermesHome\node;$env:Path"
+
+                $version = & "$HermesHome\node\node.exe" --version
+                Write-Success "Node.js $version installed to ~/.hermes/node/"
+                $script:HasNode = $true
+
+                Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                return $true
+            }
+        }
+    } catch {
+        Write-Warn "Download failed: $_"
+    }
+
+    Write-Warn "Could not auto-install Node.js"
+    Write-Info "Install manually: https://nodejs.org/en/download/"
     $script:HasNode = $false
-    return $true  # Don't fail - Node is optional
+    return $true
 }
 
-function Test-Ripgrep {
-    Write-Info "Checking ripgrep (optional, for faster file search)..."
-    
+function Install-SystemPackages {
+    $script:HasRipgrep = $false
+    $script:HasFfmpeg = $false
+    $needRipgrep = $false
+    $needFfmpeg = $false
+
+    Write-Info "Checking ripgrep (fast file search)..."
     if (Get-Command rg -ErrorAction SilentlyContinue) {
         $version = rg --version | Select-Object -First 1
         Write-Success "$version found"
         $script:HasRipgrep = $true
-        return $true
+    } else {
+        $needRipgrep = $true
     }
-    
-    Write-Warn "ripgrep not found (file search will use findstr fallback)"
-    
-    # Check what package managers are available
+
+    Write-Info "Checking ffmpeg (TTS voice messages)..."
+    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+        Write-Success "ffmpeg found"
+        $script:HasFfmpeg = $true
+    } else {
+        $needFfmpeg = $true
+    }
+
+    if (-not $needRipgrep -and -not $needFfmpeg) { return }
+
+    # Build description and package lists for each package manager
+    $descParts = @()
+    $wingetPkgs = @()
+    $chocoPkgs = @()
+    $scoopPkgs = @()
+
+    if ($needRipgrep) {
+        $descParts += "ripgrep for faster file search"
+        $wingetPkgs += "BurntSushi.ripgrep.MSVC"
+        $chocoPkgs += "ripgrep"
+        $scoopPkgs += "ripgrep"
+    }
+    if ($needFfmpeg) {
+        $descParts += "ffmpeg for TTS voice messages"
+        $wingetPkgs += "Gyan.FFmpeg"
+        $chocoPkgs += "ffmpeg"
+        $scoopPkgs += "ffmpeg"
+    }
+
+    $description = $descParts -join " and "
     $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
     $hasChoco = Get-Command choco -ErrorAction SilentlyContinue
     $hasScoop = Get-Command scoop -ErrorAction SilentlyContinue
-    
-    # Offer to install
-    Write-Host ""
-    $response = Read-Host "Would you like to install ripgrep? (faster search, recommended) [Y/n]"
-    
-    if ($response -eq "" -or $response -match "^[Yy]") {
-        Write-Info "Installing ripgrep..."
-        
-        if ($hasWinget) {
-            try {
-                winget install BurntSushi.ripgrep.MSVC --silent 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Success "ripgrep installed via winget"
-                    $script:HasRipgrep = $true
-                    return $true
-                }
-            } catch { }
-        }
-        
-        if ($hasChoco) {
-            try {
-                choco install ripgrep -y 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Success "ripgrep installed via chocolatey"
-                    $script:HasRipgrep = $true
-                    return $true
-                }
-            } catch { }
-        }
-        
-        if ($hasScoop) {
-            try {
-                scoop install ripgrep 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Success "ripgrep installed via scoop"
-                    $script:HasRipgrep = $true
-                    return $true
-                }
-            } catch { }
-        }
-        
-        Write-Warn "Auto-install failed. You can install manually:"
-    } else {
-        Write-Info "Skipping ripgrep installation. To install manually:"
-    }
-    
-    # Show manual install instructions
-    Write-Info "  winget install BurntSushi.ripgrep.MSVC"
-    Write-Info "  Or: choco install ripgrep"
-    Write-Info "  Or: scoop install ripgrep"
-    Write-Info "  Or download from: https://github.com/BurntSushi/ripgrep/releases"
-    
-    $script:HasRipgrep = $false
-    return $true  # Don't fail - ripgrep is optional
-}
 
-function Test-Ffmpeg {
-    Write-Info "Checking ffmpeg (optional, for TTS voice messages)..."
-    
-    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
-        $version = ffmpeg -version 2>&1 | Select-Object -First 1
-        Write-Success "ffmpeg found"
-        $script:HasFfmpeg = $true
-        return $true
+    # Try winget first (most common on modern Windows)
+    if ($hasWinget) {
+        Write-Info "Installing $description via winget..."
+        foreach ($pkg in $wingetPkgs) {
+            try {
+                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            } catch { }
+        }
+        # Refresh PATH and recheck
+        $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Success "ripgrep installed"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
+        }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Success "ffmpeg installed"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+        if (-not $needRipgrep -and -not $needFfmpeg) { return }
     }
-    
-    Write-Warn "ffmpeg not found (TTS voice bubbles on Telegram will send as audio files instead)"
-    Write-Info "  Install with: winget install ffmpeg"
-    Write-Info "  Or: choco install ffmpeg"
-    Write-Info "  Or download from: https://ffmpeg.org/download.html"
-    
-    $script:HasFfmpeg = $false
-    return $true  # Don't fail - ffmpeg is optional
+
+    # Fallback: choco
+    if ($hasChoco -and ($needRipgrep -or $needFfmpeg)) {
+        Write-Info "Trying Chocolatey..."
+        foreach ($pkg in $chocoPkgs) {
+            try { choco install $pkg -y 2>&1 | Out-Null } catch { }
+        }
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Success "ripgrep installed via chocolatey"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
+        }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Success "ffmpeg installed via chocolatey"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+    }
+
+    # Fallback: scoop
+    if ($hasScoop -and ($needRipgrep -or $needFfmpeg)) {
+        Write-Info "Trying Scoop..."
+        foreach ($pkg in $scoopPkgs) {
+            try { scoop install $pkg 2>&1 | Out-Null } catch { }
+        }
+        if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
+            Write-Success "ripgrep installed via scoop"
+            $script:HasRipgrep = $true
+            $needRipgrep = $false
+        }
+        if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Success "ffmpeg installed via scoop"
+            $script:HasFfmpeg = $true
+            $needFfmpeg = $false
+        }
+    }
+
+    # Show manual instructions for anything still missing
+    if ($needRipgrep) {
+        Write-Warn "ripgrep not installed (file search will use findstr fallback)"
+        Write-Info "  winget install BurntSushi.ripgrep.MSVC"
+    }
+    if ($needFfmpeg) {
+        Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
+        Write-Info "  winget install Gyan.FFmpeg"
+    }
 }
 
 # ============================================================================
@@ -651,14 +743,14 @@ function Write-Completion {
     Write-Host ""
     
     if (-not $HasNode) {
-        Write-Host "Note: Node.js was not found. Browser automation tools" -ForegroundColor Yellow
-        Write-Host "will have limited functionality." -ForegroundColor Yellow
+        Write-Host "Note: Node.js could not be installed automatically." -ForegroundColor Yellow
+        Write-Host "Browser tools need Node.js. Install manually:" -ForegroundColor Yellow
+        Write-Host "  https://nodejs.org/en/download/" -ForegroundColor Yellow
         Write-Host ""
     }
     
     if (-not $HasRipgrep) {
-        Write-Host "Note: ripgrep (rg) was not found. File search will use" -ForegroundColor Yellow
-        Write-Host "findstr as a fallback. For faster search:" -ForegroundColor Yellow
+        Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
         Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow
         Write-Host ""
     }
@@ -674,9 +766,8 @@ function Main {
     if (-not (Install-Uv)) { exit 1 }
     if (-not (Test-Python)) { exit 1 }
     if (-not (Test-Git)) { exit 1 }
-    Test-Node      # Optional, doesn't fail
-    Test-Ripgrep   # Optional, doesn't fail
-    Test-Ffmpeg    # Optional, doesn't fail
+    Test-Node              # Auto-installs if missing
+    Install-SystemPackages  # ripgrep + ffmpeg in one step
     
     Install-Repository
     Install-Venv

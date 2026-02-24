@@ -210,9 +210,10 @@ agent:
   # Enable verbose logging
   verbose: false
   
-  # Custom system prompt (personality, instructions, etc.)
-  # Leave empty or remove to use default agent behavior
-  system_prompt: ""
+  # Reasoning effort level (OpenRouter and Nous Portal)
+  # Controls how much "thinking" the model does before responding.
+  # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  reasoning_effort: "xhigh"
   
   # Predefined personalities (use with /personality command)
   personalities:

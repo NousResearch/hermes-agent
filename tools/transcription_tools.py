@@ -76,7 +76,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> dict:
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
 
         with open(file_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(

@@ -224,7 +224,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         response_format = "mp3"
 
-    client = OpenAIClient(api_key=api_key)
+    client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
     response = client.audio.speech.create(
         model=model,
         voice=voice,

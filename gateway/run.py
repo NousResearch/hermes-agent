@@ -92,6 +92,11 @@ class GatewayRunner:
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
 
+        # Load ephemeral config from config.yaml / env vars.
+        # Both are injected at API-call time only and never persisted.
+        self._prefill_messages = self._load_prefill_messages()
+        self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
@@ -119,6 +124,66 @@ class GatewayRunner:
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
     
+    @staticmethod
+    def _load_prefill_messages() -> List[Dict[str, Any]]:
+        """Load ephemeral prefill messages from config or env var.
+        
+        Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
+        the prefill_messages_file key in ~/.hermes/config.yaml.
+        Relative paths are resolved from ~/.hermes/.
+        """
+        import json as _json
+        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+        if not file_path:
+            try:
+                import yaml as _y
+                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path) as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    file_path = cfg.get("prefill_messages_file", "")
+            except Exception:
+                pass
+        if not file_path:
+            return []
+        path = Path(file_path).expanduser()
+        if not path.is_absolute():
+            path = Path.home() / ".hermes" / path
+        if not path.exists():
+            logger.warning("Prefill messages file not found: %s", path)
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if not isinstance(data, list):
+                logger.warning("Prefill messages file must contain a JSON array: %s", path)
+                return []
+            return data
+        except Exception as e:
+            logger.warning("Failed to load prefill messages from %s: %s", path, e)
+            return []
+
+    @staticmethod
+    def _load_ephemeral_system_prompt() -> str:
+        """Load ephemeral system prompt from config or env var.
+        
+        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
+        agent.system_prompt in ~/.hermes/config.yaml.
+        """
+        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        if prompt:
+            return prompt
+        try:
+            import yaml as _y
+            cfg_path = Path.home() / ".hermes" / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+        except Exception:
+            pass
+        return ""
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -1275,15 +1340,21 @@ class GatewayRunner:
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
+            # Combine platform context with user-configured ephemeral system prompt
+            combined_ephemeral = context_prompt or ""
+            if self._ephemeral_system_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            
             agent = AIAgent(
                 model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 enabled_toolsets=enabled_toolsets,
-                ephemeral_system_prompt=context_prompt,
+                ephemeral_system_prompt=combined_ephemeral or None,
+                prefill_messages=self._prefill_messages or None,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
-                platform=platform_key,  # Tells the agent which interface to format for
+                platform=platform_key,
             )
             
             # Store agent reference for interrupt support

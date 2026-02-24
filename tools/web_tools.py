@@ -159,7 +159,7 @@ async def process_content_with_llm(
         return processed_content
         
     except Exception as e:
-        logger.error("Error processing content with LLM: %s", e)
+        logger.debug("Error processing content with LLM: %s", e)
         return f"[Failed to process content: {str(e)[:100]}. Content size: {len(content):,} chars]"
 
 
@@ -318,7 +318,7 @@ async def _process_large_content_chunked(
             summaries.append(f"## Section {chunk_idx + 1}\n{summary}")
     
     if not summaries:
-        logger.error("All chunk summarizations failed")
+        logger.debug("All chunk summarizations failed")
         return "[Failed to process large content: all chunk summarizations failed]"
     
     logger.info("Got %d/%d chunk summaries", len(summaries), len(chunks))
@@ -532,7 +532,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.debug("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
@@ -673,7 +673,7 @@ async def web_extract_tool(
                 })
                 
             except Exception as scrape_err:
-                logger.error("Error scraping %s: %s", url, scrape_err)
+                logger.debug("Scrape failed for %s: %s", url, scrape_err)
                 results.append({
                     "url": url,
                     "title": "",
@@ -799,7 +799,7 @@ async def web_extract_tool(
             
     except Exception as e:
         error_msg = f"Error extracting content: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.debug("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_extract_tool", debug_call_data)
@@ -892,7 +892,7 @@ async def web_crawl_tool(
                 **crawl_params
             )
         except Exception as e:
-            logger.error("Crawl API call failed: %s", e)
+            logger.debug("Crawl API call failed: %s", e)
             raise
 
         pages: List[Dict[str, Any]] = []
@@ -1092,7 +1092,7 @@ async def web_crawl_tool(
         
     except Exception as e:
         error_msg = f"Error crawling website: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.debug("%s", error_msg)
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_crawl_tool", debug_call_data)
@@ -1227,7 +1227,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Pages under 5000 chars return raw content; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. Use browser tools only when pages require interaction or dynamic content.",
+    "description": "Extract content from web page URLs. Returns page content in markdown format. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
     "parameters": {
         "type": "object",
         "properties": {

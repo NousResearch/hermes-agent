@@ -677,12 +677,10 @@ class AIAgent:
             "value": user_query
         })
         
-        # Calculate where agent responses start in the messages list.
-        # Prefill messages are ephemeral (only used to prime model response style)
-        # so we skip them entirely in the saved trajectory.
-        # Layout: [*prefill_msgs, actual_user_msg, ...agent_responses...]
-        num_prefill = len(self.prefill_messages) if self.prefill_messages else 0
-        i = num_prefill + 1  # Skip prefill messages + the actual user message (already added above)
+        # Skip the first message (the user query) since we already added it above.
+        # Prefill messages are injected at API-call time only (not in the messages
+        # list), so no offset adjustment is needed here.
+        i = 1
         
         while i < len(messages):
             msg = messages[i]
@@ -1043,9 +1041,10 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
-        caller_prompt = system_message if system_message is not None else self.ephemeral_system_prompt
-        if caller_prompt:
-            prompt_parts.append(caller_prompt)
+        # Note: ephemeral_system_prompt is NOT included here. It's injected at
+        # API-call time only so it stays out of the cached/stored system prompt.
+        if system_message is not None:
+            prompt_parts.append(system_message)
 
         if self._memory_store:
             if self._memory_enabled:
@@ -1510,6 +1509,19 @@ class AIAgent:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result preview: {result_preview}...")
 
+            # Guard against tools returning absurdly large content that would
+            # blow up the context window. 100K chars ≈ 25K tokens — generous
+            # enough for any reasonable tool output but prevents catastrophic
+            # context explosions (e.g. accidental base64 image dumps).
+            MAX_TOOL_RESULT_CHARS = 100_000
+            if len(function_result) > MAX_TOOL_RESULT_CHARS:
+                original_len = len(function_result)
+                function_result = (
+                    function_result[:MAX_TOOL_RESULT_CHARS]
+                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
+                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
+                )
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
@@ -1551,8 +1563,15 @@ class AIAgent:
 
         try:
             api_messages = messages.copy()
+            effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
-                api_messages = [{"role": "system", "content": self.ephemeral_system_prompt}] + api_messages
+                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if effective_system:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            if self.prefill_messages:
+                sys_offset = 1 if effective_system else 0
+                for idx, pfm in enumerate(self.prefill_messages):
+                    api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
             if "openrouter" in self.base_url.lower():
@@ -1628,11 +1647,10 @@ class AIAgent:
         if conversation_history and not self._todo_store.has_items():
             self._hydrate_todo_store(conversation_history)
         
-        # Inject prefill messages at the start of conversation (before user's actual prompt)
-        # This is used for few-shot priming, e.g., a greeting exchange to set response style
-        if self.prefill_messages and not conversation_history:
-            for prefill_msg in self.prefill_messages:
-                messages.append(prefill_msg.copy())
+        # Prefill messages (few-shot priming) are injected at API-call time only,
+        # never stored in the messages list. This keeps them ephemeral: they won't
+        # be saved to session DB, session logs, or batch trajectories, but they're
+        # automatically re-applied on every API call (including session continuations).
         
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
@@ -1733,9 +1751,21 @@ class AIAgent:
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
             
-            if active_system_prompt:
-                # Insert system message at the beginning
-                api_messages = [{"role": "system", "content": active_system_prompt}] + api_messages
+            # Build the final system message: cached prompt + ephemeral system prompt.
+            # The ephemeral part is appended here (not baked into the cached prompt)
+            # so it stays out of the session DB and logs.
+            effective_system = active_system_prompt or ""
+            if self.ephemeral_system_prompt:
+                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if effective_system:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            
+            # Inject ephemeral prefill messages right after the system prompt
+            # but before conversation history. Same API-call-time-only pattern.
+            if self.prefill_messages:
+                sys_offset = 1 if effective_system else 0
+                for idx, pfm in enumerate(self.prefill_messages):
+                    api_messages.insert(sys_offset + idx, pfm.copy())
             
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
             # Auto-detected: if model name contains "claude" and base_url is OpenRouter,

@@ -310,10 +310,10 @@ def get_cute_tool_message(
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
-        """Apply red coloring and failure suffix when the tool failed."""
+        """Append failure suffix when the tool failed."""
         if not is_failure:
             return line
-        return f"{_RED}{line}{failure_suffix}{_RESET}"
+        return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
         return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")

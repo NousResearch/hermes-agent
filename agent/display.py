@@ -7,12 +7,29 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 import json
 import os
 import random
+import sys
 import threading
 import time
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
+
+
+def _raw_write(text: str):
+    """Write directly to the real stdout, bypassing prompt_toolkit's patch_stdout proxy.
+
+    prompt_toolkit's StdoutProxy intercepts sys.stdout and can swallow or
+    mishandle \\r carriage returns and inline ANSI escapes that the spinner
+    relies on.  sys.__stdout__ is the original file object before any monkey
+    patching, so writes go straight to the terminal.
+    """
+    out = sys.__stdout__
+    try:
+        out.write(text)
+        out.flush()
+    except (ValueError, OSError):
+        pass
 
 
 # =========================================================================
@@ -169,8 +186,10 @@ class KawaiiSpinner:
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            clear = '\r' + ' ' * self.last_line_len + '\r'
-            print(clear + line, end='', flush=True)
+            # \033[2K erases the entire current line, \r moves cursor to col 0.
+            # Using _raw_write bypasses patch_stdout so the animation renders
+            # even when prompt_toolkit owns the terminal.
+            _raw_write(f"\033[2K\r{line}")
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -190,9 +209,9 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        print('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
+        _raw_write(f"\033[2K\r")
         if final_message:
-            print(f"  {final_message}", flush=True)
+            _raw_write(f"  {final_message}\n")
 
     def __enter__(self):
         self.start()

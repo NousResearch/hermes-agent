@@ -224,54 +224,77 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Group by session_id, keep order (highest ranked first)
+        # Resolve child sessions to their parent — delegation stores detailed
+        # content in child sessions, but the user's conversation is the parent.
+        def _resolve_to_parent(session_id):
+            visited = set()
+            sid = session_id
+            while sid and sid not in visited:
+                visited.add(sid)
+                session = db.get_session(sid)
+                if not session:
+                    break
+                parent = session.get("parent_session_id")
+                if parent:
+                    sid = parent
+                else:
+                    break
+            return sid
+
+        # Group by resolved (parent) session_id, dedup
         seen_sessions = {}
         for result in raw_results:
-            sid = result["session_id"]
-            if sid not in seen_sessions:
-                seen_sessions[sid] = result
+            raw_sid = result["session_id"]
+            resolved_sid = _resolve_to_parent(raw_sid)
+            if resolved_sid not in seen_sessions:
+                result = dict(result)
+                result["session_id"] = resolved_sid
+                seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
 
-        # Summarize each matching session
-        summaries = []
+        # Prepare all sessions for parallel summarization
+        tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                # Load full conversation
                 messages = db.get_messages_as_conversation(session_id)
                 if not messages:
                     continue
-
-                # Get session metadata
                 session_meta = db.get_session(session_id) or {}
-
-                # Format and truncate
                 conversation_text = _format_conversation(messages)
                 conversation_text = _truncate_around_matches(conversation_text, query)
-
-                # Summarize with Gemini Flash (handle both async and sync contexts)
-                coro = _summarize_session(conversation_text, query, session_meta)
-                try:
-                    asyncio.get_running_loop()
-                    # Already in an async context (gateway) -- run in a thread
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        summary = pool.submit(lambda: asyncio.run(coro)).result(timeout=30)
-                except RuntimeError:
-                    # No running loop (normal CLI) -- use asyncio.run directly
-                    summary = asyncio.run(coro)
-
-                if summary:
-                    summaries.append({
-                        "session_id": session_id,
-                        "when": _format_timestamp(match_info.get("session_started")),
-                        "source": match_info.get("source", "unknown"),
-                        "model": match_info.get("model"),
-                        "summary": summary,
-                    })
-
+                tasks.append((session_id, match_info, conversation_text, session_meta))
             except Exception as e:
-                logging.warning(f"Failed to summarize session {session_id}: {e}")
+                logging.warning(f"Failed to prepare session {session_id}: {e}")
+
+        # Summarize all sessions in parallel
+        async def _summarize_all():
+            coros = [
+                _summarize_session(text, query, meta)
+                for _, _, text, meta in tasks
+            ]
+            return await asyncio.gather(*coros, return_exceptions=True)
+
+        try:
+            asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                results = pool.submit(lambda: asyncio.run(_summarize_all())).result(timeout=60)
+        except RuntimeError:
+            results = asyncio.run(_summarize_all())
+
+        summaries = []
+        for (session_id, match_info, _, _), result in zip(tasks, results):
+            if isinstance(result, Exception):
+                logging.warning(f"Failed to summarize session {session_id}: {result}")
                 continue
+            if result:
+                summaries.append({
+                    "session_id": session_id,
+                    "when": _format_timestamp(match_info.get("session_started")),
+                    "source": match_info.get("source", "unknown"),
+                    "model": match_info.get("model"),
+                    "summary": result,
+                })
 
         return json.dumps({
             "success": True,
@@ -309,9 +332,11 @@ SESSION_SEARCH_SCHEMA = {
         "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
         "Don't hesitate to search -- it's fast and cheap. Better to search and confirm "
         "than to guess or ask the user to repeat themselves.\n\n"
-        "Search syntax: keywords (docker deployment), phrases (\"exact match\"), "
-        "boolean (python NOT java), prefix (deploy*). Returns summaries of the "
-        "top matching sessions focused on your query."
+        "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
+        "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
+        "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
+        "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
+        "keyword searches in parallel. Returns summaries of the top matching sessions."
     ),
     "parameters": {
         "type": "object",

@@ -4,7 +4,29 @@
 
 # Hermes Agent ⚕
 
-An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system, messaging integrations, and scheduled tasks.
+<p align="center">
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/discord/1091535925690535946?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet" alt="Built by Nous Research"></a>
+</p>
+
+**An open-source AI agent you can actually live with.** Install it on a machine, give it your messaging accounts, and it becomes a persistent personal agent that grows with you — learning your projects, building its own skills, running tasks on a schedule, and reaching you wherever you are. It's not a coding copilot tethered to an IDE or a chatbot wrapper around a single API. It's an autonomous agent that lives on your server, remembers what it learns, and gets more capable the longer it runs.
+
+Use any model you want — log in with a [Nous Portal](https://portal.nousresearch.com) subscription for zero-config access, connect an [OpenRouter](https://openrouter.ai) key for 200+ models, or point it at your own VLLM/SGLang endpoint. Switch with `hermes model` — no code changes, no lock-in.
+
+Built by [Nous Research](https://nousresearch.com). Under the hood, the same architecture powers [batch data generation](#batch-processing) and [RL training environments](#-atropos-rl-environments) for training the next generation of tool-calling models.
+
+<table>
+<tr><td><b>A real terminal interface</b></td><td>Not a web UI — a full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal and want an agent that keeps up.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, and CLI — all from a single gateway process. Send it a voice memo from your phone, get a researched answer with citations. Cross-platform message mirroring means a conversation started on Telegram can continue on Discord.</td></tr>
+<tr><td><b>Grows the longer it runs</b></td><td>Persistent memory across sessions — the agent remembers your preferences, your projects, your environment. When it solves a hard problem, it writes a skill document for next time. Skills are searchable, shareable, and compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard. A Skills Hub lets you install community skills or publish your own.</td></tr>
+<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Set up a daily AI funding report delivered to Telegram, a nightly backup verification on Discord, a weekly dependency audit that opens PRs, or a morning news briefing — all in natural language. The gateway runs them unattended.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — each gets its own conversation and terminal. The agent can also write Python scripts that call its own tools via RPC, collapsing multi-step pipelines into a single turn with zero intermediate context cost.</td></tr>
+<tr><td><b>Real sandboxing</b></td><td>Five terminal backends — local, Docker, SSH, Singularity, and Modal — with persistent workspaces, background process management, with the option to make these machines ephemeral. Run it against a remote machine so it can't modify its own code.</td></tr>
+<tr><td><b>Research-ready</b></td><td>Batch runner for generating thousands of tool-calling trajectories in parallel. Atropos RL environments for training models with reinforcement learning on agentic tasks. Trajectory compression for fitting training data into token budgets.</td></tr>
+</table>
+
+---
 
 ## Quick Install
 
@@ -29,8 +51,9 @@ The installer will:
 
 After installation, reload your shell and run:
 ```bash
-hermes setup    # Configure API keys (if you skipped during install)
-hermes          # Start chatting!
+source ~/.bashrc   # or: source ~/.zshrc
+hermes setup       # Configure API keys (if you skipped during install)
+hermes             # Start chatting!
 ```
 
 ---
@@ -41,42 +64,18 @@ The installer (`hermes setup`) walks you through selecting a provider and model.
 
 ```bash
 hermes          # Start chatting!
+hermes model    # Switch provider or model interactively
+hermes tools    # See all available tools
 ```
 
-To change your provider or model later:
-
-```bash
-hermes model    # Interactive provider & model selector
-```
-
-This lets you switch between **Nous Portal** (subscription), **OpenRouter** (100+ models, pay-per-use), or a **custom endpoint** (VLLM, SGLang, any OpenAI-compatible API) at any time.
+This lets you switch between **Nous Portal** (subscription), **OpenRouter** (200+ models, pay-per-use), or a **custom endpoint** (VLLM, SGLang, any OpenAI-compatible API) at any time.
 
 ---
 
 ## Updating
 
-**Quick update (installer version):**
 ```bash
 hermes update    # Update to latest version (prompts for new config)
-```
-
-**Manual update (if you cloned the repo yourself):**
-```bash
-cd /path/to/hermes-agent
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Pull latest code and submodules
-git pull origin main
-git submodule update --init --recursive
-
-# Reinstall (picks up new dependencies)
-uv pip install -e ".[all]"
-uv pip install -e "./mini-swe-agent"
-uv pip install -e "./tinker-atropos"
-
-# Check for new config options added since your last update
-hermes config check
-hermes config migrate   # Interactively add any missing options
 ```
 
 **Uninstalling:**
@@ -153,14 +152,12 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 | Feature | Provider | Env Variable |
 |---------|----------|--------------|
-| Custom OpenAI Endpoint (OAI or VLLM/SGLANG) | [platform.openai.com](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
-| OpenAI TTS voices | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
+| OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
-| Voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `OPENAI_API_KEY` |
 | Slack integration | [Slack](https://api.slack.com/apps) | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
 | Messaging | Telegram, Discord | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` |
 
@@ -1263,6 +1260,30 @@ hermes
 
 ---
 
+### Manual Update
+
+If you installed manually (not via `hermes update`):
+
+```bash
+cd /path/to/hermes-agent
+export VIRTUAL_ENV="$(pwd)/venv"
+
+# Pull latest code and submodules
+git pull origin main
+git submodule update --init --recursive
+
+# Reinstall (picks up new dependencies)
+uv pip install -e ".[all]"
+uv pip install -e "./mini-swe-agent"
+uv pip install -e "./tinker-atropos"
+
+# Check for new config options added since your last update
+hermes config check
+hermes config migrate   # Interactively add any missing options
+```
+
+---
+
 ## Batch Processing
 
 Process multiple prompts in parallel with automatic checkpointing:
@@ -1337,7 +1358,9 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic access |
-| `OPENAI_API_KEY` | Direct OpenAI access |
+| `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
+| `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
+| `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
 
 **Provider Auth (OAuth):**
 | Variable | Description |

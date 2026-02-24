@@ -61,6 +61,35 @@ if env_path.exists():
 # Configuration Loading
 # =============================================================================
 
+def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
+    """Load ephemeral prefill messages from a JSON file.
+    
+    The file should contain a JSON array of {role, content} dicts, e.g.:
+        [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
+    
+    Relative paths are resolved from ~/.hermes/.
+    Returns an empty list if the path is empty or the file doesn't exist.
+    """
+    if not file_path:
+        return []
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        path = Path.home() / ".hermes" / path
+    if not path.exists():
+        logger.warning("Prefill messages file not found: %s", path)
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            logger.warning("Prefill messages file must contain a JSON array: %s", path)
+            return []
+        return data
+    except Exception as e:
+        logger.warning("Failed to load prefill messages from %s: %s", path, e)
+        return []
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -116,6 +145,7 @@ def load_cli_config() -> Dict[str, Any]:
             "max_turns": 60,  # Default max tool-calling iterations
             "verbose": False,
             "system_prompt": "",
+            "prefill_messages_file": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -753,9 +783,17 @@ class HermesCLI:
             if invalid:
                 self.console.print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
-        # System prompt and personalities from config
-        self.system_prompt = CLI_CONFIG["agent"].get("system_prompt", "")
+        # Ephemeral system prompt: env var takes precedence, then config
+        self.system_prompt = (
+            os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+            or CLI_CONFIG["agent"].get("system_prompt", "")
+        )
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
+        
+        # Ephemeral prefill messages (few-shot priming, never persisted)
+        self.prefill_messages = _load_prefill_messages(
+            CLI_CONFIG["agent"].get("prefill_messages_file", "")
+        )
         
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
@@ -848,10 +886,11 @@ class HermesCLI:
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
-                quiet_mode=True,  # Suppress verbose output for clean CLI
+                quiet_mode=True,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
-                session_id=self.session_id,  # Pass CLI's session ID to agent
-                platform="cli",  # CLI interface — agent uses terminal-friendly formatting
+                prefill_messages=self.prefill_messages or None,
+                session_id=self.session_id,
+                platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
             )

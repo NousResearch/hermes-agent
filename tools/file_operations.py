@@ -412,9 +412,17 @@ class ShellFileOperations(FileOperations):
             # Still try to read, but warn
             pass
         
-        # Check if it's an image - return base64
+        # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
-            return self._read_image(path)
+            return ReadResult(
+                is_image=True,
+                is_binary=True,
+                file_size=file_size,
+                hint=(
+                    "Image file detected. Automatically redirected to vision_analyze tool. "
+                    "Use vision_analyze with this file path to inspect the image contents."
+                ),
+            )
         
         # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
@@ -457,6 +465,10 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    # Images larger than this are too expensive to inline as base64 in the
+    # conversation context. Return metadata only and suggest vision_analyze.
+    MAX_IMAGE_BYTES = 512 * 1024  # 512 KB
+
     def _read_image(self, path: str) -> ReadResult:
         """Read an image file, returning base64 content."""
         # Get file size
@@ -466,6 +478,17 @@ class ShellFileOperations(FileOperations):
             file_size = int(stat_result.stdout.strip())
         except ValueError:
             file_size = 0
+        
+        if file_size > self.MAX_IMAGE_BYTES:
+            return ReadResult(
+                is_image=True,
+                is_binary=True,
+                file_size=file_size,
+                hint=(
+                    f"Image is too large to inline ({file_size:,} bytes). "
+                    "Use vision_analyze to inspect the image, or reference it by path."
+                ),
+            )
         
         # Get base64 content
         b64_cmd = f"base64 -w 0 {self._escape_shell_arg(path)} 2>/dev/null"

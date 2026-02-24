@@ -122,6 +122,11 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
     
+    # Ephemeral prefill messages file — JSON list of {role, content} dicts
+    # injected at the start of every API call for few-shot priming.
+    # Never saved to sessions, logs, or trajectories.
+    "prefill_messages_file": "",
+    
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
@@ -308,6 +313,20 @@ OPTIONAL_ENV_VARS = {
     "HERMES_TOOL_PROGRESS_MODE": {
         "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
         "prompt": "Progress mode (all/new)",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "HERMES_PREFILL_MESSAGES_FILE": {
+        "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
+        "prompt": "Prefill messages file path",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+    "HERMES_EPHEMERAL_SYSTEM_PROMPT": {
+        "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
+        "prompt": "Ephemeral system prompt",
         "url": None,
         "password": False,
         "category": "setting",

@@ -405,29 +405,22 @@ def _get_env_config() -> Dict[str, Any]:
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
-    # Default cwd depends on backend:
-    #   - local: host's current working directory
-    #   - ssh: remote user's home (agent code is local, execution is remote)
-    #   - docker: / inside the container
-    #   - singularity/modal: /root (ephemeral cloud/container)
-    if env_type in ("modal", "singularity"):
-        default_cwd = "/root"
-    elif env_type == "docker":
-        default_cwd = "/"
-    elif env_type == "ssh":
-        default_cwd = "~"
-    else:
+    # Default cwd: local uses the host's current directory, everything
+    # else starts in the user's home (~ resolves to whatever account
+    # is running inside the container/remote).
+    if env_type == "local":
         default_cwd = os.getcwd()
+    else:
+        default_cwd = "~"
     
-    # Read TERMINAL_CWD but sanity-check it for non-local backends.
+    # Read TERMINAL_CWD but sanity-check it for container backends.
     # If the CWD looks like a host-local path that can't exist inside a
-    # container/sandbox, fall back to the backend's own default.  This
+    # container/sandbox, fall back to the backend's own default. This
     # catches the case where cli.py (or .env) leaked the host's CWD.
+    # SSH is excluded since /home/ paths are valid on remote machines.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if env_type in ("modal", "docker", "singularity", "ssh") and cwd:
-        # Paths containing common host-only prefixes are clearly wrong
-        # inside a container.  Also catch Windows-style paths (C:\...).
-        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+    if env_type in ("modal", "docker", "singularity") and cwd:
+        host_prefixes = ("/Users/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",
@@ -1122,6 +1115,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 

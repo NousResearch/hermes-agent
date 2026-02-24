@@ -1,7 +1,24 @@
 """Base class for all Hermes execution environment backends."""
 
 from abc import ABC, abstractmethod
+import os
 import subprocess
+from pathlib import Path
+
+
+def get_sandbox_dir() -> Path:
+    """Return the host-side root for all sandbox storage (Docker workspaces,
+    Singularity overlays/SIF cache, etc.).
+
+    Configurable via TERMINAL_SANDBOX_DIR. Defaults to ~/.hermes/sandboxes/.
+    """
+    custom = os.getenv("TERMINAL_SANDBOX_DIR")
+    if custom:
+        p = Path(custom)
+    else:
+        p = Path.home() / ".hermes" / "sandboxes"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 class BaseEnvironment(ABC):

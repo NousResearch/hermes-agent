@@ -43,12 +43,22 @@ def _save_snapshots(data: Dict[str, str]) -> None:
 # -------------------------------------------------------------------------
 
 def _get_scratch_dir() -> Path:
-    """Get the best directory for Singularity sandboxes -- prefers /scratch on HPC."""
+    """Get the best directory for Singularity sandboxes.
+
+    Resolution order:
+      1. TERMINAL_SCRATCH_DIR (explicit override)
+      2. TERMINAL_SANDBOX_DIR / singularity (shared sandbox root)
+      3. /scratch (common on HPC clusters)
+      4. ~/.hermes/sandboxes/singularity (fallback)
+    """
     custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
     if custom_scratch:
         scratch_path = Path(custom_scratch)
         scratch_path.mkdir(parents=True, exist_ok=True)
         return scratch_path
+
+    from tools.environments.base import get_sandbox_dir
+    sandbox = get_sandbox_dir() / "singularity"
 
     scratch = Path("/scratch")
     if scratch.exists() and os.access(scratch, os.W_OK):
@@ -57,8 +67,8 @@ def _get_scratch_dir() -> Path:
         logger.info("Using /scratch for sandboxes: %s", user_scratch)
         return user_scratch
 
-    logger.debug("/scratch not available, using /tmp for sandboxes")
-    return Path(tempfile.gettempdir())
+    sandbox.mkdir(parents=True, exist_ok=True)
+    return sandbox
 
 
 def _get_apptainer_cache_dir() -> Path:
@@ -149,7 +159,7 @@ class SingularityEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "/root",
+        cwd: str = "~",
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
@@ -217,9 +227,17 @@ class SingularityEnvironment(BaseEnvironment):
             return {"output": "Instance not started", "returncode": -1}
 
         effective_timeout = timeout or self.timeout
-        cmd = [self.executable, "exec", "--pwd", cwd or self.cwd,
+        work_dir = cwd or self.cwd
+        exec_command = self._prepare_command(command)
+
+        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command
+        if work_dir == "~" or work_dir.startswith("~/"):
+            exec_command = f"cd {work_dir} && {exec_command}"
+            work_dir = "/tmp"
+
+        cmd = [self.executable, "exec", "--pwd", work_dir,
                f"instance://{self.instance_id}",
-               "bash", "-c", self._prepare_command(command)]
+               "bash", "-c", exec_command]
 
         try:
             import time as _time

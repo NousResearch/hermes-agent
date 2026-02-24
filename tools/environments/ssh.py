@@ -24,7 +24,7 @@ class SSHEnvironment(BaseEnvironment):
     and a remote kill is attempted over the ControlMaster socket.
     """
 
-    def __init__(self, host: str, user: str, cwd: str = "/tmp",
+    def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = ""):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host

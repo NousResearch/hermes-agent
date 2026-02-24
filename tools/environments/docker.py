@@ -44,7 +44,7 @@ class DockerEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "/",
+        cwd: str = "~",
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
@@ -72,23 +72,26 @@ class DockerEnvironment(BaseEnvironment):
         if not network:
             resource_args.append("--network=none")
 
-        # Persistent volume for writable workspace that survives container restarts.
-        # Non-persistent mode uses tmpfs (ephemeral, fast, gone on cleanup).
-        self._volume_name: Optional[str] = None
+        # Persistent workspace via bind mounts from a configurable host directory
+        # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
+        # mode uses tmpfs (ephemeral, fast, gone on cleanup).
+        from tools.environments.base import get_sandbox_dir
+
+        self._workspace_dir: Optional[str] = None
+        self._home_dir: Optional[str] = None
         if self._persistent:
-            self._volume_name = f"hermes-workspace-{task_id}"
-            # Create volume if it doesn't exist
-            subprocess.run(
-                ["docker", "volume", "create", self._volume_name],
-                capture_output=True, timeout=10,
-            )
+            sandbox = get_sandbox_dir() / "docker" / task_id
+            self._workspace_dir = str(sandbox / "workspace")
+            self._home_dir = str(sandbox / "home")
+            os.makedirs(self._workspace_dir, exist_ok=True)
+            os.makedirs(self._home_dir, exist_ok=True)
             writable_args = [
-                "-v", f"{self._volume_name}:{cwd}",
-                "-v", f"{self._volume_name}-home:/root",
+                "-v", f"{self._workspace_dir}:/workspace",
+                "-v", f"{self._home_dir}:/root",
             ]
         else:
             writable_args = [
-                "--tmpfs", f"{cwd}:rw,exec,size=10g",
+                "--tmpfs", "/workspace:rw,exec,size=10g",
                 "--tmpfs", "/home:rw,exec,size=1g",
                 "--tmpfs", "/root:rw,exec,size=1g",
             ]
@@ -110,6 +113,11 @@ class DockerEnvironment(BaseEnvironment):
         exec_command = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
+
+        # docker exec -w doesn't expand ~, so prepend a cd into the command
+        if work_dir == "~" or work_dir.startswith("~/"):
+            exec_command = f"cd {work_dir} && {exec_command}"
+            work_dir = "/"
 
         assert self._inner.container_id, "Container not started"
         cmd = [self._inner.config.executable, "exec"]
@@ -173,16 +181,11 @@ class DockerEnvironment(BaseEnvironment):
             return {"output": f"Docker execution error: {e}", "returncode": 1}
 
     def cleanup(self):
-        """Stop and remove the container. Volumes persist if persistent=True."""
+        """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         self._inner.cleanup()
 
-        # If NOT persistent, remove the workspace volumes too
-        if not self._persistent and self._volume_name:
-            for vol in [self._volume_name, f"{self._volume_name}-home"]:
-                try:
-                    subprocess.run(
-                        ["docker", "volume", "rm", "-f", vol],
-                        capture_output=True, timeout=10,
-                    )
-                except Exception:
-                    pass
+        if not self._persistent:
+            import shutil
+            for d in (self._workspace_dir, self._home_dir):
+                if d:
+                    shutil.rmtree(d, ignore_errors=True)

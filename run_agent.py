@@ -971,9 +971,10 @@ class AIAgent:
             print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
-        """Clear any pending interrupt request."""
+        """Clear any pending interrupt request and the global tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
+        _set_interrupt(False)
     
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """

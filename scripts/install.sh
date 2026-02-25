@@ -539,18 +539,19 @@ clone_repo() {
     else
         # Try SSH first (for private repo access), fall back to HTTPS
         # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
+        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
+        # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
-        if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+           git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
+            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
             if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
-                log_info "For private repo access, ensure your SSH key is added to GitHub:"
-                log_info "  ssh-add ~/.ssh/id_rsa"
-                log_info "  ssh -T git@github.com  # Test connection"
                 exit 1
             fi
         fi

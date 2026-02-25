@@ -32,7 +32,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 _env_path = Path.home() / '.hermes' / '.env'
 if _env_path.exists():
-    load_dotenv(_env_path)
+    try:
+        load_dotenv(_env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(_env_path, encoding="latin-1")
 # Also try project .env as fallback
 load_dotenv()
 

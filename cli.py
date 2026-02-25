@@ -55,7 +55,10 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+    try:
+        load_dotenv(dotenv_path=env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=env_path, encoding="latin-1")
 
 # =============================================================================
 # Configuration Loading
@@ -133,7 +136,10 @@ def load_cli_config() -> Dict[str, Any]:
     user_env_path = Path.home() / '.hermes' / '.env'
     if user_env_path.exists():
         from dotenv import load_dotenv
-        load_dotenv(dotenv_path=user_env_path, override=True)
+        try:
+            load_dotenv(dotenv_path=user_env_path, override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(dotenv_path=user_env_path, override=True, encoding="latin-1")
     
     # Default configuration
     defaults = {

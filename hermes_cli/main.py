@@ -37,7 +37,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 env_path = PROJECT_ROOT / '.env'
 if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+    try:
+        load_dotenv(dotenv_path=env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=env_path, encoding="latin-1")
 
 import logging
 

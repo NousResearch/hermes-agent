@@ -43,7 +43,10 @@ from dotenv import load_dotenv
 # Load .env file if it exists
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+    try:
+        load_dotenv(dotenv_path=env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=env_path, encoding="latin-1")
     logger.info("Loaded environment variables from %s", env_path)
 else:
     logger.info("No .env file found at %s. Using system environment variables.", env_path)

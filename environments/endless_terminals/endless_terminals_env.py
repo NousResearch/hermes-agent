@@ -102,11 +102,49 @@ class EndlessTerminalsEnv(HermesAgentBaseEnv):
     name = "endless_terminals_env"
     env_config_cls = EndlessTerminalsEnvConfig
 
+    @classmethod
+    def config_init(cls) -> Tuple[EndlessTerminalsEnvConfig, List["APIServerConfig"]]:
+        """
+        Default configuration for Endless Terminals environment.
+
+        This is used when no config file is provided, but note that when using
+        --config, the YAML is loaded differently and this may not be called.
+        """
+        from atroposlib.envs.server_handling.server_manager import APIServerConfig
+
+        env_config = EndlessTerminalsEnvConfig(
+            enabled_toolsets=["terminal", "file"],
+            max_agent_turns=32,
+            terminal_backend="local",
+            use_dataset=True,
+            tasks_base_dir="",
+            group_size=1,
+            total_steps=1,
+            use_wandb=False,
+        )
+
+        server_configs = [
+            APIServerConfig(
+                base_url="https://openrouter.ai/api/v1",
+                model_name="anthropic/claude-sonnet-4.5",
+                server_type="openai",
+                api_key=os.getenv("OPENROUTER_API_KEY", ""),
+                health_check=False,
+            )
+        ]
+
+        return env_config, server_configs
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._dataset = None
         self._dataset_indices = []
         self._current_index = 0
+
+        # Debug: check server config
+        if hasattr(self, 'server') and hasattr(self.server, 'servers'):
+            for i, srv in enumerate(self.server.servers):
+                print(f"[DEBUG] Server {i}: model_name={getattr(srv.config, 'model_name', 'NONE')}", flush=True)
 
     async def setup(self):
         """Load dataset from HuggingFace or local directory."""

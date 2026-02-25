@@ -120,7 +120,7 @@
                 <div class="feature-card">
                     <div class="feature-icon">🧠</div>
                     <h3>Grows the Longer It Runs</h3>
-                    <p>Persistent memory across sessions — it learns your preferences, projects, and environment. When it solves a hard problem, it writes a skill document so it never forgets how. Skills are searchable and shareable.</p>
+                    <p>Four-layer memory system: active context window, bounded <code>MEMORY.md</code>/<code>USER.md</code> snapshots (~800/~500 token targets), procedural skills via <code>skill_manage</code>, and SQLite session history with FTS5 search + summarization recall.</p>
                 </div>
 
                 <div class="feature-card">
@@ -286,9 +286,10 @@
             </div>
 
             <p class="section-desc">
-                Skills are procedural memory — reusable approaches for recurring tasks. 
-                The agent creates them when it solves hard problems, and loads them automatically when similar tasks come up.
-                Install more from community hubs with a single command.
+                Skills are procedural memory stored as <code>SKILL.md</code> workflows in <code>~/.hermes/skills/</code>; Hermes discovers them with token-efficient progressive disclosure (<code>skills_list</code> → <code>skill_view</code>) and updates them with <code>skill_manage</code> after non-trivial successful tasks.
+            </p>
+            <p class="section-desc" style="margin-top: -24px;">
+                Want the implementation details? Read <a href="https://github.com/NousResearch/hermes-agent/blob/main/docs/MEMORY_ARCHITECTURE.md" target="_blank" rel="noopener">MEMORY_ARCHITECTURE.md</a> for the full 4-layer design (active context, memory files, skills, SQLite+FTS5 recall).
             </p>
 
             <div class="skills-categories">
@@ -369,7 +370,7 @@ hermes model</code></pre>
                             </div>
                             <pre><code>hermes</code></pre>
                         </div>
-                        <p class="step-note">That's it. Full interactive CLI with tools, memory, and skills.</p>
+                        <p class="step-note">That's it. Full interactive CLI with tools plus persistent memory files, skill-based procedural reuse, and searchable session recall.</p>
                     </div>
                 </div>
 

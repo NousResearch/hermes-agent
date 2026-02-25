@@ -1,7 +1,8 @@
 # Endless Terminals Environment -- Default Configuration
 #
 # Trains agents on terminal tasks from the Endless Terminals HuggingFace dataset.
-# Each task includes a pre-built Apptainer container and pytest-based verification.
+# Uses hermes-agent backends (modal/docker/local) with per-task Docker images.
+# Tests run in the same sandbox the agent used (no separate containers needed).
 #
 # Dataset: https://huggingface.co/datasets/obiwan96/endless-terminals-train
 #
@@ -9,8 +10,9 @@
 #   1. Download dataset: huggingface-cli download obiwan96/endless-terminals-train \
 #        --repo-type dataset --local-dir ~/endless-terminals-data \
 #        --local-dir-use-symlinks False
-#   2. Install Apptainer/Singularity (for test execution)
-#   3. Set TASKS_BASE_DIR environment variable or configure tasks_base_dir below
+#   2. Set TASKS_BASE_DIR environment variable or configure tasks_base_dir below
+#   3. For modal backend: Configure Modal CLI (modal token set)
+#   4. For docker backend: Install Docker
 #
 # Usage:
 #   python environments/endless_terminals/endless_terminals_env.py process \

@@ -152,8 +152,34 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
 
     try:
+        # Re-read .env and config.yaml fresh every run so provider/key
+        # changes take effect without a gateway restart.
+        from dotenv import load_dotenv
+        load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True)
+
+        model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+        try:
+            import yaml
+            _cfg_path = os.path.expanduser("~/.hermes/config.yaml")
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path) as _f:
+                    _cfg = yaml.safe_load(_f) or {}
+                _model_cfg = _cfg.get("model", {})
+                if isinstance(_model_cfg, str):
+                    model = _model_cfg
+                elif isinstance(_model_cfg, dict):
+                    model = _model_cfg.get("default", model)
+                    base_url = _model_cfg.get("base_url", base_url)
+        except Exception:
+            pass
+
         agent = AIAgent(
-            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
             quiet_mode=True,
             session_id=f"cron_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )

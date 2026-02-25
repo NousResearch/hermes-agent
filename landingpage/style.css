@@ -34,6 +34,7 @@ html {
     scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
 }
 
 body {
@@ -42,6 +43,8 @@ body {
     color: var(--text);
     line-height: 1.6;
     overflow-x: hidden;
+    width: 100%;
+    max-width: 100vw;
     background-image: radial-gradient(rgba(255, 215, 0, 0.03) 1px, transparent 1px);
     background-size: 32px 32px;
 }
@@ -866,7 +869,11 @@ strong {
 }
 
 /* --- Responsive --- */
+
+/* Clamp ambient glows so they can't cause horizontal scroll */
 @media (max-width: 900px) {
+    .ambient-glow { display: none; }
+
     .features-grid,
     .research-grid,
     .platforms-row,
@@ -880,18 +887,98 @@ strong {
 }
 
 @media (max-width: 640px) {
+    /* --- Global mobile --- */
+    .container {
+        padding: 0 16px;
+    }
+
+    .section {
+        padding: 50px 0;
+    }
+
+    .section-header {
+        margin-bottom: 32px;
+    }
+
+    .section-header h2 {
+        font-size: 20px;
+    }
+
+    .section-desc {
+        font-size: 14px;
+    }
+
+    /* --- Nav --- */
+    .nav-inner {
+        padding: 0 16px;
+    }
+
+    .nav-links a:not(:last-child):not(:nth-last-child(2)) {
+        display: none;
+    }
+
+    /* --- Hero --- */
     .hero {
-        padding: 100px 20px 60px;
+        padding: 90px 16px 50px;
+        min-height: auto;
+    }
+
+    .hero-content {
+        max-width: 100%;
+    }
+
+    .hero-badge {
+        font-size: 11px;
+        padding: 5px 12px;
+        margin-bottom: 24px;
+    }
+
+    .hero-logo {
+        max-width: 85%;
     }
 
     .hero-title {
-        font-size: 32px;
+        font-size: 26px;
+        margin-bottom: 14px;
     }
 
     .hero-subtitle {
-        font-size: 15px;
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 0 auto 28px;
     }
 
+    .install-box {
+        font-size: 10px;
+        padding: 10px 12px;
+    }
+
+    .install-box code {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: block;
+    }
+
+    .copy-btn {
+        padding: 3px 6px;
+    }
+
+    .copy-btn .copy-text { display: none; }
+
+    .install-note {
+        font-size: 11px;
+    }
+
+    .hero-links {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .hero-links .btn {
+        justify-content: center;
+    }
+
+    /* --- Grids → single column --- */
     .features-grid,
     .research-grid,
     .platforms-row,
@@ -900,30 +987,112 @@ strong {
         grid-template-columns: 1fr;
     }
 
-    .section {
-        padding: 60px 0;
+    .feature-card {
+        padding: 20px 18px;
     }
 
-    .section-header h2 {
-        font-size: 22px;
+    .feature-icon {
+        font-size: 24px;
+        margin-bottom: 12px;
     }
 
-    .install-box {
-        font-size: 11px;
+    .feature-card h3 {
+        font-size: 15px;
     }
 
-    .nav-links a:not(:last-child):not(:nth-last-child(2)) {
-        display: none;
+    .feature-card p {
+        font-size: 13px;
     }
 
-    .hero-logo {
-        max-width: 320px;
+    /* --- Tools pills wrap tighter --- */
+    .tools-grid {
+        gap: 8px;
     }
 
+    .tool-pill {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+
+    /* --- Terminal demo --- */
     .terminal-body {
         font-size: 11px;
-        padding: 16px;
-        height: 280px;
+        padding: 14px;
+        height: 260px;
+    }
+
+    /* --- Install steps --- */
+    .install-steps {
+        max-width: 100%;
+    }
+
+    .install-step {
+        gap: 14px;
+    }
+
+    .step-number {
+        width: 28px;
+        height: 28px;
+        font-size: 13px;
+    }
+
+    .code-block pre {
+        font-size: 11px;
+        word-break: break-all;
+    }
+
+    .install-windows {
+        max-width: 100%;
+    }
+
+    /* --- Footer --- */
+    .footer-card a {
+        padding: 20px 16px;
+    }
+
+    .footer {
+        padding: 50px 0 30px;
+    }
+
+    .footer-bottom p {
+        font-size: 11px;
+    }
+
+    /* --- Platform pills --- */
+    .platform-pills {
+        gap: 6px;
+    }
+
+    .platform-pill {
+        font-size: 12px;
+        padding: 6px 12px;
+    }
+
+    /* --- Skills --- */
+    .skill-tags {
+        gap: 5px;
+    }
+
+    .skill-tags span {
+        font-size: 11px;
+        padding: 3px 8px;
+    }
+
+    .skill-hub-desc {
+        font-size: 12px;
+    }
+
+    /* --- Research cards --- */
+    .research-card {
+        padding: 20px;
+    }
+
+    .research-card h4 {
+        font-size: 14px;
+    }
+
+    .research-card p {
+        font-size: 13px;
     }
 }
 

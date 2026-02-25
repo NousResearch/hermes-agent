@@ -116,7 +116,7 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             sys.exit(0)
         print()
         return idx
-    except ImportError:
+    except (ImportError, NotImplementedError):
         for i, c in enumerate(choices):
             marker = "●" if i == default else "○"
             style = Colors.GREEN if i == default else ""
@@ -179,7 +179,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
         return {CONFIGURABLE_TOOLSETS[i][0] for i in selected_indices}
 
-    except ImportError:
+    except (ImportError, NotImplementedError):
         # Fallback: numbered toggle
         selected = set(pre_selected_indices)
         while True:

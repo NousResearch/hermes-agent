@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "pyright"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
@@ -66,3 +66,78 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 
 [tool.setuptools.packages.find]
 include = ["tools", "hermes_cli", "gateway", "cron"]
+
+# --- Linting & Formatting (ruff) ---
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+  "E501",  # line too long — handled by formatter
+  "E402",  # module level import not at top of file
+  "E741",  # ambiguous variable name
+  "F401",  # imported but unused — too many false positives in __init__.py
+  "F541",  # f-string without placeholders — widespread in existing code
+  "F811",  # redefinition of unused name
+  "F821",  # undefined name — pre-existing issues in docker.py and patch_parser.py
+  "F841",  # local variable assigned but never used
+  "W291",  # trailing whitespace — handled by formatter
+  "W293",  # blank line contains whitespace — handled by formatter
+  "W605",  # invalid escape sequence — common in regex strings
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tools", "hermes_cli", "gateway", "cron"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# --- Type Checking (pyright) ---
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+include = ["tools", "hermes_cli", "gateway", "cron"]
+exclude = ["build"]
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportOptionalMemberAccess = false
+reportGeneralTypeIssues = "warning"
+reportArgumentType = "warning"
+reportAttributeAccessIssue = "warning"
+reportReturnType = "warning"
+reportInvalidTypeForm = "warning"
+reportCallIssue = "warning"
+
+# --- Testing (pytest) ---
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+# --- Coverage ---
+[tool.coverage.run]
+source = ["tools", "hermes_cli", "gateway", "cron"]
+omit = [
+  "*/tests/*",
+  "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "def __repr__",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+  "@(abc\\.)?abstractmethod",
+]
+show_missing = true
+skip_covered = false

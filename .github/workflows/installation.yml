@@ -1,0 +1,31 @@
+name: Installation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: uv sync --no-dev
+
+      - name: Test imports
+        run: |
+          uv run python -c "
+          import tools; import hermes_cli; import gateway; import cron
+          import run_agent; import model_tools; import toolsets
+          print('All imports OK')
+          "

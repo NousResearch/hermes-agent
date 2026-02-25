@@ -150,6 +150,9 @@ DELIVERY OPTIONS (where output goes):
 - "discord": Send to Discord home channel
 - "telegram:123456": Send to specific chat (if user provides ID)
 
+NOTE: The agent's final response is auto-delivered to the target — do NOT use
+send_message in the prompt. Just have the agent compose its response normally.
+
 Use for: reminders, periodic checks, scheduled reports, automated maintenance.""",
     "parameters": {
         "type": "object",

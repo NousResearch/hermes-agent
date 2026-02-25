@@ -10,19 +10,20 @@ The prompt must contain ALL necessary information.
 
 import json
 import os
-from typing import Optional
 
 # Import from cron module (will be available when properly installed)
 import sys
 from pathlib import Path
+from typing import Optional
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import create_job, get_job, list_jobs, remove_job
 
-
 # =============================================================================
 # Tool: schedule_cronjob
 # =============================================================================
+
 
 def schedule_cronjob(
     prompt: str,
@@ -30,11 +31,11 @@ def schedule_cronjob(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
-    task_id: str = None
+    task_id: str = None,
 ) -> str:
     """
     Schedule an automated task to run the agent on a schedule.
-    
+
     IMPORTANT: When the cronjob runs, it starts a COMPLETELY FRESH session.
     The agent will have NO memory of this conversation or any prior context.
     Therefore, the prompt MUST contain ALL necessary information:
@@ -42,12 +43,12 @@ def schedule_cronjob(
     - Specific file paths, URLs, or identifiers
     - Clear success criteria
     - Any relevant background information
-    
+
     BAD prompt:  "Check on that server issue"
-    GOOD prompt: "SSH into server 192.168.1.100 as user 'deploy', check if nginx 
-                  is running with 'systemctl status nginx', and verify the site 
+    GOOD prompt: "SSH into server 192.168.1.100 as user 'deploy', check if nginx
+                  is running with 'systemctl status nginx', and verify the site
                   https://example.com returns HTTP 200. Report any issues found."
-    
+
     Args:
         prompt: Complete, self-contained instructions for the future agent.
                 Must include ALL context needed - the agent won't remember anything.
@@ -67,7 +68,7 @@ def schedule_cronjob(
                  - "telegram": Send to Telegram home channel
                  - "discord": Send to Discord home channel
                  - "telegram:123456": Send to specific chat ID
-    
+
     Returns:
         JSON with job_id, next_run time, and confirmation
     """
@@ -81,17 +82,10 @@ def schedule_cronjob(
             "chat_id": origin_chat_id,
             "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
         }
-    
+
     try:
-        job = create_job(
-            prompt=prompt,
-            schedule=schedule,
-            name=name,
-            repeat=repeat,
-            deliver=deliver,
-            origin=origin
-        )
-        
+        job = create_job(prompt=prompt, schedule=schedule, name=name, repeat=repeat, deliver=deliver, origin=origin)
+
         # Format repeat info for display
         times = job["repeat"].get("times")
         if times is None:
@@ -100,23 +94,23 @@ def schedule_cronjob(
             repeat_display = "once"
         else:
             repeat_display = f"{times} times"
-        
-        return json.dumps({
-            "success": True,
-            "job_id": job["id"],
-            "name": job["name"],
-            "schedule": job["schedule_display"],
-            "repeat": repeat_display,
-            "deliver": job.get("deliver", "local"),
-            "next_run_at": job["next_run_at"],
-            "message": f"Cronjob '{job['name']}' created. It will run {repeat_display}, deliver to {job.get('deliver', 'local')}, next at {job['next_run_at']}."
-        }, indent=2)
-        
+
+        return json.dumps(
+            {
+                "success": True,
+                "job_id": job["id"],
+                "name": job["name"],
+                "schedule": job["schedule_display"],
+                "repeat": repeat_display,
+                "deliver": job.get("deliver", "local"),
+                "next_run_at": job["next_run_at"],
+                "message": f"Cronjob '{job['name']}' created. It will run {repeat_display}, deliver to {job.get('deliver', 'local')}, next at {job['next_run_at']}.",
+            },
+            indent=2,
+        )
+
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
 SCHEDULE_CRONJOB_SCHEMA = {
@@ -159,27 +153,24 @@ Use for: reminders, periodic checks, scheduled reports, automated maintenance.""
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "Complete, self-contained instructions. Must include ALL context - the future agent will have NO memory of this conversation."
+                "description": "Complete, self-contained instructions. Must include ALL context - the future agent will have NO memory of this conversation.",
             },
             "schedule": {
                 "type": "string",
-                "description": "When to run: '30m' (once in 30min), 'every 30m' (recurring), '0 9 * * *' (cron), or ISO timestamp"
+                "description": "When to run: '30m' (once in 30min), 'every 30m' (recurring), '0 9 * * *' (cron), or ISO timestamp",
             },
-            "name": {
-                "type": "string",
-                "description": "Optional human-friendly name for the job"
-            },
+            "name": {"type": "string", "description": "Optional human-friendly name for the job"},
             "repeat": {
                 "type": "integer",
-                "description": "How many times to run. Omit for default (once for one-shot, forever for recurring). Set to N for exactly N runs."
+                "description": "How many times to run. Omit for default (once for one-shot, forever for recurring). Set to N for exactly N runs.",
             },
             "deliver": {
                 "type": "string",
-                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', or 'platform:chat_id'"
-            }
+                "description": "Where to send output: 'origin' (back to this chat), 'local' (files only), 'telegram', 'discord', or 'platform:chat_id'",
+            },
         },
-        "required": ["prompt", "schedule"]
-    }
+        "required": ["prompt", "schedule"],
+    },
 }
 
 
@@ -187,10 +178,11 @@ Use for: reminders, periodic checks, scheduled reports, automated maintenance.""
 # Tool: list_cronjobs
 # =============================================================================
 
+
 def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
     """
     List all scheduled cronjobs.
-    
+
     Returns information about each job including:
     - Job ID (needed for removal)
     - Name
@@ -198,16 +190,16 @@ def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
     - Repeat status (completed/total or 'forever')
     - Next scheduled run time
     - Last run time and status (if any)
-    
+
     Args:
         include_disabled: Whether to include disabled/completed jobs
-    
+
     Returns:
         JSON array of all scheduled jobs
     """
     try:
         jobs = list_jobs(include_disabled=include_disabled)
-        
+
         formatted_jobs = []
         for job in jobs:
             # Format repeat status
@@ -217,31 +209,26 @@ def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
                 repeat_status = "forever"
             else:
                 repeat_status = f"{completed}/{times}"
-            
-            formatted_jobs.append({
-                "job_id": job["id"],
-                "name": job["name"],
-                "prompt_preview": job["prompt"][:100] + "..." if len(job["prompt"]) > 100 else job["prompt"],
-                "schedule": job["schedule_display"],
-                "repeat": repeat_status,
-                "deliver": job.get("deliver", "local"),
-                "next_run_at": job.get("next_run_at"),
-                "last_run_at": job.get("last_run_at"),
-                "last_status": job.get("last_status"),
-                "enabled": job.get("enabled", True)
-            })
-        
-        return json.dumps({
-            "success": True,
-            "count": len(formatted_jobs),
-            "jobs": formatted_jobs
-        }, indent=2)
-        
+
+            formatted_jobs.append(
+                {
+                    "job_id": job["id"],
+                    "name": job["name"],
+                    "prompt_preview": job["prompt"][:100] + "..." if len(job["prompt"]) > 100 else job["prompt"],
+                    "schedule": job["schedule_display"],
+                    "repeat": repeat_status,
+                    "deliver": job.get("deliver", "local"),
+                    "next_run_at": job.get("next_run_at"),
+                    "last_run_at": job.get("last_run_at"),
+                    "last_status": job.get("last_status"),
+                    "enabled": job.get("enabled", True),
+                }
+            )
+
+        return json.dumps({"success": True, "count": len(formatted_jobs), "jobs": formatted_jobs}, indent=2)
+
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
 LIST_CRONJOBS_SCHEMA = {
@@ -259,11 +246,11 @@ Returns job_id, name, schedule, repeat status, next/last run times.""",
         "properties": {
             "include_disabled": {
                 "type": "boolean",
-                "description": "Include disabled/completed jobs in the list (default: false)"
+                "description": "Include disabled/completed jobs in the list (default: false)",
             }
         },
-        "required": []
-    }
+        "required": [],
+    },
 }
 
 
@@ -271,48 +258,45 @@ Returns job_id, name, schedule, repeat status, next/last run times.""",
 # Tool: remove_cronjob
 # =============================================================================
 
+
 def remove_cronjob(job_id: str, task_id: str = None) -> str:
     """
     Remove a scheduled cronjob by its ID.
-    
+
     Use list_cronjobs first to find the job_id of the job you want to remove.
-    
+
     Args:
         job_id: The ID of the job to remove (from list_cronjobs output)
-    
+
     Returns:
         JSON confirmation of removal
     """
     try:
         job = get_job(job_id)
         if not job:
-            return json.dumps({
-                "success": False,
-                "error": f"Job with ID '{job_id}' not found. Use list_cronjobs to see available jobs."
-            }, indent=2)
-        
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Job with ID '{job_id}' not found. Use list_cronjobs to see available jobs.",
+                },
+                indent=2,
+            )
+
         removed = remove_job(job_id)
         if removed:
-            return json.dumps({
-                "success": True,
-                "message": f"Cronjob '{job['name']}' (ID: {job_id}) has been removed.",
-                "removed_job": {
-                    "id": job_id,
-                    "name": job["name"],
-                    "schedule": job["schedule_display"]
-                }
-            }, indent=2)
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": f"Cronjob '{job['name']}' (ID: {job_id}) has been removed.",
+                    "removed_job": {"id": job_id, "name": job["name"], "schedule": job["schedule_display"]},
+                },
+                indent=2,
+            )
         else:
-            return json.dumps({
-                "success": False,
-                "error": f"Failed to remove job '{job_id}'"
-            }, indent=2)
-            
+            return json.dumps({"success": False, "error": f"Failed to remove job '{job_id}'"}, indent=2)
+
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        }, indent=2)
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
 REMOVE_CRONJOB_SCHEMA = {
@@ -325,13 +309,10 @@ use this to cancel a job before it completes.""",
     "parameters": {
         "type": "object",
         "properties": {
-            "job_id": {
-                "type": "string",
-                "description": "The ID of the cronjob to remove (from list_cronjobs output)"
-            }
+            "job_id": {"type": "string", "description": "The ID of the cronjob to remove (from list_cronjobs output)"}
         },
-        "required": ["job_id"]
-    }
+        "required": ["job_id"],
+    },
 }
 
 
@@ -339,44 +320,34 @@ use this to cancel a job before it completes.""",
 # Requirements check
 # =============================================================================
 
+
 def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
-    
+
     Available in interactive CLI mode and gateway/messaging platforms.
     Cronjobs are server-side scheduled tasks so they work from any interface.
     """
-    return bool(
-        os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
-        or os.getenv("HERMES_EXEC_ASK")
-    )
+    return bool(os.getenv("HERMES_INTERACTIVE") or os.getenv("HERMES_GATEWAY_SESSION") or os.getenv("HERMES_EXEC_ASK"))
 
 
 # =============================================================================
 # Exports
 # =============================================================================
 
+
 def get_cronjob_tool_definitions():
     """Return tool definitions for cronjob management."""
-    return [
-        SCHEDULE_CRONJOB_SCHEMA,
-        LIST_CRONJOBS_SCHEMA,
-        REMOVE_CRONJOB_SCHEMA
-    ]
+    return [SCHEDULE_CRONJOB_SCHEMA, LIST_CRONJOBS_SCHEMA, REMOVE_CRONJOB_SCHEMA]
 
 
 # For direct testing
 if __name__ == "__main__":
     # Test the tools
     print("Testing schedule_cronjob:")
-    result = schedule_cronjob(
-        prompt="Test prompt for cron job",
-        schedule="5m",
-        name="Test Job"
-    )
+    result = schedule_cronjob(prompt="Test prompt for cron job", schedule="5m", name="Test Job")
     print(result)
-    
+
     print("\nTesting list_cronjobs:")
     result = list_cronjobs()
     print(result)
@@ -395,7 +366,8 @@ registry.register(
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
-        task_id=kw.get("task_id")),
+        task_id=kw.get("task_id"),
+    ),
     check_fn=check_cronjob_requirements,
 )
 registry.register(
@@ -403,16 +375,14 @@ registry.register(
     toolset="cronjob",
     schema=LIST_CRONJOBS_SCHEMA,
     handler=lambda args, **kw: list_cronjobs(
-        include_disabled=args.get("include_disabled", False),
-        task_id=kw.get("task_id")),
+        include_disabled=args.get("include_disabled", False), task_id=kw.get("task_id")
+    ),
     check_fn=check_cronjob_requirements,
 )
 registry.register(
     name="remove_cronjob",
     toolset="cronjob",
     schema=REMOVE_CRONJOB_SCHEMA,
-    handler=lambda args, **kw: remove_cronjob(
-        job_id=args.get("job_id", ""),
-        task_id=kw.get("task_id")),
+    handler=lambda args, **kw: remove_cronjob(job_id=args.get("job_id", ""), task_id=kw.get("task_id")),
     check_fn=check_cronjob_requirements,
 )

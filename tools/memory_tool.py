@@ -27,7 +27,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Where memory files live
 MEMORY_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "memories"
@@ -301,9 +301,7 @@ class MemoryStore:
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".mem_")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -334,10 +332,15 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
+        return json.dumps(
+            {"success": False, "error": "Memory is not available. It may be disabled in config or this environment."},
+            ensure_ascii=False,
+        )
 
     if target not in ("memory", "user"):
-        return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
+        return json.dumps(
+            {"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False
+        )
 
     if action == "add":
         if not content:
@@ -346,18 +349,26 @@ def memory_tool(
 
     elif action == "replace":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False
+            )
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False
+            )
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False
+            )
         result = store.remove(target, old_text)
 
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return json.dumps(
+            {"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -396,23 +407,16 @@ MEMORY_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
-            },
+            "action": {"type": "string", "enum": ["add", "replace", "remove"], "description": "The action to perform."},
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile.",
             },
-            "content": {
-                "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
-            },
+            "content": {"type": "string", "description": "The entry content. Required for 'add' and 'replace'."},
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "Short unique substring identifying the entry to replace or remove.",
             },
         },
         "required": ["action", "target"],
@@ -432,10 +436,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+    ),
     check_fn=check_memory_requirements,
 )
-
-
-
-

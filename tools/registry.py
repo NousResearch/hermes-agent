@@ -25,12 +25,17 @@ class ToolEntry:
     """Metadata for a single registered tool."""
 
     __slots__ = (
-        "name", "toolset", "schema", "handler", "check_fn",
-        "requires_env", "is_async", "description",
+        "name",
+        "toolset",
+        "schema",
+        "handler",
+        "check_fn",
+        "requires_env",
+        "is_async",
+        "description",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description):
+    def __init__(self, name, toolset, schema, handler, check_fn, requires_env, is_async, description):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -122,6 +127,7 @@ class ToolRegistry:
         try:
             if entry.is_async:
                 from model_tools import _run_async
+
                 return _run_async(entry.handler(args, **kwargs))
             return entry.handler(args, **kwargs)
         except Exception as e:
@@ -207,11 +213,13 @@ class ToolRegistry:
             if self.is_toolset_available(ts):
                 available.append(ts)
             else:
-                unavailable.append({
-                    "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in self._tools.values() if e.toolset == ts],
-                })
+                unavailable.append(
+                    {
+                        "name": ts,
+                        "env_vars": entry.requires_env,
+                        "tools": [e.name for e in self._tools.values() if e.toolset == ts],
+                    }
+                )
         return available, unavailable
 
 

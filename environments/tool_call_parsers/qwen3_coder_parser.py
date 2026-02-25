@@ -68,14 +68,10 @@ class Qwen3CoderToolCallParser(ToolCallParser):
     FUNCTION_PREFIX = "<function="
 
     # Find complete tool_call blocks (or unclosed at end)
-    TOOL_CALL_REGEX = re.compile(
-        r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", re.DOTALL
-    )
+    TOOL_CALL_REGEX = re.compile(r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", re.DOTALL)
 
     # Find function blocks within a tool_call
-    FUNCTION_REGEX = re.compile(
-        r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
-    )
+    FUNCTION_REGEX = re.compile(r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL)
 
     # Find parameter blocks within a function
     PARAMETER_REGEX = re.compile(
@@ -89,7 +85,7 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             # Extract function name: everything before the first '>'
             gt_idx = function_str.index(">")
             func_name = function_str[:gt_idx].strip()
-            params_str = function_str[gt_idx + 1:]
+            params_str = function_str[gt_idx + 1 :]
 
             # Extract parameters
             param_dict: Dict[str, Any] = {}
@@ -98,7 +94,7 @@ class Qwen3CoderToolCallParser(ToolCallParser):
                     continue
                 eq_idx = match_text.index(">")
                 param_name = match_text[:eq_idx].strip()
-                param_value = match_text[eq_idx + 1:]
+                param_value = match_text[eq_idx + 1 :]
 
                 # Clean up whitespace
                 if param_value.startswith("\n"):

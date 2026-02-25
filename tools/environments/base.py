@@ -1,8 +1,8 @@
 """Base class for all Hermes execution environment backends."""
 
-from abc import ABC, abstractmethod
 import os
 import subprocess
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 
@@ -34,9 +34,9 @@ class BaseEnvironment(ABC):
         self.env = env or {}
 
     @abstractmethod
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
         ...
 
@@ -62,10 +62,10 @@ class BaseEnvironment(ABC):
     def _prepare_command(self, command: str) -> str:
         """Transform sudo commands if SUDO_PASSWORD is available."""
         from tools.terminal_tool import _transform_sudo_command
+
         return _transform_sudo_command(command)
 
-    def _build_run_kwargs(self, timeout: int | None,
-                          stdin_data: str | None = None) -> dict:
+    def _build_run_kwargs(self, timeout: int | None, stdin_data: str | None = None) -> dict:
         """Build common subprocess.run kwargs for non-interactive execution."""
         kw = {
             "text": True,

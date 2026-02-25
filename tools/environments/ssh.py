@@ -24,8 +24,7 @@ class SSHEnvironment(BaseEnvironment):
     and a remote kill is attempted over the ControlMaster socket.
     """
 
-    def __init__(self, host: str, user: str, cwd: str = "~",
-                 timeout: int = 60, port: int = 22, key_path: str = ""):
+    def __init__(self, host: str, user: str, cwd: str = "~", timeout: int = 60, port: int = 22, key_path: str = ""):
         super().__init__(cwd=cwd, timeout=timeout)
         self.host = host
         self.user = user
@@ -65,12 +64,12 @@ class SSHEnvironment(BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict:
         work_dir = cwd or self.cwd
         exec_command = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
+        wrapped = f"cd {work_dir} && {exec_command}"
         effective_timeout = timeout or self.timeout
 
         cmd = self._build_ssh_command()
@@ -100,8 +99,9 @@ class SSHEnvironment(BaseEnvironment):
 
             def _drain():
                 try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            _output_chunks.append(line)
                 except Exception:
                     pass
 
@@ -136,8 +136,7 @@ class SSHEnvironment(BaseEnvironment):
     def cleanup(self):
         if self.control_socket.exists():
             try:
-                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}", "-O", "exit", f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass

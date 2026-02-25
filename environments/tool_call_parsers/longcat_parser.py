@@ -52,9 +52,7 @@ class LongcatToolCallParser(ToolCallParser):
                         type="function",
                         function=Function(
                             name=tc_data["name"],
-                            arguments=json.dumps(
-                                tc_data.get("arguments", {}), ensure_ascii=False
-                            ),
+                            arguments=json.dumps(tc_data.get("arguments", {}), ensure_ascii=False),
                         ),
                     )
                 )

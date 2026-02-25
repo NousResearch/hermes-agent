@@ -49,8 +49,7 @@ class DebugSession:
 
         if self.enabled:
             self.log_dir.mkdir(exist_ok=True)
-            logger.debug("%s debug mode enabled - Session ID: %s",
-                         tool_name, self.session_id)
+            logger.debug("%s debug mode enabled - Session ID: %s", tool_name, self.session_id)
 
     @property
     def active(self) -> bool:
@@ -60,11 +59,13 @@ class DebugSession:
         """Append a tool-call entry to the in-memory log."""
         if not self.enabled:
             return
-        self._calls.append({
-            "timestamp": datetime.datetime.now().isoformat(),
-            "tool_name": call_name,
-            **call_data,
-        })
+        self._calls.append(
+            {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "tool_name": call_name,
+                **call_data,
+            }
+        )
 
     def save(self) -> None:
         """Flush the in-memory log to a JSON file in the logs directory."""

@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 from typing import Optional
+
 from tools.file_operations import ShellFileOperations
 
 logger = logging.getLogger(__name__)
@@ -24,13 +25,19 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
     """
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _check_disk_usage_warning,
-        _creation_locks, _creation_locks_lock,
-    )
     import time
+
+    from tools.terminal_tool import (
+        _active_environments,
+        _check_disk_usage_warning,
+        _create_environment,
+        _creation_locks,
+        _creation_locks_lock,
+        _env_lock,
+        _get_env_config,
+        _last_activity,
+        _start_cleanup_thread,
+    )
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -128,17 +135,23 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
-        print(f"[FileTools] write_file error: {type(e).__name__}: {e}", flush=True)  
+        print(f"[FileTools] write_file error: {type(e).__name__}: {e}", flush=True)
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
-               new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
+def patch_tool(
+    mode: str = "replace",
+    path: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    patch: str = None,
+    task_id: str = "default",
+) -> str:
     """Patch a file using replace mode or V4A patch format."""
     try:
         file_ops = _get_file_ops(task_id)
-        
+
         if mode == "replace":
             if not path:
                 return json.dumps({"error": "path required"})
@@ -151,22 +164,35 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result = file_ops.patch_v4a(patch)
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
-        
+
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def search_tool(pattern: str, target: str = "content", path: str = ".",
-                file_glob: str = None, limit: int = 50, offset: int = 0,
-                output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+def search_tool(
+    pattern: str,
+    target: str = "content",
+    path: str = ".",
+    file_glob: str = None,
+    limit: int = 50,
+    offset: int = 0,
+    output_mode: str = "content",
+    context: int = 0,
+    task_id: str = "default",
+) -> str:
     """Search for content or files."""
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            pattern=pattern,
+            path=path,
+            target=target,
+            file_glob=file_glob,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            context=context,
         )
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
@@ -177,7 +203,7 @@ FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
     {"name": "write_file", "function": write_file_tool},
     {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
+    {"name": "search_files", "function": search_tool},
 ]
 
 
@@ -195,7 +221,9 @@ from tools.registry import registry
 def _check_file_reqs():
     """Lazy wrapper to avoid circular import with tools/__init__.py."""
     from tools import check_file_requirements
+
     return check_file_requirements()
+
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
@@ -204,11 +232,21 @@ READ_FILE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "offset": {
+                "type": "integer",
+                "description": "Line number to start reading from (1-indexed, default: 1)",
+                "default": 1,
+                "minimum": 1,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of lines to read (default: 500, max: 2000)",
+                "default": 500,
+                "maximum": 2000,
+            },
         },
-        "required": ["path"]
-    }
+        "required": ["path"],
+    },
 }
 
 WRITE_FILE_SCHEMA = {
@@ -217,11 +255,14 @@ WRITE_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
-            "content": {"type": "string", "description": "Complete content to write to the file"}
+            "path": {
+                "type": "string",
+                "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)",
+            },
+            "content": {"type": "string", "description": "Complete content to write to the file"},
         },
-        "required": ["path", "content"]
-    }
+        "required": ["path", "content"],
+    },
 }
 
 PATCH_SCHEMA = {
@@ -230,15 +271,33 @@ PATCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches",
+                "default": "replace",
+            },
             "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
-            "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
-            "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
-            "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "old_string": {
+                "type": "string",
+                "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness.",
+            },
+            "new_string": {
+                "type": "string",
+                "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text.",
+            },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+                "default": False,
+            },
+            "patch": {
+                "type": "string",
+                "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
         },
-        "required": ["mode"]
-    }
+        "required": ["mode"],
+    },
 }
 
 SEARCH_FILES_SCHEMA = {
@@ -247,23 +306,57 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
-            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
-            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
-            "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
-            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
-            "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "pattern": {
+                "type": "string",
+                "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search",
+            },
+            "target": {
+                "type": "string",
+                "enum": ["content", "files"],
+                "description": "'content' searches inside file contents, 'files' searches for files by name",
+                "default": "content",
+            },
+            "path": {
+                "type": "string",
+                "description": "Directory or file to search in (default: current working directory)",
+                "default": ".",
+            },
+            "file_glob": {
+                "type": "string",
+                "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: 50)",
+                "default": 50,
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Skip first N results for pagination (default: 0)",
+                "default": 0,
+            },
+            "output_mode": {
+                "type": "string",
+                "enum": ["content", "files_only", "count"],
+                "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file",
+                "default": "content",
+            },
+            "context": {
+                "type": "integer",
+                "description": "Number of context lines before and after each match (grep mode only)",
+                "default": 0,
+            },
         },
-        "required": ["pattern"]
-    }
+        "required": ["pattern"],
+    },
 }
 
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid
+    )
 
 
 def _handle_write_file(args, **kw):
@@ -274,9 +367,14 @@ def _handle_write_file(args, **kw):
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
     return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
-        old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        mode=args.get("mode", "replace"),
+        path=args.get("path"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False),
+        patch=args.get("patch"),
+        task_id=tid,
+    )
 
 
 def _handle_search_files(args, **kw):
@@ -285,12 +383,29 @@ def _handle_search_files(args, **kw):
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
-        file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        pattern=args.get("pattern", ""),
+        target=target,
+        path=args.get("path", "."),
+        file_glob=args.get("file_glob"),
+        limit=args.get("limit", 50),
+        offset=args.get("offset", 0),
+        output_mode=args.get("output_mode", "content"),
+        context=args.get("context", 0),
+        task_id=tid,
+    )
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs)
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs)
+registry.register(
+    name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs
+)
+registry.register(
+    name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs
+)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs)
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs)
+registry.register(
+    name="search_files",
+    toolset="file",
+    schema=SEARCH_FILES_SCHEMA,
+    handler=_handle_search_files,
+    check_fn=_check_file_reqs,
+)

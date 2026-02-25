@@ -22,11 +22,11 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.code_execution_tool import (
+    EXECUTE_CODE_SCHEMA,
     SANDBOX_ALLOWED_TOOLS,
+    check_sandbox_requirements,
     execute_code,
     generate_hermes_tools_module,
-    check_sandbox_requirements,
-    EXECUTE_CODE_SCHEMA,
 )
 
 
@@ -36,7 +36,9 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
         cmd = function_args.get("command", "")
         return json.dumps({"output": f"mock output for: {cmd}", "exit_code": 0})
     if function_name == "web_search":
-        return json.dumps({"results": [{"url": "https://example.com", "title": "Example", "description": "A test result"}]})
+        return json.dumps(
+            {"results": [{"url": "https://example.com", "title": "Example", "description": "A test result"}]}
+        )
     if function_name == "read_file":
         return json.dumps({"content": "line 1\nline 2\nline 3\n", "total_lines": 3})
     if function_name == "write_file":
@@ -198,11 +200,13 @@ raise RuntimeError("deliberate crash")
         with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             # Override config to use a very short timeout
             with patch("tools.code_execution_tool._load_config", return_value={"timeout": 2, "max_tool_calls": 50}):
-                result = json.loads(execute_code(
-                    code=code,
-                    task_id="test-task",
-                    enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
-                ))
+                result = json.loads(
+                    execute_code(
+                        code=code,
+                        task_id="test-task",
+                        enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+                    )
+                )
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
 

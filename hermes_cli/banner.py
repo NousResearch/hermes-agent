@@ -4,15 +4,13 @@ Pure display functions with no HermesCLI state dependency.
 """
 
 from pathlib import Path
-from typing import Dict, List, Any
-
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
+from typing import Any, Dict, List
 
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
-
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 # =========================================================================
 # ANSI building blocks for conversation display
@@ -70,6 +68,7 @@ COMPACT_BANNER = """
 # Skills scanning
 # =========================================================================
 
+
 def get_available_skills() -> Dict[str, List[str]]:
     """Scan ~/.hermes/skills/ and return skills grouped by category."""
     import os
@@ -99,11 +98,16 @@ def get_available_skills() -> Dict[str, List[str]]:
 # Welcome banner
 # =========================================================================
 
-def build_welcome_banner(console: Console, model: str, cwd: str,
-                         tools: List[dict] = None,
-                         enabled_toolsets: List[str] = None,
-                         session_id: str = None,
-                         get_toolset_for_tool=None):
+
+def build_welcome_banner(
+    console: Console,
+    model: str,
+    cwd: str,
+    tools: List[dict] = None,
+    enabled_toolsets: List[str] = None,
+    session_id: str = None,
+    get_toolset_for_tool=None,
+):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -115,7 +119,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
     """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from model_tools import TOOLSET_REQUIREMENTS, check_tool_availability
+
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 

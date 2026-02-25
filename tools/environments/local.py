@@ -22,9 +22,9 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict:
         from tools.terminal_tool import _interrupt_event
 
         work_dir = cwd or self.cwd or os.getcwd()
@@ -47,20 +47,23 @@ class LocalEnvironment(BaseEnvironment):
             )
 
             if stdin_data is not None:
+
                 def _write_stdin():
                     try:
                         proc.stdin.write(stdin_data)
                         proc.stdin.close()
                     except (BrokenPipeError, OSError):
                         pass
+
                 threading.Thread(target=_write_stdin, daemon=True).start()
 
             _output_chunks: list[str] = []
 
             def _drain_stdout():
                 try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            _output_chunks.append(line)
                 except ValueError:
                     pass
                 finally:

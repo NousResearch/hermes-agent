@@ -19,8 +19,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-
+from typing import Any, Dict, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
@@ -134,7 +133,6 @@ class SessionDB:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 2")
 
-
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
@@ -198,9 +196,7 @@ class SessionDB:
         )
         self._conn.commit()
 
-    def update_token_counts(
-        self, session_id: str, input_tokens: int = 0, output_tokens: int = 0
-    ) -> None:
+    def update_token_counts(self, session_id: str, input_tokens: int = 0, output_tokens: int = 0) -> None:
         """Increment token counters on a session."""
         self._conn.execute(
             """UPDATE sessions SET
@@ -213,9 +209,7 @@ class SessionDB:
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        cursor = self._conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -397,8 +391,7 @@ class SessionDB:
                     (match["session_id"], match["id"], match["id"]),
                 )
                 context_msgs = [
-                    {"role": r["role"], "content": (r["content"] or "")[:200]}
-                    for r in ctx_cursor.fetchall()
+                    {"role": r["role"], "content": (r["content"] or "")[:200]} for r in ctx_cursor.fetchall()
                 ]
                 match["context"] = context_msgs
             except Exception:
@@ -435,9 +428,7 @@ class SessionDB:
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""
         if source:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-            )
+            cursor = self._conn.execute("SELECT COUNT(*) FROM sessions WHERE source = ?", (source,))
         else:
             cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
         return cursor.fetchone()[0]
@@ -445,9 +436,7 @@ class SessionDB:
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         if session_id:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            )
+            cursor = self._conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
         else:
             cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
         return cursor.fetchone()[0]
@@ -478,9 +467,7 @@ class SessionDB:
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages. Returns True if found."""
-        cursor = self._conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = self._conn.execute("SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,))
         if cursor.fetchone()[0] == 0:
             return False
         self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -494,6 +481,7 @@ class SessionDB:
         Only prunes ended sessions (not active ones).
         """
         import time as _time
+
         cutoff = _time.time() - (older_than_days * 86400)
 
         if source:

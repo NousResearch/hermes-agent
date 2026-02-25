@@ -27,8 +27,7 @@ def has_incomplete_scratchpad(content: str) -> bool:
     return "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
 
 
-def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
-                    completed: bool, filename: str = None):
+def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
     """Append a trajectory entry to a JSONL file.
 
     Args:

@@ -28,9 +28,7 @@ class HermesToolCallParser(ToolCallParser):
     """
 
     # Matches both closed and unclosed tool_call tags
-    PATTERN = re.compile(
-        r"<tool_call>\s*(.*?)\s*</tool_call>|<tool_call>\s*(.*)", re.DOTALL
-    )
+    PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>|<tool_call>\s*(.*)", re.DOTALL)
 
     def parse(self, text: str) -> ParseResult:
         if "<tool_call>" not in text:
@@ -55,9 +53,7 @@ class HermesToolCallParser(ToolCallParser):
                         type="function",
                         function=Function(
                             name=tc_data["name"],
-                            arguments=json.dumps(
-                                tc_data.get("arguments", {}), ensure_ascii=False
-                            ),
+                            arguments=json.dumps(tc_data.get("arguments", {}), ensure_ascii=False),
                         ),
                     )
                 )

@@ -25,8 +25,7 @@ from pathlib import Path
 
 
 def get_next_slide_number(slides_dir: Path) -> int:
-    existing = [int(m.group(1)) for f in slides_dir.glob("slide*.xml")
-                if (m := re.match(r"slide(\d+)\.xml", f.name))]
+    existing = [int(m.group(1)) for f in slides_dir.glob("slide*.xml") if (m := re.match(r"slide(\d+)\.xml", f.name))]
     return max(existing) + 1 if existing else 1
 
 
@@ -45,7 +44,7 @@ def create_slide_from_layout(unpacked_dir: Path, layout_file: str) -> None:
     dest_slide = slides_dir / dest
     dest_rels = rels_dir / f"{dest}.rels"
 
-    slide_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    slide_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
     <p:spTree>
@@ -67,14 +66,14 @@ def create_slide_from_layout(unpacked_dir: Path, layout_file: str) -> None:
   <p:clrMapOvr>
     <a:masterClrMapping/>
   </p:clrMapOvr>
-</p:sld>'''
+</p:sld>"""
     dest_slide.write_text(slide_xml, encoding="utf-8")
 
     rels_dir.mkdir(exist_ok=True)
-    rels_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    rels_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/{layout_file}"/>
-</Relationships>'''
+</Relationships>"""
     dest_rels.write_text(rels_xml, encoding="utf-8")
 
     _add_to_content_types(unpacked_dir, dest)

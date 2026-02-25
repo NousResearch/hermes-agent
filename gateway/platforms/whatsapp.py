@@ -20,11 +20,12 @@ import json
 import logging
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
@@ -33,25 +34,20 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_url,
     cache_audio_from_url,
+    cache_image_from_url,
 )
 
 
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
-    
+
     WhatsApp requires a Node.js bridge for most implementations.
     """
     # Check for Node.js
     try:
-        result = subprocess.run(
-            ["node", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
         return result.returncode == 0
     except Exception:
         return False
@@ -60,97 +56,98 @@ def check_whatsapp_requirements() -> bool:
 class WhatsAppAdapter(BasePlatformAdapter):
     """
     WhatsApp adapter.
-    
+
     This implementation uses a simple HTTP bridge pattern where:
     1. A Node.js process runs the WhatsApp Web client
     2. Messages are forwarded via HTTP/IPC to this Python adapter
     3. Responses are sent back through the bridge
-    
+
     The actual Node.js bridge implementation can vary:
     - whatsapp-web.js based
     - Baileys based
     - Business API based
-    
+
     Configuration:
     - bridge_script: Path to the Node.js bridge script
     - bridge_port: Port for HTTP communication (default: 3000)
     - session_path: Path to store WhatsApp session data
     """
-    
+
     # WhatsApp message limits
     MAX_MESSAGE_LENGTH = 65536  # WhatsApp allows longer messages
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get("bridge_script")
-        self._session_path: Path = Path(config.extra.get(
-            "session_path",
-            Path.home() / ".hermes" / "whatsapp" / "session"
-        ))
+        self._session_path: Path = Path(
+            config.extra.get("session_path", Path.home() / ".hermes" / "whatsapp" / "session")
+        )
         self._message_queue: asyncio.Queue = asyncio.Queue()
-    
+
     async def connect(self) -> bool:
         """
         Start the WhatsApp bridge.
-        
+
         This launches the Node.js bridge process and waits for it to be ready.
         """
         if not check_whatsapp_requirements():
             print(f"[{self.name}] Node.js not found. WhatsApp requires Node.js.")
             return False
-        
+
         if not self._bridge_script:
             print(f"[{self.name}] No bridge script configured.")
             print(f"[{self.name}] Set 'bridge_script' in whatsapp.extra config.")
             print(f"[{self.name}] See docs/messaging.md for WhatsApp setup instructions.")
             return False
-        
+
         bridge_path = Path(self._bridge_script)
         if not bridge_path.exists():
             print(f"[{self.name}] Bridge script not found: {bridge_path}")
             return False
-        
+
         try:
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            
+
             # Start the bridge process
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
                     str(bridge_path),
-                    "--port", str(self._bridge_port),
-                    "--session", str(self._session_path),
+                    "--port",
+                    str(self._bridge_port),
+                    "--session",
+                    str(self._session_path),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            
+
             # Wait for bridge to be ready (look for ready signal)
             # This is a simplified version - real implementation would
             # wait for an HTTP health check or specific stdout message
             await asyncio.sleep(5)
-            
+
             if self._bridge_process.poll() is not None:
                 stderr = self._bridge_process.stderr.read() if self._bridge_process.stderr else ""
                 print(f"[{self.name}] Bridge process died: {stderr}")
                 return False
-            
+
             # Start message polling task
             asyncio.create_task(self._poll_messages())
-            
+
             self._running = True
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             print(f"[{self.name}] Scan QR code if prompted (check bridge output)")
             return True
-            
+
         except Exception as e:
             print(f"[{self.name}] Failed to start bridge: {e}")
             return False
-    
+
     async def disconnect(self) -> None:
         """Stop the WhatsApp bridge."""
         if self._bridge_process:
@@ -161,25 +158,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     self._bridge_process.kill()
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
-        
+
         self._running = False
         self._bridge_process = None
         print(f"[{self.name}] Disconnected")
-    
+
     async def send(
-        self,
-        chat_id: str,
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message via the WhatsApp bridge."""
         if not self._running:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             import aiohttp
-            
+
             async with aiohttp.ClientSession() as session:
                 payload = {
                     "chatId": chat_id,
@@ -187,60 +180,50 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 }
                 if reply_to:
                     payload["replyTo"] = reply_to
-                
+
                 async with session.post(
-                    f"http://localhost:{self._bridge_port}/send",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    f"http://localhost:{self._bridge_port}/send", json=payload, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        return SendResult(
-                            success=True,
-                            message_id=data.get("messageId"),
-                            raw_response=data
-                        )
+                        return SendResult(success=True, message_id=data.get("messageId"), raw_response=data)
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
-                        
+
         except ImportError:
-            return SendResult(
-                success=False, 
-                error="aiohttp not installed. Run: pip install aiohttp"
-            )
+            return SendResult(success=False, error="aiohttp not installed. Run: pip install aiohttp")
         except Exception as e:
             return SendResult(success=False, error=str(e))
-    
+
     async def send_typing(self, chat_id: str) -> None:
         """Send typing indicator via bridge."""
         if not self._running:
             return
-        
+
         try:
             import aiohttp
-            
+
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     f"http://localhost:{self._bridge_port}/typing",
                     json={"chatId": chat_id},
-                    timeout=aiohttp.ClientTimeout(total=5)
+                    timeout=aiohttp.ClientTimeout(total=5),
                 )
         except Exception:
             pass  # Ignore typing indicator failures
-    
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""
         if not self._running:
             return {"name": "Unknown", "type": "dm"}
-        
+
         try:
             import aiohttp
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"http://localhost:{self._bridge_port}/chat/{chat_id}",
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    f"http://localhost:{self._bridge_port}/chat/{chat_id}", timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -251,9 +234,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         }
         except Exception as e:
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
-        
+
         return {"name": chat_id, "type": "dm"}
-    
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         try:
@@ -261,13 +244,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except ImportError:
             print(f"[{self.name}] aiohttp not installed, message polling disabled")
             return
-        
+
         while self._running:
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
-                        f"http://localhost:{self._bridge_port}/messages",
-                        timeout=aiohttp.ClientTimeout(total=30)
+                        f"http://localhost:{self._bridge_port}/messages", timeout=aiohttp.ClientTimeout(total=30)
                     ) as resp:
                         if resp.status == 200:
                             messages = await resp.json()
@@ -280,9 +262,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             except Exception as e:
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
-            
+
             await asyncio.sleep(1)  # Poll interval
-    
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -298,11 +280,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     msg_type = MessageType.VOICE
                 else:
                     msg_type = MessageType.DOCUMENT
-            
+
             # Determine chat type
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
-            
+
             # Build source
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
@@ -311,7 +293,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
-            
+
             # Download image media URLs to the local cache so the vision tool
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])
@@ -341,7 +323,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
-            
+
             return MessageEvent(
                 text=data.get("body", ""),
                 message_type=msg_type,

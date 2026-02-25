@@ -11,15 +11,15 @@ Examples:
 """
 
 import argparse
-import sys
 import shutil
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
 
 import defusedxml.minidom
-
 from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
+
 
 def pack(
     input_directory: str,
@@ -41,9 +41,7 @@ def pack(
     if validate and original_file:
         original_path = Path(original_file)
         if original_path.exists():
-            success, output = _run_validation(
-                input_dir, original_path, suffix, infer_author_func
-            )
+            success, output = _run_validation(input_dir, original_path, suffix, infer_author_func)
             if output:
                 print(output)
             if not success:
@@ -116,9 +114,7 @@ def _condense_xml(xml_file: Path) -> None:
 
             for child in list(element.childNodes):
                 if (
-                    child.nodeType == child.TEXT_NODE
-                    and child.nodeValue
-                    and child.nodeValue.strip() == ""
+                    child.nodeType == child.TEXT_NODE and child.nodeValue and child.nodeValue.strip() == ""
                 ) or child.nodeType == child.COMMENT_NODE:
                     element.removeChild(child)
 
@@ -129,9 +125,7 @@ def _condense_xml(xml_file: Path) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Pack a directory into a DOCX, PPTX, or XLSX file"
-    )
+    parser = argparse.ArgumentParser(description="Pack a directory into a DOCX, PPTX, or XLSX file")
     parser.add_argument("input_directory", help="Unpacked Office document directory")
     parser.add_argument("output_file", help="Output Office file (.docx/.pptx/.xlsx)")
     parser.add_argument(

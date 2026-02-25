@@ -19,8 +19,8 @@ Benchmarks (eval-only):
 """
 
 from environments.agent_loop import AgentResult, HermesAgentLoop
-from environments.tool_context import ToolContext
 from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
+from environments.tool_context import ToolContext
 
 __all__ = [
     "AgentResult",

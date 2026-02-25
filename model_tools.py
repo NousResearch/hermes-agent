@@ -20,11 +20,11 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
-import json
 import asyncio
-import os
+import json
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
+
 
 def _run_async(coro):
     """Run an async coroutine from a sync context.
@@ -56,6 +57,7 @@ def _run_async(coro):
 
     if loop and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
@@ -65,6 +67,7 @@ def _run_async(coro):
 # =============================================================================
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
+
 
 def _discover_tools():
     """Import all tool modules to trigger their registry.register() calls.
@@ -95,6 +98,7 @@ def _discover_tools():
         "tools.send_message_tool",
     ]
     import importlib
+
     for mod_name in _modules:
         try:
             importlib.import_module(mod_name)
@@ -130,18 +134,29 @@ _LEGACY_TOOLSET_MAP = {
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
-        "browser_navigate", "browser_snapshot", "browser_click",
-        "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
-        "browser_vision"
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_back",
+        "browser_press",
+        "browser_close",
+        "browser_get_images",
+        "browser_vision",
     ],
     "cronjob_tools": ["schedule_cronjob", "list_cronjobs", "remove_cronjob"],
     "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
+        "rl_list_environments",
+        "rl_select_environment",
+        "rl_get_current_config",
+        "rl_edit_config",
+        "rl_start_training",
+        "rl_check_status",
+        "rl_stop_training",
+        "rl_get_results",
+        "rl_list_runs",
+        "rl_test_inference",
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
@@ -151,6 +166,7 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
+
 
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
@@ -191,6 +207,7 @@ def get_tool_definitions(
 
     elif disabled_toolsets:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -210,6 +227,7 @@ def get_tool_definitions(
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         from toolsets import get_all_toolsets
+
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -264,13 +282,15 @@ def handle_function_call(
 
         if function_name == "execute_code":
             return registry.dispatch(
-                function_name, function_args,
+                function_name,
+                function_args,
                 task_id=task_id,
                 enabled_tools=_last_resolved_tool_names,
             )
 
         return registry.dispatch(
-            function_name, function_args,
+            function_name,
+            function_args,
             task_id=task_id,
             user_task=user_task,
         )
@@ -284,6 +304,7 @@ def handle_function_call(
 # =============================================================================
 # Backward-compat wrapper functions
 # =============================================================================
+
 
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""

@@ -28,19 +28,16 @@ SEND_MESSAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms.",
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'",
             },
-            "message": {
-                "type": "string",
-                "description": "The message text to send"
-            }
+            "message": {"type": "string", "description": "The message text to send"},
         },
-        "required": []
-    }
+        "required": [],
+    },
 }
 
 
@@ -58,6 +55,7 @@ def _handle_list():
     """Return formatted list of available messaging targets."""
     try:
         from gateway.channel_directory import format_directory_for_display
+
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps({"error": f"Failed to load channel directory: {e}"})
@@ -78,26 +76,30 @@ def _handle_send(args):
     if chat_id and not chat_id.lstrip("-").isdigit():
         try:
             from gateway.channel_directory import resolve_channel_name
+
             resolved = resolve_channel_name(platform_name, chat_id)
             if resolved:
                 chat_id = resolved
             else:
-                return json.dumps({
-                    "error": f"Could not resolve '{chat_id}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                })
+                return json.dumps(
+                    {
+                        "error": f"Could not resolve '{chat_id}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    }
+                )
         except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{chat_id}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
+            return json.dumps(
+                {"error": f"Could not resolve '{chat_id}' on {platform_name}. Try using a numeric channel ID instead."}
+            )
 
     from tools.interrupt import is_interrupted
+
     if is_interrupted():
         return json.dumps({"error": "Interrupted"})
 
     try:
-        from gateway.config import load_gateway_config, Platform
+        from gateway.config import Platform, load_gateway_config
+
         config = load_gateway_config()
     except Exception as e:
         return json.dumps({"error": f"Failed to load gateway config: {e}"})
@@ -115,7 +117,11 @@ def _handle_send(args):
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/gateway.json or environment variables."})
+        return json.dumps(
+            {
+                "error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/gateway.json or environment variables."
+            }
+        )
 
     used_home_channel = False
     if not chat_id:
@@ -124,14 +130,17 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
-            })
+            return json.dumps(
+                {
+                    "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                    f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                    f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                }
+            )
 
     try:
         from model_tools import _run_async
+
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -140,6 +149,7 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success"):
             try:
                 from gateway.mirror import mirror_to_session
+
                 source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
                 if mirror_to_session(platform_name, chat_id, message, source_label=source_label):
                     result["mirrored"] = True
@@ -154,6 +164,7 @@ def _handle_send(args):
 async def _send_to_platform(platform, pconfig, chat_id, message):
     """Route a message to the appropriate platform sender."""
     from gateway.config import Platform
+
     if platform == Platform.TELEGRAM:
         return await _send_telegram(pconfig.token, chat_id, message)
     elif platform == Platform.DISCORD:
@@ -167,6 +178,7 @@ async def _send_telegram(token, chat_id, message):
     """Send via Telegram Bot API (one-shot, no polling needed)."""
     try:
         from telegram import Bot
+
         bot = Bot(token=token)
         msg = await bot.send_message(chat_id=int(chat_id), text=message)
         return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(msg.message_id)}
@@ -185,7 +197,7 @@ async def _send_discord(token, chat_id, message):
     try:
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-        chunks = [message[i:i+2000] for i in range(0, len(message), 2000)]
+        chunks = [message[i : i + 2000] for i in range(0, len(message), 2000)]
         message_ids = []
         async with aiohttp.ClientSession() as session:
             for chunk in chunks:
@@ -226,6 +238,7 @@ def _check_send_message():
         return True
     try:
         from gateway.status import is_gateway_running
+
         return is_gateway_running()
     except Exception:
         return False

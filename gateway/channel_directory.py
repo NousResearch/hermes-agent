@@ -21,6 +21,7 @@ DIRECTORY_PATH = Path.home() / ".hermes" / "channel_directory.json"
 # Build / refresh
 # ---------------------------------------------------------------------------
 
+
 def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
@@ -74,12 +75,14 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
     for guild in client.guilds:
         for ch in guild.text_channels:
-            channels.append({
-                "id": str(ch.id),
-                "name": ch.name,
-                "guild": guild.name,
-                "type": "channel",
-            })
+            channels.append(
+                {
+                    "id": str(ch.id),
+                    "name": ch.name,
+                    "guild": guild.name,
+                    "type": "channel",
+                }
+            )
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
 
@@ -98,6 +101,7 @@ def _build_slack(adapter) -> List[Dict[str, str]]:
 
     try:
         import asyncio
+
         from tools.send_message_tool import _send_slack  # noqa: F401
         # Use the Slack Web API directly if available
     except Exception:
@@ -127,11 +131,13 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
             if not chat_id or chat_id in seen_ids:
                 continue
             seen_ids.add(chat_id)
-            entries.append({
-                "id": str(chat_id),
-                "name": origin.get("chat_name") or origin.get("user_name") or str(chat_id),
-                "type": session.get("chat_type", "dm"),
-            })
+            entries.append(
+                {
+                    "id": str(chat_id),
+                    "name": origin.get("chat_name") or origin.get("user_name") or str(chat_id),
+                    "type": session.get("chat_type", "dm"),
+                }
+            )
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
@@ -141,6 +147,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 # Read / resolve
 # ---------------------------------------------------------------------------
+
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""

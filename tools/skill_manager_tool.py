@@ -37,10 +37,9 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 import yaml
-
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
@@ -50,7 +49,7 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 # Characters allowed in skill names (filesystem-safe, URL-friendly)
-VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
+VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 # Subdirectories allowed for write_file/remove_file
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
@@ -64,6 +63,7 @@ def check_skill_manage_requirements() -> bool:
 # =============================================================================
 # Validation helpers
 # =============================================================================
+
 
 def _validate_name(name: str) -> Optional[str]:
     """Validate a skill name. Returns error message or None if valid."""
@@ -90,11 +90,11 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if not content.startswith("---"):
         return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 
-    end_match = re.search(r'\n---\s*\n', content[3:])
+    end_match = re.search(r"\n---\s*\n", content[3:])
     if not end_match:
         return "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
 
-    yaml_content = content[3:end_match.start() + 3]
+    yaml_content = content[3 : end_match.start() + 3]
 
     try:
         parsed = yaml.safe_load(yaml_content)
@@ -111,7 +111,7 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
 
-    body = content[end_match.end() + 3:].strip()
+    body = content[end_match.end() + 3 :].strip()
     if not body:
         return "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
 
@@ -168,6 +168,7 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 # Core actions
 # =============================================================================
 
+
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
@@ -183,10 +184,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
-        return {
-            "success": False,
-            "error": f"A skill named '{name}' already exists at {existing['path']}."
-        }
+        return {"success": False, "error": f"A skill named '{name}' already exists at {existing['path']}."}
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
@@ -206,7 +204,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         result["category"] = category
     result["hint"] = (
         "To add reference files, templates, or scripts, use "
-        "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
+        "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(
+            name
+        )
     )
     return result
 
@@ -246,7 +246,10 @@ def _patch_skill(
     if not old_string:
         return {"success": False, "error": "old_string is required for 'patch'."}
     if new_string is None:
-        return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
+        return {
+            "success": False,
+            "error": "new_string is required for 'patch'. Use an empty string to delete matched text.",
+        }
 
     existing = _find_skill(name)
     if not existing:
@@ -397,6 +400,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 # Main entry point
 # =============================================================================
 
+
 def skill_manage(
     action: str,
     name: str,
@@ -415,19 +419,37 @@ def skill_manage(
     """
     if action == "create":
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body)."}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).",
+                },
+                ensure_ascii=False,
+            )
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'edit'. Provide the full updated SKILL.md text."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "content is required for 'edit'. Provide the full updated SKILL.md text."},
+                ensure_ascii=False,
+            )
         result = _edit_skill(name, content)
 
     elif action == "patch":
         if not old_string:
-            return json.dumps({"success": False, "error": "old_string is required for 'patch'. Provide the text to find."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "old_string is required for 'patch'. Provide the text to find."},
+                ensure_ascii=False,
+            )
         if new_string is None:
-            return json.dumps({"success": False, "error": "new_string is required for 'patch'. Use empty string to delete matched text."}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "new_string is required for 'patch'. Use empty string to delete matched text.",
+                },
+                ensure_ascii=False,
+            )
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -435,18 +457,31 @@ def skill_manage(
 
     elif action == "write_file":
         if not file_path:
-            return json.dumps({"success": False, "error": "file_path is required for 'write_file'. Example: 'references/api-guide.md'"}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "file_path is required for 'write_file'. Example: 'references/api-guide.md'",
+                },
+                ensure_ascii=False,
+            )
         if file_content is None:
-            return json.dumps({"success": False, "error": "file_content is required for 'write_file'."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "file_content is required for 'write_file'."}, ensure_ascii=False
+            )
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
         if not file_path:
-            return json.dumps({"success": False, "error": "file_path is required for 'remove_file'."}, ensure_ascii=False)
+            return json.dumps(
+                {"success": False, "error": "file_path is required for 'remove_file'."}, ensure_ascii=False
+            )
         result = _remove_file(name, file_path)
 
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {
+            "success": False,
+            "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file",
+        }
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -481,14 +516,14 @@ SKILL_MANAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
-                "description": "The action to perform."
+                "description": "The action to perform.",
             },
             "name": {
                 "type": "string",
                 "description": (
                     "Skill name (lowercase, hyphens/underscores, max 64 chars). "
                     "Must match an existing skill for patch/edit/delete/write_file/remove_file."
-                )
+                ),
             },
             "content": {
                 "type": "string",
@@ -496,7 +531,7 @@ SKILL_MANAGE_SCHEMA = {
                     "Full SKILL.md content (YAML frontmatter + markdown body). "
                     "Required for 'create' and 'edit'. For 'edit', read the skill "
                     "first with skill_view() and provide the complete updated text."
-                )
+                ),
             },
             "old_string": {
                 "type": "string",
@@ -504,18 +539,17 @@ SKILL_MANAGE_SCHEMA = {
                     "Text to find in the file (required for 'patch'). Must be unique "
                     "unless replace_all=true. Include enough surrounding context to "
                     "ensure uniqueness."
-                )
+                ),
             },
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
-                )
+                    "Replacement text (required for 'patch'). Can be empty string to delete the matched text."
+                ),
             },
             "replace_all": {
                 "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
+                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false).",
             },
             "category": {
                 "type": "string",
@@ -523,7 +557,7 @@ SKILL_MANAGE_SCHEMA = {
                     "Optional category/domain for organizing the skill (e.g., 'devops', "
                     "'data-science', 'mlops'). Creates a subdirectory grouping. "
                     "Only used with 'create'."
-                )
+                ),
             },
             "file_path": {
                 "type": "string",
@@ -532,12 +566,9 @@ SKILL_MANAGE_SCHEMA = {
                     "For 'write_file'/'remove_file': required, must be under references/, "
                     "templates/, scripts/, or assets/. "
                     "For 'patch': optional, defaults to SKILL.md if omitted."
-                )
+                ),
             },
-            "file_content": {
-                "type": "string",
-                "description": "Content for the file. Required for 'write_file'."
-            },
+            "file_content": {"type": "string", "description": "Content for the file. Required for 'write_file'."},
         },
         "required": ["action", "name"],
     },
@@ -560,5 +591,6 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+    ),
 )

@@ -30,7 +30,11 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, scan_skill, should_allow_install, content_hash, TRUSTED_REPOS,
+    TRUSTED_REPOS,
+    ScanResult,
+    content_hash,
+    scan_skill,
+    should_allow_install,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,14 +61,16 @@ INDEX_CACHE_TTL = 3600  # 1 hour
 # Data models
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SkillMeta:
     """Minimal metadata returned by search results."""
+
     name: str
     description: str
-    source: str           # "github", "clawhub", "claude-marketplace", "lobehub"
-    identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
-    trust_level: str      # "builtin" | "trusted" | "community"
+    source: str  # "github", "clawhub", "claude-marketplace", "lobehub"
+    identifier: str  # source-specific ID (e.g. "openai/skills/skill-creator")
+    trust_level: str  # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
     path: Optional[str] = None
     tags: List[str] = field(default_factory=list)
@@ -73,8 +79,9 @@ class SkillMeta:
 @dataclass
 class SkillBundle:
     """A downloaded skill ready for quarantine/scanning/installation."""
+
     name: str
-    files: Dict[str, str]   # relative_path -> text content
+    files: Dict[str, str]  # relative_path -> text content
     source: str
     identifier: str
     trust_level: str
@@ -83,6 +90,7 @@ class SkillBundle:
 # ---------------------------------------------------------------------------
 # GitHub Authentication
 # ---------------------------------------------------------------------------
+
 
 class GitHubAuth:
     """
@@ -150,7 +158,9 @@ class GitHubAuth:
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -207,6 +217,7 @@ class GitHubAuth:
 # Source adapter interface
 # ---------------------------------------------------------------------------
 
+
 class SkillSource(ABC):
     """Abstract base for all skill registry adapters."""
 
@@ -238,6 +249,7 @@ class SkillSource(ABC):
 # ---------------------------------------------------------------------------
 # GitHub source adapter
 # ---------------------------------------------------------------------------
+
 
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
@@ -482,10 +494,10 @@ class GitHubSource(SkillSource):
         """Parse YAML frontmatter from SKILL.md content."""
         if not content.startswith("---"):
             return {}
-        match = re.search(r'\n---\s*\n', content[3:])
+        match = re.search(r"\n---\s*\n", content[3:])
         if not match:
             return {}
-        yaml_text = content[3:match.start() + 3]
+        yaml_text = content[3 : match.start() + 3]
         try:
             parsed = yaml.safe_load(yaml_text)
             return parsed if isinstance(parsed, dict) else {}
@@ -496,6 +508,7 @@ class GitHubSource(SkillSource):
 # ---------------------------------------------------------------------------
 # ClawHub source adapter
 # ---------------------------------------------------------------------------
+
 
 class ClawHubSource(SkillSource):
     """
@@ -612,6 +625,7 @@ class ClawHubSource(SkillSource):
 # Claude Code marketplace source adapter
 # ---------------------------------------------------------------------------
 
+
 class ClaudeMarketplaceSource(SkillSource):
     """
     Discover skills from Claude Code marketplace repos.
@@ -654,14 +668,16 @@ class ClaudeMarketplaceSource(SkillSource):
                     else:
                         identifier = f"{marketplace_repo}/{source_path}"
 
-                    results.append(SkillMeta(
-                        name=plugin.get("name", ""),
-                        description=plugin.get("description", ""),
-                        source="claude-marketplace",
-                        identifier=identifier,
-                        trust_level=self.trust_level_for(identifier),
-                        repo=marketplace_repo,
-                    ))
+                    results.append(
+                        SkillMeta(
+                            name=plugin.get("name", ""),
+                            description=plugin.get("description", ""),
+                            source="claude-marketplace",
+                            identifier=identifier,
+                            trust_level=self.trust_level_for(identifier),
+                            repo=marketplace_repo,
+                        )
+                    )
 
         return results[:limit]
 
@@ -710,6 +726,7 @@ class ClaudeMarketplaceSource(SkillSource):
 # LobeHub source adapter
 # ---------------------------------------------------------------------------
 
+
 class LobeHubSource(SkillSource):
     """
     Fetch skills from LobeHub's agent marketplace (14,500+ agents).
@@ -747,14 +764,16 @@ class LobeHubSource(SkillSource):
             searchable = f"{title} {desc} {' '.join(tags) if isinstance(tags, list) else ''}".lower()
             if query_lower in searchable:
                 identifier = agent.get("identifier", title.lower().replace(" ", "-"))
-                results.append(SkillMeta(
-                    name=identifier,
-                    description=desc[:200],
-                    source="lobehub",
-                    identifier=f"lobehub/{identifier}",
-                    trust_level="community",
-                    tags=tags if isinstance(tags, list) else [],
-                ))
+                results.append(
+                    SkillMeta(
+                        name=identifier,
+                        description=desc[:200],
+                        source="lobehub",
+                        identifier=f"lobehub/{identifier}",
+                        trust_level="community",
+                        tags=tags if isinstance(tags, list) else [],
+                    )
+                )
 
             if len(results) >= limit:
                 break
@@ -870,6 +889,7 @@ class LobeHubSource(SkillSource):
 # Shared cache helpers (used by multiple adapters)
 # ---------------------------------------------------------------------------
 
+
 def _read_index_cache(key: str) -> Optional[Any]:
     """Read cached data if not expired."""
     cache_file = INDEX_CACHE_DIR / f"{key}.json"
@@ -911,6 +931,7 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
 # ---------------------------------------------------------------------------
 # Lock file management
 # ---------------------------------------------------------------------------
+
 
 class HubLockFile:
     """Manages skills/.hub/lock.json — tracks provenance of installed hub skills."""
@@ -980,6 +1001,7 @@ class HubLockFile:
 # Taps management
 # ---------------------------------------------------------------------------
 
+
 class TapsManager:
     """Manages the taps.json file — custom GitHub repo sources."""
 
@@ -1025,8 +1047,10 @@ class TapsManager:
 # Audit log
 # ---------------------------------------------------------------------------
 
-def append_audit_log(action: str, skill_name: str, source: str,
-                     trust_level: str, verdict: str, extra: str = "") -> None:
+
+def append_audit_log(
+    action: str, skill_name: str, source: str, trust_level: str, verdict: str, extra: str = ""
+) -> None:
     """Append a line to the audit log."""
     AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1044,6 +1068,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
 # ---------------------------------------------------------------------------
 # Hub operations (high-level)
 # ---------------------------------------------------------------------------
+
 
 def ensure_hub_dirs() -> None:
     """Create the .hub directory structure if it doesn't exist."""
@@ -1107,8 +1132,11 @@ def install_from_quarantine(
     )
 
     append_audit_log(
-        "INSTALL", skill_name, bundle.source,
-        bundle.trust_level, scan_result.verdict,
+        "INSTALL",
+        skill_name,
+        bundle.source,
+        bundle.trust_level,
+        scan_result.verdict,
         content_hash(install_dir),
     )
 
@@ -1153,8 +1181,9 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     return sources
 
 
-def unified_search(query: str, sources: List[SkillSource],
-                   source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
+def unified_search(
+    query: str, sources: List[SkillSource], source_filter: str = "all", limit: int = 10
+) -> List[SkillMeta]:
     """Search all sources and merge results."""
     all_results: List[SkillMeta] = []
 

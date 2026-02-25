@@ -52,13 +52,8 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render."
     ),
-    "discord": (
-        "You are in a Discord server or group chat communicating with your user."
-    ),
-    "cli": (
-        "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
-    ),
+    "discord": ("You are in a Discord server or group chat communicating with your user."),
+    "cli": ("You are a CLI AI Agent. Try not to use markdown but simple text renderable inside a terminal."),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000
@@ -70,18 +65,20 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # Skills index
 # =========================================================================
 
+
 def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
     """Read the description from a SKILL.md frontmatter, capped at max_chars."""
     try:
         raw = skill_file.read_text(encoding="utf-8")[:2000]
         match = re.search(
             r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---",
-            raw, re.MULTILINE | re.DOTALL,
+            raw,
+            re.MULTILINE | re.DOTALL,
         )
         if match:
             desc = match.group(1).strip().strip("'\"")
             if len(desc) > max_chars:
-                desc = desc[:max_chars - 3] + "..."
+                desc = desc[: max_chars - 3] + "..."
             return desc
     except Exception:
         pass
@@ -156,8 +153,7 @@ def build_skills_system_prompt() -> str:
         "load it with skill_view(name) and follow its instructions. "
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "\n"
-        "<available_skills>\n"
-        + "\n".join(index_lines) + "\n"
+        "<available_skills>\n" + "\n".join(index_lines) + "\n"
         "</available_skills>\n"
         "\n"
         "If none match, proceed normally without loading a skill."
@@ -167,6 +163,7 @@ def build_skills_system_prompt() -> str:
 # =========================================================================
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
+
 
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
     """Head/tail truncation with a marker in the middle."""
@@ -203,7 +200,9 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
     if top_level_agents:
         agents_files = []
         for root, dirs, files in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
+            dirs[:] = [
+                d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__", "venv", ".venv")
+            ]
             for f in files:
                 if f.lower() == "agents.md":
                     agents_files.append(Path(root) / f)
@@ -276,4 +275,7 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return (
+        "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
+        + "\n".join(sections)
+    )

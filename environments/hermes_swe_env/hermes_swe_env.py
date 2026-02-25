@@ -40,11 +40,10 @@ _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from datasets import load_dataset
-
 from atroposlib.envs.base import ScoredDataGroup
 from atroposlib.envs.server_handling.server_manager import APIServerConfig
 from atroposlib.type_definitions import Item
+from datasets import load_dataset
 
 from environments.agent_loop import AgentResult
 from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
@@ -124,9 +123,7 @@ class HermesSweEnv(HermesAgentBaseEnv):
     async def setup(self):
         """Load the SWE dataset."""
         if self.config.dataset_name:
-            self.dataset = load_dataset(
-                self.config.dataset_name, split=self.config.dataset_split
-            )
+            self.dataset = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
         else:
             # Placeholder if no dataset specified
             self.dataset = []
@@ -157,9 +154,7 @@ class HermesSweEnv(HermesAgentBaseEnv):
 
         return prompt
 
-    async def compute_reward(
-        self, item: Dict[str, Any], result: AgentResult, ctx: ToolContext
-    ) -> float:
+    async def compute_reward(self, item: Dict[str, Any], result: AgentResult, ctx: ToolContext) -> float:
         """
         Score by running tests in the model's Modal sandbox.
 
@@ -175,9 +170,7 @@ class HermesSweEnv(HermesAgentBaseEnv):
 
         if test_code:
             # Run the test in the model's sandbox
-            test_result = ctx.terminal(
-                f'cd /workspace && python3 -c "{test_code}"', timeout=60
-            )
+            test_result = ctx.terminal(f'cd /workspace && python3 -c "{test_code}"', timeout=60)
 
             if test_result["exit_code"] == 0:
                 self.reward_buffer.append(1.0)
@@ -214,12 +207,8 @@ class HermesSweEnv(HermesAgentBaseEnv):
             wandb_metrics = {}
 
         if self.reward_buffer:
-            wandb_metrics["train/avg_reward"] = sum(self.reward_buffer) / len(
-                self.reward_buffer
-            )
-            wandb_metrics["train/pass_rate"] = sum(
-                1 for r in self.reward_buffer if r == 1.0
-            ) / len(self.reward_buffer)
+            wandb_metrics["train/avg_reward"] = sum(self.reward_buffer) / len(self.reward_buffer)
+            wandb_metrics["train/pass_rate"] = sum(1 for r in self.reward_buffer if r == 1.0) / len(self.reward_buffer)
             self.reward_buffer = []
 
         await super().wandb_log(wandb_metrics)

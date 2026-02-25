@@ -55,9 +55,7 @@ class Glm45ToolCallParser(ToolCallParser):
 
     FUNC_CALL_REGEX = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
     FUNC_DETAIL_REGEX = re.compile(r"<tool_call>([^\n]*)\n(.*)</tool_call>", re.DOTALL)
-    FUNC_ARG_REGEX = re.compile(
-        r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.DOTALL
-    )
+    FUNC_ARG_REGEX = re.compile(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.DOTALL)
 
     START_TOKEN = "<tool_call>"
 

@@ -29,6 +29,7 @@ _console = Console()
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
+
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
     Resolve a short skill name (e.g. 'pptx') to a full identifier by searching
@@ -75,8 +76,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
-def do_search(query: str, source: str = "all", limit: int = 10,
-              console: Optional[Console] = None) -> None:
+def do_search(query: str, source: str = "all", limit: int = 10, console: Optional[Console] = None) -> None:
     """Search registries and display results as a Rich table."""
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
@@ -109,18 +109,22 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         )
 
     c.print(table)
-    c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
-            "hermes skills install <identifier> to install[/]\n")
-
-
-def do_install(identifier: str, category: str = "", force: bool = False,
-               console: Optional[Console] = None) -> None:
-    """Fetch, quarantine, scan, confirm, and install a skill."""
-    from tools.skills_hub import (
-        GitHubAuth, create_source_router, ensure_hub_dirs,
-        quarantine_bundle, install_from_quarantine, HubLockFile,
+    c.print(
+        "[dim]Use: hermes skills inspect <identifier> to preview, hermes skills install <identifier> to install[/]\n"
     )
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+
+
+def do_install(identifier: str, category: str = "", force: bool = False, console: Optional[Console] = None) -> None:
+    """Fetch, quarantine, scan, confirm, and install a skill."""
+    from tools.skills_guard import format_scan_report, scan_skill, should_allow_install
+    from tools.skills_hub import (
+        GitHubAuth,
+        HubLockFile,
+        create_source_router,
+        ensure_hub_dirs,
+        install_from_quarantine,
+        quarantine_bundle,
+    )
 
     c = console or _console
     ensure_hub_dirs()
@@ -172,23 +176,31 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         # Clean up quarantine
         shutil.rmtree(q_path, ignore_errors=True)
         from tools.skills_hub import append_audit_log
-        append_audit_log("BLOCKED", bundle.name, bundle.source,
-                         bundle.trust_level, result.verdict,
-                         f"{len(result.findings)}_findings")
+
+        append_audit_log(
+            "BLOCKED",
+            bundle.name,
+            bundle.source,
+            bundle.trust_level,
+            result.verdict,
+            f"{len(result.findings)}_findings",
+        )
         return
 
     # Confirm with user — always show risk warning regardless of source
     if not force:
         c.print()
-        c.print(Panel(
-            "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
-            "External skills can contain instructions that influence agent behavior,\n"
-            "shell commands, and scripts. Even after automated scanning, you should\n"
-            "review the installed files before use.\n\n"
-            f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
-            title="Disclaimer",
-            border_style="yellow",
-        ))
+        c.print(
+            Panel(
+                "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
+                "External skills can contain instructions that influence agent behavior,\n"
+                "shell commands, and scripts. Even after automated scanning, you should\n"
+                "review the installed files before use.\n\n"
+                f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                title="Disclaimer",
+                border_style="yellow",
+            )
+        )
         c.print(f"[bold]Install '{bundle.name}'?[/]")
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
@@ -202,6 +214,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Install
     install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     from tools.skills_hub import SKILLS_DIR
+
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
@@ -265,7 +278,7 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing builtins from hub-installed."""
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import SKILLS_DIR, HubLockFile
     from tools.skills_tool import _find_all_skills
 
     c = console or _console
@@ -301,14 +314,13 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
         table.add_row(name, category, source_display, f"[{trust_style}]{trust}[/]")
 
     c.print(table)
-    c.print(f"[dim]{len(hub_installed)} hub-installed, "
-            f"{len(all_skills) - len(hub_installed)} builtin[/]\n")
+    c.print(f"[dim]{len(hub_installed)} hub-installed, {len(all_skills) - len(hub_installed)} builtin[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Re-run security scan on installed hub skills."""
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
-    from tools.skills_guard import scan_skill, format_scan_report
+    from tools.skills_guard import format_scan_report, scan_skill
+    from tools.skills_hub import SKILLS_DIR, HubLockFile
 
     c = console or _console
     lock = HubLockFile()
@@ -402,11 +414,10 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
 
 
-def do_publish(skill_path: str, target: str = "github", repo: str = "",
-               console: Optional[Console] = None) -> None:
+def do_publish(skill_path: str, target: str = "github", repo: str = "", console: Optional[Console] = None) -> None:
     """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
-    from tools.skills_hub import GitHubAuth, SKILLS_DIR
-    from tools.skills_guard import scan_skill, format_scan_report
+    from tools.skills_guard import format_scan_report, scan_skill
+    from tools.skills_hub import SKILLS_DIR, GitHubAuth
 
     c = console or _console
     path = Path(skill_path)
@@ -420,14 +431,16 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
 
     # Validate the skill
     import yaml
+
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
     fm = {}
     if skill_md.startswith("---"):
         import re
-        match = re.search(r'\n---\s*\n', skill_md[3:])
+
+        match = re.search(r"\n---\s*\n", skill_md[3:])
         if match:
             try:
-                fm = yaml.safe_load(skill_md[3:match.start() + 3]) or {}
+                fm = yaml.safe_load(skill_md[3 : match.start() + 3]) or {}
             except yaml.YAMLError:
                 pass
 
@@ -447,14 +460,18 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
 
     if target == "github":
         if not repo:
-            c.print("[bold red]Error:[/] --repo required for GitHub publish.\n"
-                    "Usage: hermes skills publish <path> --to github --repo owner/repo\n")
+            c.print(
+                "[bold red]Error:[/] --repo required for GitHub publish.\n"
+                "Usage: hermes skills publish <path> --to github --repo owner/repo\n"
+            )
             return
 
         auth = GitHubAuth()
         if not auth.is_authenticated():
-            c.print("[bold red]Error:[/] GitHub authentication required.\n"
-                    "Set GITHUB_TOKEN in ~/.hermes/.env or run 'gh auth login'.\n")
+            c.print(
+                "[bold red]Error:[/] GitHub authentication required.\n"
+                "Set GITHUB_TOKEN in ~/.hermes/.env or run 'gh auth login'.\n"
+            )
             return
 
         c.print(f"[bold]Publishing '{name}' to {repo}...[/]")
@@ -465,14 +482,12 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
             c.print(f"[bold red]Error:[/] {msg}\n")
 
     elif target == "clawhub":
-        c.print("[yellow]ClawHub publishing is not yet supported. "
-                "Submit manually at https://clawhub.ai/submit[/]\n")
+        c.print("[yellow]ClawHub publishing is not yet supported. Submit manually at https://clawhub.ai/submit[/]\n")
     else:
         c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
 
 
-def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
-                    auth) -> tuple:
+def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -> tuple:
     """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
     import httpx
 
@@ -482,7 +497,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/forks",
-            headers=headers, timeout=30,
+            headers=headers,
+            timeout=30,
         )
         if resp.status_code in (200, 202):
             fork = resp.json()
@@ -498,7 +514,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{target_repo}",
-            headers=headers, timeout=15,
+            headers=headers,
+            timeout=15,
         )
         default_branch = resp.json().get("default_branch", "main")
     except Exception:
@@ -508,7 +525,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
-            headers=headers, timeout=15,
+            headers=headers,
+            timeout=15,
         )
         base_sha = resp.json()["object"]["sha"]
     except Exception as e:
@@ -519,7 +537,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     try:
         httpx.post(
             f"https://api.github.com/repos/{fork_repo}/git/refs",
-            headers=headers, timeout=15,
+            headers=headers,
+            timeout=15,
             json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
         )
     except Exception as e:
@@ -533,10 +552,12 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         upload_path = f"skills/{skill_name}/{rel}"
         try:
             import base64
+
             content_b64 = base64.b64encode(f.read_bytes()).decode()
             httpx.put(
                 f"https://api.github.com/repos/{fork_repo}/contents/{upload_path}",
-                headers=headers, timeout=15,
+                headers=headers,
+                timeout=15,
                 json={
                     "message": f"Add {skill_name} skill: {rel}",
                     "content": content_b64,
@@ -550,11 +571,12 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/pulls",
-            headers=headers, timeout=15,
+            headers=headers,
+            timeout=15,
             json={
                 "title": f"Add skill: {skill_name}",
                 "body": f"Submitting the `{skill_name}` skill via Hermes Skills Hub.\n\n"
-                        f"This skill was scanned by the Hermes Skills Guard before submission.",
+                f"This skill was scanned by the Hermes Skills Guard before submission.",
                 "head": f"{fork_repo.split('/')[0]}:{branch_name}",
                 "base": default_branch,
             },
@@ -581,16 +603,15 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
 
     snapshot = {
         "hermes_version": "0.1.0",
-        "exported_at": __import__("datetime").datetime.now(
-            __import__("datetime").timezone.utc
-        ).isoformat(),
+        "exported_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         "skills": [
             {
                 "name": entry["name"],
                 "source": entry.get("source", ""),
                 "identifier": entry.get("identifier", ""),
                 "category": str(Path(entry.get("install_path", "")).parent)
-                            if "/" in entry.get("install_path", "") else "",
+                if "/" in entry.get("install_path", "")
+                else "",
             }
             for entry in installed
         ],
@@ -603,8 +624,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
     c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
 
 
-def do_snapshot_import(input_path: str, force: bool = False,
-                       console: Optional[Console] = None) -> None:
+def do_snapshot_import(input_path: str, force: bool = False, console: Optional[Console] = None) -> None:
     """Re-install skills from a snapshot file."""
     from tools.skills_hub import TapsManager
 
@@ -654,6 +674,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
+
 def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     action = getattr(args, "skills_action", None)
@@ -699,6 +720,7 @@ def skills_command(args) -> None:
 # ---------------------------------------------------------------------------
 # Slash command entry point (/skills in chat)
 # ---------------------------------------------------------------------------
+
 
 def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     """
@@ -836,16 +858,18 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
 def _print_skills_help(console: Console) -> None:
     """Print help for the /skills slash command."""
-    console.print(Panel(
-        "[bold]Skills Hub Commands:[/]\n\n"
-        "  [cyan]search[/] <query>              Search registries for skills\n"
-        "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
-        "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin] List installed skills\n"
-        "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
-        "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
-        "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
-        "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
-        title="/skills",
-    ))
+    console.print(
+        Panel(
+            "[bold]Skills Hub Commands:[/]\n\n"
+            "  [cyan]search[/] <query>              Search registries for skills\n"
+            "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
+            "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
+            "  [cyan]list[/] [--source hub|builtin] List installed skills\n"
+            "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+            "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+            "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
+            "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
+            "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+            title="/skills",
+        )
+    )

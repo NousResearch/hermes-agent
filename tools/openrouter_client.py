@@ -1,7 +1,7 @@
 """Shared OpenRouter API client for Hermes tools.
 
 Provides a single lazy-initialized AsyncOpenAI client that all tool modules
-can share, eliminating the duplicated _get_openrouter_client() / 
+can share, eliminating the duplicated _get_openrouter_client() /
 _get_summarizer_client() pattern previously copy-pasted across web_tools,
 vision_tools, mixture_of_agents_tool, and session_search_tool.
 """
@@ -9,6 +9,7 @@ vision_tools, mixture_of_agents_tool, and session_search_tool.
 import os
 
 from openai import AsyncOpenAI
+
 from hermes_constants import OPENROUTER_BASE_URL
 
 _client: AsyncOpenAI | None = None

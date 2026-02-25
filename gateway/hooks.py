@@ -26,7 +26,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
-
 HOOKS_DIR = Path(os.path.expanduser("~/.hermes/hooks"))
 
 
@@ -84,9 +83,7 @@ class HookRegistry:
                     continue
 
                 # Dynamically load the handler module
-                spec = importlib.util.spec_from_file_location(
-                    f"hermes_hook_{hook_name}", handler_path
-                )
+                spec = importlib.util.spec_from_file_location(f"hermes_hook_{hook_name}", handler_path)
                 if spec is None or spec.loader is None:
                     print(f"[hooks] Skipping {hook_name}: could not load handler.py", flush=True)
                     continue
@@ -103,12 +100,14 @@ class HookRegistry:
                 for event in events:
                     self._handlers.setdefault(event, []).append(handle_fn)
 
-                self._loaded_hooks.append({
-                    "name": hook_name,
-                    "description": manifest.get("description", ""),
-                    "events": events,
-                    "path": str(hook_dir),
-                })
+                self._loaded_hooks.append(
+                    {
+                        "name": hook_name,
+                        "description": manifest.get("description", ""),
+                        "events": events,
+                        "path": str(hook_dir),
+                    }
+                )
 
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 

@@ -131,11 +131,11 @@ class TerminalTestEnv(HermesAgentBaseEnv):
             # Modal terminal backend for cloud-isolated sandboxes per rollout
             terminal_backend="modal",
             # Atropos settings
-            group_size=3,              # 3 rollouts per group
+            group_size=3,  # 3 rollouts per group
             tokenizer_name="NousResearch/q-30b-t-h45-e1",
             tool_call_parser="hermes",
-            steps_per_eval=3,          # Eval after all 3 steps
-            total_steps=3,             # 3 groups total (1 group per step)
+            steps_per_eval=3,  # Eval after all 3 steps
+            total_steps=3,  # 3 groups total (1 group per step)
             use_wandb=True,
             wandb_name="terminal-test",
             ensure_scores_are_not_same=False,  # Allow all-same scores for simple tasks
@@ -174,9 +174,7 @@ class TerminalTestEnv(HermesAgentBaseEnv):
         """The prompt is directly in the task item."""
         return item["prompt"]
 
-    async def compute_reward(
-        self, item: Dict[str, str], result: AgentResult, ctx: ToolContext
-    ) -> float:
+    async def compute_reward(self, item: Dict[str, str], result: AgentResult, ctx: ToolContext) -> float:
         """
         Verify by cat-ing the expected file path and checking content matches.
         Same verifier for all tasks -- they all write a file at a known path.
@@ -234,9 +232,7 @@ class TerminalTestEnv(HermesAgentBaseEnv):
                     split="eval",
                 )
 
-                response_content = (
-                    completion.choices[0].message.content if completion.choices else ""
-                )
+                response_content = completion.choices[0].message.content if completion.choices else ""
 
                 samples.append(
                     {

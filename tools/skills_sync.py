@@ -37,11 +37,7 @@ def _read_manifest() -> set:
     if not MANIFEST_FILE.exists():
         return set()
     try:
-        return set(
-            line.strip()
-            for line in MANIFEST_FILE.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        )
+        return set(line.strip() for line in MANIFEST_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
     except (OSError, IOError):
         return set()
 
@@ -149,5 +145,4 @@ def sync_skills(quiet: bool = False) -> dict:
 if __name__ == "__main__":
     print("Syncing bundled skills into ~/.hermes/skills/ ...")
     result = sync_skills(quiet=False)
-    print(f"\nDone: {len(result['copied'])} new, {result['skipped']} skipped, "
-          f"{result['total_bundled']} total bundled.")
+    print(f"\nDone: {len(result['copied'])} new, {result['skipped']} skipped, {result['total_bundled']} total bundled.")

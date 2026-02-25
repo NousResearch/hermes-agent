@@ -17,13 +17,13 @@ Example:
     # prints: https://excalidraw.com/#json=abc123,encryptionKeyHere
 """
 
+import base64
 import json
 import os
 import struct
 import sys
-import zlib
-import base64
 import urllib.request
+import zlib
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -69,17 +69,19 @@ def upload(excalidraw_json: str) -> str:
     compressed = zlib.compress(inner_payload)
 
     # 3. AES-GCM 128-bit encrypt
-    raw_key = os.urandom(16)   # 128-bit key
-    iv = os.urandom(12)        # 12-byte nonce
+    raw_key = os.urandom(16)  # 128-bit key
+    iv = os.urandom(12)  # 12-byte nonce
     aesgcm = AESGCM(raw_key)
     encrypted = aesgcm.encrypt(iv, compressed, None)
 
     # 4. Encoding metadata
-    encoding_meta = json.dumps({
-        "version": 2,
-        "compression": "pako@1",
-        "encryption": "AES-GCM",
-    }).encode("utf-8")
+    encoding_meta = json.dumps(
+        {
+            "version": 2,
+            "compression": "pako@1",
+            "encryption": "AES-GCM",
+        }
+    ).encode("utf-8")
 
     # 5. Outer payload: concat_buffers(encoding_meta, iv, encrypted)
     payload = concat_buffers(encoding_meta, iv, encrypted)

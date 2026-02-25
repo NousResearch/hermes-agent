@@ -15,8 +15,7 @@ Design:
 """
 
 import json
-from typing import Dict, Any, List, Optional
-
+from typing import Any, Dict, List, Optional
 
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
@@ -165,16 +164,19 @@ def todo_tool(
     completed = sum(1 for i in items if i["status"] == "completed")
     cancelled = sum(1 for i in items if i["status"] == "cancelled")
 
-    return json.dumps({
-        "todos": items,
-        "summary": {
-            "total": len(items),
-            "pending": pending,
-            "in_progress": in_progress,
-            "completed": completed,
-            "cancelled": cancelled,
+    return json.dumps(
+        {
+            "todos": items,
+            "summary": {
+                "total": len(items),
+                "pending": pending,
+                "in_progress": in_progress,
+                "completed": completed,
+                "cancelled": cancelled,
+            },
         },
-    }, ensure_ascii=False)
+        ensure_ascii=False,
+    )
 
 
 def check_todo_requirements() -> bool:
@@ -214,34 +216,27 @@ TODO_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Unique item identifier"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Task description"
-                        },
+                        "id": {"type": "string", "description": "Unique item identifier"},
+                        "content": {"type": "string", "description": "Task description"},
                         "status": {
                             "type": "string",
                             "enum": ["pending", "in_progress", "completed", "cancelled"],
-                            "description": "Current status"
-                        }
+                            "description": "Current status",
+                        },
                     },
-                    "required": ["id", "content", "status"]
-                }
+                    "required": ["id", "content", "status"],
+                },
             },
             "merge": {
                 "type": "boolean",
                 "description": (
-                    "true: update existing items by id, add new ones. "
-                    "false (default): replace the entire list."
+                    "true: update existing items by id, add new ones. false (default): replace the entire list."
                 ),
-                "default": False
-            }
+                "default": False,
+            },
         },
-        "required": []
-    }
+        "required": [],
+    },
 }
 
 
@@ -253,6 +248,7 @@ registry.register(
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")
+    ),
     check_fn=check_todo_requirements,
 )

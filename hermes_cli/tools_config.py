@@ -6,45 +6,44 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Set
 
-import os
-
-from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.colors import Colors, color
+from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
 
 # Toolsets shown in the configurator, grouped for display.
 # Each entry: (toolset_name, label, description)
 # These map to keys in toolsets.py TOOLSETS dict.
 CONFIGURABLE_TOOLSETS = [
-    ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
-    ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
-    ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
-    ("file",            "📁 File Operations",           "read, write, patch, search"),
-    ("code_execution",  "⚡ Code Execution",            "execute_code"),
-    ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
-    ("image_gen",       "🎨 Image Generation",          "image_generate"),
-    ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
-    ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
-    ("skills",          "📚 Skills",                    "list, view, manage"),
-    ("todo",            "📋 Task Planning",             "todo"),
-    ("memory",          "💾 Memory",                    "persistent memory across sessions"),
-    ("session_search",  "🔎 Session Search",            "search past conversations"),
-    ("clarify",         "❓ Clarifying Questions",      "clarify"),
-    ("delegation",      "👥 Task Delegation",           "delegate_task"),
-    ("cronjob",         "⏰ Cron Jobs",                 "schedule, list, remove"),
-    ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
+    ("web", "🔍 Web Search & Scraping", "web_search, web_extract"),
+    ("browser", "🌐 Browser Automation", "navigate, click, type, scroll"),
+    ("terminal", "💻 Terminal & Processes", "terminal, process"),
+    ("file", "📁 File Operations", "read, write, patch, search"),
+    ("code_execution", "⚡ Code Execution", "execute_code"),
+    ("vision", "👁️  Vision / Image Analysis", "vision_analyze"),
+    ("image_gen", "🎨 Image Generation", "image_generate"),
+    ("moa", "🧠 Mixture of Agents", "mixture_of_agents"),
+    ("tts", "🔊 Text-to-Speech", "text_to_speech"),
+    ("skills", "📚 Skills", "list, view, manage"),
+    ("todo", "📋 Task Planning", "todo"),
+    ("memory", "💾 Memory", "persistent memory across sessions"),
+    ("session_search", "🔎 Session Search", "search past conversations"),
+    ("clarify", "❓ Clarifying Questions", "clarify"),
+    ("delegation", "👥 Task Delegation", "delegate_task"),
+    ("cronjob", "⏰ Cron Jobs", "schedule, list, remove"),
+    ("rl", "🧪 RL Training", "Tinker-Atropos training tools"),
 ]
 
 # Platform display config
 PLATFORMS = {
-    "cli":      {"label": "🖥️  CLI",       "default_toolset": "hermes-cli"},
-    "telegram": {"label": "📱 Telegram",   "default_toolset": "hermes-telegram"},
-    "discord":  {"label": "💬 Discord",    "default_toolset": "hermes-discord"},
-    "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
-    "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
+    "cli": {"label": "🖥️  CLI", "default_toolset": "hermes-cli"},
+    "telegram": {"label": "📱 Telegram", "default_toolset": "hermes-telegram"},
+    "discord": {"label": "💬 Discord", "default_toolset": "hermes-discord"},
+    "slack": {"label": "💼 Slack", "default_toolset": "hermes-slack"},
+    "whatsapp": {"label": "📱 WhatsApp", "default_toolset": "hermes-whatsapp"},
 }
 
 
@@ -64,7 +63,7 @@ def _get_enabled_platforms() -> List[str]:
 
 def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import TOOLSETS, resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets", {})
     toolset_names = platform_toolsets.get(platform)
@@ -102,6 +101,7 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
     try:
         from simple_term_menu import TerminalMenu
+
         menu = TerminalMenu(
             [f"  {c}" for c in choices],
             cursor_index=default,
@@ -144,10 +144,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
         labels.append(f"{ts_label}  ({ts_desc})")
 
-    pre_selected_indices = [
-        i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)
-        if ts_key in enabled
-    ]
+    pre_selected_indices = [i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS) if ts_key in enabled]
 
     try:
         from simple_term_menu import TerminalMenu
@@ -206,15 +203,16 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
 # Map toolset keys to the env vars they require and where to get them
 TOOLSET_ENV_REQUIREMENTS = {
-    "web":        [("FIRECRAWL_API_KEY",    "https://firecrawl.dev/")],
-    "browser":    [("BROWSERBASE_API_KEY",  "https://browserbase.com/"),
-                   ("BROWSERBASE_PROJECT_ID", None)],
-    "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "image_gen":  [("FAL_KEY",              "https://fal.ai/")],
-    "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "tts":        [],  # Edge TTS is free, no key needed
-    "rl":         [("TINKER_API_KEY",       "https://tinker-console.thinkingmachines.ai/keys"),
-                   ("WANDB_API_KEY",        "https://wandb.ai/authorize")],
+    "web": [("FIRECRAWL_API_KEY", "https://firecrawl.dev/")],
+    "browser": [("BROWSERBASE_API_KEY", "https://browserbase.com/"), ("BROWSERBASE_PROJECT_ID", None)],
+    "vision": [("OPENROUTER_API_KEY", "https://openrouter.ai/keys")],
+    "image_gen": [("FAL_KEY", "https://fal.ai/")],
+    "moa": [("OPENROUTER_API_KEY", "https://openrouter.ai/keys")],
+    "tts": [],  # Edge TTS is free, no key needed
+    "rl": [
+        ("TINKER_API_KEY", "https://tinker-console.thinkingmachines.ai/keys"),
+        ("WANDB_API_KEY", "https://wandb.ai/authorize"),
+    ],
 }
 
 
@@ -252,6 +250,7 @@ def _check_and_prompt_requirements(newly_enabled: Set[str]):
                     print(color(f"    Get key at: {url}", Colors.DIM))
                 try:
                     import getpass
+
                     value = getpass.getpass(color(f"    {var}: ", Colors.YELLOW))
                 except (KeyboardInterrupt, EOFError):
                     print()

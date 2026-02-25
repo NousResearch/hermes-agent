@@ -23,17 +23,16 @@ Example usage in a compute_reward():
         return 0.0
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import asyncio
-import concurrent.futures
-
 from model_tools import handle_function_call
-from tools.terminal_tool import cleanup_vm
 from tools.browser_tool import cleanup_browser
+from tools.terminal_tool import cleanup_vm
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +52,9 @@ def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str)
         loop = asyncio.get_running_loop()
         # We're in an async context -- need to run in thread
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(
-                handle_function_call, tool_name, arguments, task_id
-            )
+            future = pool.submit(handle_function_call, tool_name, arguments, task_id)
             return future.result(timeout=300)
     except RuntimeError:
         # No running event loop -- safe to call directly
@@ -91,6 +89,7 @@ class ToolContext:
             Dict with 'exit_code' (int) and 'output' (str)
         """
         import os
+
         backend = os.getenv("TERMINAL_ENV", "local")
         logger.debug("ToolContext.terminal [%s backend] task=%s: %s", backend, self.task_id[:8], command[:100])
 
@@ -119,9 +118,7 @@ class ToolContext:
         Returns:
             Dict with file content or error
         """
-        result = handle_function_call(
-            "read_file", {"path": path}, task_id=self.task_id
-        )
+        result = handle_function_call("read_file", {"path": path}, task_id=self.task_id)
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -141,9 +138,7 @@ class ToolContext:
         Returns:
             Dict with success status or error
         """
-        result = handle_function_call(
-            "write_file", {"path": path, "content": content}, task_id=self.task_id
-        )
+        result = handle_function_call("write_file", {"path": path, "content": content}, task_id=self.task_id)
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -312,7 +307,7 @@ class ToolContext:
                 continue
             # Compute the relative path to preserve directory structure
             if remote_file.startswith(remote_dir):
-                relative = remote_file[len(remote_dir):].lstrip("/")
+                relative = remote_file[len(remote_dir) :].lstrip("/")
             else:
                 relative = _Path(remote_file).name
             local_file = str(_Path(local_dir) / relative)
@@ -331,9 +326,7 @@ class ToolContext:
         Returns:
             Dict with search results
         """
-        result = handle_function_call(
-            "search_files", {"pattern": query, "path": path}, task_id=self.task_id
-        )
+        result = handle_function_call("search_files", {"pattern": query, "path": path}, task_id=self.task_id)
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -389,9 +382,7 @@ class ToolContext:
         Returns:
             Dict with page snapshot or error
         """
-        result = handle_function_call(
-            "browser_navigate", {"url": url}, task_id=self.task_id
-        )
+        result = handle_function_call("browser_navigate", {"url": url}, task_id=self.task_id)
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -404,9 +395,7 @@ class ToolContext:
         Returns:
             Dict with page content/accessibility snapshot
         """
-        result = handle_function_call(
-            "browser_snapshot", {}, task_id=self.task_id
-        )
+        result = handle_function_call("browser_snapshot", {}, task_id=self.task_id)
         try:
             return json.loads(result)
         except json.JSONDecodeError:
@@ -447,6 +436,7 @@ class ToolContext:
         # Kill any background processes from this rollout (safety net)
         try:
             from tools.process_registry import process_registry
+
             killed = process_registry.kill_all(task_id=self.task_id)
             if killed:
                 logger.debug("Process cleanup for task %s: killed %d process(es)", self.task_id, killed)

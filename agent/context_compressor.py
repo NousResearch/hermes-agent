@@ -11,8 +11,8 @@ from typing import Any, Dict, List
 
 from agent.auxiliary_client import get_text_auxiliary_client
 from agent.model_metadata import (
-    get_model_context_length,
     estimate_messages_tokens_rough,
+    get_model_context_length,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         n_messages = len(messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:
-                print(f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})")
+                print(
+                    f"⚠️  Cannot compress: only {n_messages} messages (need > {self.protect_first_n + self.protect_last_n + 1})"
+                )
             return messages
 
         compress_start = self.protect_first_n
@@ -145,11 +147,17 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        display_tokens = (
+            current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        )
 
         if not self.quiet_mode:
-            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
-            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
+            print(
+                f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)"
+            )
+            print(
+                f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent * 100:.0f}% = {self.threshold_tokens:,})"
+            )
 
         # Truncation fallback when no auxiliary model is available
         if self.client is None:
@@ -162,7 +170,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     kept.append(msg.copy())
                 else:
                     break
-            tail = messages[-self.protect_last_n:]
+            tail = messages[-self.protect_last_n :]
             kept.extend(m.copy() for m in tail)
             self.compression_count += 1
             if not self.quiet_mode:
@@ -170,7 +178,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             return kept
 
         if not self.quiet_mode:
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+            print(f"   🗜️  Summarizing turns {compress_start + 1}-{compress_end} ({len(turns_to_summarize)} turns)")
 
         summary = self._generate_summary(turns_to_summarize)
 
@@ -178,7 +186,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (
+                    msg.get("content", "")
+                    + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                )
             compressed.append(msg)
 
         compressed.append({"role": "user", "content": summary})

@@ -94,9 +94,7 @@ class MistralToolCallParser(ToolCallParser):
                             ChatCompletionMessageToolCall(
                                 id=_generate_mistral_id(),
                                 type="function",
-                                function=Function(
-                                    name=tc["name"], arguments=args
-                                ),
+                                function=Function(name=tc["name"], arguments=args),
                             )
                         )
                 except json.JSONDecodeError:
@@ -113,9 +111,7 @@ class MistralToolCallParser(ToolCallParser):
                                     ChatCompletionMessageToolCall(
                                         id=_generate_mistral_id(),
                                         type="function",
-                                        function=Function(
-                                            name=tc["name"], arguments=args
-                                        ),
+                                        function=Function(name=tc["name"], arguments=args),
                                     )
                                 )
                             except (json.JSONDecodeError, KeyError):

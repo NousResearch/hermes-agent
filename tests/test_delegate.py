@@ -22,10 +22,10 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     MAX_CONCURRENT_CHILDREN,
     MAX_DEPTH,
-    check_delegate_requirements,
-    delegate_task,
     _build_child_system_prompt,
     _strip_blocked_tools,
+    check_delegate_requirements,
+    delegate_task,
 )
 
 
@@ -123,8 +123,11 @@ class TestDelegateTask(unittest.TestCase):
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
         mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 3,
+            "duration_seconds": 5.0,
         }
         parent = _make_mock_parent()
         result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
@@ -155,8 +158,11 @@ class TestDelegateTask(unittest.TestCase):
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
         mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
         }
         parent = _make_mock_parent()
         tasks = [{"goal": f"Task {i}"} for i in range(5)]
@@ -168,25 +174,37 @@ class TestDelegateTask(unittest.TestCase):
     def test_batch_ignores_toplevel_goal(self, mock_run):
         """When tasks array is provided, top-level goal/context/toolsets are ignored."""
         mock_run.return_value = {
-            "task_index": 0, "status": "completed",
-            "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
         }
         parent = _make_mock_parent()
-        result = json.loads(delegate_task(
-            goal="This should be ignored",
-            tasks=[{"goal": "Actual task"}],
-            parent_agent=parent,
-        ))
+        result = json.loads(
+            delegate_task(
+                goal="This should be ignored",
+                tasks=[{"goal": "Actual task"}],
+                parent_agent=parent,
+            )
+        )
         # The mock was called with the tasks array item, not the top-level goal
         call_args = mock_run.call_args
-        self.assertEqual(call_args.kwargs.get("goal") or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None), "Actual task")
+        self.assertEqual(
+            call_args.kwargs.get("goal")
+            or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None),
+            "Actual task",
+        )
 
     @patch("tools.delegate_tool._run_single_child")
     def test_failed_child_included_in_results(self, mock_run):
         mock_run.return_value = {
-            "task_index": 0, "status": "error",
-            "summary": None, "error": "Something broke",
-            "api_calls": 0, "duration_seconds": 0.5
+            "task_index": 0,
+            "status": "error",
+            "summary": None,
+            "error": "Something broke",
+            "api_calls": 0,
+            "duration_seconds": 0.5,
         }
         parent = _make_mock_parent()
         result = json.loads(delegate_task(goal="Break things", parent_agent=parent))
@@ -199,9 +217,7 @@ class TestDelegateTask(unittest.TestCase):
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
+            mock_child.run_conversation.return_value = {"final_response": "done", "completed": True, "api_calls": 1}
             MockAgent.return_value = mock_child
 
             delegate_task(goal="Test depth", parent_agent=parent)
@@ -213,9 +229,7 @@ class TestDelegateTask(unittest.TestCase):
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
-            mock_child.run_conversation.return_value = {
-                "final_response": "done", "completed": True, "api_calls": 1
-            }
+            mock_child.run_conversation.return_value = {"final_response": "done", "completed": True, "api_calls": 1}
             MockAgent.return_value = mock_child
 
             delegate_task(goal="Test tracking", parent_agent=parent)

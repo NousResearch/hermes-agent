@@ -8,6 +8,7 @@ Usage:
     hermes pairing clear-pending     # Clear all expired/pending codes
 """
 
+
 def pairing_command(args):
     """Handle hermes pairing subcommands."""
     from gateway.pairing import PairingStore

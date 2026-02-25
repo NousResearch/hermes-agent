@@ -26,15 +26,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-
 # Tools that children must never have access to
-DELEGATE_BLOCKED_TOOLS = frozenset([
-    "delegate_task",   # no recursive delegation
-    "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
-    "send_message",    # no cross-platform side effects
-    "execute_code",    # children should reason step-by-step, not write scripts
-])
+DELEGATE_BLOCKED_TOOLS = frozenset(
+    [
+        "delegate_task",  # no recursive delegation
+        "clarify",  # no user interaction
+        "memory",  # no writes to shared MEMORY.md
+        "send_message",  # no cross-platform side effects
+        "execute_code",  # children should reason step-by-step, not write scripts
+    ]
+)
 
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
@@ -72,7 +73,10 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
-        "delegation", "clarify", "memory", "code_execution",
+        "delegation",
+        "clarify",
+        "memory",
+        "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
@@ -111,7 +115,7 @@ def _run_single_child(
             skip_context_files=True,
             skip_memory=True,
             clarify_callback=None,
-            session_db=getattr(parent_agent, '_session_db', None),
+            session_db=getattr(parent_agent, "_session_db", None),
             providers_allowed=parent_agent.providers_allowed,
             providers_ignored=parent_agent.providers_ignored,
             providers_order=parent_agent.providers_order,
@@ -119,10 +123,10 @@ def _run_single_child(
         )
 
         # Set delegation depth so children can't spawn grandchildren
-        child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+        child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
 
         # Register child for interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
+        if hasattr(parent_agent, "_active_children"):
             parent_agent._active_children.append(child)
 
         # Run with stdout/stderr suppressed to prevent interleaved output
@@ -170,7 +174,7 @@ def _run_single_child(
 
     finally:
         # Unregister child from interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
+        if hasattr(parent_agent, "_active_children"):
             try:
                 parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError):
@@ -199,14 +203,11 @@ def delegate_task(
         return json.dumps({"error": "delegate_task requires a parent agent context."})
 
     # Depth limit
-    depth = getattr(parent_agent, '_delegate_depth', 0)
+    depth = getattr(parent_agent, "_delegate_depth", 0)
     if depth >= MAX_DEPTH:
-        return json.dumps({
-            "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
-                "Subagents cannot spawn further subagents."
-            )
-        })
+        return json.dumps(
+            {"error": (f"Delegation depth limit reached ({MAX_DEPTH}). Subagents cannot spawn further subagents.")}
+        )
 
     # Load config
     cfg = _load_config()
@@ -252,7 +253,7 @@ def delegate_task(
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
-        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
         # Save stdout/stderr before the executor — redirect_stdout in child
         # threads races on sys.stdout and can leave it as devnull permanently.
@@ -297,7 +298,7 @@ def delegate_task(
                 status = entry.get("status", "?")
                 icon = "✓" if status == "completed" else "✗"
                 remaining = n_tasks - completed_count
-                print(f"  {icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)")
+                print(f"  {icon} [{idx + 1}/{n_tasks}] {label}  ({dur}s)")
 
                 # Update spinner text to show remaining count
                 if spinner_ref and remaining > 0:
@@ -315,16 +316,20 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps({
-        "results": results,
-        "total_duration_seconds": total_duration,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "results": results,
+            "total_duration_seconds": total_duration,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG if available."""
     try:
         from cli import CLI_CONFIG
+
         return CLI_CONFIG.get("delegation", {})
     except Exception:
         return {}
@@ -447,6 +452,7 @@ registry.register(
         tasks=args.get("tasks"),
         model=args.get("model"),
         max_iterations=args.get("max_iterations"),
-        parent_agent=kw.get("parent_agent")),
+        parent_agent=kw.get("parent_agent"),
+    ),
     check_fn=check_delegate_requirements,
 )

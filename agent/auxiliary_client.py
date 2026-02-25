@@ -69,6 +69,7 @@ def _nous_base_url() -> str:
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
+
 def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, model_slug) for text-only auxiliary tasks.
 

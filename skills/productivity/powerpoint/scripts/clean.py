@@ -15,13 +15,11 @@ This script removes:
 - Content-Type overrides for deleted files
 """
 
+import re
 import sys
 from pathlib import Path
 
 import defusedxml.minidom
-
-
-import re
 
 
 def get_slides_in_sldidlst(unpacked_dir: Path) -> set[str]:

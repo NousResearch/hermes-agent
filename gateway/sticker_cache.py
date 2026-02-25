@@ -14,7 +14,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-
 CACHE_PATH = Path(os.path.expanduser("~/.hermes/sticker_cache.json"))
 
 # Vision prompt for describing stickers -- kept concise to save tokens
@@ -92,11 +91,11 @@ def build_sticker_injection(
     """
     context = ""
     if set_name and emoji:
-        context = f" {emoji} from \"{set_name}\""
+        context = f' {emoji} from "{set_name}"'
     elif emoji:
         context = f" {emoji}"
 
-    return f"[The user sent a sticker{context}~ It shows: \"{description}\" (=^.w.^=)]"
+    return f'[The user sent a sticker{context}~ It shows: "{description}" (=^.w.^=)]'
 
 
 def build_animated_sticker_injection(emoji: str = "") -> str:

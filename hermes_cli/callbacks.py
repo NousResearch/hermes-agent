@@ -9,7 +9,7 @@ with the TUI.
 import queue
 import time as _time
 
-from hermes_cli.banner import cprint, _DIM, _RST
+from hermes_cli.banner import _DIM, _RST, cprint
 
 
 def clarify_callback(cli, question, choices):
@@ -33,7 +33,7 @@ def clarify_callback(cli, question, choices):
     cli._clarify_deadline = _time.monotonic() + timeout
     cli._clarify_freetext = is_open_ended
 
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
 
     while True:
@@ -45,13 +45,13 @@ def clarify_callback(cli, question, choices):
             remaining = cli._clarify_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
+            if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
 
     cli._clarify_state = None
     cli._clarify_freetext = False
     cli._clarify_deadline = 0
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
     return (
@@ -71,7 +71,7 @@ def sudo_password_callback(cli) -> str:
     cli._sudo_state = {"response_queue": response_queue}
     cli._sudo_deadline = _time.monotonic() + timeout
 
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
 
     while True:
@@ -79,7 +79,7 @@ def sudo_password_callback(cli) -> str:
             result = response_queue.get(timeout=1)
             cli._sudo_state = None
             cli._sudo_deadline = 0
-            if hasattr(cli, '_app') and cli._app:
+            if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
             if result:
                 cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
@@ -90,12 +90,12 @@ def sudo_password_callback(cli) -> str:
             remaining = cli._sudo_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
+            if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
 
     cli._sudo_state = None
     cli._sudo_deadline = 0
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
     return ""
@@ -119,7 +119,7 @@ def approval_callback(cli, command: str, description: str) -> str:
     }
     cli._approval_deadline = _time.monotonic() + timeout
 
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
 
     while True:
@@ -127,19 +127,19 @@ def approval_callback(cli, command: str, description: str) -> str:
             result = response_queue.get(timeout=1)
             cli._approval_state = None
             cli._approval_deadline = 0
-            if hasattr(cli, '_app') and cli._app:
+            if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
             return result
         except queue.Empty:
             remaining = cli._approval_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
+            if hasattr(cli, "_app") and cli._app:
                 cli._app.invalidate()
 
     cli._approval_state = None
     cli._approval_deadline = 0
-    if hasattr(cli, '_app') and cli._app:
+    if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
     return "deny"

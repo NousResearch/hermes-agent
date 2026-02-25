@@ -132,6 +132,7 @@ def _patch_swerex_modal():
 
     def _patched_execute(self, command: str, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
         """Patched execute: runs commands on the background thread's loop."""
+
         async def _do_execute():
             return await self.deployment.runtime.execute(
                 RexCommand(

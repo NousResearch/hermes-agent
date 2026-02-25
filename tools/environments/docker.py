@@ -17,16 +17,21 @@ from tools.interrupt import is_interrupted
 logger = logging.getLogger(__name__)
 
 
-
 # Security flags applied to every container
 _SECURITY_ARGS = [
     "--read-only",
-    "--cap-drop", "ALL",
-    "--security-opt", "no-new-privileges",
-    "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m",
-    "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "256",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=512m",
+    "--tmpfs",
+    "/var/tmp:rw,noexec,nosuid,size=256m",
+    "--tmpfs",
+    "/run:rw,noexec,nosuid,size=64m",
 ]
 
 
@@ -86,14 +91,19 @@ class DockerEnvironment(BaseEnvironment):
             os.makedirs(self._workspace_dir, exist_ok=True)
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args = [
-                "-v", f"{self._workspace_dir}:/workspace",
-                "-v", f"{self._home_dir}:/root",
+                "-v",
+                f"{self._workspace_dir}:/workspace",
+                "-v",
+                f"{self._home_dir}:/root",
             ]
         else:
             writable_args = [
-                "--tmpfs", "/workspace:rw,exec,size=10g",
-                "--tmpfs", "/home:rw,exec,size=1g",
-                "--tmpfs", "/root:rw,exec,size=1g",
+                "--tmpfs",
+                "/workspace:rw,exec,size=10g",
+                "--tmpfs",
+                "/home:rw,exec,size=1g",
+                "--tmpfs",
+                "/root:rw,exec,size=1g",
             ]
 
         # All containers get full security hardening (read-only root + writable
@@ -102,14 +112,16 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
 
         self._inner = _Docker(
-            image=effective_image, cwd=cwd, timeout=timeout,
+            image=image,
+            cwd=cwd,
+            timeout=timeout,
             run_args=all_run_args,
         )
         self._container_id = self._inner.container_id
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def execute(
+        self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None
+    ) -> dict:
         exec_command = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
@@ -135,7 +147,8 @@ class DockerEnvironment(BaseEnvironment):
             _output_chunks = []
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
                 text=True,
             )
@@ -148,8 +161,9 @@ class DockerEnvironment(BaseEnvironment):
 
             def _drain():
                 try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            _output_chunks.append(line)
                 except Exception:
                     pass
 
@@ -186,6 +200,7 @@ class DockerEnvironment(BaseEnvironment):
 
         if not self._persistent:
             import shutil
+
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)

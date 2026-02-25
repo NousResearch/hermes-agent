@@ -10,12 +10,13 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import os
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 try:
-    from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+    from slack_bolt.async_app import AsyncApp
     from slack_sdk.web.async_client import AsyncWebClient
+
     SLACK_AVAILABLE = True
 except ImportError:
     SLACK_AVAILABLE = False
@@ -25,6 +26,7 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
+
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
@@ -33,8 +35,8 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_url,
     cache_audio_from_url,
+    cache_image_from_url,
 )
 
 
@@ -330,16 +332,20 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Map subcommands to gateway commands
         subcommand_map = {
-            "new": "/reset", "reset": "/reset",
-            "status": "/status", "stop": "/stop",
+            "new": "/reset",
+            "reset": "/reset",
+            "status": "/status",
+            "stop": "/stop",
             "help": "/help",
-            "model": "/model", "personality": "/personality",
-            "retry": "/retry", "undo": "/undo",
+            "model": "/model",
+            "personality": "/personality",
+            "retry": "/retry",
+            "undo": "/undo",
         }
         first_word = text.split()[0] if text else ""
         if first_word in subcommand_map:
             # Preserve arguments after the subcommand
-            rest = text[len(first_word):].strip()
+            rest = text[len(first_word) :].strip()
             text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
         elif text:
             pass  # Treat as a regular question
@@ -375,7 +381,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         if audio:
             from gateway.platforms.base import cache_audio_from_bytes
+
             return cache_audio_from_bytes(response.content, ext)
         else:
             from gateway.platforms.base import cache_image_from_bytes
+
             return cache_image_from_bytes(response.content, ext)

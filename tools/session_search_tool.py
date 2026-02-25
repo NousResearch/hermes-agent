@@ -18,9 +18,9 @@ Flow:
 import asyncio
 import concurrent.futures
 import json
-import os
 import logging
-from typing import Dict, Any, List, Optional
+import os
+from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI, OpenAI
 
@@ -46,11 +46,13 @@ def _format_timestamp(ts) -> str:
     try:
         if isinstance(ts, (int, float)):
             from datetime import datetime
+
             dt = datetime.fromtimestamp(ts)
             return dt.strftime("%B %d, %Y at %I:%M %p")
         if isinstance(ts, str):
             if ts.replace(".", "").replace("-", "").isdigit():
                 from datetime import datetime
+
                 dt = datetime.fromtimestamp(float(ts))
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
@@ -93,9 +95,7 @@ def _format_conversation(messages: List[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def _truncate_around_matches(
-    full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
-) -> str:
+def _truncate_around_matches(full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS) -> str:
     """
     Truncate a conversation transcript to max_chars, centered around
     where the query terms appear. Keeps content near matches, trims the edges.
@@ -129,9 +129,7 @@ def _truncate_around_matches(
     return prefix + truncated + suffix
 
 
-async def _summarize_session(
-    conversation_text: str, query: str, session_meta: Dict[str, Any]
-) -> Optional[str]:
+async def _summarize_session(conversation_text: str, query: str, session_meta: Dict[str, Any]) -> Optional[str]:
     """Summarize a single session conversation focused on the search query."""
     system_prompt = (
         "You are reviewing a past conversation transcript to help recall what happened. "
@@ -216,13 +214,16 @@ def session_search(
         )
 
         if not raw_results:
-            return json.dumps({
-                "success": True,
-                "query": query,
-                "results": [],
-                "count": 0,
-                "message": "No matching sessions found.",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": True,
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "message": "No matching sessions found.",
+                },
+                ensure_ascii=False,
+            )
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
@@ -269,10 +270,7 @@ def session_search(
 
         # Summarize all sessions in parallel
         async def _summarize_all():
-            coros = [
-                _summarize_session(text, query, meta)
-                for _, _, text, meta in tasks
-            ]
+            coros = [_summarize_session(text, query, meta) for _, _, text, meta in tasks]
             return await asyncio.gather(*coros, return_exceptions=True)
 
         try:
@@ -288,21 +286,26 @@ def session_search(
                 logging.warning(f"Failed to summarize session {session_id}: {result}")
                 continue
             if result:
-                summaries.append({
-                    "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
-                    "summary": result,
-                })
+                summaries.append(
+                    {
+                        "session_id": session_id,
+                        "when": _format_timestamp(match_info.get("session_started")),
+                        "source": match_info.get("source", "unknown"),
+                        "model": match_info.get("model"),
+                        "summary": result,
+                    }
+                )
 
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "results": summaries,
-            "count": len(summaries),
-            "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "success": True,
+                "query": query,
+                "results": summaries,
+                "count": len(summaries),
+                "sessions_searched": len(seen_sessions),
+            },
+            ensure_ascii=False,
+        )
 
     except Exception as e:
         return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
@@ -314,6 +317,7 @@ def check_session_search_requirements() -> bool:
         return False
     try:
         from hermes_state import DEFAULT_DB_PATH
+
         return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
         return False
@@ -333,7 +337,7 @@ SESSION_SEARCH_SCHEMA = {
         "Don't hesitate to search -- it's fast and cheap. Better to search and confirm "
         "than to guess or ask the user to repeat themselves.\n\n"
         "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
-        "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
+        'phrases for exact match ("docker networking"), boolean (python NOT java), prefix (deploy*). '
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
         "keyword searches in parallel. Returns summaries of the top matching sessions."
@@ -368,9 +372,7 @@ registry.register(
     toolset="session_search",
     schema=SESSION_SEARCH_SCHEMA,
     handler=lambda args, **kw: session_search(
-        query=args.get("query", ""),
-        role_filter=args.get("role_filter"),
-        limit=args.get("limit", 3),
-        db=kw.get("db")),
+        query=args.get("query", ""), role_filter=args.get("role_filter"), limit=args.get("limit", 3), db=kw.get("db")
+    ),
     check_fn=check_session_search_requirements,
 )

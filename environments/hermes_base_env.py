@@ -45,6 +45,7 @@ if _env_path.exists():
 # This patches SwerexModalEnvironment to use a background thread instead of
 # asyncio.run(), which would deadlock inside Atropos. Safe for normal CLI too.
 from environments.patches import apply_patches
+
 apply_patches()
 
 from atroposlib.envs.base import (
@@ -227,6 +228,7 @@ class HermesAgentBaseEnv(BaseEnv):
         # This must be large enough for the number of concurrent tasks
         # (e.g., 89 parallel TB2 eval tasks each need a thread for tool calls).
         from environments.agent_loop import resize_tool_pool
+
         resize_tool_pool(config.tool_pool_size)
 
         # Current group's resolved tools (set in collect_trajectories)
@@ -294,6 +296,7 @@ class HermesAgentBaseEnv(BaseEnv):
         server = self.server.servers[0]
         # If the server is an OpenAI server (not VLLM/SGLang), use direct mode
         from atroposlib.envs.server_handling.openai_server import OpenAIServer
+
         return not isinstance(server, OpenAIServer)
 
     # =========================================================================
@@ -439,9 +442,7 @@ class HermesAgentBaseEnv(BaseEnv):
 
         await super().wandb_log(wandb_metrics)
 
-    async def collect_trajectory(
-        self, item: Item
-    ) -> Tuple[Optional[Union[ScoredDataItem, Any]], List[Item]]:
+    async def collect_trajectory(self, item: Item) -> Tuple[Optional[Union[ScoredDataItem, Any]], List[Item]]:
         """
         Run a single rollout: agent loop + reward computation.
 
@@ -469,6 +470,7 @@ class HermesAgentBaseEnv(BaseEnv):
             # Phase 2: ManagedServer with parser -- exact tokens + logprobs
             # Load the tool call parser from registry based on config
             from environments.tool_call_parsers import get_parser
+
             try:
                 tc_parser = get_parser(self.config.tool_call_parser)
             except KeyError:
@@ -496,10 +498,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     result = await agent.run(messages)
             except NotImplementedError:
                 # DummyManagedServer not allowed -- fall back to Phase 1
-                logger.warning(
-                    "ManagedServer not available (OpenAI server?). "
-                    "Falling back to direct server mode."
-                )
+                logger.warning("ManagedServer not available (OpenAI server?). Falling back to direct server mode.")
                 agent = HermesAgentLoop(
                     server=self.server,
                     tool_schemas=tools,
@@ -528,13 +527,12 @@ class HermesAgentBaseEnv(BaseEnv):
         # Skip reward computation if the agent loop produced no meaningful work
         # (e.g., API call failed on turn 1). No point spinning up a Modal sandbox
         # just to verify files that were never created.
-        only_system_and_user = all(
-            msg.get("role") in ("system", "user") for msg in result.messages
-        )
+        only_system_and_user = all(msg.get("role") in ("system", "user") for msg in result.messages)
         if result.turns_used == 0 or only_system_and_user:
             logger.warning(
                 "Agent loop produced no output (turns=%d, msgs=%d). Skipping reward.",
-                result.turns_used, len(result.messages),
+                result.turns_used,
+                len(result.messages),
             )
             reward = 0.0
         else:
@@ -551,13 +549,15 @@ class HermesAgentBaseEnv(BaseEnv):
         # Track tool errors for wandb logging
         if result.tool_errors:
             for err in result.tool_errors:
-                self._tool_error_buffer.append({
-                    "turn": err.turn,
-                    "tool": err.tool_name,
-                    "args": err.arguments[:150],
-                    "error": err.error[:300],
-                    "result": err.tool_result[:300],
-                })
+                self._tool_error_buffer.append(
+                    {
+                        "turn": err.turn,
+                        "tool": err.tool_name,
+                        "args": err.arguments[:150],
+                        "error": err.error[:300],
+                        "result": err.tool_result[:300],
+                    }
+                )
 
         # Build ScoredDataItem from ManagedServer state
         # Phase 2: real tokens/masks/logprobs from SequenceNodes
@@ -582,9 +582,7 @@ class HermesAgentBaseEnv(BaseEnv):
             # so the data pipeline doesn't break. These are NOT suitable
             # for training but allow process mode (SFT data gen) to work.
             # Tokenize the full conversation to get approximate tokens.
-            full_text = "\n".join(
-                msg.get("content", "") for msg in result.messages if msg.get("content")
-            )
+            full_text = "\n".join(msg.get("content", "") for msg in result.messages if msg.get("content"))
             if self.tokenizer:
                 tokens = self.tokenizer.encode(full_text, add_special_tokens=True)
             else:
@@ -640,9 +638,7 @@ class HermesAgentBaseEnv(BaseEnv):
         raise NotImplementedError
 
     @abstractmethod
-    async def compute_reward(
-        self, item: Item, result: AgentResult, ctx: ToolContext
-    ) -> float:
+    async def compute_reward(self, item: Item, result: AgentResult, ctx: ToolContext) -> float:
         """
         Score the rollout. Has full access to:
         - item: the original dataset item (ground truth, test commands, etc.)

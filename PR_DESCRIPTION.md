@@ -107,4 +107,4 @@ Found 4 entries:
 ---
 
 *Submitted for DEV ROLE — next 10 cool contributions contest*
-*by [your GitHub handle]*
+*by [dogiladeveloper]*

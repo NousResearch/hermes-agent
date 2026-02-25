@@ -65,7 +65,7 @@ DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OUTPUT_DIR = os.path.expanduser("~/voice-memos")
+DEFAULT_OUTPUT_DIR = os.path.expanduser("~/.hermes/audio_cache")
 MAX_TEXT_LENGTH = 4000
 
 
@@ -435,7 +435,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": "Optional custom file path to save the audio. Defaults to ~/voice-memos/<timestamp>.mp3"
+                "description": "Optional custom file path to save the audio. Defaults to ~/.hermes/audio_cache/<timestamp>.mp3"
             }
         },
         "required": ["text"]

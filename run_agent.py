@@ -899,6 +899,18 @@ class AIAgent:
                 logging.warning(f"Failed to dump API request debug payload: {dump_error}")
             return None
 
+    @staticmethod
+    def _clean_session_content(content: str) -> str:
+        """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
+        if not content:
+            return content
+        content = convert_scratchpad_to_think(content)
+        # Strip extra newlines before/after think blocks
+        import re
+        content = re.sub(r'\n+(<think>)', r'\n\1', content)
+        content = re.sub(r'(</think>)\n+', r'\1\n', content)
+        return content.strip()
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """
         Save the full raw session to a JSON file.
@@ -908,6 +920,7 @@ class AIAgent:
         tool responses (with tool_call_id, tool_name), and injected system
         messages (compression summaries, todo snapshots, etc.).
 
+        REASONING_SCRATCHPAD tags are converted to <think> blocks for consistency.
         Overwritten after each turn so it always reflects the latest state.
         """
         messages = messages or self._session_messages
@@ -915,6 +928,14 @@ class AIAgent:
             return
 
         try:
+            # Clean assistant content for session logs
+            cleaned = []
+            for msg in messages:
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    msg = dict(msg)
+                    msg["content"] = self._clean_session_content(msg["content"])
+                cleaned.append(msg)
+
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,
@@ -922,8 +943,8 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
-                "message_count": len(messages),
-                "messages": messages,
+                "message_count": len(cleaned),
+                "messages": cleaned,
             }
 
             with open(self.session_log_file, "w", encoding="utf-8") as f:

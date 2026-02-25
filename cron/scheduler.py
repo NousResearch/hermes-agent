@@ -155,7 +155,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
-        load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True)
+        try:
+            load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True, encoding="latin-1")
 
         model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
         api_key = os.getenv("OPENROUTER_API_KEY", "")

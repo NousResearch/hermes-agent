@@ -19,9 +19,12 @@ HERMES_HOME = get_hermes_home()
 from dotenv import load_dotenv
 _env_path = get_env_path()
 if _env_path.exists():
-    load_dotenv(_env_path)
+    try:
+        load_dotenv(_env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(_env_path, encoding="latin-1")
 # Also try project .env as fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL

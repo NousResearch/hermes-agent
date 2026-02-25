@@ -5,9 +5,10 @@
 # Hermes Agent ⚕
 
 <p align="center">
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/discord/1091535925690535946?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet" alt="Built by Nous Research"></a>
+  <a href="https://x.com/NousResearch"><img src="https://img.shields.io/badge/@NousResearch-black?style=for-the-badge&logo=X&logoColor=white" alt="@NousResearch"/></a>
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
 </p>
 
 **An open-source AI agent you can actually live with.** Install it on a machine, give it your messaging accounts, and it becomes a persistent personal agent that grows with you — learning your projects, building its own skills, running tasks on a schedule, and reaching you wherever you are. It's not a coding copilot tethered to an IDE or a chatbot wrapper around a single API. It's an autonomous agent that lives on your server, remembers what it learns, and gets more capable the longer it runs.

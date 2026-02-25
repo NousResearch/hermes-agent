@@ -99,8 +99,8 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         print()  # Add newline after selection
         return idx
         
-    except ImportError:
-        # Fallback to number-based selection
+    except (ImportError, NotImplementedError):
+        # Fallback to number-based selection (simple_term_menu doesn't support Windows)
         for i, choice in enumerate(choices):
             marker = "●" if i == default else "○"
             if i == default:
@@ -192,8 +192,8 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         selected = list(terminal_menu.chosen_menu_indices or [])
         return selected
         
-    except ImportError:
-        # Fallback: numbered toggle interface
+    except (ImportError, NotImplementedError):
+        # Fallback: numbered toggle interface (simple_term_menu doesn't support Windows)
         selected = set(pre_selected)
         
         while True:

@@ -231,7 +231,7 @@ def _prompt_provider_choice(choices):
         idx = menu.show()
         print()
         return idx
-    except ImportError:
+    except (ImportError, NotImplementedError):
         pass
 
     # Fallback: numbered list

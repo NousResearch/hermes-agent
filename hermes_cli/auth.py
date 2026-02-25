@@ -596,7 +596,11 @@ def fetch_nous_models(
             continue
         model_id = item.get("id")
         if isinstance(model_id, str) and model_id.strip():
-            model_ids.append(model_id.strip())
+            mid = model_id.strip()
+            # Skip Hermes models — they're not reliable for agentic tool-calling
+            if "hermes" in mid.lower():
+                continue
+            model_ids.append(mid)
 
     return list(dict.fromkeys(model_ids))
 

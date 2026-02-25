@@ -394,13 +394,20 @@ function Install-Repository {
             exit 1
         }
     } else {
-        # Try SSH first (for private repo access), fall back to HTTPS
+        # Try SSH first (for private repo access), fall back to HTTPS.
+        # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
+        # when no key is configured (fails immediately instead of prompting).
         Write-Info "Trying SSH clone..."
+        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
+        $sshExitCode = $LASTEXITCODE
+        $env:GIT_SSH_COMMAND = $null
         
-        if ($LASTEXITCODE -eq 0) {
+        if ($sshExitCode -eq 0) {
             Write-Success "Cloned via SSH"
         } else {
+            # Clean up partial SSH clone before retrying
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             $httpsResult = git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir 2>&1
             
@@ -408,9 +415,6 @@ function Install-Repository {
                 Write-Success "Cloned via HTTPS"
             } else {
                 Write-Err "Failed to clone repository"
-                Write-Info "For private repo access, ensure your SSH key is added to GitHub:"
-                Write-Info "  ssh-add ~/.ssh/id_rsa"
-                Write-Info "  ssh -T git@github.com  # Test connection"
                 exit 1
             }
         }
@@ -731,8 +735,8 @@ function Write-Completion {
     Write-Host "View/edit configuration"
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
-    Write-Host "   hermes gateway install " -NoNewline -ForegroundColor Green
-    Write-Host "Install gateway service (messaging + cron)"
+    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
+    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""

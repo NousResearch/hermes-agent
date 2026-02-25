@@ -70,6 +70,27 @@ hermes tools    # See all available tools
 
 This lets you switch between **Nous Portal** (subscription), **OpenRouter** (200+ models, pay-per-use), or a **custom endpoint** (VLLM, SGLang, any OpenAI-compatible API) at any time.
 
+### 🔒 Recommended: Run with a Sandboxed Terminal
+
+By default, Hermes runs commands directly on your machine (`local` backend). For safer use we recommend running with a **sandboxed terminal backend** so the agent **cannot access its own code, config, or API keys**:
+
+```bash
+# Option A: SSH into a separate machine (recommended for production)
+hermes config set terminal.backend ssh
+hermes config set TERMINAL_SSH_HOST my-server.example.com
+hermes config set TERMINAL_SSH_USER myuser
+
+# Option B: Docker container (good for local isolation)
+hermes config set terminal.backend docker
+
+# Option C: Modal cloud sandbox (serverless, no infra to manage)
+hermes config set terminal.backend modal
+```
+
+All container/remote backends support **persistent workspaces** — installed packages, files, and state survive across sessions. The agent gets a full working environment but can't read `~/.hermes/.env`, modify its own source code, or access your host filesystem.
+
+See [Terminal & Process Management](#-terminal--process-management) for full configuration options.
+
 ---
 
 ## Updating

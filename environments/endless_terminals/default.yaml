@@ -32,7 +32,7 @@ env:
 
   # Dataset settings
   use_dataset: true
-  dataset_name: "obiwan96/endless-terminals-train"
+  dataset_name: "obiwan96/endless-terminals"
   dataset_split: "train"
   dataset_cache_dir: "~/.cache/huggingface/datasets"
   tasks_base_dir: ""  # Set to directory containing task_* folders (e.g., ~/endless-terminals-data)
@@ -44,11 +44,7 @@ env:
   group_size: 4
   total_steps: 1000
   steps_per_eval: 100
-
-  # Tool call parsing (for Phase 2 VLLM training)
-  tool_call_parser: "hermes"
-  tokenizer_name: "NousResearch/Hermes-3-Llama-3.1-8B"
-
+  
   # Logging
   use_wandb: true
   wandb_name: "endless-terminals"
@@ -61,8 +57,10 @@ env:
     and verify your solution works correctly before finishing.
 
 openai:
-  base_url: "http://localhost:8000/v1"
-  model_name: "NousResearch/Hermes-3-Llama-3.1-8B"
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-sonnet-4.5"
   server_type: "openai"
-  api_key: ""
+  api_key: ""  # Loaded from OPENROUTER_API_KEY env var
   health_check: false
+  timeout: 30  # 30 second timeout per request
+  max_retries: 2  # Only retry twice

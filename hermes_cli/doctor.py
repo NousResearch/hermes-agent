@@ -337,6 +337,41 @@ def run_doctor(args):
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     
+    # npm audit for all Node.js packages
+    if shutil.which("npm"):
+        npm_dirs = [
+            (PROJECT_ROOT, "Browser tools (agent-browser)"),
+            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+        ]
+        for npm_dir, label in npm_dirs:
+            if not (npm_dir / "node_modules").exists():
+                continue
+            try:
+                audit_result = subprocess.run(
+                    ["npm", "audit", "--json"],
+                    cwd=str(npm_dir),
+                    capture_output=True, text=True, timeout=30,
+                )
+                import json as _json
+                audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
+                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                critical = vuln_count.get("critical", 0)
+                high = vuln_count.get("high", 0)
+                moderate = vuln_count.get("moderate", 0)
+                total = critical + high + moderate
+                if total == 0:
+                    check_ok(f"{label} deps", "(no known vulnerabilities)")
+                elif critical > 0 or high > 0:
+                    check_warn(
+                        f"{label} deps",
+                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                    )
+                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                else:
+                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+            except Exception:
+                pass
+
     # =========================================================================
     # Check: API connectivity
     # =========================================================================

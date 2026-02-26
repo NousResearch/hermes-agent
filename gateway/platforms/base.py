@@ -6,10 +6,13 @@ and implement the required methods.
 """
 
 import asyncio
+import logging
 import os
 import re
 import uuid
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -517,6 +520,8 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             
             # Send response if any
+            if not response:
+                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -526,6 +531,7 @@ class BasePlatformAdapter(ABC):
                 
                 # Send the text portion first (if any remains after extractions)
                 if text_content:
+                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self.send(
                         chat_id=event.source.chat_id,
                         content=text_content,

@@ -133,6 +133,116 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_whatsapp(args):
+    """Set up WhatsApp: enable, configure allowed users, install bridge, pair via QR."""
+    import os
+    import subprocess
+    from pathlib import Path
+    from hermes_cli.config import get_env_value, save_env_value
+
+    print()
+    print("⚕ WhatsApp Setup")
+    print("=" * 50)
+    print()
+    print("This will link your WhatsApp account to Hermes Agent.")
+    print("The agent will respond to messages sent to your WhatsApp number.")
+    print()
+
+    # Step 1: Enable WhatsApp
+    current = get_env_value("WHATSAPP_ENABLED")
+    if current and current.lower() == "true":
+        print("✓ WhatsApp is already enabled")
+    else:
+        save_env_value("WHATSAPP_ENABLED", "true")
+        print("✓ WhatsApp enabled")
+
+    # Step 2: Allowed users
+    current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
+    if current_users:
+        print(f"✓ Allowed users: {current_users}")
+        response = input("\n  Update allowed users? [y/N] ").strip()
+        if response.lower() in ("y", "yes"):
+            phone = input("  Phone number(s) (e.g. 15551234567, comma-separated): ").strip()
+            if phone:
+                save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
+                print(f"  ✓ Updated to: {phone}")
+    else:
+        print()
+        phone = input("  Your phone number (e.g. 15551234567): ").strip()
+        if phone:
+            save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
+            print(f"  ✓ Allowed users set: {phone}")
+        else:
+            print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
+
+    # Step 3: Install bridge deps
+    project_root = Path(__file__).resolve().parents[1]
+    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    bridge_script = bridge_dir / "bridge.js"
+
+    if not bridge_script.exists():
+        print(f"\n✗ Bridge script not found at {bridge_script}")
+        return
+
+    if not (bridge_dir / "node_modules").exists():
+        print("\n→ Installing WhatsApp bridge dependencies...")
+        result = subprocess.run(
+            ["npm", "install"],
+            cwd=str(bridge_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"  ✗ npm install failed: {result.stderr}")
+            return
+        print("  ✓ Dependencies installed")
+    else:
+        print("✓ Bridge dependencies already installed")
+
+    # Step 4: Check for existing session
+    session_dir = Path.home() / ".hermes" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    if (session_dir / "creds.json").exists():
+        print("✓ Existing WhatsApp session found")
+        response = input("\n  Re-pair? This will clear the existing session. [y/N] ").strip()
+        if response.lower() in ("y", "yes"):
+            import shutil
+            shutil.rmtree(session_dir, ignore_errors=True)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            print("  ✓ Session cleared")
+        else:
+            print("\n✓ WhatsApp is configured and paired!")
+            print("  Start the gateway with: hermes gateway")
+            return
+
+    # Step 5: Run bridge in pair-only mode (no HTTP server, exits after QR scan)
+    print()
+    print("─" * 50)
+    print("📱 Scan the QR code with your phone:")
+    print("   WhatsApp → Settings → Linked Devices → Link a Device")
+    print("─" * 50)
+    print()
+
+    try:
+        subprocess.run(
+            ["node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
+            cwd=str(bridge_dir),
+        )
+    except KeyboardInterrupt:
+        pass
+
+    print()
+    if (session_dir / "creds.json").exists():
+        print("✓ WhatsApp paired successfully!")
+        print()
+        print("Start the gateway with: hermes gateway")
+        print("Or install as a service: hermes gateway install")
+    else:
+        print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
+
+
 def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
@@ -754,6 +864,16 @@ For more help on a command:
         help="Reset configuration to defaults"
     )
     setup_parser.set_defaults(func=cmd_setup)
+
+    # =========================================================================
+    # whatsapp command
+    # =========================================================================
+    whatsapp_parser = subparsers.add_parser(
+        "whatsapp",
+        help="Set up WhatsApp integration",
+        description="Configure WhatsApp and pair via QR code"
+    )
+    whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
     # =========================================================================
     # login command

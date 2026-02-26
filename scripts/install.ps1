@@ -545,6 +545,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\whatsapp\session" | Out-Null
     
     # Create .env
     $envPath = "$HermesHome\.env"
@@ -626,13 +627,27 @@ function Install-NodeDeps {
     Push-Location $InstallDir
     
     if (Test-Path "package.json") {
-        Write-Info "Installing Node.js dependencies..."
+        Write-Info "Installing Node.js dependencies (browser tools)..."
         try {
             npm install --silent 2>&1 | Out-Null
             Write-Success "Node.js dependencies installed"
         } catch {
             Write-Warn "npm install failed (browser tools may not work)"
         }
+    }
+    
+    # Install WhatsApp bridge dependencies
+    $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
+    if (Test-Path "$bridgeDir\package.json") {
+        Write-Info "Installing WhatsApp bridge dependencies..."
+        Push-Location $bridgeDir
+        try {
+            npm install --silent 2>&1 | Out-Null
+            Write-Success "WhatsApp bridge dependencies installed"
+        } catch {
+            Write-Warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
+        }
+        Pop-Location
     }
     
     Pop-Location
@@ -673,6 +688,29 @@ function Start-GatewayIfConfigured {
 
     if (-not $hasMessaging) { return }
 
+    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    if (-not (Test-Path $hermesCmd)) {
+        $hermesCmd = "hermes"
+    }
+
+    # If WhatsApp is enabled but not yet paired, run foreground for QR scan
+    $whatsappEnabled = $content | Where-Object { $_ -match "^WHATSAPP_ENABLED=true" }
+    $whatsappSession = "$HermesHome\whatsapp\session\creds.json"
+    if ($whatsappEnabled -and -not (Test-Path $whatsappSession)) {
+        Write-Host ""
+        Write-Info "WhatsApp is enabled but not yet paired."
+        Write-Info "Running 'hermes whatsapp' to pair via QR code..."
+        Write-Host ""
+        $response = Read-Host "Pair WhatsApp now? [Y/n]"
+        if ($response -eq "" -or $response -match "^[Yy]") {
+            try {
+                & $hermesCmd whatsapp
+            } catch {
+                # Expected after pairing completes
+            }
+        }
+    }
+
     Write-Host ""
     Write-Info "Messaging platform token detected!"
     Write-Info "The gateway handles messaging platforms and cron job execution."
@@ -680,11 +718,6 @@ function Start-GatewayIfConfigured {
     $response = Read-Host "Would you like to start the gateway now? [Y/n]"
 
     if ($response -eq "" -or $response -match "^[Yy]") {
-        $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
-        if (-not (Test-Path $hermesCmd)) {
-            $hermesCmd = "hermes"
-        }
-
         Write-Info "Starting gateway in background..."
         try {
             $logFile = "$HermesHome\logs\gateway.log"

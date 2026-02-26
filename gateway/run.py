@@ -1379,8 +1379,38 @@ class GatewayRunner:
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
             
+            # Re-read .env and config for fresh credentials (gateway is long-lived,
+            # keys may change without restart).
+            try:
+                load_dotenv(_env_path, override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(_env_path, override=True, encoding="latin-1")
+            except Exception:
+                pass
+
+            api_key = os.getenv("OPENROUTER_API_KEY", "")
+            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+
+            try:
+                import yaml as _y
+                _cfg_path = Path.home() / ".hermes" / "config.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path) as _f:
+                        _cfg = _y.safe_load(_f) or {}
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
+                        base_url = _model_cfg.get("base_url", base_url)
+            except Exception:
+                pass
+
             agent = AIAgent(
-                model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 enabled_toolsets=enabled_toolsets,

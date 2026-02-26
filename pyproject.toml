@@ -26,6 +26,7 @@ dependencies = [
   "prompt_toolkit",
   # Tools
   "firecrawl-py",
+  "youtube-transcript-api",
   "fal-client",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts",

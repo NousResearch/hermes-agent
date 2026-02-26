@@ -74,6 +74,7 @@ def _discover_tools():
     """
     _modules = [
         "tools.web_tools",
+        "tools.youtube_content_tool",
         "tools.terminal_tool",
         "tools.file_tools",
         "tools.vision_tools",
@@ -123,7 +124,7 @@ _last_resolved_tool_names: List[str] = []
 # =============================================================================
 
 _LEGACY_TOOLSET_MAP = {
-    "web_tools": ["web_search", "web_extract"],
+    "web_tools": ["web_search", "web_extract", "youtube_content"],
     "terminal_tools": ["terminal"],
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],

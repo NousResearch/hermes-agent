@@ -18,6 +18,7 @@ PyJWT[crypto]
 
 # Web tools
 firecrawl-py
+youtube-transcript-api
 
 # Image generation
 fal-client

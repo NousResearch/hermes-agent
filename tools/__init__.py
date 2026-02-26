@@ -155,6 +155,17 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
+# Domain intelligence tools (passive OSINT — no API keys required)
+from .domain_intel_tool import (
+    domain_subdomains,
+    domain_ssl,
+    domain_whois,
+    domain_dns,
+    domain_available,
+    domain_bulk,
+    check_domain_intel_requirements,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -260,5 +271,13 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+        # Domain intelligence tools
+    'domain_subdomains',
+    'domain_ssl',
+    'domain_whois',
+    'domain_dns',
+    'domain_available',
+    'domain_bulk',
+    'check_domain_intel_requirements',
 ]
 

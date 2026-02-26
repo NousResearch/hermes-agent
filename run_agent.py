@@ -270,6 +270,15 @@ class AIAgent:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
             client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         
+        # OpenRouter app attribution — shows hermes-agent in rankings/analytics
+        effective_base = client_kwargs.get("base_url", "")
+        if "openrouter" in effective_base.lower():
+            client_kwargs["default_headers"] = {
+                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                "X-OpenRouter-Title": "Hermes Agent",
+                "X-OpenRouter-Categories": "cli-agent",
+            }
+        
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
             self.client = OpenAI(**client_kwargs)

@@ -28,6 +28,13 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+# OpenRouter app attribution headers
+_OR_HEADERS = {
+    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+    "X-OpenRouter-Title": "Hermes Agent",
+    "X-OpenRouter-Categories": "cli-agent",
+}
+
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
@@ -78,7 +85,8 @@ def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         logger.debug("Auxiliary text client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL), _OPENROUTER_MODEL
+        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     # 2. Nous Portal
     nous = _read_nous_auth()
@@ -112,7 +120,8 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         logger.debug("Auxiliary vision client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL), _OPENROUTER_MODEL
+        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     # 2. Nous Portal
     nous = _read_nous_auth()

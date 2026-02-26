@@ -163,8 +163,15 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
     
     try:
         from simple_term_menu import TerminalMenu
+        import re
         
-        menu_items = [f"  {item}" for item in items]
+        # Strip emoji characters from menu labels — simple_term_menu miscalculates
+        # visual width of emojis on macOS, causing duplicated/garbled lines.
+        _emoji_re = re.compile(
+            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
+            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+", flags=re.UNICODE
+        )
+        menu_items = [f"  {_emoji_re.sub('', item).strip()}" for item in items]
         
         # Map pre-selected indices to the actual menu entry strings
         preselected = [menu_items[i] for i in pre_selected if i < len(menu_items)]

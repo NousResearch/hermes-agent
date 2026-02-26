@@ -131,6 +131,7 @@ class AIAgent:
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
+        honcho_session_key: str = None,
     ):
         """
         Initialize the AI Agent.
@@ -168,6 +169,8 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
+                When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -418,6 +421,45 @@ class AIAgent:
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
+        # Honcho AI-native memory (cross-session user modeling)
+        # Reads ~/.honcho/config.json as the single source of truth.
+        self._honcho = None  # HonchoSessionManager | None
+        self._honcho_session_key = honcho_session_key
+        if not skip_memory:
+            try:
+                from honcho_integration.client import HonchoClientConfig, get_honcho_client
+                hcfg = HonchoClientConfig.from_global_config()
+                if hcfg.enabled and hcfg.api_key:
+                    from honcho_integration.session import HonchoSessionManager
+                    client = get_honcho_client(hcfg)
+                    self._honcho = HonchoSessionManager(
+                        honcho=client,
+                        config=hcfg,
+                    )
+                    # Resolve session key: explicit arg > global sessions map > fallback
+                    if not self._honcho_session_key:
+                        self._honcho_session_key = (
+                            hcfg.resolve_session_name()
+                            or "hermes-default"
+                        )
+                    # Ensure session exists in Honcho
+                    self._honcho.get_or_create(self._honcho_session_key)
+                    # Inject session context into the honcho tool module
+                    from tools.honcho_tools import set_session_context
+                    set_session_context(self._honcho, self._honcho_session_key)
+                    logger.info(
+                        "Honcho active (session: %s, user: %s, workspace: %s)",
+                        self._honcho_session_key, hcfg.peer_name, hcfg.workspace_id,
+                    )
+                else:
+                    if not hcfg.enabled:
+                        logger.debug("Honcho disabled in global config")
+                    elif not hcfg.api_key:
+                        logger.debug("Honcho enabled but no API key configured")
+            except Exception as e:
+                logger.debug("Honcho init failed (non-fatal): %s", e)
+                self._honcho = None
+
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 15
         try:
@@ -1056,7 +1098,46 @@ class AIAgent:
     def is_interrupted(self) -> bool:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
-    
+
+    # ── Honcho integration helpers ──
+
+    def _honcho_prefetch(self, user_message: str) -> str:
+        """Fetch user context from Honcho for system prompt injection.
+
+        Returns a formatted context block, or empty string if unavailable.
+        """
+        if not self._honcho or not self._honcho_session_key:
+            return ""
+        try:
+            ctx = self._honcho.get_prefetch_context(self._honcho_session_key, user_message)
+            if not ctx:
+                return ""
+            parts = []
+            rep = ctx.get("representation", "")
+            card = ctx.get("card", "")
+            if rep:
+                parts.append(rep)
+            if card:
+                parts.append(card)
+            if not parts:
+                return ""
+            return "# Honcho User Context\n" + "\n\n".join(parts)
+        except Exception as e:
+            logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+            return ""
+
+    def _honcho_sync(self, user_content: str, assistant_content: str) -> None:
+        """Sync the user/assistant message pair to Honcho."""
+        if not self._honcho or not self._honcho_session_key:
+            return
+        try:
+            session = self._honcho.get_or_create(self._honcho_session_key)
+            session.add_message("user", user_content)
+            session.add_message("assistant", assistant_content)
+            self._honcho.save(session)
+        except Exception as e:
+            logger.debug("Honcho sync failed (non-fatal): %s", e)
+
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
@@ -1711,6 +1792,10 @@ class AIAgent:
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
 
+        # Preserve the original user message before nudge injection.
+        # Honcho should receive the actual user input, not system nudges.
+        original_user_message = user_message
+
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
         if (self._memory_nudge_interval > 0
@@ -1734,6 +1819,14 @@ class AIAgent:
                 "If you discovered a reusable workflow, consider saving it as a skill.]"
             )
             self._iters_since_skill = 0
+
+        # Honcho prefetch: retrieve user context for system prompt injection
+        self._honcho_context = ""
+        if self._honcho and self._honcho_session_key:
+            try:
+                self._honcho_context = self._honcho_prefetch(user_message)
+            except Exception as e:
+                logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -1813,6 +1906,8 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            if self._honcho_context:
+                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             
@@ -2471,7 +2566,11 @@ class AIAgent:
 
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
-        
+
+        # Sync conversation to Honcho for user modeling
+        if final_response and not interrupted:
+            self._honcho_sync(original_user_message, final_response)
+
         # Build result with interrupt info if applicable
         result = {
             "final_response": final_response,

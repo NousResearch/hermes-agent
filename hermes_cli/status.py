@@ -12,7 +12,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.colors import Colors, color
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_cli.model_profiles import get_active_profile, normalize_model_config
+from hermes_cli.provider_registry import (
+    get_provider,
+    list_provider_ids,
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -69,15 +75,55 @@ def show_status(args):
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
     
     # =========================================================================
-    # API Keys
+    # Inference Providers
     # =========================================================================
     print()
-    print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-    
+    print(color("◆ Inference Providers", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = normalize_model_config(load_config().get("model"))
+        active_profile = get_active_profile(model_cfg)
+        print(
+            f"  Active:       {active_profile.get('name')} "
+            f"[{active_profile.get('provider')}/{active_profile.get('model')}]"
+        )
+    except Exception:
+        pass
+
+    api_provider_ids = list_provider_ids(include_oauth=False, include_api_key=True, include_custom=True)
+    for provider_id in api_provider_ids:
+        meta = get_provider(provider_id)
+        if not meta:
+            continue
+
+        api_key = resolve_provider_api_key(provider_id) or ""
+        base_url = resolve_provider_base_url(provider_id) or ""
+        if provider_id == "custom":
+            configured = bool(base_url)
+        else:
+            configured = bool(api_key)
+
+        key_display = api_key if show_all else redact_key(api_key)
+        print(f"  {meta.label:<12}  {check_mark(configured)} {provider_id}")
+        print(f"    API key:   {key_display}")
+        if meta.api_key_env_vars:
+            print(f"    Key vars:  {', '.join(meta.api_key_env_vars)}")
+        if base_url:
+            base_label = meta.base_url_env_var or "(provider default)"
+            print(f"    Base URL:  {base_url} ({base_label})")
+        else:
+            print("    Base URL:  (not set)")
+
+    # =========================================================================
+    # Tool API Keys
+    # =========================================================================
+    print()
+    print(color("◆ Tool API Keys", Colors.CYAN, Colors.BOLD))
+
     keys = {
-        "OpenRouter": "OPENROUTER_API_KEY",
-        "Anthropic": "ANTHROPIC_API_KEY", 
-        "OpenAI": "OPENAI_API_KEY",
+        "Anthropic": "ANTHROPIC_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",
         "FAL": "FAL_KEY",
@@ -86,11 +132,11 @@ def show_status(args):
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
-    
+
     for name, env_var in keys.items():
         value = os.getenv(env_var, "")
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        display = value if show_all else redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     # =========================================================================
@@ -249,21 +295,42 @@ def show_status(args):
     if deep:
         print()
         print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
-        
-        # Check OpenRouter connectivity
-        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-        if openrouter_key:
-            try:
-                import httpx
-                response = httpx.get(
-                    OPENROUTER_MODELS_URL,
-                    headers={"Authorization": f"Bearer {openrouter_key}"},
-                    timeout=10
-                )
-                ok = response.status_code == 200
-                print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
-            except Exception as e:
-                print(f"  OpenRouter:   {check_mark(False)} error: {e}")
+
+        try:
+            import httpx
+            provider_ids = list_provider_ids(include_oauth=False, include_api_key=True, include_custom=True)
+            for provider_id in provider_ids:
+                meta = get_provider(provider_id)
+                if not meta:
+                    continue
+
+                api_key = resolve_provider_api_key(provider_id) or ""
+                base_url = resolve_provider_base_url(provider_id) or ""
+                if provider_id != "custom" and not api_key:
+                    continue
+                if not base_url:
+                    continue
+
+                endpoint = f"{base_url.rstrip('/')}/chat/completions"
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                payload = {
+                    "model": "hermes-healthcheck",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                }
+
+                try:
+                    response = httpx.post(endpoint, headers=headers, json=payload, timeout=10)
+                    status_code = response.status_code
+                    ok = status_code in (200, 400, 401, 403, 422, 429)
+                    detail = "chat endpoint reachable" if ok else f"HTTP {status_code}"
+                    print(f"  {meta.label:<12}  {check_mark(ok)} {detail}")
+                except Exception as exc:
+                    print(f"  {meta.label:<12}  {check_mark(False)} error: {exc}")
+        except Exception as exc:
+            print(f"  Provider API checks unavailable: {exc}")
         
         # Check gateway port
         try:

@@ -21,6 +21,12 @@ from typing import Dict, Any, Optional, List, Tuple
 import yaml
 
 from hermes_cli.colors import Colors, color
+from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.model_profiles import (
+    get_active_profile,
+    normalize_model_config,
+    sync_legacy_model_fields,
+)
 
 
 # =============================================================================
@@ -57,7 +63,22 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-opus-4.6",
+    "model": {
+        "default": "anthropic/claude-opus-4.6",
+        "provider": "openrouter",
+        "base_url": OPENROUTER_BASE_URL,
+        "profiles": [
+            {
+                "name": "default-openrouter",
+                "provider": "openrouter",
+                "model": "anthropic/claude-opus-4.6",
+                "base_url": OPENROUTER_BASE_URL,
+                "enabled": True,
+            }
+        ],
+        "active_profile": "default-openrouter",
+        "scoped_profiles": ["default-openrouter"],
+    },
     "toolsets": ["hermes-cli"],
     "max_turns": 100,
     
@@ -131,7 +152,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 3,
+    "_config_version": 4,
 }
 
 # =============================================================================
@@ -153,6 +174,54 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GLM_API_KEY": {
+        "description": "zAI GLM provider API key (preferred over ZAI_API_KEY/Z_AI_API_KEY)",
+        "prompt": "GLM API key",
+        "url": "https://docs.z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ZAI_API_KEY": {
+        "description": "zAI API key (fallback alias for GLM provider)",
+        "prompt": "zAI API key",
+        "url": "https://docs.z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "Z_AI_API_KEY": {
+        "description": "zAI API key (fallback alias variant for GLM provider)",
+        "prompt": "zAI API key (Z_AI_API_KEY)",
+        "url": "https://docs.z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_API_KEY": {
+        "description": "Kimi Coding provider API key",
+        "prompt": "Kimi API key",
+        "url": "https://docs.moonshot.cn/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_API_KEY": {
+        "description": "MiniMax provider API key",
+        "prompt": "MiniMax API key",
+        "url": "https://platform.minimax.io/docs/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_CN_API_KEY": {
+        "description": "MiniMax China provider API key",
+        "prompt": "MiniMax CN API key",
+        "url": "https://platform.minimax.io/docs/",
+        "password": True,
         "category": "provider",
         "advanced": True,
     },
@@ -558,6 +627,10 @@ def load_config() -> Dict[str, Any]:
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
+
+    # Normalize model config so profile fields are always present, while
+    # preserving compatibility with legacy string-based model configs.
+    config["model"] = normalize_model_config(config.get("model"))
     
     return config
 
@@ -567,8 +640,12 @@ def save_config(config: Dict[str, Any]):
     ensure_hermes_home()
     config_path = get_config_path()
     
+    to_save = dict(config)
+    if "model" in to_save:
+        to_save["model"] = sync_legacy_model_fields(normalize_model_config(to_save.get("model")))
+
     with open(config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(to_save, f, default_flow_style=False, sort_keys=False)
 
 
 def load_env() -> Dict[str, str]:
@@ -664,6 +741,12 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("ANTHROPIC_API_KEY", "Anthropic"),
+        ("GLM_API_KEY", "GLM"),
+        ("ZAI_API_KEY", "zAI (legacy)"),
+        ("Z_AI_API_KEY", "zAI (legacy alt)"),
+        ("KIMI_API_KEY", "Kimi Coding"),
+        ("MINIMAX_API_KEY", "MiniMax"),
+        ("MINIMAX_CN_API_KEY", "MiniMax CN"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
@@ -677,7 +760,14 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    model_cfg = normalize_model_config(config.get("model"))
+    active = get_active_profile(model_cfg)
+    print(f"  Model:        {model_cfg.get('default', 'not set')}")
+    print(f"  Provider:     {model_cfg.get('provider', 'auto')}")
+    print(f"  Base URL:     {model_cfg.get('base_url', OPENROUTER_BASE_URL)}")
+    print(f"  Active prof:  {model_cfg.get('active_profile', '(none)')}")
+    print(f"  Profiles:     {len(model_cfg.get('profiles', []))}")
+    print(f"  Active model: {active.get('model', '(none)')} [{active.get('provider', '(none)')}]")
     print(f"  Max turns:    {config.get('max_turns', 100)}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
@@ -765,6 +855,8 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'GLM_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY', 'KIMI_API_KEY', 'MINIMAX_API_KEY', 'MINIMAX_CN_API_KEY',
+        'GLM_BASE_URL', 'KIMI_BASE_URL', 'MINIMAX_BASE_URL', 'MINIMAX_CN_BASE_URL',
         'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',

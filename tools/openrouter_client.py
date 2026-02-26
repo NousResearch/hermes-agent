@@ -25,7 +25,15 @@ def get_async_client() -> AsyncOpenAI:
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        _client = AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+        _client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=OPENROUTER_BASE_URL,
+            default_headers={
+                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                "X-OpenRouter-Title": "Hermes Agent",
+                "X-OpenRouter-Categories": "cli-agent",
+            },
+        )
     return _client
 
 

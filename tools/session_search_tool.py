@@ -170,12 +170,15 @@ async def _summarize_session(
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            from agent.auxiliary_client import get_auxiliary_extra_body
+            _extra = get_auxiliary_extra_body()
             response = await _async_aux_client.chat.completions.create(
                 model=_SUMMARIZER_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                **({} if not _extra else {"extra_body": _extra}),
                 temperature=0.1,
                 max_tokens=MAX_SUMMARY_TOKENS,
             )

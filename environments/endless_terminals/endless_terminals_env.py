@@ -625,6 +625,13 @@ class EndlessTerminalsEnv(HermesAgentBaseEnv):
         """Periodic evaluation (optional)."""
         return {}
 
+    async def wandb_log(self, wandb_metrics: Optional[Dict] = None):
+        """Log Endless Terminals specific metrics to wandb."""
+        if wandb_metrics is None:
+            wandb_metrics = {}
+
+        await super().wandb_log(wandb_metrics)
+
 
 if __name__ == "__main__":
     EndlessTerminalsEnv.cli()

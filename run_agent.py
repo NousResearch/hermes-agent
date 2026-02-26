@@ -508,6 +508,7 @@ class AIAgent:
 
         action_markers = (
             "look into",
+            "look at",
             "inspect",
             "scan",
             "check",
@@ -526,11 +527,33 @@ class AIAgent:
             "report back",
             "summarize",
         )
+        workspace_markers = (
+            "directory",
+            "current directory",
+            "current dir",
+            "cwd",
+            "repo",
+            "repository",
+            "codebase",
+            "project",
+            "folder",
+            "filesystem",
+            "file tree",
+            "files",
+            "path",
+        )
 
         user_text = (user_message or "").strip().lower()
-        user_requests_action = any(marker in user_text for marker in action_markers) or "~/" in user_text or "/" in user_text
+        user_targets_workspace = (
+            any(marker in user_text for marker in workspace_markers)
+            or "~/" in user_text
+            or "/" in user_text
+        )
         assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
-        return user_requests_action and assistant_mentions_action
+        assistant_targets_workspace = any(
+            marker in assistant_text for marker in workspace_markers
+        )
+        return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
     
     
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
@@ -1499,10 +1522,29 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict):
         """Execute one streaming Responses API request and return the final response."""
-        with self.client.responses.stream(**api_kwargs) as stream:
-            for _ in stream:
-                pass
-            return stream.get_final_response()
+        max_stream_retries = 1
+        for attempt in range(max_stream_retries + 1):
+            try:
+                with self.client.responses.stream(**api_kwargs) as stream:
+                    for _ in stream:
+                        pass
+                    return stream.get_final_response()
+            except RuntimeError as exc:
+                err_text = str(exc)
+                missing_completed = "response.completed" in err_text
+                if missing_completed and attempt < max_stream_retries:
+                    logger.debug(
+                        "Responses stream closed before completion (attempt %s/%s); retrying.",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                    )
+                    continue
+                if missing_completed:
+                    logger.debug(
+                        "Responses stream did not emit response.completed; falling back to non-stream create."
+                    )
+                    return self.client.responses.create(**api_kwargs)
+                raise
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """

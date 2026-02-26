@@ -13,7 +13,6 @@ model:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
-  #   "openai-codex" - Always use Codex CLI auth (requires: hermes login --provider openai-codex)
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   

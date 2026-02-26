@@ -1530,10 +1530,48 @@ class AIAgent:
                     continue
                 if missing_completed:
                     logger.debug(
-                        "Responses stream did not emit response.completed; falling back to non-stream create."
+                        "Responses stream did not emit response.completed; falling back to create(stream=True)."
                     )
-                    return self.client.responses.create(**api_kwargs)
+                    return self._run_codex_create_stream_fallback(api_kwargs)
                 raise
+
+    def _run_codex_create_stream_fallback(self, api_kwargs: dict):
+        """Fallback path for stream completion edge cases on Codex-style Responses backends."""
+        fallback_kwargs = dict(api_kwargs)
+        fallback_kwargs["stream"] = True
+        stream_or_response = self.client.responses.create(**fallback_kwargs)
+
+        # Compatibility shim for mocks or providers that still return a concrete response.
+        if hasattr(stream_or_response, "output"):
+            return stream_or_response
+        if not hasattr(stream_or_response, "__iter__"):
+            return stream_or_response
+
+        terminal_response = None
+        try:
+            for event in stream_or_response:
+                event_type = getattr(event, "type", None)
+                if not event_type and isinstance(event, dict):
+                    event_type = event.get("type")
+                if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
+                    continue
+
+                terminal_response = getattr(event, "response", None)
+                if terminal_response is None and isinstance(event, dict):
+                    terminal_response = event.get("response")
+                if terminal_response is not None:
+                    return terminal_response
+        finally:
+            close_fn = getattr(stream_or_response, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        if terminal_response is not None:
+            return terminal_response
+        raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """

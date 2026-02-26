@@ -634,7 +634,7 @@ def run_setup_wizard(args):
 
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
-        "Login with OpenAI Codex (ChatGPT/Codex CLI auth)",
+        "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
@@ -698,8 +698,6 @@ def run_setup_wizard(args):
         selected_provider = "openai-codex"
         print()
         print_header("OpenAI Codex Login")
-        print_info("This uses your Codex CLI auth state from CODEX_HOME/auth.json.")
-        print_info("If you're not logged in, Hermes will run `codex login`.")
         print()
 
         try:

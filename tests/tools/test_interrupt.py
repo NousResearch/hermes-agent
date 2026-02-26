@@ -62,6 +62,7 @@ class TestPreToolCheck:
     def test_all_tools_skipped_when_interrupted(self):
         """Mock an interrupted agent and verify no tools execute."""
         from unittest.mock import MagicMock, patch
+        from agent.tool_executor import ToolExecConfig, execute_tool_calls
 
         # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()
@@ -84,16 +85,28 @@ class TestPreToolCheck:
 
         messages = []
 
-        # Create a minimal mock agent with _interrupt_requested = True
-        agent = MagicMock()
-        agent._interrupt_requested = True
-        agent.log_prefix = ""
-        agent._log_msg_to_db = MagicMock()
+        # Create a minimal config and callbacks
+        config = ToolExecConfig(
+            todo_store=None,
+            memory_store=None,
+            session_db=None,
+            clarify_callback=None,
+            tool_delay=0,
+            tool_progress_callback=None,
+            quiet_mode=False,
+            verbose_logging=False,
+            log_prefix="",
+            log_prefix_chars=100,
+        )
+        log_mock = MagicMock()
 
-        # Import and call the method
-        from run_agent import AIAgent
-        # Bind the real method to our mock
-        AIAgent._execute_tool_calls(agent, assistant_msg, messages, "default")
+        # Call the standalone execute_tool_calls with is_interrupted=True
+        execute_tool_calls(
+            config, assistant_msg, messages, "default",
+            is_interrupted=lambda: True,
+            log_msg_to_db=log_mock,
+            on_tool_executed=lambda name: None,
+        )
 
         # All 3 should be skipped
         assert len(messages) == 3

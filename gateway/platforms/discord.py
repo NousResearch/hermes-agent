@@ -120,6 +120,7 @@ class DiscordAdapter(BasePlatformAdapter):
             
             @self._client.event
             async def on_message(message: DiscordMessage):
+                print(f"[{adapter_self.name}] DEBUG on_message: author={message.author}, content={message.content!r}, mentions={message.mentions}, channel={message.channel}")
                 # Ignore bot's own messages
                 if message.author == self._client.user:
                     return

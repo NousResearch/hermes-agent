@@ -5,11 +5,13 @@ schema, handler, toolset membership, and availability check.  ``model_tools.py``
 queries the registry instead of maintaining its own parallel data structures.
 
 Import chain (circular-import safe):
-    tools/registry.py  (no imports from model_tools or tool files)
+    agent/async_bridge.py  (no imports from model_tools, registry, or tool files)
+           ^
+    tools/registry.py  (imports async_bridge for sync->async dispatch)
            ^
     tools/*.py  (import from tools.registry at module level)
            ^
-    model_tools.py  (imports tools.registry + all tool modules)
+    model_tools.py  (imports tools.registry + all tool modules + async_bridge)
            ^
     run_agent.py, cli.py, batch_runner.py, etc.
 """
@@ -17,6 +19,8 @@ Import chain (circular-import safe):
 import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set
+
+from agent.async_bridge import run_async
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +116,7 @@ class ToolRegistry:
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
-        * Async handlers are bridged automatically via ``_run_async()``.
+        * Async handlers are bridged automatically via ``run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
@@ -121,8 +125,7 @@ class ToolRegistry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
             if entry.is_async:
-                from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
+                return run_async(entry.handler(args, **kwargs))
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.error("Tool %s dispatch error: %s", name, e)

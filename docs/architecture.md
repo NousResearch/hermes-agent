@@ -18,11 +18,16 @@
 │                   ↓                                                   │
 │            ┌──────────────┐                                          │
 │            │   AIAgent    │  (run_agent.py)                          │
-│            │  Core Engine │                                          │
+│            │  Orchestrator│                                          │
 │            └──────┬───────┘                                          │
 │                   │                                                   │
-│     ┌─────────────┼──────────────────┐                               │
-│     ↓             ↓                  ↓                               │
+│    ┌──────────────┼──────────────────────┐                           │
+│    ↓              ↓                      ↓                           │
+│  ┌──────────┐ ┌───────────────┐ ┌───────────────┐                  │
+│  │ Tool     │ │ Prompt        │ │  Session      │                  │
+│  │ Executor │ │ Assembler     │ │  Persister    │                  │
+│  └─────┬────┘ └───────────────┘ └───────────────┘                  │
+│        ↓                                                             │
 │  ┌────────┐  ┌──────────┐   ┌──────────────┐                       │
 │  │ Tools  │  │ Context  │   │   Memory &   │                       │
 │  │Registry│  │Compressor│   │   State      │                       │
@@ -77,41 +82,67 @@ discord.py
 
 ## 3. The Agent Core (`run_agent.py` — AIAgent)
 
+AIAgent is the orchestration engine. It delegates prompt assembly, session
+persistence, and tool execution to three extracted components:
+
 ```
 AIAgent
   ├── __init__()
   │     ├── Creates OpenAI client (compatible with any OpenAI-format API)
   │     ├── Resolves tools via model_tools.get_tool_definitions()
   │     ├── Creates ContextCompressor, MemoryStore, TodoStore
-  │     ├── Sets up session logging, trajectory saving
+  │     ├── Creates composed components:
+  │     │     ├── PromptAssembler  (agent/prompt_assembler.py)
+  │     │     ├── SessionPersister (agent/session_persister.py)
+  │     │     └── ToolExecConfig   (agent/tool_executor.py, frozen dataclass)
   │     └── Loads memory/skill config from hermes_cli.config
   │
   ├── run_conversation(user_message, system_message, history, task_id)
-  │     ├── Builds system prompt (_build_system_prompt)
+  │     ├── Builds system prompt via PromptAssembler.build()
   │     ├── Applies prompt caching (apply_anthropic_cache_control)
   │     ├── Context compression check (should_compress → _compress_context)
   │     ├── API call loop:
   │     │     ├── _build_api_kwargs() → constructs request with tools
   │     │     ├── _interruptible_api_call() → handles interrupts mid-stream
   │     │     ├── Parse tool_calls from response
-  │     │     ├── _execute_tool_calls() → dispatches via model_tools.handle_function_call()
+  │     │     ├── execute_tool_calls() → standalone function from tool_executor
   │     │     ├── Check for interrupt between turns
   │     │     └── Loop until: no tool calls, max_iterations, or finish_reason=stop
-  │     ├── Persists session to SessionDB
-  │     ├── Saves trajectory if configured
+  │     ├── Persists session via SessionPersister.persist()
+  │     ├── Saves trajectory via SessionPersister.save_trajectory()
   │     └── Returns {response, messages, token counts}
   │
-  ├── _build_system_prompt()
-  │     ├── Base identity (DEFAULT_AGENT_IDENTITY)
-  │     ├── Platform hints (Discord/Telegram/CLI-specific)
-  │     ├── Memory block (MemoryStore.format_for_system_prompt)
-  │     ├── User profile block
-  │     ├── Skills index (build_skills_system_prompt)
-  │     ├── Context files (build_context_files_prompt)
-  │     ├── Session context (from gateway)
-  │     └── Ephemeral system prompt override
+  ├── session_id → property delegating to SessionPersister
   │
   └── flush_memories() → persists memory store to disk
+```
+
+### Extracted Components
+
+```
+PromptAssembler (agent/prompt_assembler.py)
+  ├── build() → assembles system prompt from layers (cached after first call)
+  ├── cached → returns cached prompt or None
+  └── invalidate() → clears cache, optionally reloads memory from disk
+
+SessionPersister (agent/session_persister.py)
+  ├── session_id (property) → atomic getter/setter (updates log file path too)
+  ├── log_message() → appends to SessionDB
+  ├── persist() → writes JSON log + flushes to DB
+  ├── maybe_save_session_log() → interval-gated save
+  ├── save_trajectory() → converts messages to trajectory format
+  └── create_compression_session() → ends old session, creates new one
+
+execute_tool_calls (agent/tool_executor.py)
+  ├── Standalone function, receives frozen ToolExecConfig
+  ├── Dispatches agent-loop tools (todo, memory, session_search, clarify,
+  │   delegate_task) directly; others via model_tools.handle_function_call()
+  ├── Callbacks: is_interrupted, log_msg_to_db, on_tool_executed
+  └── AGENT_LOOP_TOOLS frozenset → single source of truth
+
+run_async (agent/async_bridge.py)
+  └── Sync-to-async bridge shared by model_tools.py and tools/registry.py
+      (breaks the circular import between them)
 ```
 
 ---
@@ -246,13 +277,15 @@ ToolRegistry (tools/registry.py) — Singleton
   ├── register(name, toolset, schema, handler, check_fn)
   ├── get_definitions(tool_names) → OpenAI function schemas
   ├── dispatch(name, args) → calls handler, returns string result
+  │     └── Uses agent.async_bridge.run_async for async handlers
   │
   └── Each tool file calls registry.register() at import time
 
 model_tools.py — Orchestration layer
   ├── _discover_tools() → imports all tool modules to trigger registration
   ├── get_tool_definitions(enabled_toolsets) → filtered list
-  └── handle_function_call(name, args) → dispatches to registry
+  ├── handle_function_call(name, args) → dispatches to registry
+  └── AGENT_LOOP_TOOLS imported from agent.tool_executor (single source of truth)
 
 Toolsets (toolsets.py)
   ├── Composable tool groups: "web", "terminal", "browser", "file", etc.
@@ -280,25 +313,31 @@ Toolsets (toolsets.py)
 
 ---
 
-## 8. Prompt Assembly (`agent/prompt_builder.py`)
+## 8. Prompt Assembly
+
+Prompt assembly is split into two layers:
+
+- **`agent/prompt_builder.py`** — Constants and helpers (DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS, build_skills_system_prompt, build_context_files_prompt)
+- **`agent/prompt_assembler.py`** — `PromptAssembler` class that composes layers with caching
 
 ```
-System prompt structure:
+System prompt structure (assembled by PromptAssembler.build()):
   ┌─────────────────────────────────────────┐
   │ 1. Agent Identity (DEFAULT_AGENT_IDENTITY)│
   │ 2. Platform Hints (Discord/Telegram/CLI)  │
-  │ 3. Ephemeral System Prompt (if set)       │
-  │ 4. Memory Block ("§"-delimited entries)   │
-  │ 5. User Profile Block                     │
-  │ 6. Memory Guidance (proactive save hint)  │
-  │ 7. Session Search Guidance                │
-  │ 8. Skills Index (from ~/.hermes/skills/)  │
-  │ 9. Skills Guidance (save-as-skill hint)   │
-  │ 10. Context Files (.hermescontext, etc.)  │
-  │ 11. Session Context (gateway source info) │
-  │ 12. Tool Descriptions (formatted list)    │
+  │ 3. Memory Block ("§"-delimited entries)   │
+  │ 4. User Profile Block                     │
+  │ 5. Memory Guidance (proactive save hint)  │
+  │ 6. Session Search Guidance                │
+  │ 7. Skills Index (from ~/.hermes/skills/)  │
+  │ 8. Skills Guidance (save-as-skill hint)   │
+  │ 9. Context Files (.hermescontext, etc.)   │
+  │ 10. Session Context (gateway source info) │
+  │ 11. Tool Descriptions (formatted list)    │
   └─────────────────────────────────────────┘
 ```
+
+Note: Ephemeral system prompt is handled separately (not part of cached prompt).
 
 **Prompt Caching** (`agent/prompt_caching.py`): Applies Anthropic's `cache_control` markers using a "system_and_3" strategy — caches the system message plus the 3 most recent conversation turns.
 
@@ -383,7 +422,7 @@ User Message (CLI or Platform)
   Session Resolution (SessionStore)
        │
        ↓
-  System Prompt Assembly (prompt_builder)
+  PromptAssembler.build()
   [identity + memory + skills + context files + session info]
        │
        ↓
@@ -391,16 +430,17 @@ User Message (CLI or Platform)
        │
        ├── Context compression check
        │     └── If over threshold → summarize middle messages
+       │     └── SessionPersister.create_compression_session()
        │
        ├── API call → LLM response
        │     └── Prompt caching for Anthropic models
        │
-       ├── Tool execution loop
-       │     ├── model_tools.handle_function_call()
-       │     ├── registry.dispatch() → tool handler
+       ├── execute_tool_calls(ToolExecConfig, ...)
+       │     ├── Agent-loop tools: todo, memory, session_search, clarify, delegate_task
+       │     ├── Other tools: model_tools.handle_function_call() → registry.dispatch()
        │     └── Result appended to messages → next API call
        │
-       ├── Persist to SessionDB
+       ├── SessionPersister.persist() → JSON log + SessionDB
        │
        └── Return response
               │
@@ -425,8 +465,12 @@ hermes-agent/
 ├── trajectory_compressor.py    # Trajectory compression for training data
 │
 ├── agent/
+│   ├── async_bridge.py         # Sync-to-async bridge (breaks circular import)
+│   ├── prompt_assembler.py     # PromptAssembler — cached system prompt composition
+│   ├── session_persister.py    # SessionPersister — JSON logs, DB, trajectories
+│   ├── tool_executor.py        # execute_tool_calls() + ToolExecConfig dataclass
 │   ├── context_compressor.py   # Context window compression
-│   ├── prompt_builder.py       # System prompt assembly
+│   ├── prompt_builder.py       # Prompt constants and helpers
 │   ├── prompt_caching.py       # Anthropic cache_control markers
 │   ├── model_metadata.py       # Model context length + token estimation
 │   ├── display.py              # Terminal UI (spinner, tool previews)

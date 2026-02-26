@@ -21,45 +21,15 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
-import asyncio
 import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
+from agent.async_bridge import run_async as _run_async  # noqa: F401 — re-exported for backward compat
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Async Bridging  (single source of truth -- used by registry.dispatch too)
-# =============================================================================
-
-def _run_async(coro):
-    """Run an async coroutine from a sync context.
-
-    If the current thread already has a running event loop (e.g., inside
-    the gateway's async stack or Atropos's event loop), we spin up a
-    disposable thread so asyncio.run() can create its own loop without
-    conflicting.
-
-    This is the single source of truth for sync->async bridging in tool
-    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
-    outer thread-pool wrapping as defense-in-depth, but each handler is
-    self-protecting via this function.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=300)
-    return asyncio.run(coro)
 
 
 # =============================================================================
@@ -237,7 +207,8 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+# Single source of truth lives in agent/tool_executor.py (includes 'clarify').
+from agent.tool_executor import AGENT_LOOP_TOOLS as _AGENT_LOOP_TOOLS
 
 
 def handle_function_call(

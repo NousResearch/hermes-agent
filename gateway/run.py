@@ -50,9 +50,51 @@ if _config_path.exists():
         import yaml as _yaml
         with open(_config_path) as _f:
             _cfg = _yaml.safe_load(_f) or {}
+        # Bridge top-level simple values
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
+
+        # Bridge terminal config (nested dict) → TERMINAL_* env vars.
+        # Mirrors the mapping in cli.py so the gateway picks up the same
+        # backend, image, timeout, etc. from config.yaml.
+        _terminal_cfg = _cfg.get('terminal', {})
+        if isinstance(_terminal_cfg, dict):
+            # Normalize: config uses "backend", terminal_tool uses "env_type"
+            if 'backend' in _terminal_cfg:
+                _terminal_cfg['env_type'] = _terminal_cfg['backend']
+            _terminal_env_map = {
+                'env_type': 'TERMINAL_ENV',
+                'cwd': 'TERMINAL_CWD',
+                'timeout': 'TERMINAL_TIMEOUT',
+                'lifetime_seconds': 'TERMINAL_LIFETIME_SECONDS',
+                'docker_image': 'TERMINAL_DOCKER_IMAGE',
+                'singularity_image': 'TERMINAL_SINGULARITY_IMAGE',
+                'modal_image': 'TERMINAL_MODAL_IMAGE',
+                'ssh_host': 'TERMINAL_SSH_HOST',
+                'ssh_user': 'TERMINAL_SSH_USER',
+                'ssh_port': 'TERMINAL_SSH_PORT',
+                'ssh_key': 'TERMINAL_SSH_KEY',
+                'container_cpu': 'TERMINAL_CONTAINER_CPU',
+                'container_memory': 'TERMINAL_CONTAINER_MEMORY',
+                'container_disk': 'TERMINAL_CONTAINER_DISK',
+                'container_persistent': 'TERMINAL_CONTAINER_PERSISTENT',
+                'sudo_password': 'SUDO_PASSWORD',
+            }
+            for _ck, _ev in _terminal_env_map.items():
+                if _ck in _terminal_cfg and _ev not in os.environ:
+                    os.environ[_ev] = str(_terminal_cfg[_ck])
+
+            # For modal/docker/singularity backends, override TERMINAL_CWD
+            # with the messaging CWD (host paths won't exist in sandbox).
+            # MESSAGING_CWD takes precedence if set, otherwise use home dir.
+            _eff_backend = _terminal_cfg.get('env_type', 'local')
+            if _eff_backend in ('modal', 'docker', 'singularity'):
+                _mcwd = os.getenv('MESSAGING_CWD') or str(Path.home())
+                _host_prefixes = ('/Users/', 'C:\\', 'C:/')
+                _cur_cwd = os.environ.get('TERMINAL_CWD', '')
+                if any(_cur_cwd.startswith(p) for p in _host_prefixes):
+                    os.environ['TERMINAL_CWD'] = '~'
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

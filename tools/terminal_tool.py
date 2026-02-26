@@ -495,8 +495,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             sandbox_kwargs["cpu"] = cpu
         if memory > 0:
             sandbox_kwargs["memory"] = memory
-        if disk > 0:
-            sandbox_kwargs["ephemeral_disk"] = disk
+        # Note: Modal Sandbox.create does not support a disk/ephemeral_disk parameter.
+        # Disk size is determined by the Modal platform automatically.
         
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,

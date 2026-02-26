@@ -7,6 +7,7 @@ and optional filesystem persistence via `docker commit`/`docker create --image`.
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -30,6 +31,9 @@ _SECURITY_ARGS = [
 ]
 
 
+_storage_opt_ok: Optional[bool] = None  # cached result across instances
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
@@ -44,7 +48,7 @@ class DockerEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "~",
+        cwd: str = "/root",
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
@@ -53,6 +57,8 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         network: bool = True,
     ):
+        if cwd == "~":
+            cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._base_image = image
         self._persistent = persistent_filesystem
@@ -67,7 +73,7 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--cpus", str(cpu)])
         if memory > 0:
             resource_args.extend(["--memory", f"{memory}m"])
-        if disk > 0:
+        if disk > 0 and sys.platform != "darwin" and self._storage_opt_supported():
             resource_args.extend(["--storage-opt", f"size={disk}m"])
         if not network:
             resource_args.append("--network=none")
@@ -102,10 +108,49 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
 
         self._inner = _Docker(
-            image=effective_image, cwd=cwd, timeout=timeout,
+            image=image, cwd=cwd, timeout=timeout,
             run_args=all_run_args,
         )
         self._container_id = self._inner.container_id
+
+    @staticmethod
+    def _storage_opt_supported() -> bool:
+        """Check if Docker's storage driver supports --storage-opt size=.
+        
+        Only overlay2 on XFS with pquota supports per-container disk quotas.
+        Ubuntu (and most distros) default to ext4, where this flag errors out.
+        """
+        global _storage_opt_ok
+        if _storage_opt_ok is not None:
+            return _storage_opt_ok
+        try:
+            result = subprocess.run(
+                ["docker", "info", "--format", "{{.Driver}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            driver = result.stdout.strip().lower()
+            if driver != "overlay2":
+                _storage_opt_ok = False
+                return False
+            # overlay2 only supports storage-opt on XFS with pquota.
+            # Probe by attempting a dry-ish run — the fastest reliable check.
+            probe = subprocess.run(
+                ["docker", "create", "--storage-opt", "size=1m", "hello-world"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if probe.returncode == 0:
+                # Clean up the created container
+                container_id = probe.stdout.strip()
+                if container_id:
+                    subprocess.run(["docker", "rm", container_id],
+                                   capture_output=True, timeout=5)
+                _storage_opt_ok = True
+            else:
+                _storage_opt_ok = False
+        except Exception:
+            _storage_opt_ok = False
+        logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
+        return _storage_opt_ok
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,

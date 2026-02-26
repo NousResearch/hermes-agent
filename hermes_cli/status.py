@@ -12,6 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.config import get_env_path, get_env_value
 from hermes_constants import OPENROUTER_MODELS_URL
 
 def check_mark(ok: bool) -> str:
@@ -65,7 +66,7 @@ def show_status(args):
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
     
-    env_path = PROJECT_ROOT / '.env'
+    env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
     
     # =========================================================================
@@ -88,7 +89,7 @@ def show_status(args):
     }
     
     for name, env_var in keys.items():
-        value = os.getenv(env_var, "")
+        value = get_env_value(env_var) or ""
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")

@@ -176,3 +176,70 @@ class TestGetCodexModelIds:
         ):
             from agent.codex_models import get_codex_model_ids
             assert get_codex_model_ids() == []
+
+
+class TestResponsesToCompletion:
+    """Tests for _responses_to_chat_completion SSE reconstruction."""
+
+    def test_multi_tool_calls_correct_arguments(self):
+        """Ensure multiple parallel tool calls get the right arguments assigned."""
+        from agent.codex_transport import _responses_to_chat_completion
+
+        events = [
+            {"type": "response.created", "response": {"id": "resp_1"}},
+            # First tool call
+            {"type": "response.output_item.added", "item": {
+                "id": "item_aaa", "type": "function_call",
+                "call_id": "call_111", "name": "web_search",
+            }},
+            {"type": "response.function_call_arguments.delta",
+             "item_id": "item_aaa", "delta": '{"query":'},
+            {"type": "response.function_call_arguments.delta",
+             "item_id": "item_aaa", "delta": '"first"}'},
+            # Second tool call (interleaved)
+            {"type": "response.output_item.added", "item": {
+                "id": "item_bbb", "type": "function_call",
+                "call_id": "call_222", "name": "terminal",
+            }},
+            {"type": "response.function_call_arguments.delta",
+             "item_id": "item_bbb", "delta": '{"command":'},
+            {"type": "response.function_call_arguments.delta",
+             "item_id": "item_bbb", "delta": '"ls"}'},
+            # Done events
+            {"type": "response.function_call_arguments.done",
+             "item_id": "item_aaa", "arguments": '{"query":"first"}'},
+            {"type": "response.function_call_arguments.done",
+             "item_id": "item_bbb", "arguments": '{"command":"ls"}'},
+            {"type": "response.completed", "response": {"usage": {
+                "input_tokens": 10, "output_tokens": 20, "total_tokens": 30,
+            }}},
+        ]
+
+        result = _responses_to_chat_completion(events, "gpt-5.3-codex")
+        tc = result["choices"][0]["message"]["tool_calls"]
+        assert len(tc) == 2
+        assert tc[0]["id"] == "call_111"
+        assert tc[0]["function"]["name"] == "web_search"
+        assert tc[0]["function"]["arguments"] == '{"query":"first"}'
+        assert tc[1]["id"] == "call_222"
+        assert tc[1]["function"]["name"] == "terminal"
+        assert tc[1]["function"]["arguments"] == '{"command":"ls"}'
+        assert result["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_text_only_response(self):
+        from agent.codex_transport import _responses_to_chat_completion
+
+        events = [
+            {"type": "response.created", "response": {"id": "resp_2"}},
+            {"type": "response.output_text.delta", "delta": "Hello "},
+            {"type": "response.output_text.delta", "delta": "world!"},
+            {"type": "response.completed", "response": {"usage": {
+                "input_tokens": 5, "output_tokens": 2, "total_tokens": 7,
+            }}},
+        ]
+
+        result = _responses_to_chat_completion(events, "gpt-5.3-codex")
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == "Hello world!"
+        assert msg.get("tool_calls") is None
+        assert result["choices"][0]["finish_reason"] == "stop"

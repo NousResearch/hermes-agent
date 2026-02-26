@@ -220,7 +220,7 @@ class AIAgent:
                         "~/.codex/auth.json. Run `codex login` first."
                     )
                 api_key = codex_api_key
-                base_url = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+                base_url = "https://api.openai.com/v1"
                 self.base_url = base_url
             elif codex_auth_mode == "chatgpt":
                 codex_auth = get_codex_chatgpt_auth(refresh_if_expiring=True)

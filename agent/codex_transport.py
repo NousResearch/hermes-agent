@@ -137,7 +137,8 @@ def _responses_to_chat_completion(events: List[Dict[str, Any]], model: str) -> D
     """Reassemble responses API SSE events into a chat completions JSON response."""
     text_parts: List[str] = []
     tool_calls: List[Dict[str, Any]] = []
-    tool_call_args: Dict[str, List[str]] = {}  # id -> arg chunks
+    tool_call_args: Dict[str, List[str]] = {}  # item_id -> arg chunks
+    item_id_to_index: Dict[str, int] = {}  # item_id -> tool_calls index
     usage = {}
     response_id = ""
     finish_reason = "stop"
@@ -156,6 +157,8 @@ def _responses_to_chat_completion(events: List[Dict[str, Any]], model: str) -> D
             item = event.get("item", {})
             if item.get("type") == "function_call":
                 call_id = item.get("call_id", str(uuid.uuid4()))
+                item_id = item.get("id", "")
+                idx = len(tool_calls)
                 tool_calls.append({
                     "id": call_id,
                     "type": "function",
@@ -164,7 +167,8 @@ def _responses_to_chat_completion(events: List[Dict[str, Any]], model: str) -> D
                         "arguments": "",
                     },
                 })
-                tool_call_args[item.get("id", "")] = []
+                tool_call_args[item_id] = []
+                item_id_to_index[item_id] = idx
 
         elif event_type == "response.function_call_arguments.delta":
             item_id = event.get("item_id", "")
@@ -173,15 +177,11 @@ def _responses_to_chat_completion(events: List[Dict[str, Any]], model: str) -> D
 
         elif event_type == "response.function_call_arguments.done":
             item_id = event.get("item_id", "")
-            # Find the matching tool call and set full arguments
-            for tc in tool_calls:
-                if item_id in tool_call_args:
-                    args_str = "".join(tool_call_args[item_id])
-                    # Match by checking if this is the right tool call
-                    # (tool_calls are ordered same as output items)
-                    tc["function"]["arguments"] = args_str
-                    del tool_call_args[item_id]
-                    break
+            if item_id in item_id_to_index:
+                idx = item_id_to_index[item_id]
+                tool_calls[idx]["function"]["arguments"] = "".join(
+                    tool_call_args.get(item_id, [])
+                )
 
         elif event_type == "response.completed":
             resp = event.get("response", {})

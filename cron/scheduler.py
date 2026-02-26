@@ -185,6 +185,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 elif isinstance(_model_cfg, dict):
                     model = _model_cfg.get("default", model)
                     base_url = _model_cfg.get("base_url", base_url)
+                # Check if provider is nous — resolve OAuth credentials
+                provider = _model_cfg.get("provider", "") if isinstance(_model_cfg, dict) else ""
+                if provider == "nous":
+                    try:
+                        from hermes_cli.auth import resolve_nous_runtime_credentials
+                        creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
+                        api_key = creds.get("api_key", api_key)
+                        base_url = creds.get("base_url", base_url)
+                    except Exception as nous_err:
+                        logging.warning("Nous Portal credential resolution failed for cron: %s", nous_err)
         except Exception:
             pass
 

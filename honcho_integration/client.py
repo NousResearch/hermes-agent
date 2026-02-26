@@ -42,6 +42,8 @@ class HonchoClientConfig:
     # Toggles
     enabled: bool = False
     save_messages: bool = True
+    # Prefetch budget
+    context_tokens: int | None = None
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -105,6 +107,7 @@ class HonchoClientConfig:
             linked_hosts=linked_hosts,
             enabled=raw.get("enabled", False),
             save_messages=raw.get("saveMessages", True),
+            context_tokens=raw.get("contextTokens") or host_block.get("contextTokens"),
             session_strategy=raw.get("sessionStrategy", "per-directory"),
             session_peer_prefix=raw.get("sessionPeerPrefix", False),
             sessions=raw.get("sessions", {}),

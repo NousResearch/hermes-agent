@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # MCP server management
+    "mcp",
 ]
 
 
@@ -126,6 +128,11 @@ TOOLSETS = {
         "includes": []
     },
     
+    "mcp": {
+        "description": "MCP (Model Context Protocol) server tools -- connect to external tool servers",
+        "tools": ["mcp"],
+        "includes": []
+    },
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

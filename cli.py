@@ -373,6 +373,11 @@ def _run_cleanup():
         _cleanup_all_browsers()
     except Exception:
         pass
+    try:
+        from tools.mcp_manager import mcp_manager
+        mcp_manager.shutdown_all()
+    except Exception:
+        pass
 
 # ============================================================================
 # ASCII Art & Branding

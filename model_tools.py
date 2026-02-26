@@ -73,27 +73,28 @@ def _discover_tools():
     not installed) don't prevent the rest from loading.
     """
     _modules = [
-        "tools.web_tools",
-        "tools.terminal_tool",
-        "tools.file_tools",
-        "tools.vision_tools",
-        "tools.mixture_of_agents_tool",
-        "tools.image_generation_tool",
-        "tools.skills_tool",
-        "tools.skill_manager_tool",
-        "tools.browser_tool",
-        "tools.cronjob_tools",
-        "tools.rl_training_tool",
-        "tools.tts_tool",
-        "tools.todo_tool",
-        "tools.memory_tool",
-        "tools.session_search_tool",
-        "tools.clarify_tool",
-        "tools.code_execution_tool",
-        "tools.delegate_tool",
-        "tools.process_registry",
-        "tools.send_message_tool",
-    ]
+    "tools.web_tools",
+    "tools.terminal_tool",
+    "tools.file_tools",
+    "tools.vision_tools",
+    "tools.mixture_of_agents_tool",
+    "tools.image_generation_tool",
+    "tools.skills_tool",
+    "tools.skill_manager_tool",
+    "tools.browser_tool",
+    "tools.cronjob_tools",
+    "tools.rl_training_tool",
+    "tools.tts_tool",
+    "tools.todo_tool",
+    "tools.memory_tool",
+    "tools.session_search_tool",
+    "tools.clarify_tool",
+    "tools.code_execution_tool",
+    "tools.delegate_tool",
+    "tools.process_registry",
+    "tools.send_message_tool",
+    "tools.hello_tool",   # 👈 BU ŞART
+]
     import importlib
     for mod_name in _modules:
         try:

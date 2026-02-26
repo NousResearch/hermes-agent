@@ -1139,7 +1139,12 @@ class HermesCLI:
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
-        config_path = Path(__file__).parent / 'cli-config.yaml'
+        user_config_path = Path.home() / '.hermes' / 'config.yaml'
+        project_config_path = Path(__file__).parent / 'cli-config.yaml'
+        if user_config_path.exists():
+            config_path = user_config_path
+        else:
+            config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
@@ -1171,7 +1176,7 @@ class HermesCLI:
         print()
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  Config File: cli-config.yaml {config_status}")
+        print(f"  Config File: {config_path} {config_status}")
         print()
     
     def show_history(self):

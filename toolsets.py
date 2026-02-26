@@ -60,6 +60,9 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Domain intelligence (passive OSINT)      <-- BUNU EKLE
+    "domain_subdomains", "domain_ssl", "domain_whois",
+    "domain_dns", "domain_available", "domain_bulk",
 ]
 
 
@@ -492,4 +495,5 @@ if __name__ == "__main__":
     print(f"  Created 'my_custom' toolset:")
     print(f"    Description: {custom_info['description']}")
     print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+
 

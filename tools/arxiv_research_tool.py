@@ -71,15 +71,6 @@ PAPER TEXT:
         # --- TOOL REGISTRY (SİSTEME KAYIT) ---
 from tools.registry import registry
 
-# --- TOOL REGISTRY (SİSTEME KAYIT) ---
-from tools.registry import registry
-
-# --- TOOL REGISTRY (SİSTEME KAYIT) ---
-from tools.registry import registry
-
-# --- TOOL REGISTRY (SİSTEME KAYIT) ---
-from tools.registry import registry
-
 # Sistemin tam olarak beklediği OpenAI fonksiyon şeması
 arxiv_schema = {
     "name": "arxiv_research",

@@ -185,7 +185,12 @@ TOOLSETS = {
         "tools": ["delegate_task"],
         "includes": []
     },
-    
+
+    "domain_intel": {
+        "description": "Passive domain reconnaissance: subdomain discovery (crt.sh), SSL inspection, WHOIS lookup, DNS records, availability check, bulk multi-domain analysis. No API key required.",
+        "tools": ["domain_subdomains", "domain_ssl", "domain_whois", "domain_dns", "domain_available", "domain_bulk"],
+        "includes": []
+    },
     
     # Scenario-specific toolsets
     
@@ -487,3 +492,4 @@ if __name__ == "__main__":
     print(f"  Created 'my_custom' toolset:")
     print(f"    Description: {custom_info['description']}")
     print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+

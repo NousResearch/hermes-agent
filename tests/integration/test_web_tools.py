@@ -12,8 +12,11 @@ Usage:
 
 Requirements:
     - FIRECRAWL_API_KEY environment variable must be set
-    - NOUS_API_KEY environment vitinariable (optional, for LLM tests)
+    - NOUS_API_KEY environment variable (optional, for LLM tests)
 """
+
+import pytest
+pytestmark = pytest.mark.integration
 
 import json
 import asyncio

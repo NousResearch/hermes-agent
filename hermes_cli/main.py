@@ -197,7 +197,7 @@ def cmd_model(args):
     providers = [
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
-        ("openai-codex", "OpenAI Codex (ChatGPT/Codex CLI login)"),
+        ("openai-codex", "OpenAI Codex"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 

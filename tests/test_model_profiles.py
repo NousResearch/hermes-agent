@@ -203,3 +203,35 @@ def test_set_active_profile_switches_active_profile_and_preserves_unknown_reques
     unchanged = mp.set_active_profile(switched, "missing")
     assert unchanged["active_profile"] == "b"
     assert unchanged["scoped_profiles"] == ["a", "b"]
+
+
+def test_get_profile_names_can_filter_to_enabled_profiles_only():
+    cfg = mp.normalize_model_config(
+        {
+            "profiles": [
+                {"name": "enabled-a", "provider": "openrouter", "model": "m-a", "enabled": True},
+                {"name": "disabled-b", "provider": "zai", "model": "m-b", "enabled": False},
+            ],
+            "active_profile": "enabled-a",
+            "scoped_profiles": ["enabled-a", "disabled-b"],
+        }
+    )
+
+    assert mp.get_profile_names(cfg, enabled_only=False) == ["enabled-a", "disabled-b"]
+    assert mp.get_profile_names(cfg, enabled_only=True) == ["enabled-a"]
+
+
+def test_custom_provider_without_base_url_does_not_silently_fallback_to_openrouter():
+    cfg = mp.normalize_model_config(
+        {
+            "profiles": [
+                {"name": "custom-profile", "provider": "custom", "model": "local-model", "enabled": True},
+            ],
+            "active_profile": "custom-profile",
+            "scoped_profiles": ["custom-profile"],
+        }
+    )
+
+    assert cfg["provider"] == "custom"
+    assert cfg["base_url"] == ""
+    assert cfg["profiles"][0]["base_url"] == ""

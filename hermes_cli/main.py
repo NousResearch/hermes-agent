@@ -51,7 +51,7 @@ from hermes_cli.model_profiles import (
     upsert_profile,
 )
 from hermes_cli.provider_registry import (
-    get_curated_models,
+    get_provider_model_candidates,
     get_provider,
     list_provider_ids,
     list_model_picker_provider_ids,
@@ -61,6 +61,17 @@ from hermes_cli.provider_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_oauth_active_provider(model_cfg: dict) -> None:
+    """
+    Keep auth.json active_provider aligned with active model profile.
+    """
+    active = get_active_profile(model_cfg)
+    if active.get("provider") != "nous":
+        from hermes_cli.auth import deactivate_provider
+
+        deactivate_provider()
 
 
 def _has_any_provider_configured() -> bool:
@@ -243,6 +254,7 @@ def cmd_model(args):
             model_cfg = sync_legacy_model_fields(model_cfg)
             config["model"] = model_cfg
             save_config(config)
+            _sync_oauth_active_provider(model_cfg)
             print(f"Scoped profiles set: {', '.join(updated_scoped)}")
         else:
             print("No change.")
@@ -262,6 +274,7 @@ def cmd_model(args):
         model_cfg = sync_legacy_model_fields(model_cfg)
         config["model"] = model_cfg
         save_config(config)
+        _sync_oauth_active_provider(model_cfg)
         print(f"Removed profile: {to_remove}")
         return
 
@@ -291,6 +304,7 @@ def cmd_model(args):
         model_cfg = sync_legacy_model_fields(model_cfg)
         config["model"] = model_cfg
         save_config(config)
+        _sync_oauth_active_provider(model_cfg)
         print(
             f"Active profile set to: {updated['name']} "
             f"[{updated['provider']}/{updated['model']}]"
@@ -311,6 +325,7 @@ def cmd_model(args):
     model_cfg = sync_legacy_model_fields(model_cfg)
     config["model"] = model_cfg
     save_config(config)
+    _sync_oauth_active_provider(model_cfg)
     print(
         f"Active profile set to: {updated['name']} "
         f"[{updated['provider']}/{updated['model']}]"
@@ -451,10 +466,10 @@ def _configure_api_key_profile(profile: dict) -> dict | None:
     if meta.base_url_env_var:
         save_env_value(meta.base_url_env_var, base_url.rstrip("/"))
 
-    if provider == "openrouter":
-        candidates = openrouter_model_ids()
-    else:
-        candidates = get_curated_models(provider)
+    candidates = get_provider_model_candidates(
+        provider,
+        openrouter_model_loader=openrouter_model_ids,
+    )
     if candidates:
         selected = _prompt_model_selection(candidates, current_model=profile.get("model", ""))
     else:

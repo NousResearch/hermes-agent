@@ -43,6 +43,7 @@ from hermes_cli.provider_registry import (
     list_setup_provider_ids,
     resolve_provider_api_key,
     resolve_provider_base_url,
+    should_clear_custom_endpoint_env,
 )
 
 def print_header(title: str):
@@ -691,6 +692,7 @@ def run_setup_wizard(args):
     from hermes_cli.auth import (
         AuthError,
         PROVIDER_REGISTRY,
+        deactivate_provider,
         _login_nous,
         fetch_nous_models,
         format_auth_error,
@@ -847,7 +849,7 @@ def run_setup_wizard(args):
                 save_env_value(meta.base_url_env_var, selected_base_url)
                 print_success(f"{meta.base_url_env_var} saved")
 
-        if selected_provider == "openrouter" and get_env_value("OPENAI_BASE_URL"):
+        if should_clear_custom_endpoint_env(selected_provider) and get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
@@ -1641,5 +1643,8 @@ def run_setup_wizard(args):
     # =========================================================================
     # Save config and show summary
     # =========================================================================
+    if selected_provider and selected_provider != "nous":
+        deactivate_provider()
+
     save_config(config)
     _print_setup_summary(config, hermes_home)

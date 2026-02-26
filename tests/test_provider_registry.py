@@ -66,6 +66,64 @@ def test_provider_cli_choices_and_list_filters():
     assert "openrouter" in api_only
 
 
+def test_setup_and_model_picker_provider_visibility_lists():
+    setup_ids = pr.list_setup_provider_ids()
+    model_ids = pr.list_model_picker_provider_ids()
+
+    for expected in ("openrouter", "nous", "zai", "kimi-coding", "minimax", "minimax-cn", "custom"):
+        assert expected in setup_ids
+        assert expected in model_ids
+
+
+def test_resolve_effective_base_url_precedence_and_custom_fallback_behavior():
+    env = {"GLM_BASE_URL": "https://env.example/zai/v1"}
+
+    assert (
+        pr.resolve_effective_base_url(
+            "zai",
+            env_get=_env(env),
+            explicit_base_url=" https://explicit.example/zai/v1/ ",
+            profile_base_url="https://profile.example/zai/v1",
+            model_base_url="https://model.example/zai/v1",
+        )
+        == "https://explicit.example/zai/v1"
+    )
+    assert (
+        pr.resolve_effective_base_url(
+            "zai",
+            env_get=_env(env),
+            profile_base_url="https://profile.example/zai/v1",
+            model_base_url="https://model.example/zai/v1",
+        )
+        == "https://env.example/zai/v1"
+    )
+    assert (
+        pr.resolve_effective_base_url(
+            "zai",
+            env_get=_env({}),
+            profile_base_url="https://profile.example/zai/v1",
+            model_base_url="https://model.example/zai/v1",
+        )
+        == "https://profile.example/zai/v1"
+    )
+    assert (
+        pr.resolve_effective_base_url(
+            "custom",
+            env_get=_env({}),
+            include_openrouter_fallback=False,
+        )
+        is None
+    )
+
+
+def test_get_provider_model_candidates_uses_loader_for_openrouter_and_curated_for_others():
+    assert pr.get_provider_model_candidates("openrouter", openrouter_model_loader=lambda: ["a", "b"]) == [
+        "a",
+        "b",
+    ]
+    assert "glm-5" in pr.get_provider_model_candidates("zai")
+
+
 def test_has_any_provider_key_checks_all_configured_env_vars():
     env = {"GLM_API_KEY": "   ", "ZAI_API_KEY": "   ", "Z_AI_API_KEY": "legacy-zai-key"}
     assert pr.has_any_provider_key("zai", env_get=_env(env)) is True

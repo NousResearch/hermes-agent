@@ -201,6 +201,65 @@ def resolve_provider_base_url(
     return None
 
 
+def resolve_provider_base_url_override(
+    provider_id: str,
+    *,
+    env_get: EnvGetter = os.getenv,
+) -> Optional[str]:
+    """
+    Resolve provider base URL from environment override only (no provider default).
+    """
+    meta = get_provider(provider_id)
+    if not meta or not meta.base_url_env_var:
+        return None
+    env_value = env_get(meta.base_url_env_var)
+    if isinstance(env_value, str) and env_value.strip():
+        return env_value.strip().rstrip("/")
+    return None
+
+
+def resolve_effective_base_url(
+    provider_id: str,
+    *,
+    env_get: EnvGetter = os.getenv,
+    explicit_base_url: Optional[str] = None,
+    profile_base_url: Optional[str] = None,
+    model_base_url: Optional[str] = None,
+    include_openrouter_fallback: bool = True,
+) -> Optional[str]:
+    """
+    Resolve runtime base URL with consistent precedence.
+
+    Order:
+    1) explicit CLI --base-url
+    2) provider-specific base URL env override
+    3) active profile base_url
+    4) model-level base_url
+    5) provider default base URL
+    6) optional OPENROUTER fallback
+    """
+    if isinstance(explicit_base_url, str) and explicit_base_url.strip():
+        return explicit_base_url.strip().rstrip("/")
+
+    env_override = resolve_provider_base_url_override(provider_id, env_get=env_get)
+    if env_override:
+        return env_override
+
+    if isinstance(profile_base_url, str) and profile_base_url.strip():
+        return profile_base_url.strip().rstrip("/")
+
+    if isinstance(model_base_url, str) and model_base_url.strip():
+        return model_base_url.strip().rstrip("/")
+
+    meta = get_provider(provider_id)
+    if meta and meta.default_base_url:
+        return meta.default_base_url.rstrip("/")
+
+    if include_openrouter_fallback:
+        return OPENROUTER_BASE_URL
+    return None
+
+
 def has_any_provider_key(provider_id: str, *, env_get: EnvGetter = os.getenv) -> bool:
     for env_var in iter_api_key_env_vars(provider_id):
         value = env_get(env_var)
@@ -214,6 +273,31 @@ def get_curated_models(provider_id: str) -> List[str]:
     if not meta:
         return []
     return list(meta.curated_models)
+
+
+def get_provider_model_candidates(
+    provider_id: str,
+    *,
+    openrouter_model_loader: Optional[Callable[[], Iterable[str]]] = None,
+) -> List[str]:
+    """
+    Return model candidates for a provider.
+    OpenRouter can use a dynamic loader to fetch the full catalog.
+    """
+    normalized = normalize_provider_id(provider_id)
+    if normalized == "openrouter" and openrouter_model_loader is not None:
+        try:
+            return list(openrouter_model_loader())
+        except Exception:
+            return get_curated_models("openrouter")
+    return get_curated_models(normalized)
+
+
+def should_clear_custom_endpoint_env(provider_id: str) -> bool:
+    """
+    Whether selecting this provider should clear OPENAI_BASE_URL/OPENAI_API_KEY.
+    """
+    return normalize_provider_id(provider_id) == "openrouter"
 
 
 def is_supported_provider(provider_id: str) -> bool:

@@ -76,6 +76,20 @@ def test_has_any_provider_configured_reads_provider_vars_from_dotenv_file(monkey
     assert main._has_any_provider_configured() is True
 
 
+def test_has_any_provider_configured_accepts_custom_base_url_only(monkeypatch, tmp_path):
+    _patch_config_paths(
+        monkeypatch,
+        tmp_path,
+        env_text="\nOPENAI_BASE_URL='https://custom.example/v1'\n",
+    )
+
+    def _unexpected_load_config():
+        raise AssertionError("load_config should not run when .env already has custom base URL")
+
+    monkeypatch.setattr(config_module, "load_config", _unexpected_load_config)
+    assert main._has_any_provider_configured() is True
+
+
 def test_has_any_provider_configured_uses_configured_custom_profile(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path, env_text="UNRELATED_KEY=1\n")
     monkeypatch.setattr(
@@ -125,3 +139,52 @@ def test_has_any_provider_configured_returns_false_when_no_sources_are_present(m
 
     monkeypatch.setattr(config_module, "load_config", _load_config_failure)
     assert main._has_any_provider_configured() is False
+
+
+def test_sync_oauth_active_provider_deactivates_when_active_profile_is_non_nous(monkeypatch):
+    calls = {"count": 0}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.deactivate_provider",
+        lambda: calls.__setitem__("count", calls["count"] + 1),
+    )
+
+    main._sync_oauth_active_provider(
+        {
+            "default": "model-a",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "profiles": [
+                {
+                    "name": "openrouter-default",
+                    "provider": "openrouter",
+                    "model": "model-a",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "enabled": True,
+                }
+            ],
+            "active_profile": "openrouter-default",
+            "scoped_profiles": ["openrouter-default"],
+        }
+    )
+    assert calls["count"] == 1
+
+    main._sync_oauth_active_provider(
+        {
+            "default": "nous/model",
+            "provider": "nous",
+            "base_url": "https://inference.nousresearch.com/v1",
+            "profiles": [
+                {
+                    "name": "nous-default",
+                    "provider": "nous",
+                    "model": "nous/model",
+                    "base_url": "https://inference.nousresearch.com/v1",
+                    "enabled": True,
+                }
+            ],
+            "active_profile": "nous-default",
+            "scoped_profiles": ["nous-default"],
+        }
+    )
+    assert calls["count"] == 1

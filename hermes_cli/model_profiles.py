@@ -37,7 +37,13 @@ def _normalize_profile(raw: Any, idx: int) -> Optional[Dict[str, Any]]:
         base_url = None
 
     if not base_url:
-        base_url = resolve_provider_base_url(provider) or OPENROUTER_BASE_URL
+        base_url = resolve_provider_base_url(provider)
+        if not base_url:
+            # Custom and OAuth providers should not silently inherit OpenRouter URLs.
+            if provider in {"custom", "nous"}:
+                base_url = ""
+            else:
+                base_url = OPENROUTER_BASE_URL
 
     return {
         "name": name,
@@ -91,7 +97,12 @@ def normalize_model_config(model_cfg: Any) -> Dict[str, Any]:
     else:
         base_url = None
     if not base_url:
-        base_url = resolve_provider_base_url(provider) or OPENROUTER_BASE_URL
+        base_url = resolve_provider_base_url(provider)
+        if not base_url:
+            if provider in {"custom", "nous"}:
+                base_url = ""
+            else:
+                base_url = OPENROUTER_BASE_URL
 
     raw_profiles = cfg.get("profiles")
     profiles: List[Dict[str, Any]] = []
@@ -173,12 +184,18 @@ def sync_legacy_model_fields(model_cfg: Dict[str, Any]) -> Dict[str, Any]:
     active = _active_profile_from_normalized(cfg)
     cfg["default"] = active.get("model") or cfg.get("default") or DEFAULT_MODEL_ID
     cfg["provider"] = active.get("provider") or cfg.get("provider") or "openrouter"
-    cfg["base_url"] = (
-        active.get("base_url")
-        or resolve_provider_base_url(cfg["provider"])
-        or cfg.get("base_url")
-        or OPENROUTER_BASE_URL
-    )
+    active_base_url = active.get("base_url")
+    provider_base_url = resolve_provider_base_url(cfg["provider"])
+    if cfg["provider"] in {"custom", "nous"}:
+        cfg["base_url"] = active_base_url or provider_base_url or ""
+    else:
+        legacy_base_url = cfg.get("base_url")
+        cfg["base_url"] = (
+            active_base_url
+            or provider_base_url
+            or legacy_base_url
+            or OPENROUTER_BASE_URL
+        )
     return cfg
 
 

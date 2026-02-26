@@ -880,6 +880,33 @@ def set_config_value(key: str, value: str):
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
+
+    if key == "model.default":
+        new_model = str(value).strip()
+        if not new_model:
+            print("Model cannot be empty.")
+            return
+        model_cfg = normalize_model_config(user_config.get("model"))
+        active_name = model_cfg.get("active_profile")
+        target = None
+        for profile in model_cfg.get("profiles", []):
+            if profile.get("name") == active_name:
+                target = profile
+                break
+        if target is None and model_cfg.get("profiles"):
+            target = model_cfg["profiles"][0]
+            model_cfg["active_profile"] = target.get("name")
+        if target is not None:
+            target["model"] = new_model
+        model_cfg["default"] = new_model
+        user_config["model"] = sync_legacy_model_fields(model_cfg)
+
+        ensure_hermes_home()
+        with open(config_path, 'w') as f:
+            yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+
+        print(f"✓ Set {key} = {new_model} in {config_path}")
+        return
     
     # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')

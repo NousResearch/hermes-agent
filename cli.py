@@ -52,10 +52,14 @@ import queue
 # Load environment variables first
 from dotenv import load_dotenv
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.model_profiles import get_active_profile, normalize_model_config
+from hermes_cli.model_profiles import (
+    get_active_profile,
+    normalize_model_config,
+    sync_legacy_model_fields,
+)
 from hermes_cli.provider_registry import (
+    resolve_effective_base_url,
     resolve_provider_api_key,
-    resolve_provider_base_url,
 )
 
 env_path = Path(__file__).parent / '.env'
@@ -714,6 +718,32 @@ def save_config_value(key_path: str, value: any) -> bool:
                 config = yaml.safe_load(f) or {}
         else:
             config = {}
+
+        # Keep profile-backed model state coherent when changing model.default.
+        if key_path == "model.default":
+            new_model = str(value).strip()
+            if not new_model:
+                return False
+
+            model_cfg = normalize_model_config(config.get("model"))
+            active_name = model_cfg.get("active_profile")
+            target_profile = None
+            for profile in model_cfg.get("profiles", []):
+                if profile.get("name") == active_name:
+                    target_profile = profile
+                    break
+            if target_profile is None and model_cfg.get("profiles"):
+                target_profile = model_cfg["profiles"][0]
+                model_cfg["active_profile"] = target_profile.get("name")
+
+            if target_profile is not None:
+                target_profile["model"] = new_model
+            model_cfg["default"] = new_model
+            config["model"] = sync_legacy_model_fields(model_cfg)
+
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            return True
         
         # Navigate to the key and set value
         keys = key_path.split('.')
@@ -812,11 +842,12 @@ class HermesCLI:
         )
         # Runtime base URL/API key from provider registry.
         # Nous credentials are resolved lazily in _ensure_runtime_credentials().
-        self.base_url = (
-            resolve_provider_base_url(self.provider, explicit_base_url=base_url)
-            or active_profile.get("base_url")
-            or model_cfg.get("base_url")
-            or OPENROUTER_BASE_URL
+        self.base_url = resolve_effective_base_url(
+            self.provider,
+            explicit_base_url=base_url,
+            profile_base_url=active_profile.get("base_url"),
+            model_base_url=model_cfg.get("base_url"),
+            include_openrouter_fallback=self.provider != "custom",
         )
         self.api_key = resolve_provider_api_key(self.provider, explicit_api_key=api_key)
 
@@ -825,10 +856,6 @@ class HermesCLI:
             self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or self.base_url
             if not self.api_key:
                 self.api_key = os.getenv("OPENAI_API_KEY")
-        elif self.provider == "openrouter":
-            # Historical fallback behavior for users who only set OPENROUTER_API_KEY.
-            if not self.api_key:
-                self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
 
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
@@ -942,6 +969,12 @@ class HermesCLI:
             return True
 
         if self.provider == "nous" and not self._ensure_runtime_credentials():
+            return False
+
+        if self.provider == "custom" and not (isinstance(self.base_url, str) and self.base_url.strip()):
+            self.console.print(
+                "[bold red]Custom provider requires OPENAI_BASE_URL (or profile base_url).[/]"
+            )
             return False
 
         # Initialize SQLite session store for CLI sessions

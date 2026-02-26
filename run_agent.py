@@ -1199,9 +1199,8 @@ class AIAgent:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
                     prompt_parts.append(mem_block)
-            # When Honcho is active, it handles the user profile via prefetch.
-            # USER.md is skipped to avoid duplicate/conflicting user context.
-            if self._user_profile_enabled and not self._honcho:
+            # USER.md is always included when enabled -- Honcho prefetch is additive.
+            if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
@@ -1443,17 +1442,17 @@ class AIAgent:
                             try:
                                 args = json.loads(tc.function.arguments)
                                 flush_target = args.get("target", "memory")
+                                from tools.memory_tool import memory_tool as _memory_tool
+                                result = _memory_tool(
+                                    action=args.get("action"),
+                                    target=flush_target,
+                                    content=args.get("content"),
+                                    old_text=args.get("old_text"),
+                                    store=self._memory_store,
+                                )
+                                # Also send user observations to Honcho when active
                                 if self._honcho and flush_target == "user" and args.get("action") == "add":
-                                    result = self._honcho_save_user_observation(args.get("content", ""))
-                                else:
-                                    from tools.memory_tool import memory_tool as _memory_tool
-                                    result = _memory_tool(
-                                        action=args.get("action"),
-                                        target=flush_target,
-                                        content=args.get("content"),
-                                        old_text=args.get("old_text"),
-                                        store=self._memory_store,
-                                    )
+                                    self._honcho_save_user_observation(args.get("content", ""))
                                 if not self.quiet_mode:
                                     print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                             except Exception as e:
@@ -1574,19 +1573,17 @@ class AIAgent:
                     print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
-                # When Honcho is active, route user profile writes to Honcho
+                from tools.memory_tool import memory_tool as _memory_tool
+                function_result = _memory_tool(
+                    action=function_args.get("action"),
+                    target=target,
+                    content=function_args.get("content"),
+                    old_text=function_args.get("old_text"),
+                    store=self._memory_store,
+                )
+                # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
-                    content = function_args.get("content", "")
-                    function_result = self._honcho_save_user_observation(content)
-                else:
-                    from tools.memory_tool import memory_tool as _memory_tool
-                    function_result = _memory_tool(
-                        action=function_args.get("action"),
-                        target=target,
-                        content=function_args.get("content"),
-                        old_text=function_args.get("old_text"),
-                        store=self._memory_store,
-                    )
+                    self._honcho_save_user_observation(function_args.get("content", ""))
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")

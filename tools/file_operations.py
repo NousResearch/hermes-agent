@@ -312,6 +312,16 @@ class ShellFileOperations(FileOperations):
         
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
+
+    def _stat_size_cmd(self, escaped_path: str) -> str:
+        """Return a cross-platform shell command to get file size in bytes.
+
+        GNU stat uses -c '%s', BSD/macOS stat uses -f '%z'.
+        """
+        return (
+            f"stat -c '%s' {escaped_path} 2>/dev/null "
+            f"|| stat -f '%z' {escaped_path} 2>/dev/null"
+        )
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
@@ -442,9 +452,10 @@ class ShellFileOperations(FileOperations):
         limit = min(limit, MAX_LINES)
         
         # Check if file exists and get metadata
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
+        escaped = self._escape_shell_arg(path)
+        stat_cmd = self._stat_size_cmd(escaped)
         stat_result = self._exec(stat_cmd)
-        
+
         if stat_result.exit_code != 0:
             # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
@@ -519,8 +530,8 @@ class ShellFileOperations(FileOperations):
     def _read_image(self, path: str) -> ReadResult:
         """Read an image file, returning base64 content."""
         # Get file size
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        escaped = self._escape_shell_arg(path)
+        stat_result = self._exec(self._stat_size_cmd(escaped))
         try:
             file_size = int(stat_result.stdout.strip())
         except ValueError:
@@ -649,8 +660,8 @@ class ShellFileOperations(FileOperations):
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         
         # Get bytes written
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        escaped = self._escape_shell_arg(path)
+        stat_result = self._exec(self._stat_size_cmd(escaped))
         
         try:
             bytes_written = int(stat_result.stdout.strip())

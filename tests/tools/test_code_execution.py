@@ -12,14 +12,10 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import json
-import os
 import sys
 import time
 import unittest
 from unittest.mock import patch
-
-# Ensure the project root is on the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,

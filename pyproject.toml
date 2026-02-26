@@ -66,3 +66,10 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 
 [tool.setuptools.packages.find]
 include = ["tools", "hermes_cli", "gateway", "cron"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests requiring external services (API keys, Modal, etc.)",
+]
+addopts = "-m 'not integration'"

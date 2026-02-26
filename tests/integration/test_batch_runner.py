@@ -6,6 +6,9 @@ This script tests the batch runner with a small sample dataset
 to verify functionality before running large batches.
 """
 
+import pytest
+pytestmark = pytest.mark.integration
+
 import json
 import shutil
 from pathlib import Path

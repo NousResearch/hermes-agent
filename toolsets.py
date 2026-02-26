@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Psyche network monitoring
+    "psyche_monitor",
 ]
 
 
@@ -126,6 +128,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "psyche": {
+        "description": "Psyche decentralized AI training network monitor - track runs, pool, checkpoints, stats",
+        "tools": ["psyche_monitor"],
+        "includes": []
+    },
+
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

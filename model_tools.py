@@ -93,6 +93,7 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.psyche_tool",
     ]
     import importlib
     for mod_name in _modules:

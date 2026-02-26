@@ -767,6 +767,8 @@ def main():
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
+    hermes --continue             Resume the most recent session
+    hermes --resume <session_id>  Resume a specific session
     hermes setup                  Run setup wizard
     hermes login                  Authenticate with an inference provider
     hermes logout                 Clear stored authentication
@@ -776,6 +778,7 @@ Examples:
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
     hermes gateway install        Install as system service
+    hermes sessions list          List past sessions
     hermes update                 Update to latest version
 
 For more help on a command:

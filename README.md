@@ -339,6 +339,8 @@ HERMES_TOOL_PROGRESS_MODE=all    # or "new" for only when tool changes
 # Chat
 hermes                    # Interactive chat (default)
 hermes chat -q "Hello"    # Single query mode
+hermes --continue         # Resume the most recent session (-c)
+hermes --resume <id>      # Resume a specific session (-r)
 
 # Provider & model management
 hermes model              # Switch provider and model interactively
@@ -577,7 +579,21 @@ All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state
 - **FTS5 search** via the `session_search` tool -- search past conversations with Gemini Flash summarization
 - **Compression-triggered session splitting** -- when context is compressed, a new session is created linked to the parent, giving clean trajectories
 - **Source tagging** -- each session is tagged with its origin (cli, telegram, discord, etc.)
+- **Session resume** -- pick up where you left off with `hermes --continue` (most recent) or `hermes --resume <id>` (specific session)
 - Batch runner and RL trajectories are NOT stored here (separate systems)
+
+When you exit a CLI session, the resume command is printed automatically:
+
+```
+Resume this session with:
+  hermes --resume 20260225_143052_a1b2c3
+
+Session:        20260225_143052_a1b2c3
+Duration:       12m 34s
+Messages:       28 (5 user, 18 tool calls)
+```
+
+Use `hermes sessions list` to browse past sessions and find IDs to resume.
 
 ### 📝 Session Logging
 

@@ -826,12 +826,8 @@ def run_setup_wizard(args):
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
         elif selected_provider == "openai-codex":
-            codex_models = [
-                "gpt-5-codex",
-                "gpt-5.3-codex",
-                "gpt-5.2-codex",
-                "gpt-5.1-codex",
-            ]
+            from hermes_cli.codex_models import get_codex_model_ids
+            codex_models = get_codex_model_ids()
             model_choices = [f"{m}" for m in codex_models]
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

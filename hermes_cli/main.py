@@ -385,6 +385,7 @@ def _model_flow_openai_codex(config, current_model=""):
         _update_config_for_provider, _login_openai_codex,
         PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
     )
+    from hermes_cli.codex_models import get_codex_model_ids
     from hermes_cli.config import get_env_value, save_env_value
     import argparse
 
@@ -402,14 +403,7 @@ def _model_flow_openai_codex(config, current_model=""):
             print(f"Login failed: {exc}")
             return
 
-    # Codex models are not discoverable through /models with this auth path,
-    # so provide curated IDs with custom fallback.
-    codex_models = [
-        "gpt-5-codex",
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex",
-    ]
+    codex_models = get_codex_model_ids()
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:

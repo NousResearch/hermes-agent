@@ -2,6 +2,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -156,6 +158,16 @@ class _FakeCreateStream:
         self.closed = True
 
 
+def _codex_request_kwargs():
+    return {
+        "model": "gpt-5-codex",
+        "instructions": "You are Hermes.",
+        "input": [{"role": "user", "content": "Ping"}],
+        "tools": None,
+        "store": False,
+    }
+
+
 def test_api_mode_uses_explicit_provider_when_codex(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -222,6 +234,10 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["tools"][0]["name"] == "terminal"
     assert kwargs["tools"][0]["strict"] is False
     assert "function" not in kwargs["tools"][0]
+    assert kwargs["store"] is False
+    assert "timeout" not in kwargs
+    assert "max_tokens" not in kwargs
+    assert "extra_body" not in kwargs
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
@@ -243,7 +259,7 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
         )
     )
 
-    response = agent._run_codex_stream({"model": "gpt-5-codex"})
+    response = agent._run_codex_stream(_codex_request_kwargs())
     assert calls["stream"] == 2
     assert response.output[0].content[0].text == "stream ok"
 
@@ -269,7 +285,7 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
         )
     )
 
-    response = agent._run_codex_stream({"model": "gpt-5-codex"})
+    response = agent._run_codex_stream(_codex_request_kwargs())
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
@@ -304,7 +320,7 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
         )
     )
 
-    response = agent._run_codex_stream({"model": "gpt-5-codex"})
+    response = agent._run_codex_stream(_codex_request_kwargs())
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert create_stream.closed is True
@@ -321,6 +337,72 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _UnauthorizedError(RuntimeError):
+        def __init__(self):
+            super().__init__("Error code: 401 - unauthorized")
+            self.status_code = 401
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _UnauthorizedError()
+        return _codex_message_response("Recovered after refresh")
+
+    def _fake_refresh(*, force=True):
+        calls["refresh"] += 1
+        assert force is True
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_codex_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after refresh"
+
+
+def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    closed = {"value": False}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            closed["value"] = True
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda force_refresh=True: {
+            "api_key": "new-codex-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True
+    assert closed["value"] is True
+    assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
+    assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert isinstance(agent.client, _RebuiltClient)
 
 
 def test_run_conversation_codex_tool_round_trip(monkeypatch):
@@ -402,6 +484,56 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     assert function_call["call_id"] == "call_pair123"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_pair123"
+
+
+def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    preflight = agent._preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {"role": "user", "content": "hi"},
+                {
+                    "type": "function_call",
+                    "id": "call_bad",
+                    "call_id": "call_good",
+                    "name": "terminal",
+                    "arguments": "{}",
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    fn_call = next(item for item in preflight["input"] if item.get("type") == "function_call")
+    assert fn_call["call_id"] == "call_good"
+    assert "id" not in fn_call
+
+
+def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    with pytest.raises(ValueError, match="function_call_output is missing call_id"):
+        agent._preflight_codex_api_kwargs(
+            {
+                "model": "gpt-5-codex",
+                "instructions": "You are Hermes.",
+                "input": [{"type": "function_call_output", "output": "{}"}],
+                "tools": [],
+                "store": False,
+            }
+        )
+
+
+def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["temperature"] = 0
+
+    with pytest.raises(ValueError, match="unsupported field"):
+        agent._preflight_codex_api_kwargs(kwargs)
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

@@ -1357,6 +1357,175 @@ class AIAgent:
 
         return items
 
+    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_items, list):
+            raise ValueError("Codex Responses input must be a list of input items.")
+
+        normalized: List[Dict[str, Any]] = []
+        for idx, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                raise ValueError(f"Codex Responses input[{idx}] must be an object.")
+
+            item_type = item.get("type")
+            if item_type == "function_call":
+                call_id = item.get("call_id")
+                name = item.get("name")
+                if not isinstance(call_id, str) or not call_id.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
+
+                arguments = item.get("arguments", "{}")
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                elif not isinstance(arguments, str):
+                    arguments = str(arguments)
+                arguments = arguments.strip() or "{}"
+
+                normalized.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id.strip(),
+                        "name": name.strip(),
+                        "arguments": arguments,
+                    }
+                )
+                continue
+
+            if item_type == "function_call_output":
+                call_id = item.get("call_id")
+                if not isinstance(call_id, str) or not call_id.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
+                output = item.get("output", "")
+                if output is None:
+                    output = ""
+                if not isinstance(output, str):
+                    output = str(output)
+
+                normalized.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id.strip(),
+                        "output": output,
+                    }
+                )
+                continue
+
+            role = item.get("role")
+            if role in {"user", "assistant"}:
+                content = item.get("content", "")
+                if content is None:
+                    content = ""
+                if not isinstance(content, str):
+                    content = str(content)
+
+                normalized.append({"role": role, "content": content})
+                continue
+
+            raise ValueError(
+                f"Codex Responses input[{idx}] has unsupported item shape (type={item_type!r}, role={role!r})."
+            )
+
+        return normalized
+
+    def _preflight_codex_api_kwargs(
+        self,
+        api_kwargs: Any,
+        *,
+        allow_stream: bool = False,
+    ) -> Dict[str, Any]:
+        if not isinstance(api_kwargs, dict):
+            raise ValueError("Codex Responses request must be a dict.")
+
+        required = {"model", "instructions", "input"}
+        missing = [key for key in required if key not in api_kwargs]
+        if missing:
+            raise ValueError(f"Codex Responses request missing required field(s): {', '.join(sorted(missing))}.")
+
+        model = api_kwargs.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Codex Responses request 'model' must be a non-empty string.")
+        model = model.strip()
+
+        instructions = api_kwargs.get("instructions")
+        if instructions is None:
+            instructions = ""
+        if not isinstance(instructions, str):
+            instructions = str(instructions)
+        instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+
+        normalized_input = self._preflight_codex_input_items(api_kwargs.get("input"))
+
+        tools = api_kwargs.get("tools")
+        normalized_tools = None
+        if tools is not None:
+            if not isinstance(tools, list):
+                raise ValueError("Codex Responses request 'tools' must be a list when provided.")
+            normalized_tools = []
+            for idx, tool in enumerate(tools):
+                if not isinstance(tool, dict):
+                    raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
+                if tool.get("type") != "function":
+                    raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
+
+                name = tool.get("name")
+                parameters = tool.get("parameters")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"Codex Responses tools[{idx}] is missing a valid name.")
+                if not isinstance(parameters, dict):
+                    raise ValueError(f"Codex Responses tools[{idx}] is missing valid parameters.")
+
+                description = tool.get("description", "")
+                if description is None:
+                    description = ""
+                if not isinstance(description, str):
+                    description = str(description)
+
+                strict = tool.get("strict", False)
+                if not isinstance(strict, bool):
+                    strict = bool(strict)
+
+                normalized_tools.append(
+                    {
+                        "type": "function",
+                        "name": name.strip(),
+                        "description": description,
+                        "strict": strict,
+                        "parameters": parameters,
+                    }
+                )
+
+        store = api_kwargs.get("store", False)
+        if store is not False:
+            raise ValueError("Codex Responses contract requires 'store' to be false.")
+
+        allowed_keys = {"model", "instructions", "input", "tools", "store"}
+        normalized: Dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": normalized_input,
+            "tools": normalized_tools,
+            "store": False,
+        }
+
+        if allow_stream:
+            stream = api_kwargs.get("stream")
+            if stream is not None and stream is not True:
+                raise ValueError("Codex Responses 'stream' must be true when set.")
+            if stream is True:
+                normalized["stream"] = True
+            allowed_keys.add("stream")
+        elif "stream" in api_kwargs:
+            raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
+
+        unexpected = sorted(key for key in api_kwargs.keys() if key not in allowed_keys)
+        if unexpected:
+            raise ValueError(
+                f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
+            )
+
+        return normalized
+
     def _extract_responses_message_text(self, item: Any) -> str:
         """Extract assistant text from a Responses message output item."""
         content = getattr(item, "content", None)
@@ -1511,6 +1680,7 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict):
         """Execute one streaming Responses API request and return the final response."""
+        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
             try:
@@ -1539,6 +1709,7 @@ class AIAgent:
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
+        fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = self.client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -1572,6 +1743,43 @@ class AIAgent:
         if terminal_response is not None:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+
+    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
+        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(force_refresh=force)
+        except Exception as exc:
+            logger.debug("Codex credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        try:
+            self.client = OpenAI(**self._client_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to rebuild OpenAI client after Codex refresh: %s", exc)
+            return False
+
+        return True
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """
@@ -2364,12 +2572,15 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            codex_auth_retry_attempted = False
 
             finish_reason = "stop"
 
             while retry_count <= max_retries:
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
+                    if self.api_mode == "codex_responses":
+                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -2586,6 +2797,18 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
+
+                    status_code = getattr(api_error, "status_code", None)
+                    if (
+                        self.api_mode == "codex_responses"
+                        and self.provider == "openai-codex"
+                        and status_code == 401
+                        and not codex_auth_retry_attempted
+                    ):
+                        codex_auth_retry_attempted = True
+                        if self._try_refresh_codex_client_credentials(force=True):
+                            print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            continue
                     
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -2614,7 +2837,6 @@ class AIAgent:
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    status_code = getattr(api_error, "status_code", None)
                     is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500
                     is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 400', 'error code: 401', 'error code: 403',

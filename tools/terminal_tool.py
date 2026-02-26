@@ -1068,6 +1068,10 @@ def check_terminal_requirements() -> bool:
                 result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
                 return result.returncode == 0
             return False
+        elif env_type == "ssh":
+            from tools.environments.ssh import SSHEnvironment
+            # Check that host and user are configured
+            return bool(config.get("ssh_host")) and bool(config.get("ssh_user"))
         elif env_type == "modal":
             from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
             # Check for modal token

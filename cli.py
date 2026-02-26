@@ -1075,9 +1075,9 @@ class HermesCLI:
         
         # Header
         print()
-        print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
-        print("+" + "-" * 78 + "+")
+        print("+" + "-" * 90 + "+")
+        print("|" + " " * 30 + "(^_^)/ Available Tools" + " " * 30 + "|")
+        print("+" + "-" * 90 + "+")
         print()
         
         # Group tools by toolset
@@ -1088,10 +1088,13 @@ class HermesCLI:
             if toolset not in toolsets:
                 toolsets[toolset] = []
             desc = tool["function"].get("description", "")
-            # First sentence: split on ". " (period+space) to avoid breaking on "e.g." or "v2.0"
             desc = desc.split("\n")[0]
-            if ". " in desc:
-                desc = desc[:desc.index(". ") + 1]
+            max_desc_len = 60
+            if len(desc) > max_desc_len:
+                if ". " in desc[:max_desc_len]:
+                    desc = desc[:desc.index(". ") + 1]
+                else:
+                    desc = desc[:max_desc_len] + "..."
             toolsets[toolset].append((name, desc))
         
         # Display by toolset

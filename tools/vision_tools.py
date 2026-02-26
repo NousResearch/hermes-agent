@@ -46,10 +46,17 @@ logger = logging.getLogger(__name__)
 _aux_sync_client, DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
 _aux_async_client: AsyncOpenAI | None = None
 if _aux_sync_client is not None:
-    _aux_async_client = AsyncOpenAI(
-        api_key=_aux_sync_client.api_key,
-        base_url=str(_aux_sync_client.base_url),
-    )
+    _async_kwargs = {
+        "api_key": _aux_sync_client.api_key,
+        "base_url": str(_aux_sync_client.base_url),
+    }
+    if "openrouter" in str(_aux_sync_client.base_url).lower():
+        _async_kwargs["default_headers"] = {
+            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+            "X-OpenRouter-Title": "Hermes Agent",
+            "X-OpenRouter-Categories": "cli-agent",
+        }
+    _aux_async_client = AsyncOpenAI(**_async_kwargs)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 

@@ -52,6 +52,11 @@ import queue
 # Load environment variables first
 from dotenv import load_dotenv
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.model_profiles import get_active_profile, normalize_model_config
+from hermes_cli.provider_registry import (
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 
 env_path = Path(__file__).parent / '.env'
 if env_path.exists():
@@ -140,7 +145,18 @@ def load_cli_config() -> Dict[str, Any]:
         "model": {
             "default": "anthropic/claude-opus-4.6",
             "base_url": OPENROUTER_BASE_URL,
-            "provider": "auto",
+            "provider": "openrouter",
+            "profiles": [
+                {
+                    "name": "default-openrouter",
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.6",
+                    "base_url": OPENROUTER_BASE_URL,
+                    "enabled": True,
+                }
+            ],
+            "active_profile": "default-openrouter",
+            "scoped_profiles": ["default-openrouter"],
         },
         "terminal": {
             "env_type": "local",
@@ -237,6 +253,8 @@ def load_cli_config() -> Dict[str, Any]:
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
+
+    defaults["model"] = normalize_model_config(defaults.get("model"))
     
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -745,7 +763,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous")
+            provider: Inference provider ("auto", "openrouter", "nous", "zai", "kimi-coding", "minimax", "minimax-cn")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -757,29 +775,61 @@ class HermesCLI:
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
         
-        # Configuration - priority: CLI args > env vars > config file
-        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
-        self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
-        
-        # Base URL: custom endpoint (OPENAI_BASE_URL) takes precedence over OpenRouter
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        
-        # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        model_cfg = normalize_model_config(CLI_CONFIG.get("model"))
+        active_profile = get_active_profile(model_cfg)
 
-        # Provider resolution: determines whether to use OAuth credentials or env var keys
-        from hermes_cli.auth import resolve_provider
-        self.requested_provider = (
-            provider
-            or os.getenv("HERMES_INFERENCE_PROVIDER")
-            or CLI_CONFIG["model"].get("provider")
-            or "auto"
+        # Configuration - priority: CLI args > env vars > active profile
+        # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
+        self.model = (
+            model
+            or os.getenv("LLM_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or active_profile.get("model")
+            or model_cfg.get("default")
         )
+
+        # Provider resolution: determines whether to use OAuth credentials or env var keys.
+        # If config defaults to OpenRouter but no OpenRouter key is configured, fall back
+        # to auto-detection so provider-specific env keys (e.g., GLM/KIMI/MINIMAX) are respected.
+        from hermes_cli.auth import resolve_provider
+        explicit_requested_provider = provider or os.getenv("HERMES_INFERENCE_PROVIDER")
+        if explicit_requested_provider:
+            self.requested_provider = explicit_requested_provider
+        else:
+            configured_provider = (
+                active_profile.get("provider")
+                or model_cfg.get("provider")
+                or "openrouter"
+            )
+            if configured_provider == "openrouter" and not resolve_provider_api_key("openrouter"):
+                self.requested_provider = "auto"
+            else:
+                self.requested_provider = configured_provider
         self.provider = resolve_provider(
             self.requested_provider,
             explicit_api_key=api_key,
             explicit_base_url=base_url,
         )
+        # Runtime base URL/API key from provider registry.
+        # Nous credentials are resolved lazily in _ensure_runtime_credentials().
+        self.base_url = (
+            resolve_provider_base_url(self.provider, explicit_base_url=base_url)
+            or active_profile.get("base_url")
+            or model_cfg.get("base_url")
+            or OPENROUTER_BASE_URL
+        )
+        self.api_key = resolve_provider_api_key(self.provider, explicit_api_key=api_key)
+
+        # Backward compatibility: old custom endpoint env pair.
+        if self.provider == "custom":
+            self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or self.base_url
+            if not self.api_key:
+                self.api_key = os.getenv("OPENAI_API_KEY")
+        elif self.provider == "openrouter":
+            # Historical fallback behavior for users who only set OPENROUTER_API_KEY.
+            if not self.api_key:
+                self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
@@ -2587,7 +2637,7 @@ def main(
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous")
+        provider: Inference provider ("auto", "openrouter", "nous", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)

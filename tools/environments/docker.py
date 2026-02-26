@@ -7,6 +7,7 @@ and optional filesystem persistence via `docker commit`/`docker create --image`.
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -44,7 +45,7 @@ class DockerEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "~",
+        cwd: str = "/root",
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
@@ -53,6 +54,8 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         network: bool = True,
     ):
+        if cwd == "~":
+            cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._base_image = image
         self._persistent = persistent_filesystem
@@ -67,7 +70,7 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--cpus", str(cpu)])
         if memory > 0:
             resource_args.extend(["--memory", f"{memory}m"])
-        if disk > 0:
+        if disk > 0 and sys.platform != "darwin":
             resource_args.extend(["--storage-opt", f"size={disk}m"])
         if not network:
             resource_args.append("--network=none")
@@ -102,7 +105,7 @@ class DockerEnvironment(BaseEnvironment):
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
 
         self._inner = _Docker(
-            image=effective_image, cwd=cwd, timeout=timeout,
+            image=image, cwd=cwd, timeout=timeout,
             run_args=all_run_args,
         )
         self._container_id = self._inner.container_id

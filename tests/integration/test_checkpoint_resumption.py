@@ -10,13 +10,16 @@ This script simulates batch processing with intentional failures to test:
 Usage:
     # Test current implementation
     python tests/test_checkpoint_resumption.py --test_current
-    
+
     # Test after fix is applied
     python tests/test_checkpoint_resumption.py --test_fixed
-    
+
     # Run full comparison
     python tests/test_checkpoint_resumption.py --compare
 """
+
+import pytest
+pytestmark = pytest.mark.integration
 
 import json
 import os
@@ -27,8 +30,8 @@ from pathlib import Path
 from typing import List, Dict, Any
 import traceback
 
-# Add parent directory to path to import batch_runner
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path to import batch_runner
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 def create_test_dataset(num_prompts: int = 20) -> Path:

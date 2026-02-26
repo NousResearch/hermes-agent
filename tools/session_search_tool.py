@@ -31,10 +31,17 @@ from agent.auxiliary_client import get_text_auxiliary_client
 _aux_client, _SUMMARIZER_MODEL = get_text_auxiliary_client()
 _async_aux_client: AsyncOpenAI | None = None
 if _aux_client is not None:
-    _async_aux_client = AsyncOpenAI(
-        api_key=_aux_client.api_key,
-        base_url=str(_aux_client.base_url),
-    )
+    _async_kwargs = {
+        "api_key": _aux_client.api_key,
+        "base_url": str(_aux_client.base_url),
+    }
+    if "openrouter" in str(_aux_client.base_url).lower():
+        _async_kwargs["default_headers"] = {
+            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+            "X-OpenRouter-Title": "Hermes Agent",
+            "X-OpenRouter-Categories": "cli-agent",
+        }
+    _async_aux_client = AsyncOpenAI(**_async_kwargs)
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 2000
 

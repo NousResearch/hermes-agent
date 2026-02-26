@@ -77,23 +77,6 @@ class TestTokenExpired:
 class TestHasCodexCredentials:
     """Tests for has_codex_credentials with mock auth.json."""
 
-    def test_api_key_mode(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "auth_mode": "api_key",
-            "OPENAI_API_KEY": "sk-test-key-12345",
-        }))
-        with patch("agent.codex_auth.CODEX_AUTH_FILE", auth_file):
-            from agent.codex_auth import has_codex_credentials
-            assert has_codex_credentials()
-
-    def test_api_key_mode_missing_key(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({"auth_mode": "api_key"}))
-        with patch("agent.codex_auth.CODEX_AUTH_FILE", auth_file):
-            from agent.codex_auth import has_codex_credentials
-            assert not has_codex_credentials()
-
     def test_no_auth_file(self, tmp_path):
         auth_file = tmp_path / "nonexistent.json"
         with patch("agent.codex_auth.CODEX_AUTH_FILE", auth_file):
@@ -103,6 +86,17 @@ class TestHasCodexCredentials:
     def test_unknown_auth_mode(self, tmp_path):
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({"auth_mode": "unknown"}))
+        with patch("agent.codex_auth.CODEX_AUTH_FILE", auth_file):
+            from agent.codex_auth import has_codex_credentials
+            assert not has_codex_credentials()
+
+    def test_api_key_mode_ignored(self, tmp_path):
+        """api_key mode is not supported — should return False."""
+        auth_file = tmp_path / "auth.json"
+        auth_file.write_text(json.dumps({
+            "auth_mode": "api_key",
+            "OPENAI_API_KEY": "sk-test-key-12345",
+        }))
         with patch("agent.codex_auth.CODEX_AUTH_FILE", auth_file):
             from agent.codex_auth import has_codex_credentials
             assert not has_codex_credentials()

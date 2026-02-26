@@ -43,7 +43,7 @@ def _write_codex_auth(data: Dict[str, Any]) -> None:
 def get_codex_auth_mode() -> Optional[str]:
     """Return configured auth mode from ~/.codex/auth.json."""
     mode = _read_codex_auth().get("auth_mode")
-    if mode in ("api_key", "chatgpt"):
+    if mode == "chatgpt":
         return mode
     return None
 
@@ -81,13 +81,6 @@ def _token_expired(token: str, skew_seconds: int = 90) -> bool:
     if not isinstance(exp, (int, float)):
         return False
     return exp <= (datetime.now(tz=timezone.utc).timestamp() + skew_seconds)
-
-
-def get_codex_openai_api_key() -> Optional[str]:
-    """Return OPENAI_API_KEY stored by Codex when auth_mode=api_key."""
-    if get_codex_auth_mode() != "api_key":
-        return None
-    return _read_codex_auth().get("OPENAI_API_KEY") or None
 
 
 def refresh_codex_chatgpt_auth(refresh_token: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -176,10 +169,7 @@ def get_codex_chatgpt_auth(refresh_if_expiring: bool = True) -> Optional[Dict[st
 
 
 def has_codex_credentials() -> bool:
-    """Return True when ~/.codex contains usable API-key or ChatGPT auth."""
-    mode = get_codex_auth_mode()
-    if mode == "api_key":
-        return get_codex_openai_api_key() is not None
-    if mode == "chatgpt":
+    """Return True when ~/.codex contains usable ChatGPT auth."""
+    if get_codex_auth_mode() == "chatgpt":
         return get_codex_chatgpt_auth(refresh_if_expiring=False) is not None
     return False

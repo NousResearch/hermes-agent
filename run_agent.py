@@ -207,51 +207,32 @@ class AIAgent:
         # Explicit opt-in: load credentials from ~/.codex/auth.json.
         self._codex_transport = None  # CodexTransport instance (survives httpx.Client.close())
         if self._use_codex_auth:
-            from agent.codex_auth import (
-                get_codex_auth_mode, get_codex_chatgpt_auth, get_codex_openai_api_key,
-            )
+            from agent.codex_auth import get_codex_chatgpt_auth
             from agent.codex_models import get_codex_default_model
-            codex_auth_mode = get_codex_auth_mode()
-            if codex_auth_mode == "api_key":
-                codex_api_key = get_codex_openai_api_key()
-                if not codex_api_key:
-                    raise RuntimeError(
-                        "Codex auth requested but OPENAI_API_KEY is missing in "
-                        "~/.codex/auth.json. Run `codex login` first."
-                    )
-                api_key = codex_api_key
-                base_url = "https://api.openai.com/v1"
-                self.base_url = base_url
-            elif codex_auth_mode == "chatgpt":
-                codex_auth = get_codex_chatgpt_auth(refresh_if_expiring=True)
-                if not codex_auth:
-                    raise RuntimeError(
-                        "Codex auth requested but no usable credentials in "
-                        "~/.codex/auth.json. Run `codex login` first."
-                    )
-                from agent.codex_transport import CodexTransport
-                import httpx as _httpx
-                transport = CodexTransport(
-                    access_token=codex_auth["access_token"],
-                    refresh_token=codex_auth["refresh_token"],
-                    account_id=codex_auth["account_id"],
-                )
-                self._codex_transport = transport
-                # Dummy key; the transport injects the real Bearer token.
-                api_key = "codex-oauth"
-                # base_url must be OpenAI-compatible so the SDK builds correct
-                # paths; the transport rewrites the actual URL.
-                base_url = "https://api.openai.com/v1"
-                self.base_url = base_url
-            else:
+            codex_auth = get_codex_chatgpt_auth(refresh_if_expiring=True)
+            if not codex_auth:
                 raise RuntimeError(
-                    "~/.codex/auth.json is missing a supported auth_mode. "
-                    "Run `codex login` first."
+                    "Codex auth requested but no usable credentials in "
+                    "~/.codex/auth.json. Run `codex login` first."
                 )
+            from agent.codex_transport import CodexTransport
+            import httpx as _httpx
+            transport = CodexTransport(
+                access_token=codex_auth["access_token"],
+                refresh_token=codex_auth["refresh_token"],
+                account_id=codex_auth["account_id"],
+            )
+            self._codex_transport = transport
+            # Dummy key; the transport injects the real Bearer token.
+            api_key = "codex-oauth"
+            # base_url must be OpenAI-compatible so the SDK builds correct
+            # paths; the transport rewrites the actual URL.
+            base_url = "https://api.openai.com/v1"
+            self.base_url = base_url
             codex_model = get_codex_default_model() or "gpt-5.1-codex"
             if "codex" not in self.model.lower():
                 self.model = codex_model
-            logger.info("Using Codex auth (%s) from %s", codex_auth_mode, Path.home() / ".codex" / "auth.json")
+            logger.info("Using Codex auth from %s", Path.home() / ".codex" / "auth.json")
 
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the

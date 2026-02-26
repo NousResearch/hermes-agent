@@ -38,3 +38,4 @@ croniter
 python-telegram-bot>=20.0
 discord.py>=2.0
 aiohttp>=3.9.0
+PyMuPDF>=1.23.0

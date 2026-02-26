@@ -106,8 +106,8 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
-        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 60,  # Default tool-calling iterations
+        model: str = "anthropic/claude-opus-4.6",
+        max_iterations: int = 60,
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -2524,7 +2524,7 @@ def main(
 
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4-20250514.
+        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-opus-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
         max_turns (int): Maximum number of API call iterations. Defaults to 10.

@@ -28,6 +28,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
 from toolsets import resolve_toolset, validate_toolset
+import tools.arxiv_research_tool
 
 logger = logging.getLogger(__name__)
 

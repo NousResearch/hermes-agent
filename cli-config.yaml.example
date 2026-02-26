@@ -6,19 +6,56 @@
 # Model Configuration
 # =============================================================================
 model:
-  # Default model to use (can be overridden with --model flag)
+  # Legacy fields (default/provider/base_url) remain supported and are
+  # auto-synced from the active profile for backward compatibility.
   default: "anthropic/claude-opus-4.6"
-  
-  # Inference provider selection:
-  #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
-  #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
-  #   "nous"       - Always use Nous Portal (requires: hermes login)
-  # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
-  provider: "auto"
-  
-  # API configuration (falls back to OPENROUTER_API_KEY env var)
-  # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
+  # Provider choices:
+  #   "auto" (default) | "openrouter" | "nous" | "zai" | "kimi-coding" | "minimax" | "minimax-cn"
+  # "custom" is inferred from OPENAI_BASE_URL (not passed via --provider).
+  # Per-session override: --provider or HERMES_INFERENCE_PROVIDER.
+  # API keys in .env:
+  #   OPENROUTER_API_KEY | GLM_API_KEY (or ZAI_API_KEY/Z_AI_API_KEY) | KIMI_API_KEY | MINIMAX_API_KEY | MINIMAX_CN_API_KEY
+  # Optional base URL overrides:
+  #   GLM_BASE_URL | KIMI_BASE_URL | MINIMAX_BASE_URL | MINIMAX_CN_BASE_URL
+  provider: "auto"
+
+  # Multi-provider profile configuration.
+  profiles:
+    - name: "openrouter-default"
+      provider: "openrouter"
+      model: "anthropic/claude-opus-4.6"
+      base_url: "https://openrouter.ai/api/v1"
+      enabled: true
+    - name: "glm-fast"
+      provider: "zai"
+      model: "glm-4.7"
+      base_url: "https://api.z.ai/api/coding/paas/v4"
+      enabled: true
+    - name: "kimi-reasoning"
+      provider: "kimi-coding"
+      model: "kimi-k2-thinking"
+      base_url: "https://api.kimi.com/coding/v1"
+      enabled: true
+    - name: "minimax-global"
+      provider: "minimax"
+      model: "MiniMax-M2.5"
+      base_url: "https://api.minimax.io/v1"
+      enabled: true
+    - name: "minimax-cn"
+      provider: "minimax-cn"
+      model: "MiniMax-M2.1"
+      base_url: "https://api.minimaxi.com/v1"
+      enabled: false
+
+  # Default profile for new CLI sessions.
+  active_profile: "openrouter-default"
+
+  # Optional subset used by scoped profile-selection workflows.
+  scoped_profiles:
+    - "openrouter-default"
+    - "glm-fast"
+    - "kimi-reasoning"
 
 # =============================================================================
 # Terminal Tool Configuration

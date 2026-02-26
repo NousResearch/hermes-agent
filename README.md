@@ -122,9 +122,41 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes login` (OAuth, subscription-based) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **GLM (z.ai)** | `GLM_API_KEY` (preferred) or `ZAI_API_KEY`/`Z_AI_API_KEY` + optional `GLM_BASE_URL` |
+| **Kimi Coding** | `KIMI_API_KEY` + optional `KIMI_BASE_URL` |
+| **MiniMax** | `MINIMAX_API_KEY` + optional `MINIMAX_BASE_URL` |
+| **MiniMax (China)** | `MINIMAX_CN_API_KEY` + optional `MINIMAX_CN_BASE_URL` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
-**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+**Model profile config** (`~/.hermes/config.yaml`):
+
+```yaml
+model:
+  profiles:
+    - name: "openrouter-default"
+      provider: "openrouter"
+      model: "anthropic/claude-opus-4.6"
+    - name: "glm-fast"
+      provider: "zai"
+      model: "glm-4.7"
+  active_profile: "openrouter-default"
+  scoped_profiles: ["openrouter-default", "glm-fast"]
+```
+
+- `model.profiles`: Named provider/model entries for multi-provider setups.
+- `model.active_profile`: Persisted default profile for new CLI sessions.
+- `model.scoped_profiles`: Optional subset used in scoped profile-selection workflows.
+- Legacy fields (`model.default`, `model.provider`, `model.base_url`) remain supported and are synchronized from the active profile for backward compatibility.
+
+**One-off selection examples** (do not change saved `active_profile`):
+
+```bash
+hermes chat --provider zai --model glm-4.7
+hermes chat --provider kimi-coding --model kimi-k2-thinking
+hermes chat --provider minimax-cn --model MiniMax-M2.1
+```
+
+**Note:** Even when using Nous Portal, direct providers (GLM/Kimi/MiniMax), or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 
 ---
 
@@ -334,6 +366,7 @@ hermes chat -q "Hello"    # Single query mode
 
 # Provider & model management
 hermes model              # Switch provider and model interactively
+hermes chat --provider zai --model glm-4.7  # One-off override (session only)
 hermes login              # Authenticate with Nous Portal (OAuth)
 hermes logout             # Clear stored OAuth credentials
 
@@ -1171,8 +1204,20 @@ Your `~/.hermes/` directory should now look like:
 Open `~/.hermes/.env` in your editor and add at minimum an LLM provider key:
 
 ```bash
-# Required — at least one LLM provider:
+# Required — set at least one LLM provider key:
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+# GLM_API_KEY=your-zai-glm-key          # Preferred zAI/GLM key
+# ZAI_API_KEY=your-zai-key              # Fallback alias for GLM provider
+# Z_AI_API_KEY=your-z-ai-key            # Alternate fallback alias
+# KIMI_API_KEY=your-kimi-key
+# MINIMAX_API_KEY=your-minimax-key
+# MINIMAX_CN_API_KEY=your-minimax-cn-key
+
+# Optional provider base URL overrides:
+# GLM_BASE_URL=https://api.z.ai/api/coding/paas/v4
+# KIMI_BASE_URL=https://api.kimi.com/coding/v1
+# MINIMAX_BASE_URL=https://api.minimax.io/v1
+# MINIMAX_CN_BASE_URL=https://api.minimaxi.com/v1
 
 # Optional — enable additional tools:
 FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping
@@ -1398,15 +1443,25 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
-| `ANTHROPIC_API_KEY` | Direct Anthropic access |
+| `GLM_API_KEY` | zAI/GLM provider API key (preferred key name) |
+| `ZAI_API_KEY` | zAI legacy fallback alias (used when `GLM_API_KEY` is unset) |
+| `Z_AI_API_KEY` | zAI fallback alias variant (used when `GLM_API_KEY` and `ZAI_API_KEY` are unset) |
+| `KIMI_API_KEY` | Kimi Coding provider API key |
+| `MINIMAX_API_KEY` | MiniMax provider API key |
+| `MINIMAX_CN_API_KEY` | MiniMax (China) provider API key |
+| `GLM_BASE_URL` | Optional zAI/GLM base URL override |
+| `KIMI_BASE_URL` | Optional Kimi Coding base URL override |
+| `MINIMAX_BASE_URL` | Optional MiniMax base URL override |
+| `MINIMAX_CN_BASE_URL` | Optional MiniMax (China) base URL override |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
+| `ANTHROPIC_API_KEY` | Legacy direct Anthropic key (used by some scripts/tools) |
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
 
 **Provider Auth (OAuth):**
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` (custom endpoints are inferred from `OPENAI_BASE_URL`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |

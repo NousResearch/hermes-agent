@@ -12,8 +12,12 @@ The Hermes Agent CLI provides an interactive terminal interface for working with
 ./hermes --model "anthropic/claude-sonnet-4"
 
 # With specific provider
-./hermes --provider nous        # Use Nous Portal (requires: hermes login)
-./hermes --provider openrouter  # Force OpenRouter
+./hermes chat --provider nous        # Use Nous Portal (requires: hermes login)
+./hermes chat --provider openrouter  # Force OpenRouter
+./hermes chat --provider zai --model "glm-4.7"                    # One-off GLM session
+./hermes chat --provider kimi-coding --model "kimi-k2-thinking"   # One-off Kimi session
+./hermes chat --provider minimax --model "MiniMax-M2.5"           # One-off MiniMax session
+./hermes chat --provider minimax-cn --model "MiniMax-M2.1"        # One-off MiniMax CN session
 
 # With specific toolsets
 ./hermes --toolsets "web,terminal,skills"
@@ -83,17 +87,46 @@ cp cli-config.yaml.example cli-config.yaml
 
 ```yaml
 model:
+  # Legacy fields are still supported and auto-synced from active_profile.
   default: "anthropic/claude-opus-4.6"
+  provider: "auto"  # "auto" | "openrouter" | "nous" | "zai" | "kimi-coding" | "minimax" | "minimax-cn"
   base_url: "https://openrouter.ai/api/v1"
-  provider: "auto"  # "auto" | "openrouter" | "nous"
+  profiles:
+    - name: "openrouter-default"
+      provider: "openrouter"
+      model: "anthropic/claude-opus-4.6"
+      enabled: true
+    - name: "glm-fast"
+      provider: "zai"
+      model: "glm-4.7"
+      enabled: true
+    - name: "minimax-global"
+      provider: "minimax"
+      model: "MiniMax-M2.5"
+      enabled: true
+  active_profile: "openrouter-default"
+  scoped_profiles: ["openrouter-default", "glm-fast", "minimax-global"]
 ```
 
 **Provider selection** (`provider` field):
-- `auto` (default): Uses Nous Portal if logged in (`hermes login`), otherwise falls back to OpenRouter/env vars.
+- `auto` (default): Uses Nous Portal if logged in (`hermes login`), otherwise auto-detects from env (`OPENAI_BASE_URL` custom endpoint, then `OPENROUTER_API_KEY`, `GLM_API_KEY`/`ZAI_API_KEY`/`Z_AI_API_KEY`, `KIMI_API_KEY`, `MINIMAX_API_KEY`, `MINIMAX_CN_API_KEY`).
 - `openrouter`: Always uses `OPENROUTER_API_KEY` from `.env`.
 - `nous`: Always uses Nous Portal OAuth credentials from `auth.json`.
+- `zai`, `kimi-coding`, `minimax`, `minimax-cn`: Use the matching provider API key and optional base URL override from `.env`.
 
-Can also be overridden per-session with `--provider` or via `HERMES_INFERENCE_PROVIDER` env var.
+**Provider env vars**:
+- zAI/GLM: `GLM_API_KEY` (preferred) or `ZAI_API_KEY`/`Z_AI_API_KEY` (fallback aliases), optional `GLM_BASE_URL`.
+- Kimi Coding: `KIMI_API_KEY`, optional `KIMI_BASE_URL`.
+- MiniMax: `MINIMAX_API_KEY`, optional `MINIMAX_BASE_URL`.
+- MiniMax (China): `MINIMAX_CN_API_KEY`, optional `MINIMAX_CN_BASE_URL`.
+
+**Profile schema**:
+- `model.profiles`: Named provider/model entries for multi-provider setups.
+- `model.active_profile`: Default profile used for new CLI sessions.
+- `model.scoped_profiles`: Optional subset used by scoped profile-selection workflows.
+- Legacy fields (`model.default`, `model.provider`, `model.base_url`) remain supported for backward compatibility and are synchronized from the active profile.
+
+Session overrides: `--provider` and `--model` apply to the current run only. Use `hermes model` to persist profile changes.
 
 ### Terminal Configuration
 

@@ -205,7 +205,7 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
 
         # Explicit opt-in: load credentials from ~/.codex/auth.json.
-        self._codex_http_client: Optional[object] = None  # httpx.Client for transport-based codex
+        self._codex_transport = None  # CodexTransport instance (survives httpx.Client.close())
         if self._use_codex_auth:
             from agent.codex_auth import (
                 get_codex_auth_mode, get_codex_chatgpt_auth, get_codex_openai_api_key,
@@ -236,7 +236,7 @@ class AIAgent:
                     refresh_token=codex_auth["refresh_token"],
                     account_id=codex_auth["account_id"],
                 )
-                self._codex_http_client = _httpx.Client(transport=transport)
+                self._codex_transport = transport
                 # Dummy key; the transport injects the real Bearer token.
                 api_key = "codex-oauth"
                 # base_url must be OpenAI-compatible so the SDK builds correct
@@ -1211,9 +1211,15 @@ class AIAgent:
                     self.client.close()
                 except Exception:
                     pass
-                # Rebuild the client for future calls (cheap, no network)
+                # Rebuild the client for future calls (cheap, no network).
+                # If using Codex, rewrap the transport in a fresh httpx.Client
+                # (the old one was closed above, but the transport survives).
                 try:
-                    self.client = OpenAI(**self._client_kwargs)
+                    rebuild_kwargs = dict(self._client_kwargs)
+                    if self._codex_transport is not None:
+                        import httpx as _httpx
+                        rebuild_kwargs["http_client"] = _httpx.Client(transport=self._codex_transport)
+                    self.client = OpenAI(**rebuild_kwargs)
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")

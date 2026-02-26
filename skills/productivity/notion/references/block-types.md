@@ -106,3 +106,7 @@ When reading blocks from `GET /v1/blocks/{page_id}/children`, each block has a `
 | `child_database` | — | `.child_database.title` |
 
 Rich text arrays contain objects with `.plain_text` — concatenate them for readable output.
+
+---
+
+*Contributed by [@dogiladeveloper](https://github.com/dogiladeveloper)*

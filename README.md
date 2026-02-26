@@ -235,23 +235,31 @@ SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
 
 ### WhatsApp Setup
 
-WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes supports two approaches:
+WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
 
-**Option A — WhatsApp Business API** (requires [Meta Business verification](https://business.facebook.com/)):
-- Production-grade, but requires a verified business account
-- Set `WHATSAPP_ENABLED=true` in `~/.hermes/.env` and configure the Business API credentials
-
-**Option B — whatsapp-web.js bridge** (personal accounts):
-1. Install Node.js if not already present
-2. Set up the bridge:
+1. **Run the setup command:**
 
 ```bash
-# Add to ~/.hermes/.env:
-WHATSAPP_ENABLED=true
-WHATSAPP_ALLOWED_USERS=YOUR_PHONE_NUMBER    # e.g. 15551234567
+hermes whatsapp
 ```
 
-3. On first launch, the gateway will display a QR code — scan it with WhatsApp on your phone to link the session
+This will:
+- Enable WhatsApp in your config
+- Ask for your phone number (for the allowlist)
+- Install bridge dependencies (Node.js required)
+- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
+- Exit automatically once paired
+
+2. **Start the gateway:**
+
+```bash
+hermes gateway            # Foreground
+hermes gateway install    # Or install as a system service (Linux)
+```
+
+The gateway starts the WhatsApp bridge automatically using the saved session.
+
+> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" so you can distinguish them from your own messages in self-chat.
 
 See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 
@@ -331,6 +339,8 @@ HERMES_TOOL_PROGRESS_MODE=all    # or "new" for only when tool changes
 # Chat
 hermes                    # Interactive chat (default)
 hermes chat -q "Hello"    # Single query mode
+hermes --continue         # Resume the most recent session (-c)
+hermes --resume <id>      # Resume a specific session (-r)
 
 # Provider & model management
 hermes model              # Switch provider and model interactively
@@ -569,7 +579,21 @@ All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state
 - **FTS5 search** via the `session_search` tool -- search past conversations with Gemini Flash summarization
 - **Compression-triggered session splitting** -- when context is compressed, a new session is created linked to the parent, giving clean trajectories
 - **Source tagging** -- each session is tagged with its origin (cli, telegram, discord, etc.)
+- **Session resume** -- pick up where you left off with `hermes --continue` (most recent) or `hermes --resume <id>` (specific session)
 - Batch runner and RL trajectories are NOT stored here (separate systems)
+
+When you exit a CLI session, the resume command is printed automatically:
+
+```
+Resume this session with:
+  hermes --resume 20260225_143052_a1b2c3
+
+Session:        20260225_143052_a1b2c3
+Duration:       12m 34s
+Messages:       28 (5 user, 18 tool calls)
+```
+
+Use `hermes sessions list` to browse past sessions and find IDs to resume.
 
 ### 📝 Session Logging
 

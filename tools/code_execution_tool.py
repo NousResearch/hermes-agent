@@ -381,14 +381,20 @@ def execute_code(
         rpc_thread.start()
 
         # --- Spawn child process ---
-        # Filter out secret env vars to prevent exfiltration from sandbox
-        _SECRET_PATTERNS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                            "API_KEY", "OPENROUTER", "ANTHROPIC", "OPENAI",
-                            "AWS_SECRET", "GITHUB_TOKEN")
-        child_env = {
-            k: v for k, v in os.environ.items()
-            if not any(pat in k.upper() for pat in _SECRET_PATTERNS)
-        }
+        # Build a minimal environment for the child. We intentionally exclude
+        # API keys and tokens to prevent credential exfiltration from LLM-
+        # generated scripts. The child accesses tools via RPC, not direct API.
+        _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
+                              "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
+                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
+        _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                              "PASSWD", "AUTH")
+        child_env = {}
+        for k, v in os.environ.items():
+            if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+                continue
+            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+                child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
 

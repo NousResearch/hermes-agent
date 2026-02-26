@@ -708,7 +708,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         keys = key_path.split('.')
         current = config
         for key in keys[:-1]:
-            if key not in current:
+            if key not in current or not isinstance(current[key], dict):
                 current[key] = {}
             current = current[key]
         current[keys[-1]] = value

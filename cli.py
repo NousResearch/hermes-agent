@@ -49,16 +49,26 @@ import threading
 import queue
 
 
-# Load environment variables first
+# Load .env from ~/.hermes/.env first, then project root as dev fallback
 from dotenv import load_dotenv
 from hermes_constants import OPENROUTER_BASE_URL
 
-env_path = Path(__file__).parent / '.env'
-if env_path.exists():
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_user_env = _hermes_home / ".env"
+_project_env = Path(__file__).parent / '.env'
+if _user_env.exists():
     try:
-        load_dotenv(dotenv_path=env_path, encoding="utf-8")
+        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=env_path, encoding="latin-1")
+        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
+elif _project_env.exists():
+    try:
+        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+
+# Point mini-swe-agent at ~/.hermes/ so it shares our config
+os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
 
 # =============================================================================
 # Configuration Loading
@@ -131,15 +141,6 @@ def load_cli_config() -> Dict[str, Any]:
         config_path = user_config_path
     else:
         config_path = project_config_path
-    
-    # Also load .env from ~/.hermes/.env if it exists
-    user_env_path = Path.home() / '.hermes' / '.env'
-    if user_env_path.exists():
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(dotenv_path=user_env_path, override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(dotenv_path=user_env_path, override=True, encoding="latin-1")
     
     # Default configuration
     defaults = {

@@ -468,7 +468,7 @@ install_system_packages() {
         # sudo needs password — ask once for everything
         elif command -v sudo &> /dev/null; then
             echo ""
-            read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
+            read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r < /dev/tty
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 if sudo $install_cmd; then
@@ -595,8 +595,45 @@ install_deps() {
         export VIRTUAL_ENV="$INSTALL_DIR/venv"
     fi
 
-    # Install the main package in editable mode with all extras
-    $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+    # On Debian/Ubuntu (including WSL), some Python packages need build tools.
+    # Check and offer to install them if missing.
+    if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+        local need_build_tools=false
+        for pkg in gcc python3-dev libffi-dev; do
+            if ! dpkg -s "$pkg" &>/dev/null; then
+                need_build_tools=true
+                break
+            fi
+        done
+        if [ "$need_build_tools" = true ]; then
+            log_info "Some build tools may be needed for Python packages..."
+            if command -v sudo &> /dev/null; then
+                if sudo -n true 2>/dev/null; then
+                    sudo apt-get update -qq && sudo apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
+                    log_success "Build tools installed"
+                else
+                    read -p "Install build tools (build-essential, python3-dev)? (requires sudo) [Y/n] " -n 1 -r < /dev/tty
+                    echo
+                    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                        sudo apt-get update -qq && sudo apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
+                        log_success "Build tools installed"
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    # Install the main package in editable mode with all extras.
+    # Try [all] first, fall back to base install if extras have issues.
+    if ! $UV_CMD pip install -e ".[all]" 2>/dev/null; then
+        log_warn "Full install (.[all]) failed, trying base install..."
+        if ! $UV_CMD pip install -e "."; then
+            log_error "Package installation failed."
+            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
+            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+            exit 1
+        fi
+    fi
 
     log_success "Main package installed"
 
@@ -633,35 +670,56 @@ setup_path() {
         fi
     fi
 
+    # Verify the entry point script was actually generated
+    if [ ! -x "$HERMES_BIN" ]; then
+        log_warn "hermes entry point not found at $HERMES_BIN"
+        log_info "This usually means the pip install didn't complete successfully."
+        log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+        return 0
+    fi
+
     # Create symlink in ~/.local/bin (standard user binary location, usually on PATH)
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
     log_success "Symlinked hermes → ~/.local/bin/hermes"
 
-    # Check if ~/.local/bin is on PATH; if not, add it to shell config
+    # Check if ~/.local/bin is on PATH; if not, add it to shell config.
+    # Detect the user's actual login shell (not the shell running this script,
+    # which is always bash when piped from curl).
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
-        SHELL_CONFIG=""
-        if [ -n "$BASH_VERSION" ]; then
-            if [ -f "$HOME/.bashrc" ]; then
-                SHELL_CONFIG="$HOME/.bashrc"
-            elif [ -f "$HOME/.bash_profile" ]; then
-                SHELL_CONFIG="$HOME/.bash_profile"
-            fi
-        elif [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
-            SHELL_CONFIG="$HOME/.zshrc"
-        fi
+        SHELL_CONFIGS=()
+        LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
+        case "$LOGIN_SHELL" in
+            zsh)
+                [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+                ;;
+            bash)
+                [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
+                [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
+                ;;
+            *)
+                [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
+                [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+                ;;
+        esac
+        # Also ensure ~/.profile has it (sourced by login shells on
+        # Ubuntu/Debian/WSL even when ~/.bashrc is skipped)
+        [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
 
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
-        if [ -n "$SHELL_CONFIG" ]; then
+        for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
             if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
                 echo "" >> "$SHELL_CONFIG"
                 echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
                 echo "$PATH_LINE" >> "$SHELL_CONFIG"
                 log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
-            else
-                log_info "~/.local/bin already referenced in $SHELL_CONFIG"
             fi
+        done
+
+        if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+            log_warn "Could not detect shell config file to add ~/.local/bin to PATH"
+            log_info "Add manually: $PATH_LINE"
         fi
     else
         log_info "~/.local/bin already on PATH"
@@ -777,11 +835,12 @@ run_setup_wizard() {
 
     cd "$INSTALL_DIR"
 
-    # Run hermes setup using the venv Python directly (no activation needed)
+    # Run hermes setup using the venv Python directly (no activation needed).
+    # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup
+        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
-        python -m hermes_cli.main setup
+        python -m hermes_cli.main setup < /dev/tty
     fi
 }
 
@@ -817,7 +876,7 @@ maybe_start_gateway() {
         log_info "WhatsApp is enabled but not yet paired."
         log_info "Running 'hermes whatsapp' to pair via QR code..."
         echo ""
-        read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
+        read -p "Pair WhatsApp now? [Y/n] " -n 1 -r < /dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
             HERMES_CMD="$HOME/.local/bin/hermes"
@@ -827,7 +886,7 @@ maybe_start_gateway() {
     fi
 
     echo ""
-    read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r
+    read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r < /dev/tty
     echo
 
     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then

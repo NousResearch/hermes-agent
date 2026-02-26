@@ -435,6 +435,7 @@ class AIAgent:
                     self._honcho = HonchoSessionManager(
                         honcho=client,
                         config=hcfg,
+                        context_tokens=hcfg.context_tokens,
                     )
                     # Resolve session key: explicit arg > global sessions map > fallback
                     if not self._honcho_session_key:
@@ -1126,6 +1127,27 @@ class AIAgent:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
 
+    def _honcho_save_user_observation(self, content: str) -> str:
+        """Route a memory tool target=user add to Honcho.
+
+        Sends the content as a user peer message so Honcho's reasoning
+        model can incorporate it into the user representation.
+        """
+        if not content or not content.strip():
+            return json.dumps({"success": False, "error": "Content cannot be empty."})
+        try:
+            session = self._honcho.get_or_create(self._honcho_session_key)
+            session.add_message("user", f"[observation] {content.strip()}")
+            self._honcho.save(session)
+            return json.dumps({
+                "success": True,
+                "target": "user",
+                "message": "Saved to Honcho user model.",
+            })
+        except Exception as e:
+            logger.debug("Honcho user observation failed: %s", e)
+            return json.dumps({"success": False, "error": f"Honcho save failed: {e}"})
+
     def _honcho_sync(self, user_content: str, assistant_content: str) -> None:
         """Sync the user/assistant message pair to Honcho."""
         if not self._honcho or not self._honcho_session_key:
@@ -1177,7 +1199,9 @@ class AIAgent:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
                     prompt_parts.append(mem_block)
-            if self._user_profile_enabled:
+            # When Honcho is active, it handles the user profile via prefetch.
+            # USER.md is skipped to avoid duplicate/conflicting user context.
+            if self._user_profile_enabled and not self._honcho:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
@@ -1418,14 +1442,18 @@ class AIAgent:
                         if tc.function.name == "memory":
                             try:
                                 args = json.loads(tc.function.arguments)
-                                from tools.memory_tool import memory_tool as _memory_tool
-                                result = _memory_tool(
-                                    action=args.get("action"),
-                                    target=args.get("target", "memory"),
-                                    content=args.get("content"),
-                                    old_text=args.get("old_text"),
-                                    store=self._memory_store,
-                                )
+                                flush_target = args.get("target", "memory")
+                                if self._honcho and flush_target == "user" and args.get("action") == "add":
+                                    result = self._honcho_save_user_observation(args.get("content", ""))
+                                else:
+                                    from tools.memory_tool import memory_tool as _memory_tool
+                                    result = _memory_tool(
+                                        action=args.get("action"),
+                                        target=flush_target,
+                                        content=args.get("content"),
+                                        old_text=args.get("old_text"),
+                                        store=self._memory_store,
+                                    )
                                 if not self.quiet_mode:
                                     print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                             except Exception as e:
@@ -1545,14 +1573,20 @@ class AIAgent:
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=function_args.get("target", "memory"),
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
+                target = function_args.get("target", "memory")
+                # When Honcho is active, route user profile writes to Honcho
+                if self._honcho and target == "user" and function_args.get("action") == "add":
+                    content = function_args.get("content", "")
+                    function_result = self._honcho_save_user_observation(content)
+                else:
+                    from tools.memory_tool import memory_tool as _memory_tool
+                    function_result = _memory_tool(
+                        action=function_args.get("action"),
+                        target=target,
+                        content=function_args.get("content"),
+                        old_text=function_args.get("old_text"),
+                        store=self._memory_store,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")

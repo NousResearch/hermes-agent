@@ -381,7 +381,14 @@ def execute_code(
         rpc_thread.start()
 
         # --- Spawn child process ---
-        child_env = os.environ.copy()
+        # Filter out secret env vars to prevent exfiltration from sandbox
+        _SECRET_PATTERNS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+                            "API_KEY", "OPENROUTER", "ANTHROPIC", "OPENAI",
+                            "AWS_SECRET", "GITHUB_TOKEN")
+        child_env = {
+            k: v for k, v in os.environ.items()
+            if not any(pat in k.upper() for pat in _SECRET_PATTERNS)
+        }
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
 

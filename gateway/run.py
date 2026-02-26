@@ -101,6 +101,42 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
 
+        # Provider resolution — mirrors CLI logic (cli.py:776-788)
+        from hermes_cli.auth import resolve_provider
+        _cli_cfg = {}
+        _cfg_path = Path.home() / '.hermes' / 'config.yaml'
+        if _cfg_path.exists():
+            try:
+                import yaml as _yaml_prov
+                with open(_cfg_path) as _f:
+                    _cli_cfg = _yaml_prov.safe_load(_f) or {}
+            except Exception:
+                pass
+        _model_cfg = _cli_cfg.get("model", {})
+
+        self._provider = resolve_provider(
+            os.getenv("HERMES_INFERENCE_PROVIDER")
+            or _model_cfg.get("provider")
+            or "auto"
+        )
+        # Initial credentials (overwritten for Nous by _ensure_runtime_credentials)
+        self._api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        self._base_url = (
+            os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OPENROUTER_BASE_URL")
+            or _model_cfg.get("base_url")
+            or "https://openrouter.ai/api/v1"
+        )
+        # Model resolution — mirrors CLI logic (cli.py:768)
+        # Priority: HERMES_MODEL > LLM_MODEL > config.yaml model.default > fallback
+        self._model = (
+            os.getenv("HERMES_MODEL")
+            or os.getenv("LLM_MODEL")
+            or _model_cfg.get("default")
+            or "anthropic/claude-opus-4.6"
+        )
+        logger.info("Gateway provider: %s, model: %s", self._provider, self._model)
+
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
@@ -127,7 +163,89 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
-    
+
+    def _ensure_runtime_credentials(self) -> bool:
+        """Ensure provider credentials are fresh before creating an AIAgent.
+
+        The gateway is long-lived so .env / config.yaml may change without a
+        restart.  Re-read them every call, then apply provider-aware logic:
+          - Nous Portal: resolve/refresh short-lived agent key via OAuth.
+          - OpenRouter / other: use env-var API key + base URL.
+        """
+        # Re-read .env so key rotations are picked up without restart.
+        try:
+            load_dotenv(_env_path, override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(_env_path, override=True, encoding="latin-1")
+        except Exception:
+            pass
+
+        # Re-read config.yaml for model / base_url changes.
+        _model_cfg = {}
+        try:
+            import yaml as _y
+            _cfg_path = Path.home() / ".hermes" / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _cfg = _y.safe_load(_f) or {}
+                _model_cfg = _cfg.get("model", {})
+                if isinstance(_model_cfg, str):
+                    _model_cfg = {"default": _model_cfg}
+        except Exception:
+            pass
+
+        # Re-resolve provider (it may have changed in config.yaml).
+        from hermes_cli.auth import resolve_provider
+        self._provider = resolve_provider(
+            os.getenv("HERMES_INFERENCE_PROVIDER")
+            or _model_cfg.get("provider")
+            or "auto"
+        )
+
+        # Update model from the same priority chain as the CLI.
+        self._model = (
+            os.getenv("HERMES_MODEL")
+            or os.getenv("LLM_MODEL")
+            or _model_cfg.get("default")
+            or "anthropic/claude-opus-4.6"
+        )
+
+        if self._provider == "nous":
+            from hermes_cli.auth import resolve_nous_runtime_credentials
+            try:
+                credentials = resolve_nous_runtime_credentials(
+                    min_key_ttl_seconds=max(
+                        60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
+                    ),
+                    timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                )
+            except Exception as exc:
+                logger.error("Nous credential refresh failed: %s", exc)
+                return False
+
+            api_key = credentials.get("api_key")
+            base_url = credentials.get("base_url")
+            if not isinstance(api_key, str) or not api_key:
+                logger.error("Nous credential resolver returned an empty API key.")
+                return False
+            if not isinstance(base_url, str) or not base_url:
+                logger.error("Nous credential resolver returned an empty base URL.")
+                return False
+
+            self._api_key = api_key
+            self._base_url = base_url
+        else:
+            # OpenRouter / custom provider — read from env vars.
+            self._api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or ""
+            self._base_url = (
+                os.getenv("OPENAI_BASE_URL")
+                or os.getenv("OPENROUTER_BASE_URL")
+                or _model_cfg.get("base_url")
+                or "https://openrouter.ai/api/v1"
+            )
+
+        return True
+
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
@@ -700,7 +818,7 @@ class GatewayRunner:
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": os.getenv("HERMES_MODEL", ""),
+                        "model": self._model,
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
@@ -764,10 +882,13 @@ class GatewayRunner:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
                     from run_agent import AIAgent
+                    self._ensure_runtime_credentials()
                     loop = asyncio.get_event_loop()
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                            model=self._model,
+                            api_key=self._api_key,
+                            base_url=self._base_url,
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
@@ -860,12 +981,11 @@ class GatewayRunner:
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
         args = event.get_command_args().strip()
-        current = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        
+
         if not args:
-            return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
-        
-        os.environ["HERMES_MODEL"] = args
+            return f"🤖 **Current model:** `{self._model}`\n\nTo change: `/model provider/model-name`"
+
+        self._model = args
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
@@ -1378,39 +1498,13 @@ class GatewayRunner:
             combined_ephemeral = context_prompt or ""
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-            
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart).
-            try:
-                load_dotenv(_env_path, override=True, encoding="utf-8")
-            except UnicodeDecodeError:
-                load_dotenv(_env_path, override=True, encoding="latin-1")
-            except Exception:
-                pass
 
-            api_key = os.getenv("OPENROUTER_API_KEY", "")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-
-            try:
-                import yaml as _y
-                _cfg_path = Path.home() / ".hermes" / "config.yaml"
-                if _cfg_path.exists():
-                    with open(_cfg_path) as _f:
-                        _cfg = _y.safe_load(_f) or {}
-                    _model_cfg = _cfg.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
-                        base_url = _model_cfg.get("base_url", base_url)
-            except Exception:
-                pass
+            self._ensure_runtime_credentials()
 
             agent = AIAgent(
-                model=model,
-                api_key=api_key,
-                base_url=base_url,
+                model=self._model,
+                api_key=self._api_key,
+                base_url=self._base_url,
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 enabled_toolsets=enabled_toolsets,

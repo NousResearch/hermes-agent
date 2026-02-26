@@ -21,6 +21,7 @@ Usage:
 """
 
 import copy
+import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -482,6 +483,54 @@ class AIAgent:
         if not content:
             return ""
         return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+
+    def _looks_like_codex_intermediate_ack(
+        self,
+        user_message: str,
+        assistant_content: str,
+        messages: List[Dict[str, Any]],
+    ) -> bool:
+        """Detect a planning/ack message that should continue instead of ending the turn."""
+        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+            return False
+
+        assistant_text = self._strip_think_blocks(assistant_content or "").strip().lower()
+        if not assistant_text:
+            return False
+        if len(assistant_text) > 1200:
+            return False
+
+        has_future_ack = bool(
+            re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        )
+        if not has_future_ack:
+            return False
+
+        action_markers = (
+            "look into",
+            "inspect",
+            "scan",
+            "check",
+            "analyz",
+            "review",
+            "explore",
+            "read",
+            "open",
+            "run",
+            "test",
+            "fix",
+            "debug",
+            "search",
+            "find",
+            "walkthrough",
+            "report back",
+            "summarize",
+        )
+
+        user_text = (user_message or "").strip().lower()
+        user_requests_action = any(marker in user_text for marker in action_markers) or "~/" in user_text or "/" in user_text
+        assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
+        return user_requests_action and assistant_mentions_action
     
     
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
@@ -1154,9 +1203,56 @@ class AIAgent:
                 "type": "function",
                 "name": name,
                 "description": fn.get("description", ""),
+                "strict": False,
                 "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
             })
         return converted or None
+
+    @staticmethod
+    def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
+        """Split a stored tool id into (call_id, response_item_id)."""
+        if not isinstance(raw_id, str):
+            return None, None
+        value = raw_id.strip()
+        if not value:
+            return None, None
+        if "|" in value:
+            call_id, response_item_id = value.split("|", 1)
+            call_id = call_id.strip() or None
+            response_item_id = response_item_id.strip() or None
+            return call_id, response_item_id
+        if value.startswith("fc_"):
+            return None, value
+        return value, None
+
+    def _derive_responses_function_call_id(
+        self,
+        call_id: str,
+        response_item_id: Optional[str] = None,
+    ) -> str:
+        """Build a valid Responses `function_call.id` (must start with `fc_`)."""
+        if isinstance(response_item_id, str):
+            candidate = response_item_id.strip()
+            if candidate.startswith("fc_"):
+                return candidate
+
+        source = (call_id or "").strip()
+        if source.startswith("fc_"):
+            return source
+        if source.startswith("call_") and len(source) > len("call_"):
+            return f"fc_{source[len('call_'):]}"
+
+        sanitized = re.sub(r"[^A-Za-z0-9_-]", "", source)
+        if sanitized.startswith("fc_"):
+            return sanitized
+        if sanitized.startswith("call_") and len(sanitized) > len("call_"):
+            return f"fc_{sanitized[len('call_'):]}"
+        if sanitized:
+            return f"fc_{sanitized[:48]}"
+
+        seed = source or str(response_item_id or "") or uuid.uuid4().hex
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+        return f"fc_{digest}"
 
     def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
@@ -1187,9 +1283,32 @@ class AIAgent:
                             if not isinstance(fn_name, str) or not fn_name.strip():
                                 continue
 
-                            call_id = tc.get("id") or tc.get("call_id")
+                            embedded_call_id, embedded_response_item_id = self._split_responses_tool_id(
+                                tc.get("id")
+                            )
+                            call_id = tc.get("call_id")
                             if not isinstance(call_id, str) or not call_id.strip():
-                                call_id = f"call_{uuid.uuid4().hex[:12]}"
+                                call_id = embedded_call_id
+                            if not isinstance(call_id, str) or not call_id.strip():
+                                if (
+                                    isinstance(embedded_response_item_id, str)
+                                    and embedded_response_item_id.startswith("fc_")
+                                    and len(embedded_response_item_id) > len("fc_")
+                                ):
+                                    call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
+                                else:
+                                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                            call_id = call_id.strip()
+
+                            response_item_id = tc.get("response_item_id")
+                            if not isinstance(response_item_id, str) or not response_item_id.strip():
+                                response_item_id = tc.get("responses_item_id")
+                            if not isinstance(response_item_id, str) or not response_item_id.strip():
+                                response_item_id = embedded_response_item_id
+                            response_item_id = self._derive_responses_function_call_id(
+                                call_id,
+                                response_item_id if isinstance(response_item_id, str) else None,
+                            )
 
                             arguments = fn.get("arguments", "{}")
                             if isinstance(arguments, dict):
@@ -1200,7 +1319,7 @@ class AIAgent:
 
                             items.append({
                                 "type": "function_call",
-                                "id": call_id,
+                                "id": response_item_id,
                                 "call_id": call_id,
                                 "name": fn_name,
                                 "arguments": arguments,
@@ -1211,7 +1330,11 @@ class AIAgent:
                 continue
 
             if role == "tool":
-                call_id = msg.get("tool_call_id")
+                raw_tool_call_id = msg.get("tool_call_id")
+                call_id, _ = self._split_responses_tool_id(raw_tool_call_id)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                        call_id = raw_tool_call_id.strip()
                 if not isinstance(call_id, str) or not call_id.strip():
                     continue
                 items.append({
@@ -1278,6 +1401,8 @@ class AIAgent:
         reasoning_parts: List[str] = []
         tool_calls: List[Any] = []
         has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+        saw_commentary_phase = False
+        saw_final_answer_phase = False
 
         for item in output:
             item_type = getattr(item, "type", None)
@@ -1291,6 +1416,13 @@ class AIAgent:
                 has_incomplete_items = True
 
             if item_type == "message":
+                item_phase = getattr(item, "phase", None)
+                if isinstance(item_phase, str):
+                    normalized_phase = item_phase.strip().lower()
+                    if normalized_phase in {"commentary", "analysis"}:
+                        saw_commentary_phase = True
+                    elif normalized_phase in {"final_answer", "final"}:
+                        saw_final_answer_phase = True
                 message_text = self._extract_responses_message_text(item)
                 if message_text:
                     content_parts.append(message_text)
@@ -1305,9 +1437,19 @@ class AIAgent:
                 arguments = getattr(item, "arguments", "{}")
                 if not isinstance(arguments, str):
                     arguments = str(arguments)
-                call_id = getattr(item, "call_id", None) or getattr(item, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
+                raw_call_id = getattr(item, "call_id", None)
+                raw_item_id = getattr(item, "id", None)
+                embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
+                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+                response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+                response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
                 tool_calls.append(SimpleNamespace(
                     id=call_id,
+                    call_id=call_id,
+                    response_item_id=response_item_id,
                     type="function",
                     function=SimpleNamespace(name=fn_name, arguments=arguments),
                 ))
@@ -1316,9 +1458,19 @@ class AIAgent:
                 arguments = getattr(item, "input", "{}")
                 if not isinstance(arguments, str):
                     arguments = str(arguments)
-                call_id = getattr(item, "call_id", None) or getattr(item, "id", None) or f"call_{uuid.uuid4().hex[:12]}"
+                raw_call_id = getattr(item, "call_id", None)
+                raw_item_id = getattr(item, "id", None)
+                embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
+                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+                response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+                response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
                 tool_calls.append(SimpleNamespace(
                     id=call_id,
+                    call_id=call_id,
+                    response_item_id=response_item_id,
                     type="function",
                     function=SimpleNamespace(name=fn_name, arguments=arguments),
                 ))
@@ -1339,7 +1491,7 @@ class AIAgent:
 
         if tool_calls:
             finish_reason = "tool_calls"
-        elif has_incomplete_items:
+        elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
             finish_reason = "incomplete"
         else:
             finish_reason = "stop"
@@ -1484,17 +1636,42 @@ class AIAgent:
             ]
 
         if assistant_message.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tool_call.id,
+            tool_calls = []
+            for tool_call in assistant_message.tool_calls:
+                raw_id = getattr(tool_call, "id", None)
+                call_id = getattr(tool_call, "call_id", None)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    embedded_call_id, _ = self._split_responses_tool_id(raw_id)
+                    call_id = embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    if isinstance(raw_id, str) and raw_id.strip():
+                        call_id = raw_id.strip()
+                    else:
+                        call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+
+                response_item_id = getattr(tool_call, "response_item_id", None)
+                if not isinstance(response_item_id, str) or not response_item_id.strip():
+                    _, embedded_response_item_id = self._split_responses_tool_id(raw_id)
+                    response_item_id = embedded_response_item_id
+
+                response_item_id = self._derive_responses_function_call_id(
+                    call_id,
+                    response_item_id if isinstance(response_item_id, str) else None,
+                )
+
+                tool_calls.append({
+                    "id": call_id,
+                    "call_id": call_id,
+                    "response_item_id": response_item_id,
                     "type": tool_call.type,
                     "function": {
                         "name": tool_call.function.name,
                         "arguments": tool_call.function.arguments
-                    }
+                    },
                 }
-                for tool_call in assistant_message.tool_calls
-            ]
+                )
+            msg["tool_calls"] = tool_calls
 
         return msg
 
@@ -2021,6 +2198,7 @@ class AIAgent:
         api_call_count = 0
         final_response = None
         interrupted = False
+        codex_ack_continuations = 0
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -2742,6 +2920,36 @@ class AIAgent:
                     # Reset retry counter on successful content
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
+
+                    if (
+                        self.api_mode == "codex_responses"
+                        and self.valid_tool_names
+                        and codex_ack_continuations < 2
+                        and self._looks_like_codex_intermediate_ack(
+                            user_message=user_message,
+                            assistant_content=final_response,
+                            messages=messages,
+                        )
+                    ):
+                        codex_ack_continuations += 1
+                        interim_msg = self._build_assistant_message(assistant_message, "incomplete")
+                        messages.append(interim_msg)
+                        self._log_msg_to_db(interim_msg)
+
+                        continue_msg = {
+                            "role": "user",
+                            "content": (
+                                "[System: Continue now. Execute the required tool calls and only "
+                                "send your final answer after completing the task.]"
+                            ),
+                        }
+                        messages.append(continue_msg)
+                        self._log_msg_to_db(continue_msg)
+                        self._session_messages = messages
+                        self._save_session_log(messages)
+                        continue
+
+                    codex_ack_continuations = 0
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     

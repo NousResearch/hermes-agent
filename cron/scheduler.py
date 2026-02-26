@@ -34,8 +34,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 
+# Resolve Hermes home directory (respects HERMES_HOME override)
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
-_LOCK_DIR = Path.home() / ".hermes" / "cron"
+_LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
@@ -165,9 +168,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
         try:
-            load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True, encoding="utf-8")
+            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True, encoding="latin-1")
+            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
         model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
         # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
@@ -176,7 +179,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         try:
             import yaml
-            _cfg_path = os.path.expanduser("~/.hermes/config.yaml")
+            _cfg_path = str(_hermes_home / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}

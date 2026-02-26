@@ -9,11 +9,20 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
-import fcntl
 import logging
 import os
 import sys
 import traceback
+
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -256,9 +265,13 @@ def tick(verbose: bool = True) -> int:
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     try:
         lock_fd = open(_LOCK_FILE, "w")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
         return 0
@@ -299,7 +312,13 @@ def tick(verbose: bool = True) -> int:
 
         return executed
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt:
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
         lock_fd.close()
 
 

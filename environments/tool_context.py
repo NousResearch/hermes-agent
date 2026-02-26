@@ -46,7 +46,8 @@ def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str)
     Run a tool call in a thread pool executor so backends that use asyncio.run()
     internally (modal, docker) get a clean event loop.
 
-    If we're already in an async context, uses run_in_executor.
+    If we're already in an async context, executes handle_function_call() in a
+    disposable worker thread and blocks for the result.
     If not (e.g., called from sync code), runs directly.
     """
     try:
@@ -94,7 +95,7 @@ class ToolContext:
         backend = os.getenv("TERMINAL_ENV", "local")
         logger.debug("ToolContext.terminal [%s backend] task=%s: %s", backend, self.task_id[:8], command[:100])
 
-        # Run in thread pool so modal/docker backends' asyncio.run() doesn't deadlock
+        # Run via thread helper so modal/docker backends' asyncio.run() doesn't deadlock
         result = _run_tool_in_thread(
             "terminal",
             {"command": command, "timeout": timeout},

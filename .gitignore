@@ -30,6 +30,7 @@ source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
 node_modules/
+package-lock.json
 browser-use/
 agent-browser/
 # Private keys

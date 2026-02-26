@@ -99,8 +99,14 @@ def _run_single_child(
     child_prompt = _build_child_system_prompt(goal, context)
 
     try:
+        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal)
+        parent_api_key = None
+        if hasattr(parent_agent, '_client_kwargs'):
+            parent_api_key = parent_agent._client_kwargs.get("api_key")
+
         child = AIAgent(
             base_url=parent_agent.base_url,
+            api_key=parent_api_key,
             model=model or parent_agent.model,
             max_iterations=max_iterations,
             enabled_toolsets=child_toolsets,

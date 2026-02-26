@@ -45,20 +45,65 @@ if env_path.exists():
 import logging
 
 from hermes_cli import __version__
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.model_profiles import (
+    get_active_profile,
+    normalize_model_config,
+    remove_profile,
+    set_active_profile,
+    sync_legacy_model_fields,
+    upsert_profile,
+)
+from hermes_cli.provider_registry import (
+    get_provider_model_candidates,
+    get_provider,
+    list_provider_ids,
+    list_model_picker_provider_ids,
+    provider_cli_choices,
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
 
+def _sync_oauth_active_provider(model_cfg: dict) -> None:
+    """
+    Keep auth.json active_provider aligned with active model profile.
+    """
+    active = get_active_profile(model_cfg)
+    if active.get("provider") != "nous":
+        from hermes_cli.auth import deactivate_provider
+
+        deactivate_provider()
+
+
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.config import get_env_path, get_hermes_home, load_config
 
-    # Check env vars (may be set by .env or shell)
-    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
-        return True
+    api_provider_ids = list_provider_ids(include_oauth=False, include_api_key=True, include_custom=True)
 
-    # Check .env file for keys
+    # Check resolved environment state first.
+    for provider_id in api_provider_ids:
+        key = resolve_provider_api_key(provider_id)
+        base_url = resolve_provider_base_url(provider_id)
+        if provider_id == "custom":
+            if base_url:
+                return True
+            continue
+        if key:
+            return True
+
+    # Check ~/.hermes/.env for provider env vars that may not be loaded yet.
+    provider_env_vars = set()
+    for provider_id in api_provider_ids:
+        meta = get_provider(provider_id)
+        if not meta:
+            continue
+        provider_env_vars.update(meta.api_key_env_vars)
+        if meta.base_url_env_var:
+            provider_env_vars.add(meta.base_url_env_var)
+
     env_file = get_env_path()
     if env_file.exists():
         try:
@@ -68,10 +113,31 @@ def _has_any_provider_configured() -> bool:
                     continue
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
-                if key.strip() in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY") and val:
+                if key.strip() in provider_env_vars and val:
                     return True
         except Exception:
             pass
+
+    # Check configured profiles with provider-aware key/base resolution.
+    try:
+        config = load_config()
+        model_cfg = normalize_model_config(config.get("model"))
+        for profile in model_cfg.get("profiles", []):
+            provider_id = str(profile.get("provider") or "").strip()
+            if not provider_id:
+                continue
+            key = resolve_provider_api_key(provider_id)
+            base_url = profile.get("base_url") or resolve_provider_base_url(provider_id)
+            if provider_id == "custom":
+                if base_url:
+                    return True
+                continue
+            if provider_id == "nous":
+                continue
+            if key and base_url:
+                return True
+    except Exception:
+        pass
 
     # Check for Nous Portal OAuth credentials
     auth_file = get_hermes_home() / "auth.json"
@@ -140,83 +206,133 @@ def cmd_setup(args):
 
 
 def cmd_model(args):
-    """Select default model — starts with provider selection, then model picker."""
-    from hermes_cli.auth import (
-        resolve_provider, get_provider_auth_state, PROVIDER_REGISTRY,
-        _prompt_model_selection, _save_model_choice, _update_config_for_provider,
-        resolve_nous_runtime_credentials, fetch_nous_models, AuthError, format_auth_error,
-        _login_nous, ProviderConfig,
-    )
-    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+    """Manage model/provider profiles and active selection."""
+    from hermes_cli.config import load_config, save_config
 
     config = load_config()
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
-    current_model = current_model or "(not set)"
+    model_cfg = normalize_model_config(config.get("model"))
+    active_profile = get_active_profile(model_cfg)
 
-    # Read effective provider the same way the CLI does at startup:
-    # config.yaml model.provider > env var > auto-detect
-    import os
-    config_provider = None
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        config_provider = model_cfg.get("provider")
+    print()
+    print(f"  Active profile:   {active_profile.get('name')}")
+    print(f"  Current model:    {model_cfg.get('default', '(not set)')}")
+    print(f"  Active provider:  {active_profile.get('provider', '(not set)')}")
+    print()
 
-    effective_provider = (
-        os.getenv("HERMES_INFERENCE_PROVIDER")
-        or config_provider
-        or "auto"
+    profile_items = []
+    for profile in model_cfg.get("profiles", []):
+        marker = "  ← active" if profile.get("name") == model_cfg.get("active_profile") else ""
+        profile_items.append(
+            (
+                profile.get("name"),
+                f"Use profile: {profile.get('name')} [{profile.get('provider')}/{profile.get('model')}]"
+                f"{marker}",
+            )
+        )
+
+    menu_items = (
+        profile_items
+        + [
+            ("add", "Add or update provider profile"),
+            ("scoped", "Configure scoped profiles"),
+            ("remove", "Remove a profile"),
+            ("cancel", "Cancel"),
+        ]
     )
-    active = resolve_provider(effective_provider)
 
-    # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
-        active = "custom"
+    choice = _prompt_provider_choice([label for _, label in menu_items])
+    if choice is None:
+        print("No change.")
+        return
+    action = menu_items[choice][0]
 
-    provider_labels = {
-        "openrouter": "OpenRouter",
-        "nous": "Nous Portal",
-        "custom": "Custom endpoint",
-    }
-    active_label = provider_labels.get(active, active)
-
-    print()
-    print(f"  Current model:    {current_model}")
-    print(f"  Active provider:  {active_label}")
-    print()
-
-    # Step 1: Provider selection — put active provider first with marker
-    providers = [
-        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
-        ("nous", "Nous Portal (Nous Research subscription)"),
-        ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
-    ]
-
-    # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous") else "custom"
-    ordered = []
-    for key, label in providers:
-        if key == active_key:
-            ordered.insert(0, (key, f"{label}  ← currently active"))
-        else:
-            ordered.append((key, label))
-    ordered.append(("cancel", "Cancel"))
-
-    provider_idx = _prompt_provider_choice([label for _, label in ordered])
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
+    if action == "cancel":
         print("No change.")
         return
 
-    selected_provider = ordered[provider_idx][0]
+    if action == "scoped":
+        updated_scoped = _prompt_scoped_profiles(model_cfg)
+        if updated_scoped:
+            model_cfg["scoped_profiles"] = updated_scoped
+            model_cfg = sync_legacy_model_fields(model_cfg)
+            config["model"] = model_cfg
+            save_config(config)
+            _sync_oauth_active_provider(model_cfg)
+            print(f"Scoped profiles set: {', '.join(updated_scoped)}")
+        else:
+            print("No change.")
+        return
 
-    # Step 2: Provider-specific setup + model selection
-    if selected_provider == "openrouter":
-        _model_flow_openrouter(config, current_model)
-    elif selected_provider == "nous":
-        _model_flow_nous(config, current_model)
-    elif selected_provider == "custom":
-        _model_flow_custom(config)
+    if action == "remove":
+        names = [p.get("name") for p in model_cfg.get("profiles", [])]
+        if len(names) <= 1:
+            print("Cannot remove the only profile.")
+            return
+        idx = _prompt_provider_choice([f"Remove {name}" for name in names] + ["Cancel"])
+        if idx is None or idx == len(names):
+            print("No change.")
+            return
+        to_remove = names[idx]
+        model_cfg = remove_profile(model_cfg, to_remove)
+        model_cfg = sync_legacy_model_fields(model_cfg)
+        config["model"] = model_cfg
+        save_config(config)
+        _sync_oauth_active_provider(model_cfg)
+        print(f"Removed profile: {to_remove}")
+        return
+
+    if action == "add":
+        provider_id = _choose_provider_for_profile()
+        if not provider_id:
+            print("No change.")
+            return
+        existing = next((p for p in model_cfg.get("profiles", []) if p.get("provider") == provider_id), None)
+        base_name = provider_id.replace("-", "_")
+        if existing and existing.get("name"):
+            profile_name = existing["name"]
+        else:
+            existing_names = {p.get("name") for p in model_cfg.get("profiles", [])}
+            profile_name = f"{base_name}-profile"
+            suffix = 2
+            while profile_name in existing_names:
+                profile_name = f"{base_name}-profile-{suffix}"
+                suffix += 1
+        seed = existing or {"name": profile_name, "provider": provider_id, "model": "", "enabled": True}
+        updated = _configure_provider_profile(seed)
+        if not updated:
+            print("No change.")
+            return
+        model_cfg = upsert_profile(model_cfg, updated)
+        model_cfg = set_active_profile(model_cfg, updated["name"])
+        model_cfg = sync_legacy_model_fields(model_cfg)
+        config["model"] = model_cfg
+        save_config(config)
+        _sync_oauth_active_provider(model_cfg)
+        print(
+            f"Active profile set to: {updated['name']} "
+            f"[{updated['provider']}/{updated['model']}]"
+        )
+        return
+
+    # Existing profile selected.
+    selected_profile = next((p for p in model_cfg.get("profiles", []) if p.get("name") == action), None)
+    if not selected_profile:
+        print("No change.")
+        return
+    updated = _configure_provider_profile(selected_profile)
+    if not updated:
+        print("No change.")
+        return
+    model_cfg = upsert_profile(model_cfg, updated)
+    model_cfg = set_active_profile(model_cfg, updated["name"])
+    model_cfg = sync_legacy_model_fields(model_cfg)
+    config["model"] = model_cfg
+    save_config(config)
+    _sync_oauth_active_provider(model_cfg)
+    print(
+        f"Active profile set to: {updated['name']} "
+        f"[{updated['provider']}/{updated['model']}]"
+    )
 
 
 def _prompt_provider_choice(choices):
@@ -258,68 +374,139 @@ def _prompt_provider_choice(choices):
             return None
 
 
-def _model_flow_openrouter(config, current_model=""):
-    """OpenRouter provider: ensure API key, then pick model."""
-    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, save_env_value
+def _choose_provider_for_profile() -> str | None:
+    provider_ids = list_model_picker_provider_ids()
+    labels = []
+    for pid in provider_ids:
+        meta = get_provider(pid)
+        label = meta.label if meta else pid
+        labels.append(f"{label} ({pid})")
+    labels.append("Cancel")
+    idx = _prompt_provider_choice(labels)
+    if idx is None or idx >= len(provider_ids):
+        return None
+    return provider_ids[idx]
 
-    api_key = get_env_value("OPENROUTER_API_KEY")
-    if not api_key:
-        print("No OpenRouter API key configured.")
-        print("Get one at: https://openrouter.ai/keys")
+
+def _prompt_scoped_profiles(model_cfg: dict) -> list[str]:
+    profiles = model_cfg.get("profiles", [])
+    names = [p.get("name") for p in profiles if p.get("enabled", True)]
+    if not names:
+        return []
+    current = set(model_cfg.get("scoped_profiles", []))
+    print()
+    print("Scoped profile selection:")
+    for i, name in enumerate(names, 1):
+        mark = "x" if name in current else " "
+        print(f"  {i}. [{mark}] {name}")
+    print("Enter comma-separated profile numbers (blank = keep current)")
+    try:
+        raw = input("Scoped profiles: ").strip()
+    except (KeyboardInterrupt, EOFError):
         print()
+        return []
+    if not raw:
+        return list(current)
+    selected: list[str] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            continue
+        idx = int(part) - 1
+        if 0 <= idx < len(names):
+            selected.append(names[idx])
+    if not selected:
+        selected = [model_cfg.get("active_profile")] if model_cfg.get("active_profile") else []
+    return list(dict.fromkeys(selected))
+
+
+def _configure_provider_profile(profile: dict) -> dict | None:
+    provider = profile.get("provider")
+    if provider == "nous":
+        return _configure_nous_profile(profile)
+    if provider == "custom":
+        return _configure_custom_profile(profile)
+    return _configure_api_key_profile(profile)
+
+
+def _configure_api_key_profile(profile: dict) -> dict | None:
+    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.config import save_env_value
+    from hermes_cli.models import model_ids as openrouter_model_ids
+
+    provider = profile.get("provider", "openrouter")
+    meta = get_provider(provider)
+    if not meta:
+        print(f"Unknown provider: {provider}")
+        return None
+
+    # Save into the first canonical env var for this provider.
+    key_env = meta.api_key_env_vars[0] if meta.api_key_env_vars else ""
+    existing_key = resolve_provider_api_key(provider) or ""
+    if key_env and not existing_key:
+        print(f"No {meta.label} API key configured.")
         try:
-            key = input("OpenRouter API key (or Enter to cancel): ").strip()
+            key = input(f"{key_env} (or Enter to cancel): ").strip()
         except (KeyboardInterrupt, EOFError):
             print()
-            return
+            return None
         if not key:
-            print("Cancelled.")
-            return
-        save_env_value("OPENROUTER_API_KEY", key)
-        print("API key saved.")
+            return None
+        save_env_value(key_env, key)
+
+    current_url = profile.get("base_url") or resolve_provider_base_url(provider) or ""
+    prompt_default = current_url or "https://api.example.com/v1"
+    try:
+        base_url = input(f"Base URL [{prompt_default}]: ").strip() or current_url
+    except (KeyboardInterrupt, EOFError):
         print()
+        return None
+    if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+        print("Invalid URL (must start with http:// or https://)")
+        return None
+    if meta.base_url_env_var:
+        save_env_value(meta.base_url_env_var, base_url.rstrip("/"))
 
-    from hermes_cli.models import model_ids
-    openrouter_models = model_ids()
-
-    selected = _prompt_model_selection(openrouter_models, current_model=current_model)
-    if selected:
-        # Clear any custom endpoint and set provider to openrouter
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _save_model_choice(selected)
-
-        # Update config provider and deactivate any OAuth provider
-        from hermes_cli.config import load_config, save_config
-        cfg = load_config()
-        model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = "openrouter"
-            model["base_url"] = OPENROUTER_BASE_URL
-        save_config(cfg)
-        deactivate_provider()
-        print(f"Default model set to: {selected} (via OpenRouter)")
-    else:
-        print("No change.")
-
-
-def _model_flow_nous(config, current_model=""):
-    """Nous Portal provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
-        get_provider_auth_state, _prompt_model_selection, _save_model_choice,
-        _update_config_for_provider, resolve_nous_runtime_credentials,
-        fetch_nous_models, AuthError, format_auth_error,
-        _login_nous, PROVIDER_REGISTRY,
+    candidates = get_provider_model_candidates(
+        provider,
+        openrouter_model_loader=openrouter_model_ids,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    if candidates:
+        selected = _prompt_model_selection(candidates, current_model=profile.get("model", ""))
+    else:
+        try:
+            selected = input("Model ID (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+    if not selected:
+        return None
+
+    updated = dict(profile)
+    updated["model"] = selected
+    updated["base_url"] = base_url.rstrip("/")
+    updated["enabled"] = True
+    return updated
+
+
+def _configure_nous_profile(profile: dict) -> dict | None:
+    from hermes_cli.auth import (
+        AuthError,
+        PROVIDER_REGISTRY,
+        _login_nous,
+        _prompt_model_selection,
+        fetch_nous_models,
+        format_auth_error,
+        get_provider_auth_state,
+        resolve_nous_runtime_credentials,
+    )
     import argparse
 
     state = get_provider_auth_state("nous")
     if not state or not state.get("access_token"):
         print("Not logged into Nous Portal. Starting login...")
-        print()
         try:
             mock_args = argparse.Namespace(
                 portal_url=None, inference_url=None, client_id=None,
@@ -329,100 +516,69 @@ def _model_flow_nous(config, current_model=""):
             _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
         except SystemExit:
             print("Login cancelled or failed.")
-            return
+            return None
         except Exception as exc:
             print(f"Login failed: {exc}")
-            return
-        # login_nous already handles model selection + config update
-        return
+            return None
 
-    # Already logged in — fetch models and select
     print("Fetching models from Nous Portal...")
     try:
         creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-        model_ids = fetch_nous_models(
+        nous_models = fetch_nous_models(
             inference_base_url=creds.get("base_url", ""),
             api_key=creds.get("api_key", ""),
         )
     except Exception as exc:
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
         print(f"Could not fetch models: {msg}")
-        return
+        return None
 
-    if not model_ids:
-        print("No models returned by the inference API.")
-        return
+    selected = _prompt_model_selection(nous_models, current_model=profile.get("model", ""))
+    if not selected:
+        return None
 
-    selected = _prompt_model_selection(model_ids, current_model=current_model)
-    if selected:
-        _save_model_choice(selected)
-        # Reactivate Nous as the provider and update config
-        inference_url = creds.get("base_url", "")
-        _update_config_for_provider("nous", inference_url)
-        # Clear any custom endpoint that might conflict
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        print(f"Default model set to: {selected} (via Nous Portal)")
-    else:
-        print("No change.")
+    updated = dict(profile)
+    updated["model"] = selected
+    updated["base_url"] = (creds.get("base_url") or "").rstrip("/")
+    updated["enabled"] = True
+    return updated
 
 
-def _model_flow_custom(config):
-    """Custom endpoint: collect URL, API key, and model name."""
-    from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+def _configure_custom_profile(profile: dict) -> dict | None:
+    from hermes_cli.config import save_env_value
 
-    current_url = get_env_value("OPENAI_BASE_URL") or ""
-    current_key = get_env_value("OPENAI_API_KEY") or ""
+    current_url = profile.get("base_url") or os.getenv("OPENAI_BASE_URL") or ""
+    current_model = profile.get("model") or ""
+    current_key = os.getenv("OPENAI_API_KEY") or ""
 
     print("Custom OpenAI-compatible endpoint configuration:")
-    if current_url:
-        print(f"  Current URL: {current_url}")
-    if current_key:
-        print(f"  Current key: {current_key[:8]}...")
-    print()
-
     try:
-        base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
-        api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
-        model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        base_url = input(f"API base URL [{current_url or 'https://api.example.com/v1'}]: ").strip()
+        model_name = input(f"Model name [{current_model or 'gpt-4o'}]: ").strip()
+        api_key = input(f"OPENAI_API_KEY [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
     except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
-        return
+        print()
+        return None
 
-    if not base_url and not current_url:
-        print("No URL provided. Cancelled.")
-        return
-
-    # Validate URL format
     effective_url = base_url or current_url
-    if not effective_url.startswith(("http://", "https://")):
-        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
-        return
+    if not effective_url or not effective_url.startswith(("http://", "https://")):
+        print("Invalid URL (must start with http:// or https://)")
+        return None
+    effective_model = model_name or current_model
+    if not effective_model:
+        print("Model name is required.")
+        return None
 
-    if base_url:
-        save_env_value("OPENAI_BASE_URL", base_url)
+    save_env_value("OPENAI_BASE_URL", effective_url)
     if api_key:
         save_env_value("OPENAI_API_KEY", api_key)
 
-    if model_name:
-        _save_model_choice(model_name)
-
-        # Update config and deactivate any OAuth provider
-        cfg = load_config()
-        model = cfg.get("model")
-        if isinstance(model, dict):
-            model["provider"] = "auto"
-            model["base_url"] = effective_url
-        save_config(cfg)
-        deactivate_provider()
-
-        print(f"Default model set to: {model_name} (via {effective_url})")
-    else:
-        if base_url or api_key:
-            deactivate_provider()
-        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+    updated = dict(profile)
+    updated["provider"] = "custom"
+    updated["model"] = effective_model
+    updated["base_url"] = effective_url.rstrip("/")
+    updated["enabled"] = True
+    return updated
 
 
 def cmd_login(args):
@@ -678,7 +834,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous"],
+        choices=provider_cli_choices(include_auto=True),
         default=None,
         help="Inference provider (default: auto)"
     )

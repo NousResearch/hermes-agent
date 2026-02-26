@@ -27,7 +27,12 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_cli.provider_registry import (
+    get_provider,
+    list_provider_ids,
+    resolve_provider_api_key,
+    resolve_provider_base_url,
+)
 
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
@@ -125,14 +130,31 @@ def run_doctor(args):
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok("~/.hermes/.env file exists")
-        
-        # Check for common issues
-        content = env_path.read_text()
-        if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
-            check_ok("API key configured")
+
+        provider_ids = list_provider_ids(include_oauth=False, include_api_key=True, include_custom=True)
+        has_api_provider = any(
+            bool(resolve_provider_base_url(pid)) if pid == "custom" else bool(resolve_provider_api_key(pid))
+            for pid in provider_ids
+        )
+
+        has_oauth_provider = False
+        auth_file = HERMES_HOME / "auth.json"
+        if auth_file.exists():
+            try:
+                import json
+                auth = json.loads(auth_file.read_text())
+                active = auth.get("active_provider")
+                if active:
+                    state = auth.get("providers", {}).get(active, {})
+                    has_oauth_provider = bool(state.get("access_token") or state.get("refresh_token"))
+            except Exception:
+                has_oauth_provider = False
+
+        if has_api_provider or has_oauth_provider:
+            check_ok("Inference provider configured")
         else:
-            check_warn("No API key found in ~/.hermes/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            check_warn("No provider credentials found in ~/.hermes/.env/auth.json")
+            issues.append("Run 'hermes setup' to configure an inference provider")
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
@@ -343,58 +365,115 @@ def run_doctor(args):
             check_warn("agent-browser not installed", "(run: npm install)")
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
+
+    # =========================================================================
+    # Check: Inference provider credentials
+    # =========================================================================
+    print()
+    print(color("◆ Inference Provider Credentials", Colors.CYAN, Colors.BOLD))
+
+    provider_ids = list_provider_ids(include_oauth=False, include_api_key=True, include_custom=True)
+    for provider_id in provider_ids:
+        meta = get_provider(provider_id)
+        if not meta:
+            continue
+
+        api_key = resolve_provider_api_key(provider_id) or ""
+        base_url = resolve_provider_base_url(provider_id) or ""
+        key_vars = ", ".join(meta.api_key_env_vars) if meta.api_key_env_vars else "(none)"
+
+        if provider_id == "custom":
+            if base_url:
+                check_ok(f"{meta.label} base URL configured")
+            else:
+                check_warn(f"{meta.label} base URL not configured", "(set OPENAI_BASE_URL)")
+        else:
+            if api_key:
+                check_ok(f"{meta.label} API key configured", f"({key_vars})")
+            else:
+                check_warn(f"{meta.label} API key not configured", f"({key_vars})")
+
+        if base_url:
+            check_info(f"{meta.label} base URL: {base_url}")
     
     # =========================================================================
     # Check: API connectivity
     # =========================================================================
     print()
     print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
-    
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    if openrouter_key:
-        print("  Checking OpenRouter API...", end="", flush=True)
-        try:
-            import httpx
-            response = httpx.get(
-                OPENROUTER_MODELS_URL,
-                headers={"Authorization": f"Bearer {openrouter_key}"},
-                timeout=10
-            )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} OpenRouter API                          ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
-                issues.append("Check OPENROUTER_API_KEY in .env")
-            else:
-                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
-        except Exception as e:
-            print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'({e})', Colors.DIM)}                ")
-            issues.append("Check network connectivity")
+
+    try:
+        import httpx
+    except Exception as exc:
+        check_warn("HTTPX unavailable", f"({exc})")
     else:
-        check_warn("OpenRouter API", "(not configured)")
-    
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        print("  Checking Anthropic API...", end="", flush=True)
-        try:
-            import httpx
-            response = httpx.get(
-                "https://api.anthropic.com/v1/models",
-                headers={
-                    "x-api-key": anthropic_key,
-                    "anthropic-version": "2023-06-01"
-                },
-                timeout=10
-            )
-            if response.status_code == 200:
-                print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
-            elif response.status_code == 401:
-                print(f"\r  {color('✗', Colors.RED)} Anthropic API {color('(invalid API key)', Colors.DIM)}                 ")
-            else:
-                msg = "(couldn't verify)"
-                print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
-        except Exception as e:
-            print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
+        for provider_id in provider_ids:
+            meta = get_provider(provider_id)
+            if not meta or not meta.supports_openai_chat:
+                continue
+
+            api_key = resolve_provider_api_key(provider_id) or ""
+            base_url = resolve_provider_base_url(provider_id) or ""
+
+            if provider_id != "custom" and not api_key:
+                check_warn(f"{meta.label} chat endpoint", "(skipped; API key not configured)")
+                continue
+            if not base_url:
+                check_warn(f"{meta.label} chat endpoint", "(skipped; base URL not configured)")
+                continue
+
+            print(f"  Checking {meta.label} chat endpoint...", end="", flush=True)
+            endpoint = f"{base_url.rstrip('/')}/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            payload = {
+                "model": "hermes-healthcheck",
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            }
+
+            try:
+                response = httpx.post(endpoint, headers=headers, json=payload, timeout=10)
+                status_code = response.status_code
+                if status_code == 200:
+                    print(f"\r  {color('✓', Colors.GREEN)} {meta.label} chat endpoint reachable            ")
+                elif status_code in (400, 422, 429):
+                    print(
+                        f"\r  {color('✓', Colors.GREEN)} {meta.label} endpoint reachable "
+                        f"{color('(OpenAI-compatible response)', Colors.DIM)}"
+                    )
+                elif status_code in (401, 403):
+                    if provider_id == "custom" and not api_key:
+                        print(
+                            f"\r  {color('⚠', Colors.YELLOW)} {meta.label} endpoint requires auth "
+                            f"{color('(set OPENAI_API_KEY if needed)', Colors.DIM)}"
+                        )
+                    else:
+                        print(
+                            f"\r  {color('✗', Colors.RED)} {meta.label} auth failed "
+                            f"{color('(invalid API key)', Colors.DIM)}"
+                        )
+                        if meta.api_key_env_vars:
+                            issues.append(f"Check {meta.api_key_env_vars[0]} for {meta.label}")
+                elif status_code in (404, 405):
+                    print(
+                        f"\r  {color('✗', Colors.RED)} {meta.label} endpoint not found "
+                        f"{color('(check base URL)', Colors.DIM)}"
+                    )
+                    if meta.base_url_env_var:
+                        issues.append(f"Check {meta.base_url_env_var} for {meta.label}")
+                else:
+                    print(
+                        f"\r  {color('✗', Colors.RED)} {meta.label} chat endpoint "
+                        f"{color(f'(HTTP {status_code})', Colors.DIM)}"
+                    )
+            except Exception as exc:
+                print(
+                    f"\r  {color('✗', Colors.RED)} {meta.label} chat endpoint "
+                    f"{color(f'({exc})', Colors.DIM)}"
+                )
+                issues.append(f"Check network connectivity to {meta.label}")
     
     # =========================================================================
     # Check: Submodules

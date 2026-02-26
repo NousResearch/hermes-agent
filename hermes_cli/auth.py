@@ -32,6 +32,18 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.model_profiles import (
+    get_active_profile,
+    normalize_model_config,
+    set_active_profile,
+    sync_legacy_model_fields,
+    upsert_profile,
+)
+from hermes_cli.provider_registry import (
+    detect_auto_provider,
+    is_supported_provider,
+    normalize_provider_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,21 +304,23 @@ def resolve_provider(
 
     Priority (when requested="auto" or None):
     1. active_provider in auth.json with valid credentials
-    2. Explicit CLI api_key/base_url -> "openrouter"
-    3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
+    2. Explicit CLI api_key/base_url -> inferred API-key provider
+    3. Environment variable/provider-profile detection
     4. Fallback: "openrouter"
     """
-    normalized = (requested or "auto").strip().lower()
+    normalized = normalize_provider_id(requested or "auto")
 
     if normalized in PROVIDER_REGISTRY:
         return normalized
-    if normalized == "openrouter":
-        return "openrouter"
+    if is_supported_provider(normalized):
+        return normalized
     if normalized != "auto":
         return "openrouter"
 
-    # Explicit one-off CLI creds always mean openrouter/custom
+    # Explicit one-off CLI creds usually mean custom or openrouter.
     if explicit_api_key or explicit_base_url:
+        if explicit_base_url and "openrouter.ai" not in explicit_base_url.lower():
+            return "custom"
         return "openrouter"
 
     # Check auth store for an active OAuth provider
@@ -320,10 +334,7 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
-
-    return "openrouter"
+    return detect_auto_provider(env_get=os.getenv)
 
 
 # =============================================================================
@@ -839,16 +850,41 @@ def _update_config_for_provider(provider_id: str, inference_base_url: str) -> Pa
         except Exception:
             config = {}
 
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        model_cfg = dict(current_model)
-    elif isinstance(current_model, str) and current_model.strip():
-        model_cfg = {"default": current_model.strip()}
-    else:
-        model_cfg = {}
+    model_cfg = normalize_model_config(config.get("model"))
+    active = get_active_profile(model_cfg)
+    model_id = (
+        active.get("model")
+        or model_cfg.get("default")
+        or "anthropic/claude-opus-4.6"
+    )
 
-    model_cfg["provider"] = provider_id
-    model_cfg["base_url"] = inference_base_url.rstrip("/")
+    existing = next(
+        (p for p in model_cfg.get("profiles", []) if p.get("provider") == provider_id),
+        None,
+    )
+    if existing and existing.get("name"):
+        profile_name = existing["name"]
+    else:
+        base_name = provider_id.replace("-", "_")
+        profile_name = f"{base_name}-profile"
+        existing_names = {p.get("name") for p in model_cfg.get("profiles", [])}
+        suffix = 2
+        while profile_name in existing_names:
+            profile_name = f"{base_name}-profile-{suffix}"
+            suffix += 1
+
+    model_cfg = upsert_profile(
+        model_cfg,
+        {
+            "name": profile_name,
+            "provider": provider_id,
+            "model": model_id,
+            "base_url": inference_base_url.rstrip("/"),
+            "enabled": True,
+        },
+    )
+    model_cfg = set_active_profile(model_cfg, profile_name)
+    model_cfg = sync_legacy_model_fields(model_cfg)
     config["model"] = model_cfg
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -869,11 +905,27 @@ def _reset_config_provider() -> Path:
     if not isinstance(config, dict):
         return config_path
 
-    model = config.get("model")
-    if isinstance(model, dict):
-        model["provider"] = "auto"
-        if "base_url" in model:
-            model["base_url"] = OPENROUTER_BASE_URL
+    model_cfg = normalize_model_config(config.get("model"))
+    profiles = model_cfg.get("profiles", [])
+
+    target = next((p for p in profiles if p.get("provider") != "nous"), None)
+    if target and target.get("name"):
+        model_cfg = set_active_profile(model_cfg, target["name"])
+    else:
+        model_cfg = upsert_profile(
+            model_cfg,
+            {
+                "name": "default-openrouter",
+                "provider": "openrouter",
+                "model": model_cfg.get("default") or "anthropic/claude-opus-4.6",
+                "base_url": OPENROUTER_BASE_URL,
+                "enabled": True,
+            },
+        )
+        model_cfg = set_active_profile(model_cfg, "default-openrouter")
+
+    model_cfg = sync_legacy_model_fields(model_cfg)
+    config["model"] = model_cfg
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path
 

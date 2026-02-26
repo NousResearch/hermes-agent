@@ -202,7 +202,7 @@ class GatewayRunner:
             or "auto"
         )
 
-        # Update model from the same priority chain as the CLI.
+        # Update model: env vars > config.yaml > fallback
         self._model = (
             os.getenv("HERMES_MODEL")
             or os.getenv("LLM_MODEL")
@@ -986,6 +986,17 @@ class GatewayRunner:
             return f"🤖 **Current model:** `{self._model}`\n\nTo change: `/model provider/model-name`"
 
         self._model = args
+        # Persist to config.yaml + .env — same as CLI (hermes_cli/auth.py:964-969)
+        try:
+            from cli import save_config_value
+            save_config_value("model.default", args)
+        except Exception:
+            pass
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value("LLM_MODEL", args)
+        except Exception:
+            pass
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:

@@ -617,7 +617,10 @@ def _stop_cleanup_thread():
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
-        _cleanup_thread.join(timeout=5)
+        try:
+            _cleanup_thread.join(timeout=5)
+        except (SystemExit, KeyboardInterrupt):
+            pass
 
 
 def get_active_environments_info() -> Dict[str, Any]:

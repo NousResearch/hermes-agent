@@ -1,0 +1,16 @@
+{
+  "name": "hermes-whatsapp-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "WhatsApp Web bridge for Hermes Agent gateway",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.16",
+    "express": "^4.21.0",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

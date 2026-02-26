@@ -134,29 +134,62 @@ pip install discord.py>=2.0
 
 ### WhatsApp
 
-WhatsApp integration is more complex due to the lack of a simple bot API.
+WhatsApp integration uses a Node.js bridge process that connects to WhatsApp Web
+via [Baileys](https://github.com/WhiskeySockets/Baileys) (no browser/Chromium needed).
 
-**Options:**
-1. **WhatsApp Business API** (requires Meta verification)
-2. **whatsapp-web.js** via Node.js bridge (for personal accounts)
+**Requirements:**
+- Node.js >= 18
 
 **Bridge Setup:**
-1. Install Node.js
-2. Set up the bridge script (see `scripts/whatsapp-bridge/` for reference)
-3. Configure in gateway:
-   ```json
-   {
-     "platforms": {
-       "whatsapp": {
-         "enabled": true,
-         "extra": {
-           "bridge_script": "/path/to/bridge.js",
-           "bridge_port": 3000
-         }
-       }
-     }
-   }
-   ```
+
+```bash
+# 1. Install bridge dependencies
+cd scripts/whatsapp-bridge
+npm install
+
+# 2. First run - scan the QR code printed in terminal with your phone
+node bridge.js --port 3000
+
+# 3. After scanning, the session is saved automatically.
+#    Subsequent launches will reconnect without a QR code.
+```
+
+**Gateway Configuration:**
+
+Add to `~/.hermes/gateway.json`:
+
+```json
+{
+  "platforms": {
+    "whatsapp": {
+      "enabled": true,
+      "extra": {
+        "bridge_script": "/absolute/path/to/scripts/whatsapp-bridge/bridge.js",
+        "bridge_port": 3000
+      }
+    }
+  }
+}
+```
+
+Or set environment variables in `~/.hermes/.env`:
+
+```bash
+WHATSAPP_ENABLED=true
+```
+
+**How it works:**
+
+The gateway launches the bridge as a subprocess (`node bridge.js --port 3000 --session <path>`).
+The bridge connects to WhatsApp Web, buffers incoming messages, and exposes HTTP endpoints
+that the Python adapter polls. Media files (images, voice notes, documents) are downloaded
+and served via a local HTTP endpoint.
+
+**Notes:**
+- The first time you run the bridge, scan the QR code with WhatsApp on your phone
+- Session data is stored in `~/.hermes/whatsapp/session/` by default
+- If you get logged out, delete the session directory and re-authenticate
+- The bridge auto-reconnects on temporary disconnections
 
 ## Configuration
 

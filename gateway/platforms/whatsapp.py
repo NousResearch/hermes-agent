@@ -115,8 +115,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            
-            # Start the bridge process
+
+            # Start the bridge process with inherited stdout/stderr so the
+            # QR code printed by the bridge is visible to the user.
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -124,29 +125,40 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
             )
-            
-            # Wait for bridge to be ready (look for ready signal)
-            # This is a simplified version - real implementation would
-            # wait for an HTTP health check or specific stdout message
-            await asyncio.sleep(5)
-            
-            if self._bridge_process.poll() is not None:
-                stderr = self._bridge_process.stderr.read() if self._bridge_process.stderr else ""
-                print(f"[{self.name}] Bridge process died: {stderr}")
+
+            # Poll the bridge health endpoint until it responds (up to 30s).
+            import aiohttp
+            ready = False
+            for _ in range(30):
+                await asyncio.sleep(1)
+                if self._bridge_process.poll() is not None:
+                    print(f"[{self.name}] Bridge process exited unexpectedly.")
+                    return False
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://localhost:{self._bridge_port}/health",
+                            timeout=aiohttp.ClientTimeout(total=2)
+                        ) as resp:
+                            if resp.status == 200:
+                                ready = True
+                                break
+                except Exception:
+                    pass
+
+            if not ready:
+                print(f"[{self.name}] Bridge did not become ready within 30s.")
                 return False
-            
+
             # Start message polling task
             asyncio.create_task(self._poll_messages())
-            
+
             self._running = True
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             print(f"[{self.name}] Scan QR code if prompted (check bridge output)")
             return True
-            
+
         except Exception as e:
             print(f"[{self.name}] Failed to start bridge: {e}")
             return False

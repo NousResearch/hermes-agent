@@ -140,7 +140,7 @@ detect_os() {
             log_warn "Unknown operating system"
             ;;
     esac
-    
+
     log_success "Detected: $OS ($DISTRO)"
 }
 
@@ -150,7 +150,7 @@ detect_os() {
 
 install_uv() {
     log_info "Checking for uv package manager..."
-    
+
     # Check common locations for uv
     if command -v uv &> /dev/null; then
         UV_CMD="uv"
@@ -158,7 +158,7 @@ install_uv() {
         log_success "uv found ($UV_VERSION)"
         return 0
     fi
-    
+
     # Check ~/.local/bin (default uv install location) even if not on PATH yet
     if [ -x "$HOME/.local/bin/uv" ]; then
         UV_CMD="$HOME/.local/bin/uv"
@@ -166,7 +166,7 @@ install_uv() {
         log_success "uv found at ~/.local/bin ($UV_VERSION)"
         return 0
     fi
-    
+
     # Check ~/.cargo/bin (alternative uv install location)
     if [ -x "$HOME/.cargo/bin/uv" ]; then
         UV_CMD="$HOME/.cargo/bin/uv"
@@ -174,7 +174,7 @@ install_uv() {
         log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
         return 0
     fi
-    
+
     # Install uv
     log_info "Installing uv (fast Python package manager)..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
@@ -201,7 +201,7 @@ install_uv() {
 
 check_python() {
     log_info "Checking Python $PYTHON_VERSION..."
-    
+
     # Let uv handle Python — it can download and manage Python versions
     # First check if a suitable Python is already available
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
@@ -210,7 +210,7 @@ check_python() {
         log_success "Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
-    
+
     # Python not found — use uv to install it (no sudo needed!)
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
     if $UV_CMD python install "$PYTHON_VERSION"; then
@@ -226,16 +226,16 @@ check_python() {
 
 check_git() {
     log_info "Checking Git..."
-    
+
     if command -v git &> /dev/null; then
         GIT_VERSION=$(git --version | awk '{print $3}')
         log_success "Git $GIT_VERSION found"
         return 0
     fi
-    
+
     log_error "Git not found"
     log_info "Please install Git:"
-    
+
     case "$OS" in
         linux)
             case "$DISTRO" in
@@ -258,7 +258,7 @@ check_git() {
             log_info "  Or: brew install git"
             ;;
     esac
-    
+
     exit 1
 }
 
@@ -523,7 +523,7 @@ show_manual_install_hint() {
 
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
-    
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
@@ -556,14 +556,14 @@ clone_repo() {
             fi
         fi
     fi
-    
+
     cd "$INSTALL_DIR"
-    
+
     # Ensure submodules are initialized and updated (for existing installs or if --recurse failed)
     log_info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
     git submodule update --init --recursive
     log_success "Submodules ready"
-    
+
     log_success "Repository ready"
 }
 
@@ -572,33 +572,33 @@ setup_venv() {
         log_info "Skipping virtual environment (--no-venv)"
         return 0
     fi
-    
+
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
-    
+
     if [ -d "venv" ]; then
         log_info "Virtual environment already exists, recreating..."
         rm -rf venv
     fi
-    
+
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
-    
+
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
-    
+
     if [ "$USE_VENV" = true ]; then
         # Tell uv to install into our venv (no need to activate)
         export VIRTUAL_ENV="$INSTALL_DIR/venv"
     fi
-    
+
     # Install the main package in editable mode with all extras
     $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
-    
+
     log_success "Main package installed"
-    
+
     # Install submodules
     log_info "Installing mini-swe-agent (terminal tool backend)..."
     if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
@@ -607,7 +607,7 @@ install_deps() {
     else
         log_warn "mini-swe-agent not found (run: git submodule update --init)"
     fi
-    
+
     log_info "Installing tinker-atropos (RL training backend)..."
     if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
         $UV_CMD pip install -e "./tinker-atropos" || log_warn "tinker-atropos install failed (RL tools may not work)"
@@ -615,13 +615,13 @@ install_deps() {
     else
         log_warn "tinker-atropos not found (run: git submodule update --init)"
     fi
-    
+
     log_success "All dependencies installed"
 }
 
 setup_path() {
     log_info "Setting up hermes command..."
-    
+
     if [ "$USE_VENV" = true ]; then
         HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
     else
@@ -631,12 +631,12 @@ setup_path() {
             return 0
         fi
     fi
-    
+
     # Create symlink in ~/.local/bin (standard user binary location, usually on PATH)
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
     log_success "Symlinked hermes → ~/.local/bin/hermes"
-    
+
     # Check if ~/.local/bin is on PATH; if not, add it to shell config
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
         SHELL_CONFIG=""
@@ -649,9 +649,9 @@ setup_path() {
         elif [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
             SHELL_CONFIG="$HOME/.zshrc"
         fi
-        
+
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-        
+
         if [ -n "$SHELL_CONFIG" ]; then
             if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
                 echo "" >> "$SHELL_CONFIG"
@@ -665,19 +665,19 @@ setup_path() {
     else
         log_info "~/.local/bin already on PATH"
     fi
-    
+
     # Export for current session so hermes works immediately
     export PATH="$HOME/.local/bin:$PATH"
-    
+
     log_success "hermes command ready"
 }
 
 copy_config_templates() {
     log_info "Setting up configuration files..."
-    
+
     # Create ~/.hermes directory structure (config at top level, code in subdir)
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
-    
+
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
         if [ -f "$INSTALL_DIR/.env.example" ]; then
@@ -690,7 +690,7 @@ copy_config_templates() {
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi
-    
+
     # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
@@ -700,13 +700,13 @@ copy_config_templates() {
     else
         log_info "~/.hermes/config.yaml already exists, keeping it"
     fi
-    
+
     # Create SOUL.md if it doesn't exist (global persona file)
     if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
         cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
 # Hermes Agent Persona
 
-<!-- 
+<!--
 This file defines the agent's personality and tone.
 The agent will embody whatever you write here.
 Edit this to customize how Hermes communicates with you.
@@ -722,9 +722,9 @@ Delete the contents (or this file) to use the default personality.
 SOUL_EOF
         log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
     fi
-    
+
     log_success "Configuration directory ready: ~/.hermes/"
-    
+
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
     if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
@@ -743,7 +743,7 @@ install_node_deps() {
         log_info "Skipping Node.js dependencies (Node not installed)"
         return 0
     fi
-    
+
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
@@ -752,7 +752,7 @@ install_node_deps() {
         }
         log_success "Node.js dependencies installed"
     fi
-    
+
     # Install WhatsApp bridge dependencies
     if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
         log_info "Installing WhatsApp bridge dependencies..."
@@ -769,13 +769,13 @@ run_setup_wizard() {
         log_info "Skipping setup wizard (--skip-setup)"
         return 0
     fi
-    
+
     echo ""
     log_info "Starting setup wizard..."
     echo ""
-    
+
     cd "$INSTALL_DIR"
-    
+
     # Run hermes setup using the venv Python directly (no activation needed)
     if [ "$USE_VENV" = true ]; then
         "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup
@@ -868,7 +868,7 @@ print_success() {
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
     echo ""
-    
+
     # Show file locations
     echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
     echo ""
@@ -877,7 +877,7 @@ print_success() {
     echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
     echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
     echo ""
-    
+
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${CYAN}${BOLD}🚀 Commands:${NC}"
@@ -889,14 +889,14 @@ print_success() {
     echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
     echo ""
-    
+
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
     echo ""
     echo "   source ~/.bashrc   # or ~/.zshrc"
     echo ""
-    
+
     # Show Node.js warning if auto-install failed
     if [ "$HAS_NODE" = false ]; then
         echo -e "${YELLOW}"
@@ -905,7 +905,7 @@ print_success() {
         echo "  https://nodejs.org/en/download/"
         echo -e "${NC}"
     fi
-    
+
     # Show ripgrep note if not installed
     if [ "$HAS_RIPGREP" = false ]; then
         echo -e "${YELLOW}"
@@ -922,14 +922,14 @@ print_success() {
 
 main() {
     print_banner
-    
+
     detect_os
     install_uv
     check_python
     check_git
     check_node
     install_system_packages
-    
+
     clone_repo
     setup_venv
     install_deps
@@ -938,7 +938,7 @@ main() {
     copy_config_templates
     run_setup_wizard
     maybe_start_gateway
-    
+
     print_success
 }
 

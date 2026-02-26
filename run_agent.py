@@ -1186,11 +1186,10 @@ class AIAgent:
         if provider_preferences:
             extra_body["provider"] = provider_preferences
 
-        _supports_reasoning = (
-            "openrouter" in self.base_url.lower()
-            or "nousresearch" in self.base_url.lower()
-        )
-        if _supports_reasoning:
+        _is_openrouter = "openrouter" in self.base_url.lower()
+        _is_nous = "nousresearch" in self.base_url.lower()
+
+        if _is_openrouter or _is_nous:
             if self.reasoning_config is not None:
                 extra_body["reasoning"] = self.reasoning_config
             else:
@@ -1198,6 +1197,10 @@ class AIAgent:
                     "enabled": True,
                     "effort": "xhigh"
                 }
+
+        # Nous Portal product attribution
+        if _is_nous:
+            extra_body["tags"] = ["product=hermes-agent"]
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
@@ -1612,11 +1615,9 @@ class AIAgent:
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
-            _supports_reasoning = (
-                "openrouter" in self.base_url.lower()
-                or "nousresearch" in self.base_url.lower()
-            )
-            if _supports_reasoning:
+            _is_openrouter = "openrouter" in self.base_url.lower()
+            _is_nous = "nousresearch" in self.base_url.lower()
+            if _is_openrouter or _is_nous:
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
                 else:
@@ -1624,6 +1625,8 @@ class AIAgent:
                         "enabled": True,
                         "effort": "xhigh"
                     }
+            if _is_nous:
+                summary_extra_body["tags"] = ["product=hermes-agent"]
 
             summary_kwargs = {
                 "model": self.model,

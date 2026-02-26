@@ -960,6 +960,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
+                honcho_session_key=self.session_id,
             )
             return True
         except Exception as e:

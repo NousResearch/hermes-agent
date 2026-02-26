@@ -118,6 +118,7 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
+        use_codex_auth: bool = False,
         skip_memory: bool = False,
         session_db=None,
     ):
@@ -157,6 +158,8 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            use_codex_auth (bool): If True, use credentials from ~/.codex/auth.json explicitly
+                (no silent fallback). Supports both OPENAI_API_KEY and ChatGPT Codex tokens.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -172,6 +175,8 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
+        codex_env_flag = os.getenv("HERMES_USE_CODEX_AUTH", "").strip().lower() in {"1", "true", "yes", "on"}
+        self._use_codex_auth = use_codex_auth or codex_env_flag
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode
@@ -198,7 +203,56 @@ class AIAgent:
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (xhigh for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
-        
+
+        # Explicit opt-in: load credentials from ~/.codex/auth.json.
+        self._codex_http_client: Optional[object] = None  # httpx.Client for transport-based codex
+        if self._use_codex_auth:
+            from agent.codex_auth import (
+                get_codex_auth_mode, get_codex_chatgpt_auth, get_codex_openai_api_key,
+            )
+            from agent.codex_models import get_codex_default_model
+            codex_auth_mode = get_codex_auth_mode()
+            if codex_auth_mode == "api_key":
+                codex_api_key = get_codex_openai_api_key()
+                if not codex_api_key:
+                    raise RuntimeError(
+                        "Codex auth requested but OPENAI_API_KEY is missing in "
+                        "~/.codex/auth.json. Run `codex login` first."
+                    )
+                api_key = codex_api_key
+                base_url = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+                self.base_url = base_url
+            elif codex_auth_mode == "chatgpt":
+                codex_auth = get_codex_chatgpt_auth(refresh_if_expiring=True)
+                if not codex_auth:
+                    raise RuntimeError(
+                        "Codex auth requested but no usable credentials in "
+                        "~/.codex/auth.json. Run `codex login` first."
+                    )
+                from agent.codex_transport import CodexTransport
+                import httpx as _httpx
+                transport = CodexTransport(
+                    access_token=codex_auth["access_token"],
+                    refresh_token=codex_auth["refresh_token"],
+                    account_id=codex_auth["account_id"],
+                )
+                self._codex_http_client = _httpx.Client(transport=transport)
+                # Dummy key; the transport injects the real Bearer token.
+                api_key = "codex-oauth"
+                # base_url must be OpenAI-compatible so the SDK builds correct
+                # paths; the transport rewrites the actual URL.
+                base_url = "https://api.openai.com/v1"
+                self.base_url = base_url
+            else:
+                raise RuntimeError(
+                    "~/.codex/auth.json is missing a supported auth_mode. "
+                    "Run `codex login` first."
+                )
+            codex_model = get_codex_default_model() or "gpt-5.1-codex"
+            if "codex" not in self.model.lower():
+                self.model = codex_model
+            logger.info("Using Codex auth (%s) from %s", codex_auth_mode, Path.home() / ".codex" / "auth.json")
+
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
@@ -256,20 +310,20 @@ class AIAgent:
         
         # Initialize OpenAI client - defaults to OpenRouter
         client_kwargs = {}
-        
+
         # Default to OpenRouter if no base_url provided
         if base_url:
             client_kwargs["base_url"] = base_url
         else:
             client_kwargs["base_url"] = OPENROUTER_BASE_URL
-        
+
         # Handle API key - OpenRouter is the primary provider
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
             client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
-        
+
         # OpenRouter app attribution — shows hermes-agent in rankings/analytics
         effective_base = client_kwargs.get("base_url", "")
         if "openrouter" in effective_base.lower():
@@ -278,8 +332,16 @@ class AIAgent:
                 "X-OpenRouter-Title": "Hermes Agent",
                 "X-OpenRouter-Categories": "cli-agent",
             }
-        
-        self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+
+        # Codex ChatGPT auth uses a custom httpx transport for URL rewriting.
+        # Store the transport (not the httpx.Client) so we can cheaply rewrap
+        # it after interrupts — OpenAI SDK closes the httpx.Client on .close()
+        # but the transport itself survives and can be reused.
+        if self._codex_transport is not None:
+            import httpx as _httpx
+            client_kwargs["http_client"] = _httpx.Client(transport=self._codex_transport)
+
+        self._client_kwargs = client_kwargs
         try:
             self.client = OpenAI(**client_kwargs)
             if not self.quiet_mode:
@@ -2499,6 +2561,7 @@ def main(
     model: str = "anthropic/claude-opus-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
+    use_codex_auth: bool = False,
     max_turns: int = 10,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
@@ -2516,6 +2579,7 @@ def main(
         model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4-20250514.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
+        use_codex_auth (bool): Explicitly use credentials from ~/.codex/auth.json.
         max_turns (int): Maximum number of API call iterations. Defaults to 10.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
@@ -2639,6 +2703,7 @@ def main(
             base_url=base_url,
             model=model,
             api_key=api_key,
+            use_codex_auth=use_codex_auth,
             max_iterations=max_turns,
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,

@@ -298,6 +298,8 @@ def resolve_provider(
     """
     normalized = (requested or "auto").strip().lower()
 
+    if normalized == "codex":
+        return "codex"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized == "openrouter":

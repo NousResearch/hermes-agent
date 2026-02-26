@@ -178,6 +178,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "custom": "Custom endpoint",
+        "codex": "Codex (~/.codex)",
     }
     active_label = provider_labels.get(active, active)
 
@@ -190,11 +191,12 @@ def cmd_model(args):
     providers = [
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
+        ("codex", "Codex (~/.codex, ChatGPT Pro/Plus)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous") else "custom"
+    active_key = active if active in ("openrouter", "nous", "codex") else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -215,6 +217,8 @@ def cmd_model(args):
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model)
+    elif selected_provider == "codex":
+        _model_flow_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
 
@@ -364,6 +368,34 @@ def _model_flow_nous(config, current_model=""):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
+    else:
+        print("No change.")
+
+
+def _model_flow_codex(config, current_model=""):
+    """Codex provider: require ~/.codex auth, then pick a Codex model."""
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from agent.codex_auth import has_codex_credentials
+    from agent.codex_models import get_codex_model_ids
+
+    if not has_codex_credentials():
+        print("Codex credentials were not found in ~/.codex/auth.json.")
+        print("Run: codex login")
+        return
+
+    codex_models = get_codex_model_ids()
+    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = "codex"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Codex)")
     else:
         print("No change.")
 
@@ -678,7 +710,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous"],
+        choices=["auto", "openrouter", "nous", "codex"],
         default=None,
         help="Inference provider (default: auto)"
     )

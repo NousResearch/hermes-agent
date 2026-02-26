@@ -751,7 +751,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous")
+            provider: Inference provider ("auto", "openrouter", "nous", "codex")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -786,6 +786,13 @@ class HermesCLI:
             explicit_api_key=api_key,
             explicit_base_url=base_url,
         )
+        if self.provider == "codex":
+            # Codex auth comes from ~/.codex explicitly, not from Hermes env keys.
+            self.api_key = None
+            self.base_url = None
+            if "codex" not in (self.model or "").lower():
+                from agent.codex_models import get_codex_default_model
+                self.model = get_codex_default_model() or "gpt-5.1-codex"
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
@@ -924,6 +931,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
+                use_codex_auth=(self.provider == "codex"),
             )
             return True
         except Exception as e:
@@ -1028,7 +1036,7 @@ class HermesCLI:
         print("  Tip: Just type your message to chat with Hermes!")
         print("  Multi-line: Alt+Enter for a new line")
         print()
-    
+
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
@@ -2593,7 +2601,7 @@ def main(
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous")
+        provider: Inference provider ("auto", "openrouter", "nous", "codex")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)

@@ -28,6 +28,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -90,8 +91,31 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _resolve_last_cli_session() -> Optional[str]:
+    """Look up the most recent CLI session ID from SQLite. Returns None if unavailable."""
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        sessions = db.search_sessions(source="cli", limit=1)
+        db.close()
+        if sessions:
+            return sessions[0]["id"]
+    except Exception:
+        pass
+    return None
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    # Resolve --continue into --resume with the latest CLI session
+    if getattr(args, "continue_last", False) and not getattr(args, "resume", None):
+        last_id = _resolve_last_cli_session()
+        if last_id:
+            args.resume = last_id
+        else:
+            print("No previous CLI session found to continue.")
+            sys.exit(1)
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -770,6 +794,13 @@ For more help on a command:
         default=None,
         help="Resume a previous session by ID (shortcut for: hermes chat --resume ID)"
     )
+    parser.add_argument(
+        "--continue", "-c",
+        dest="continue_last",
+        action="store_true",
+        default=False,
+        help="Resume the most recent CLI session"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -808,6 +839,13 @@ For more help on a command:
         "--resume", "-r",
         metavar="SESSION_ID",
         help="Resume a previous session by ID (shown on exit)"
+    )
+    chat_parser.add_argument(
+        "--continue", "-c",
+        dest="continue_last",
+        action="store_true",
+        default=False,
+        help="Resume the most recent CLI session"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -1315,8 +1353,8 @@ For more help on a command:
         cmd_version(args)
         return
     
-    # Handle top-level --resume as shortcut to chat --resume
-    if args.resume and args.command is None:
+    # Handle top-level --resume / --continue as shortcut to chat
+    if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
         args.query = None
         args.model = None
@@ -1334,6 +1372,7 @@ For more help on a command:
         args.toolsets = None
         args.verbose = False
         args.resume = None
+        args.continue_last = False
         cmd_chat(args)
         return
     

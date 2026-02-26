@@ -87,6 +87,14 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
+    # Check for Codex CLI credentials (~/.codex/auth.json)
+    try:
+        from agent.codex_auth import has_codex_credentials
+        if has_codex_credentials():
+            return True
+    except Exception:
+        pass
+
     return False
 
 

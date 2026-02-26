@@ -676,7 +676,7 @@ copy_config_templates() {
     log_info "Setting up configuration files..."
     
     # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills}
+    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
     
     # Create .env at ~/.hermes/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -745,13 +745,22 @@ install_node_deps() {
     fi
     
     if [ -f "$INSTALL_DIR/package.json" ]; then
-        log_info "Installing Node.js dependencies..."
+        log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
         npm install --silent 2>/dev/null || {
             log_warn "npm install failed (browser tools may not work)"
-            return 0
         }
         log_success "Node.js dependencies installed"
+    fi
+    
+    # Install WhatsApp bridge dependencies
+    if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
+        log_info "Installing WhatsApp bridge dependencies..."
+        cd "$INSTALL_DIR/scripts/whatsapp-bridge"
+        npm install --silent 2>/dev/null || {
+            log_warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
+        }
+        log_success "WhatsApp bridge dependencies installed"
     fi
 }
 
@@ -798,6 +807,24 @@ maybe_start_gateway() {
     echo ""
     log_info "Messaging platform token detected!"
     log_info "The gateway needs to be running for Hermes to send/receive messages."
+
+    # If WhatsApp is enabled and no session exists yet, run foreground first for QR scan
+    WHATSAPP_VAL=$(grep "^WHATSAPP_ENABLED=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
+    WHATSAPP_SESSION="$HERMES_HOME/whatsapp/session/creds.json"
+    if [ "$WHATSAPP_VAL" = "true" ] && [ ! -f "$WHATSAPP_SESSION" ]; then
+        echo ""
+        log_info "WhatsApp is enabled but not yet paired."
+        log_info "Running 'hermes whatsapp' to pair via QR code..."
+        echo ""
+        read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+            HERMES_CMD="$HOME/.local/bin/hermes"
+            [ ! -x "$HERMES_CMD" ] && HERMES_CMD="hermes"
+            $HERMES_CMD whatsapp || true
+        fi
+    fi
+
     echo ""
     read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r
     echo

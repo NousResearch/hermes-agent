@@ -744,6 +744,7 @@ class HermesCLI:
         max_turns: int = 60,
         verbose: bool = False,
         compact: bool = False,
+        resume: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -757,6 +758,7 @@ class HermesCLI:
             max_turns: Maximum tool-calling iterations (default: 60)
             verbose: Enable verbose logging
             compact: Use compact display mode
+            resume: Session ID to resume (restores conversation history from SQLite)
         """
         # Initialize Rich console
         self.console = Console()
@@ -832,12 +834,16 @@ class HermesCLI:
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
+        self._resumed = False
         
-        # Generate session ID with timestamp for display and logging
-        # Format: YYYYMMDD_HHMMSS_shortUUID (e.g., 20260201_143052_a1b2c3)
-        timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
-        short_uuid = uuid.uuid4().hex[:6]
-        self.session_id = f"{timestamp_str}_{short_uuid}"
+        # Session ID: reuse existing one when resuming, otherwise generate fresh
+        if resume:
+            self.session_id = resume
+            self._resumed = True
+        else:
+            timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
@@ -890,6 +896,7 @@ class HermesCLI:
     def _init_agent(self) -> bool:
         """
         Initialize the agent on first use.
+        When resuming a session, restores conversation history from SQLite.
         
         Returns:
             bool: True if successful, False otherwise
@@ -907,6 +914,34 @@ class HermesCLI:
             self._session_db = SessionDB()
         except Exception as e:
             logger.debug("SQLite session store not available: %s", e)
+        
+        # If resuming, validate the session exists and load its history
+        if self._resumed and self._session_db:
+            session_meta = self._session_db.get_session(self.session_id)
+            if not session_meta:
+                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
+                _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
+                return False
+            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            if restored:
+                self.conversation_history = restored
+                msg_count = len([m for m in restored if m.get("role") == "user"])
+                _cprint(
+                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
+                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
+                    f"{len(restored)} total messages){_RST}"
+                )
+            else:
+                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
+            # Re-open the session (clear ended_at so it's active again)
+            try:
+                self._session_db._conn.execute(
+                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                    (self.session_id,),
+                )
+                self._session_db._conn.commit()
+            except Exception:
+                pass
         
         try:
             self.agent = AIAgent(
@@ -1903,6 +1938,32 @@ class HermesCLI:
             print(f"Error: {e}")
             return None
     
+    def _print_exit_summary(self):
+        """Print session resume info on exit, similar to Claude Code."""
+        print()
+        msg_count = len(self.conversation_history)
+        if msg_count > 0:
+            user_msgs = len([m for m in self.conversation_history if m.get("role") == "user"])
+            tool_calls = len([m for m in self.conversation_history if m.get("role") == "tool" or m.get("tool_calls")])
+            elapsed = datetime.now() - self.session_start
+            hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if hours > 0:
+                duration_str = f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                duration_str = f"{minutes}m {seconds}s"
+            else:
+                duration_str = f"{seconds}s"
+            
+            print(f"Resume this session with:")
+            print(f"  hermes --resume {self.session_id}")
+            print()
+            print(f"Session:        {self.session_id}")
+            print(f"Duration:       {duration_str}")
+            print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+        else:
+            print("Goodbye! ⚕")
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
@@ -2563,7 +2624,7 @@ class HermesCLI:
                 except Exception as e:
                     logger.debug("Could not close session in DB: %s", e)
             _run_cleanup()
-            print("\nGoodbye! ⚕")
+            self._print_exit_summary()
 
 
 # ============================================================================
@@ -2584,6 +2645,7 @@ def main(
     list_tools: bool = False,
     list_toolsets: bool = False,
     gateway: bool = False,
+    resume: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -2601,12 +2663,14 @@ def main(
         compact: Use compact display mode
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
+        resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
     
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
+        python cli.py --resume 20260225_143052_a1b2c3  # Resume session
     """
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
@@ -2655,6 +2719,7 @@ def main(
         max_turns=max_turns,
         verbose=verbose,
         compact=compact,
+        resume=resume,
     )
     
     # Handle list commands (don't init agent for these)
@@ -2676,6 +2741,7 @@ def main(
         cli.show_banner()
         cli.console.print(f"[bold blue]Query:[/] {query}")
         cli.chat(query)
+        cli._print_exit_summary()
         return
     
     # Run interactive mode

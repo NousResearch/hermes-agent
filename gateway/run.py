@@ -428,7 +428,11 @@ class GatewayRunner:
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
-        return user_id in allowed_ids
+        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+        return bool(check_ids & allowed_ids)
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1388,8 +1392,9 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            api_key = os.getenv("OPENROUTER_API_KEY", "")
-            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
             model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
 
             try:

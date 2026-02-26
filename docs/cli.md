@@ -6,20 +6,24 @@ The Hermes Agent CLI provides an interactive terminal interface for working with
 
 ```bash
 # Basic usage
-./hermes
+hermes
 
 # With specific model
-./hermes --model "anthropic/claude-sonnet-4"
+hermes --model "anthropic/claude-sonnet-4"
 
 # With specific provider
-./hermes --provider nous        # Use Nous Portal (requires: hermes login)
-./hermes --provider openrouter  # Force OpenRouter
+hermes --provider nous        # Use Nous Portal (requires: hermes login)
+hermes --provider openrouter  # Force OpenRouter
 
 # With specific toolsets
-./hermes --toolsets "web,terminal,skills"
+hermes --toolsets "web,terminal,skills"
+
+# Resume previous sessions
+hermes --continue             # Resume the most recent CLI session (-c)
+hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
 # Verbose mode
-./hermes --verbose
+hermes --verbose
 ```
 
 ## Architecture
@@ -238,6 +242,34 @@ This allows you to have different terminal configs for CLI vs batch processing.
 - **Conversations**: Use `/save` to export conversations
 - **Reset**: Use `/clear` for full reset, `/reset` to just clear history
 - **Session Logs**: Every session automatically logs to `logs/session_{session_id}.json`
+- **Resume**: Pick up any previous session with `--resume` or `--continue`
+
+### Resuming Sessions
+
+When you exit a CLI session, a resume command is printed:
+
+```
+Resume this session with:
+  hermes --resume 20260225_143052_a1b2c3
+
+Session:        20260225_143052_a1b2c3
+Duration:       12m 34s
+Messages:       28 (5 user, 18 tool calls)
+```
+
+To resume:
+
+```bash
+hermes --continue                          # Resume the most recent CLI session
+hermes -c                                  # Short form
+hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
+hermes -r 20260225_143052_a1b2c3           # Short form
+hermes chat --resume 20260225_143052_a1b2c3  # Explicit subcommand form
+```
+
+Resuming restores the full conversation history from SQLite (`~/.hermes/state.db`). The agent sees all previous messages, tool calls, and responses — just as if you never left. New messages append to the same session in the database.
+
+Use `hermes sessions list` to browse past sessions and find IDs.
 
 ### Session Logging
 

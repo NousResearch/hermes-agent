@@ -37,19 +37,30 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-# Load environment variables from .env file
+# Load .env from ~/.hermes/.env first, then project root as dev fallback
 from dotenv import load_dotenv
 
-# Load .env file if it exists
-env_path = Path(__file__).parent / '.env'
-if env_path.exists():
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_user_env = _hermes_home / ".env"
+_project_env = Path(__file__).parent / '.env'
+if _user_env.exists():
     try:
-        load_dotenv(dotenv_path=env_path, encoding="utf-8")
+        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=env_path, encoding="latin-1")
-    logger.info("Loaded environment variables from %s", env_path)
+        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
+    logger.info("Loaded environment variables from %s", _user_env)
+elif _project_env.exists():
+    try:
+        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+    logger.info("Loaded environment variables from %s", _project_env)
 else:
-    logger.info("No .env file found at %s. Using system environment variables.", env_path)
+    logger.info("No .env file found. Using system environment variables.")
+
+# Point mini-swe-agent at ~/.hermes/ so it shares our config
+os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
+os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
 from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements

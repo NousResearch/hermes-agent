@@ -18,6 +18,7 @@ with different backends via a bridge pattern.
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -80,11 +81,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits
     MAX_MESSAGE_LENGTH = 65536  # WhatsApp allows longer messages
     
+    # Default bridge location relative to the hermes-agent install
+    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
-        self._bridge_script: Optional[str] = config.extra.get("bridge_script")
+        self._bridge_script: Optional[str] = config.extra.get(
+            "bridge_script",
+            str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
+        )
         self._session_path: Path = Path(config.extra.get(
             "session_path",
             Path.home() / ".hermes" / "whatsapp" / "session"
@@ -98,25 +105,58 @@ class WhatsAppAdapter(BasePlatformAdapter):
         This launches the Node.js bridge process and waits for it to be ready.
         """
         if not check_whatsapp_requirements():
-            print(f"[{self.name}] Node.js not found. WhatsApp requires Node.js.")
-            return False
-        
-        if not self._bridge_script:
-            print(f"[{self.name}] No bridge script configured.")
-            print(f"[{self.name}] Set 'bridge_script' in whatsapp.extra config.")
-            print(f"[{self.name}] See docs/messaging.md for WhatsApp setup instructions.")
+            logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             return False
         
         bridge_path = Path(self._bridge_script)
         if not bridge_path.exists():
-            print(f"[{self.name}] Bridge script not found: {bridge_path}")
+            logger.warning("[%s] Bridge script not found: %s", self.name, bridge_path)
             return False
+        
+        logger.info("[%s] Bridge found at %s", self.name, bridge_path)
+        
+        # Auto-install npm dependencies if node_modules doesn't exist
+        bridge_dir = bridge_path.parent
+        if not (bridge_dir / "node_modules").exists():
+            print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
+            try:
+                install_result = subprocess.run(
+                    ["npm", "install", "--silent"],
+                    cwd=str(bridge_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if install_result.returncode != 0:
+                    print(f"[{self.name}] npm install failed: {install_result.stderr}")
+                    return False
+                print(f"[{self.name}] Dependencies installed")
+            except Exception as e:
+                print(f"[{self.name}] Failed to install dependencies: {e}")
+                return False
         
         try:
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
             
-            # Start the bridge process
+            # Kill any orphaned bridge from a previous gateway run
+            try:
+                result = subprocess.run(
+                    ["fuser", f"{self._bridge_port}/tcp"],
+                    capture_output=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    # Port is in use — kill the process
+                    subprocess.run(
+                        ["fuser", "-k", f"{self._bridge_port}/tcp"],
+                        capture_output=True, timeout=5,
+                    )
+                    import time
+                    time.sleep(2)
+            except Exception:
+                pass
+            
+            # Start the bridge process in its own process group
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -124,19 +164,32 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid,
             )
             
-            # Wait for bridge to be ready (look for ready signal)
-            # This is a simplified version - real implementation would
-            # wait for an HTTP health check or specific stdout message
-            await asyncio.sleep(5)
-            
-            if self._bridge_process.poll() is not None:
-                stderr = self._bridge_process.stderr.read() if self._bridge_process.stderr else ""
-                print(f"[{self.name}] Bridge process died: {stderr}")
+            # Wait for bridge to be ready via HTTP health check
+            import aiohttp
+            for attempt in range(15):
+                await asyncio.sleep(1)
+                if self._bridge_process.poll() is not None:
+                    print(f"[{self.name}] Bridge process died (exit code {self._bridge_process.returncode})")
+                    return False
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://localhost:{self._bridge_port}/health",
+                            timeout=aiohttp.ClientTimeout(total=2)
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                print(f"[{self.name}] Bridge ready (status: {data.get('status', '?')})")
+                                break
+                except Exception:
+                    continue
+            else:
+                print(f"[{self.name}] Bridge did not become ready in 15s")
                 return False
             
             # Start message polling task
@@ -148,19 +201,36 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
-            print(f"[{self.name}] Failed to start bridge: {e}")
+            logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             return False
     
     async def disconnect(self) -> None:
-        """Stop the WhatsApp bridge."""
+        """Stop the WhatsApp bridge and clean up any orphaned processes."""
         if self._bridge_process:
             try:
-                self._bridge_process.terminate()
+                # Kill the entire process group so child node processes die too
+                import signal
+                try:
+                    os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    self._bridge_process.terminate()
                 await asyncio.sleep(1)
                 if self._bridge_process.poll() is None:
-                    self._bridge_process.kill()
+                    try:
+                        os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        self._bridge_process.kill()
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
+        
+        # Also kill any orphaned bridge processes on our port
+        try:
+            subprocess.run(
+                ["fuser", "-k", f"{self._bridge_port}/tcp"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
         
         self._running = False
         self._bridge_process = None
@@ -355,9 +425,3 @@ class WhatsAppAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Error building event: {e}")
             return None
 
-
-# Note: A reference Node.js bridge script would be provided in scripts/whatsapp-bridge/
-# It would use whatsapp-web.js or Baileys to:
-# 1. Handle WhatsApp Web authentication (QR code)
-# 2. Listen for incoming messages
-# 3. Expose HTTP endpoints for send/receive/status

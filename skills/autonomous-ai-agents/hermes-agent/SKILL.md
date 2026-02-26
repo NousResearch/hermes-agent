@@ -42,6 +42,20 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 This installs uv, Python 3.11, clones the repo, sets up the venv, and launches an interactive setup wizard to configure your API provider and model. See the [GitHub repo](https://github.com/NousResearch/hermes-agent) for details.
 
+## Resuming Previous Sessions
+
+Resume a prior CLI session instead of starting fresh. Useful for continuing long tasks across process restarts:
+
+```
+# Resume the most recent CLI session
+terminal(command="hermes --continue", background=true, pty=true)
+
+# Resume a specific session by ID (shown on exit)
+terminal(command="hermes --resume 20260225_143052_a1b2c3", background=true, pty=true)
+```
+
+The full conversation history (messages, tool calls, responses) is restored from SQLite. The agent sees everything from the previous session.
+
 ## Mode 1: One-Shot Query (-q flag)
 
 Run a single query non-interactively. The agent executes, does its work, and exits:
@@ -145,13 +159,13 @@ For scheduled autonomous tasks, use the `schedule_cronjob` tool instead of spawn
 
 ## Key Differences Between Modes
 
-| | `-q` (one-shot) | Interactive (PTY) |
-|---|---|---|
-| User interaction | None | Full back-and-forth |
-| PTY required | No | Yes (`pty=true`) |
-| Multi-turn | Single query | Unlimited turns |
-| Best for | Fire-and-forget tasks | Iterative work, reviews, steering |
-| Exit | Automatic after completion | Send `/exit` or kill |
+| | `-q` (one-shot) | Interactive (PTY) | `--continue` / `--resume` |
+|---|---|---|---|
+| User interaction | None | Full back-and-forth | Full back-and-forth |
+| PTY required | No | Yes (`pty=true`) | Yes (`pty=true`) |
+| Multi-turn | Single query | Unlimited turns | Continues previous turns |
+| Best for | Fire-and-forget tasks | Iterative work, steering | Picking up where you left off |
+| Exit | Automatic after completion | Send `/exit` or kill | Send `/exit` or kill |
 
 ## Known Issues
 

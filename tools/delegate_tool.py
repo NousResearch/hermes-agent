@@ -116,6 +116,7 @@ def _run_single_child(
             providers_ignored=parent_agent.providers_ignored,
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
+            use_codex_auth=getattr(parent_agent, '_use_codex_auth', False),
         )
 
         # Set delegation depth so children can't spawn grandchildren

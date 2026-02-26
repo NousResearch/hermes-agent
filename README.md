@@ -13,7 +13,7 @@
 
 **The fully open-source AI agent that grows with you.** Install it on a machine, give it your messaging accounts, and it becomes a persistent personal agent — learning your projects, building its own skills, running tasks on a schedule, and reaching you wherever you are. An autonomous agent that lives on your server, remembers what it learns, and gets more capable the longer it runs.
 
-Use any model you want — log in with [Nous Portal](https://portal.nousresearch.com), log in with OpenAI Codex via `hermes login --provider openai-codex`, connect an [OpenRouter](https://openrouter.ai) key for 200+ models, or point it at your own VLLM/SGLang endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Use any model you want — log in with a [Nous Portal](https://portal.nousresearch.com) subscription for zero-config access, connect an [OpenRouter](https://openrouter.ai) key for 200+ models, or point it at your own VLLM/SGLang endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
 Built by [Nous Research](https://nousresearch.com). Under the hood, the same architecture powers [batch data generation](#batch-processing) and [RL training environments](#-atropos-rl-environments) for training the next generation of tool-calling models.
 
@@ -121,13 +121,10 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | Provider | Setup |
 |----------|-------|
 | **Nous Portal** | `hermes login` (OAuth, subscription-based) |
-| **OpenAI Codex** | `hermes login --provider openai-codex` (uses `CODEX_HOME/auth.json`) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 **Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
-
-**Codex note:** The `openai-codex` provider uses Codex CLI auth (`CODEX_HOME/auth.json`, default `~/.codex/auth.json`) and Hermes routes that provider through the Responses API transport.
 
 ---
 
@@ -139,7 +136,7 @@ All your settings are stored in `~/.hermes/` for easy access:
 ~/.hermes/
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
-├── auth.json       # OAuth provider credentials (Nous Portal, OpenAI Codex)
+├── auth.json       # OAuth provider credentials (Nous Portal, etc.)
 ├── SOUL.md         # Optional: global persona (agent embodies this personality)
 ├── memories/       # Persistent memory (MEMORY.md, USER.md)
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
@@ -338,7 +335,6 @@ hermes chat -q "Hello"    # Single query mode
 # Provider & model management
 hermes model              # Switch provider and model interactively
 hermes login              # Authenticate with Nous Portal (OAuth)
-hermes login --provider openai-codex
 hermes logout             # Clear stored OAuth credentials
 
 # Configuration
@@ -1410,7 +1406,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 **Provider Auth (OAuth):**
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -1485,7 +1481,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 |------|-------------|
 | `~/.hermes/config.yaml` | Your settings |
 | `~/.hermes/.env` | API keys and secrets |
-| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes login`, including Codex metadata) |
+| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes login`) |
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
 | `~/.hermes/hermes-agent/` | Installation directory |
@@ -1513,11 +1509,11 @@ hermes config    # View current settings
 Common issues:
 - **"API key not set"**: Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key`
 - **"hermes: command not found"**: Reload your shell (`source ~/.bashrc`) or check PATH
-- **"Run `hermes login` to re-authenticate"**: Your OAuth session expired. Use `hermes login` for Nous or `hermes login --provider openai-codex` for Codex.
+- **"Run `hermes login` to re-authenticate"**: Your Nous Portal session expired. Run `hermes login` to refresh.
 - **"No active paid subscription"**: Your Nous Portal account needs an active subscription for inference.
 - **Gateway won't start**: Check `hermes gateway status` and logs
 - **Missing config after update**: Run `hermes config check` to see what's new, then `hermes config migrate` to add missing options
-- **Provider auto-detection wrong**: Force a provider with `hermes chat --provider openrouter` (or `nous` / `openai-codex`) or set `HERMES_INFERENCE_PROVIDER` in `.env`
+- **Provider auto-detection wrong**: Force a provider with `hermes chat --provider openrouter` or set `HERMES_INFERENCE_PROVIDER` in `.env`
 
 ---
 

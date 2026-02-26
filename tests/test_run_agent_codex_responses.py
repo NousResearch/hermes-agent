@@ -300,7 +300,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
-def test_chat_messages_to_responses_input_uses_fc_id_for_function_call(monkeypatch):
+def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeypatch):
     agent = _build_agent(monkeypatch)
     items = agent._chat_messages_to_responses_input(
         [
@@ -324,7 +324,7 @@ def test_chat_messages_to_responses_input_uses_fc_id_for_function_call(monkeypat
     function_output = next(item for item in items if item.get("type") == "function_call_output")
 
     assert function_call["call_id"] == "call_abc123"
-    assert function_call["id"] == "fc_abc123"
+    assert "id" not in function_call
     assert function_output["call_id"] == "call_abc123"
 
 
@@ -352,11 +352,11 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     function_output = next(item for item in items if item.get("type") == "function_call_output")
 
     assert function_call["call_id"] == "call_pair123"
-    assert function_call["id"] == "fc_pair123"
+    assert "id" not in function_call
     assert function_output["call_id"] == "call_pair123"
 
 
-def test_run_conversation_codex_replay_payload_keeps_call_id_and_fc_id(monkeypatch):
+def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     requests = []
@@ -389,7 +389,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id_and_fc_id(monkeypat
     function_call = next(item for item in replay_input if item.get("type") == "function_call")
     function_output = next(item for item in replay_input if item.get("type") == "function_call_output")
     assert function_call["call_id"] == "call_1"
-    assert function_call["id"] == "fc_1"
+    assert "id" not in function_call
     assert function_output["call_id"] == "call_1"
 
 

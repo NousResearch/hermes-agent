@@ -1323,16 +1323,6 @@ class AIAgent:
                                     call_id = f"call_{uuid.uuid4().hex[:12]}"
                             call_id = call_id.strip()
 
-                            response_item_id = tc.get("response_item_id")
-                            if not isinstance(response_item_id, str) or not response_item_id.strip():
-                                response_item_id = tc.get("responses_item_id")
-                            if not isinstance(response_item_id, str) or not response_item_id.strip():
-                                response_item_id = embedded_response_item_id
-                            response_item_id = self._derive_responses_function_call_id(
-                                call_id,
-                                response_item_id if isinstance(response_item_id, str) else None,
-                            )
-
                             arguments = fn.get("arguments", "{}")
                             if isinstance(arguments, dict):
                                 arguments = json.dumps(arguments, ensure_ascii=False)
@@ -1342,7 +1332,6 @@ class AIAgent:
 
                             items.append({
                                 "type": "function_call",
-                                "id": response_item_id,
                                 "call_id": call_id,
                                 "name": fn_name,
                                 "arguments": arguments,

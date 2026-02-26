@@ -319,7 +319,9 @@ def _transform_sudo_command(command: str) -> str:
         # Replace 'sudo' with password-piped version
         # The -S flag makes sudo read password from stdin
         # The -p '' suppresses the password prompt
-        return f"echo '{sudo_password}' | sudo -S -p ''"
+        # Use shlex.quote() to prevent shell injection via password content
+        import shlex
+        return f"echo {shlex.quote(sudo_password)} | sudo -S -p ''"
     
     # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
     # This handles: sudo, sudo -flag, etc.

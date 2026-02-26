@@ -769,9 +769,15 @@ class GatewayRunner:
                 if old_history:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
+                    # Resolve credentials so the flush agent can reach the LLM
+                    _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+                    _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                            model=_flush_model,
+                            api_key=_flush_api_key,
+                            base_url=_flush_base_url,
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
@@ -1395,7 +1401,7 @@ class GatewayRunner:
             # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
             base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
 
             try:
                 import yaml as _y

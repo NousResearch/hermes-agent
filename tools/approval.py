@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
-    (r'\brm\s+(-[^\s]*)?r', "recursive delete"),
+    (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
     (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),

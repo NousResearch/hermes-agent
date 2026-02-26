@@ -849,6 +849,8 @@ print(summary)
 
 **When the agent uses this:** 3+ tool calls with processing logic between them, bulk data filtering, conditional branching, loops. The intermediate tool results never enter the context window -- only the final `print()` output comes back.
 
+**Security:** The child process runs with a minimal environment -- only safe system variables (`PATH`, `HOME`, `LANG`, etc.) are passed through. API keys, tokens, and credentials are stripped entirely. The script accesses tools exclusively via the RPC channel; it cannot read secrets from environment variables.
+
 Configure via `~/.hermes/config.yaml`:
 ```yaml
 code_execution:
@@ -1425,7 +1427,9 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `ANTHROPIC_API_KEY` | Direct Anthropic access |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
+| `LLM_MODEL` | Default model name (fallback when `HERMES_MODEL` is not set) |
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
+| `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). All config, sessions, logs, and skills are stored here. |
 
 **Provider Auth (OAuth):**
 | Variable | Description |

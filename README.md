@@ -235,23 +235,31 @@ SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
 
 ### WhatsApp Setup
 
-WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes supports two approaches:
+WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
 
-**Option A — WhatsApp Business API** (requires [Meta Business verification](https://business.facebook.com/)):
-- Production-grade, but requires a verified business account
-- Set `WHATSAPP_ENABLED=true` in `~/.hermes/.env` and configure the Business API credentials
-
-**Option B — whatsapp-web.js bridge** (personal accounts):
-1. Install Node.js if not already present
-2. Set up the bridge:
+1. **Run the setup command:**
 
 ```bash
-# Add to ~/.hermes/.env:
-WHATSAPP_ENABLED=true
-WHATSAPP_ALLOWED_USERS=YOUR_PHONE_NUMBER    # e.g. 15551234567
+hermes whatsapp
 ```
 
-3. On first launch, the gateway will display a QR code — scan it with WhatsApp on your phone to link the session
+This will:
+- Enable WhatsApp in your config
+- Ask for your phone number (for the allowlist)
+- Install bridge dependencies (Node.js required)
+- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
+- Exit automatically once paired
+
+2. **Start the gateway:**
+
+```bash
+hermes gateway            # Foreground
+hermes gateway install    # Or install as a system service (Linux)
+```
+
+The gateway starts the WhatsApp bridge automatically using the saved session.
+
+> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" so you can distinguish them from your own messages in self-chat.
 
 See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 

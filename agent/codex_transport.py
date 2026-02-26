@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import sys
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -284,10 +282,6 @@ class CodexTransport(httpx.BaseTransport):
             content=content,
         )
 
-    def _debug(self, msg: str) -> None:
-        if os.environ.get("CODEX_DEBUG"):
-            print(f"\033[90m[codex] {msg}\033[0m", file=sys.stderr)
-
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if not self._should_rewrite(request):
             return self._inner.handle_request(request)
@@ -300,32 +294,21 @@ class CodexTransport(httpx.BaseTransport):
 
         request = self._build_codex_request(request)
         self._apply_headers(request)
-        self._debug(f"→ {CODEX_RESPONSES_URL} ({model})")
 
-        t0 = time.time()
         response = self._inner.handle_request(request)
 
         if response.status_code == 401 and self._refresh():
-            self._debug("↻ refreshed token, retrying")
             self._apply_headers(request)
             response = self._inner.handle_request(request)
 
         if response.status_code != 200:
-            self._debug(f"✗ {response.status_code}")
             return response
 
         # Consume the SSE stream and convert to chat completions JSON
         raw = response.read()
-        elapsed = time.time() - t0
         events = _parse_sse_stream(raw)
         chat_completion = _responses_to_chat_completion(events, model)
         result_bytes = json.dumps(chat_completion).encode("utf-8")
-
-        usage = chat_completion.get("usage", {})
-        self._debug(
-            f"✓ {usage.get('prompt_tokens', '?')}→{usage.get('completion_tokens', '?')} tokens, "
-            f"{elapsed:.1f}s"
-        )
 
         return httpx.Response(
             status_code=200,

@@ -33,11 +33,37 @@ Directory layout for user skills:
 """
 
 import json
+import logging
 import os
 import re
 import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# Import security scanner — agent-created skills get the same scrutiny as
+# community hub installs.
+try:
+    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    _GUARD_AVAILABLE = True
+except ImportError:
+    _GUARD_AVAILABLE = False
+
+
+def _security_scan_skill(skill_dir: Path) -> Optional[str]:
+    """Scan a skill directory after write. Returns error string if blocked, else None."""
+    if not _GUARD_AVAILABLE:
+        return None
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        if not allowed:
+            report = format_scan_report(result)
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning("Security scan failed for %s: %s", skill_dir, e)
+    return None
 
 import yaml
 
@@ -196,6 +222,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(content, encoding="utf-8")
 
+    # Security scan — roll back on block
+    scan_error = _security_scan_skill(skill_dir)
+    if scan_error:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        return {"success": False, "error": scan_error}
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
@@ -222,7 +254,16 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
     skill_md = existing["path"] / "SKILL.md"
+    # Back up original content for rollback
+    original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     skill_md.write_text(content, encoding="utf-8")
+
+    # Security scan — roll back on block
+    scan_error = _security_scan_skill(existing["path"])
+    if scan_error:
+        if original_content is not None:
+            skill_md.write_text(original_content, encoding="utf-8")
+        return {"success": False, "error": scan_error}
 
     return {
         "success": True,
@@ -300,7 +341,14 @@ def _patch_skill(
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
 
+    original_content = content  # for rollback
     target.write_text(new_content, encoding="utf-8")
+
+    # Security scan — roll back on block
+    scan_error = _security_scan_skill(skill_dir)
+    if scan_error:
+        target.write_text(original_content, encoding="utf-8")
+        return {"success": False, "error": scan_error}
 
     replacements = count if replace_all else 1
     return {
@@ -344,7 +392,18 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
     target = existing["path"] / file_path
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Back up for rollback
+    original_content = target.read_text(encoding="utf-8") if target.exists() else None
     target.write_text(file_content, encoding="utf-8")
+
+    # Security scan — roll back on block
+    scan_error = _security_scan_skill(existing["path"])
+    if scan_error:
+        if original_content is not None:
+            target.write_text(original_content, encoding="utf-8")
+        else:
+            target.unlink(missing_ok=True)
+        return {"success": False, "error": scan_error}
 
     return {
         "success": True,

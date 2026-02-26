@@ -30,25 +30,68 @@ logger = logging.getLogger(__name__)
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 
 
+def _convert_messages_to_input(messages: List[Dict[str, Any]]) -> tuple:
+    """Convert chat completions messages to responses API input items.
+
+    Returns (instructions, input_items) where instructions is the system
+    message content and input_items is a list of responses API items.
+
+    The responses API uses a different format for tool interactions:
+    - assistant message with tool_calls → message + function_call items
+    - tool message → function_call_output item
+    """
+    instructions = None
+    items: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+
+        if role == "system":
+            instructions = msg.get("content", "")
+
+        elif role == "user":
+            items.append({"role": "user", "content": msg.get("content", "")})
+
+        elif role == "assistant":
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls")
+
+            # Emit text content as a message if present
+            if content:
+                items.append({"role": "assistant", "content": content})
+
+            # Convert each tool_call to a function_call item
+            if tool_calls:
+                for tc in tool_calls:
+                    func = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    call_id = tc.get("id", "")
+                    items.append({
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": func.get("name", ""),
+                        "arguments": func.get("arguments", "{}"),
+                    })
+
+        elif role == "tool":
+            items.append({
+                "type": "function_call_output",
+                "call_id": msg.get("tool_call_id", ""),
+                "output": msg.get("content", ""),
+            })
+
+    return instructions, items
+
+
 def _chat_to_responses_body(body: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a chat completions request body to responses API format."""
     messages = body.get("messages", [])
-
-    # Extract system message as instructions
-    instructions = None
-    input_messages: List[Dict[str, Any]] = []
-    for msg in messages:
-        role = msg.get("role", "")
-        if role == "system":
-            instructions = msg.get("content", "")
-        else:
-            input_messages.append(msg)
+    instructions, input_items = _convert_messages_to_input(messages)
 
     result: Dict[str, Any] = {
         "model": body.get("model", ""),
         "stream": True,
         "store": False,
-        "input": input_messages,
+        "input": input_items,
     }
     if instructions:
         result["instructions"] = instructions

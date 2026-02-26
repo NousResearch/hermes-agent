@@ -28,9 +28,12 @@ from typing import Dict, Optional, Any, List
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Resolve Hermes home directory (respects HERMES_HOME override)
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
 # Load environment variables from ~/.hermes/.env first
 from dotenv import load_dotenv
-_env_path = Path.home() / '.hermes' / '.env'
+_env_path = _hermes_home / '.env'
 if _env_path.exists():
     try:
         load_dotenv(_env_path, encoding="utf-8")
@@ -41,7 +44,7 @@ load_dotenv()
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # Values already set in the environment (from .env or shell) take precedence.
-_config_path = Path.home() / '.hermes' / 'config.yaml'
+_config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
@@ -163,7 +166,7 @@ class GatewayRunner:
         if not file_path:
             try:
                 import yaml as _y
-                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
                     with open(cfg_path) as _f:
                         cfg = _y.safe_load(_f) or {}
@@ -174,7 +177,7 @@ class GatewayRunner:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = Path.home() / ".hermes" / path
+            path = _hermes_home / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
@@ -201,7 +204,7 @@ class GatewayRunner:
             return prompt
         try:
             import yaml as _y
-            cfg_path = Path.home() / ".hermes" / "config.yaml"
+            cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path) as _f:
                     cfg = _y.safe_load(_f) or {}
@@ -222,7 +225,7 @@ class GatewayRunner:
         if not effort:
             try:
                 import yaml as _y
-                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
                     with open(cfg_path) as _f:
                         cfg = _y.safe_load(_f) or {}
@@ -450,7 +453,11 @@ class GatewayRunner:
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
-        return user_id in allowed_ids
+        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+        return bool(check_ids & allowed_ids)
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -787,9 +794,11 @@ class GatewayRunner:
                 if old_history:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
+                    # Resolve credentials so the flush agent can reach the LLM
+                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                            model=_flush_model,
                             **_resolve_runtime_agent_kwargs(),
                             max_iterations=5,
                             quiet_mode=True,
@@ -897,7 +906,7 @@ class GatewayRunner:
         
         try:
             import yaml
-            config_path = Path.home() / '.hermes' / 'config.yaml'
+            config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
@@ -994,7 +1003,7 @@ class GatewayRunner:
         # Save to config.yaml
         try:
             import yaml
-            config_path = Path.home() / '.hermes' / 'config.yaml'
+            config_path = _hermes_home / 'config.yaml'
             user_config = {}
             if config_path.exists():
                 with open(config_path) as f:
@@ -1256,7 +1265,7 @@ class GatewayRunner:
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
         try:
-            config_path = Path.home() / '.hermes' / 'config.yaml'
+            config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 import yaml
                 with open(config_path, 'r') as f:
@@ -1411,11 +1420,11 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
 
             try:
                 import yaml as _y
-                _cfg_path = Path.home() / ".hermes" / "config.yaml"
+                _cfg_path = _hermes_home / "config.yaml"
                 if _cfg_path.exists():
                     with open(_cfg_path) as _f:
                         _cfg = _y.safe_load(_f) or {}
@@ -1705,7 +1714,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
     # Configure rotating file log so gateway output is persisted for debugging
-    log_dir = Path.home() / '.hermes' / 'logs'
+    log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
         log_dir / 'gateway.log',

@@ -35,6 +35,53 @@ from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# Write-path deny list — blocks writes to sensitive system/credential files
+# ---------------------------------------------------------------------------
+
+_HOME = str(Path.home())
+
+WRITE_DENIED_PATHS = {
+    os.path.join(_HOME, ".ssh", "authorized_keys"),
+    os.path.join(_HOME, ".ssh", "id_rsa"),
+    os.path.join(_HOME, ".ssh", "id_ed25519"),
+    os.path.join(_HOME, ".ssh", "config"),
+    os.path.join(_HOME, ".hermes", ".env"),
+    os.path.join(_HOME, ".bashrc"),
+    os.path.join(_HOME, ".zshrc"),
+    os.path.join(_HOME, ".profile"),
+    os.path.join(_HOME, ".bash_profile"),
+    os.path.join(_HOME, ".zprofile"),
+    os.path.join(_HOME, ".netrc"),
+    os.path.join(_HOME, ".pgpass"),
+    os.path.join(_HOME, ".npmrc"),
+    os.path.join(_HOME, ".pypirc"),
+    "/etc/sudoers",
+    "/etc/passwd",
+    "/etc/shadow",
+}
+
+WRITE_DENIED_PREFIXES = [
+    os.path.join(_HOME, ".ssh") + os.sep,
+    os.path.join(_HOME, ".aws") + os.sep,
+    os.path.join(_HOME, ".gnupg") + os.sep,
+    os.path.join(_HOME, ".kube") + os.sep,
+    "/etc/sudoers.d" + os.sep,
+    "/etc/systemd" + os.sep,
+]
+
+
+def _is_write_denied(path: str) -> bool:
+    """Return True if path is on the write deny list."""
+    resolved = os.path.realpath(os.path.expanduser(path))
+    if resolved in WRITE_DENIED_PATHS:
+        return True
+    for prefix in WRITE_DENIED_PREFIXES:
+        if resolved.startswith(prefix):
+            return True
+    return False
+
+
 # =============================================================================
 # Result Data Classes
 # =============================================================================
@@ -564,21 +611,25 @@ class ShellFileOperations(FileOperations):
     def write_file(self, path: str, content: str) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
-        
+
         Pipes content through stdin to avoid OS ARG_MAX limits on large
         files. The content never appears in the shell command string —
         only the file path does.
-        
+
         Args:
             path: File path to write
             content: Content to write
-        
+
         Returns:
             WriteResult with bytes written or error
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block writes to sensitive paths
+        if _is_write_denied(path):
+            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+
         # Create parent directories
         parent = os.path.dirname(path)
         dirs_created = False
@@ -619,19 +670,23 @@ class ShellFileOperations(FileOperations):
                       replace_all: bool = False) -> PatchResult:
         """
         Replace text in a file using fuzzy matching.
-        
+
         Args:
             path: File path to modify
             old_string: Text to find (must be unique unless replace_all=True)
             new_string: Replacement text
             replace_all: If True, replace all occurrences
-        
+
         Returns:
             PatchResult with diff and lint results
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block writes to sensitive paths
+        if _is_write_denied(path):
+            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         read_result = self._exec(read_cmd)

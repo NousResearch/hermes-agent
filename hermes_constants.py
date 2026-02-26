@@ -7,3 +7,6 @@ without risk of circular imports.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
+
+CHUTES_BASE_URL = "https://llm.chutes.ai/v1"
+CHUTES_API_KEY_ENV = "CHUTES_API_KEY"

@@ -122,10 +122,11 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | Provider | Setup |
 |----------|-------|
 | **Nous Portal** | `hermes login` (OAuth, subscription-based) |
+| **Chutes.ai** | `CHUTES_API_KEY` in `~/.hermes/.env` |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
-**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+**Note:** Even when using Nous Portal, Chutes.ai, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 
 ---
 
@@ -1548,6 +1549,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 **LLM Providers:**
 | Variable | Description |
 |----------|-------------|
+| `CHUTES_API_KEY` | Chutes.ai API key — get one at https://chutes.ai |
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |

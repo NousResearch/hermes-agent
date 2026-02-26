@@ -643,6 +643,8 @@ def run_setup_wizard(args):
         "Login with Nous Portal (Nous Research subscription)",
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
+        "Chutes.ai API key (400+ open-source models incl. Hermes, DeepSeek, Llama)",
+        "NVIDIA NIM API key (optimized inference via build.nvidia.com)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
     if keep_label:
@@ -752,7 +754,61 @@ def run_setup_wizard(args):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
-    elif provider_idx == 3:  # Custom endpoint
+    elif provider_idx == 3:  # Chutes.ai
+        selected_provider = "chutes"
+        print()
+        print_header("Chutes.ai API Key")
+        print_info("Chutes.ai provides pay-per-use inference for 400+ open-source models.")
+        print_info("Get your API key at: https://chutes.ai")
+
+        existing_chutes = get_env_value("CHUTES_API_KEY")
+        if existing_chutes:
+            print_info(f"Current: {existing_chutes[:8]}... (configured)")
+            if prompt_yes_no("Update Chutes.ai API key?", False):
+                api_key = prompt("  Chutes.ai API key", password=True)
+                if api_key:
+                    save_env_value("CHUTES_API_KEY", api_key)
+                    print_success("Chutes.ai API key updated")
+        else:
+            api_key = prompt("  Chutes.ai API key", password=True)
+            if api_key:
+                save_env_value("CHUTES_API_KEY", api_key)
+                print_success("Chutes.ai API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        from hermes_constants import CHUTES_BASE_URL
+        save_env_value("OPENAI_BASE_URL", CHUTES_BASE_URL)
+        save_env_value("OPENAI_API_KEY", get_env_value("CHUTES_API_KEY") or "")
+
+    elif provider_idx == 4:  # NVIDIA NIM
+        selected_provider = "nvidia"
+        print()
+        print_header("NVIDIA NIM API Key")
+        print_info("NVIDIA NIM provides optimized inference for 100+ models via build.nvidia.com.")
+        print_info("Get your API key at: https://build.nvidia.com (sign in → Get API Key)")
+
+        existing_nvidia = get_env_value("NVIDIA_API_KEY")
+        if existing_nvidia:
+            print_info(f"Current: {existing_nvidia[:8]}... (configured)")
+            if prompt_yes_no("Update NVIDIA API key?", False):
+                api_key = prompt("  NVIDIA API key (nvapi-...)", password=True)
+                if api_key:
+                    save_env_value("NVIDIA_API_KEY", api_key)
+                    print_success("NVIDIA API key updated")
+        else:
+            api_key = prompt("  NVIDIA API key (nvapi-...)", password=True)
+            if api_key:
+                save_env_value("NVIDIA_API_KEY", api_key)
+                print_success("NVIDIA API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        from hermes_constants import NVIDIA_BASE_URL
+        save_env_value("OPENAI_BASE_URL", NVIDIA_BASE_URL)
+        save_env_value("OPENAI_API_KEY", get_env_value("NVIDIA_API_KEY") or "")
+
+    elif provider_idx == 5:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -786,7 +842,7 @@ def run_setup_wizard(args):
     # =========================================================================
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "openai-codex", "custom") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "custom", "chutes", "nvidia") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")

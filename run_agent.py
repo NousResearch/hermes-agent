@@ -307,8 +307,12 @@ class AIAgent:
         if api_key:
             client_kwargs["api_key"] = api_key
         else:
-            # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
-            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
+            # Primary: OPENROUTER_API_KEY, fallback to Chutes or other direct provider keys
+            _effective_url = client_kwargs.get("base_url", "")
+            if "chutes.ai" in _effective_url.lower():
+                client_kwargs["api_key"] = os.getenv("CHUTES_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
+            else:
+                client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         
         # OpenRouter app attribution — shows hermes-agent in rankings/analytics
         effective_base = client_kwargs.get("base_url", "")

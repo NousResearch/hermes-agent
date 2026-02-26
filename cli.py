@@ -1088,8 +1088,10 @@ class HermesCLI:
             if toolset not in toolsets:
                 toolsets[toolset] = []
             desc = tool["function"].get("description", "")
-            # Get first sentence or first 60 chars
-            desc = desc.split(".")[0][:60]
+            # First sentence: split on ". " (period+space) to avoid breaking on "e.g." or "v2.0"
+            desc = desc.split("\n")[0]
+            if ". " in desc:
+                desc = desc[:desc.index(". ") + 1]
             toolsets[toolset].append((name, desc))
         
         # Display by toolset

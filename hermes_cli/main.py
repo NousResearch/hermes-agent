@@ -120,6 +120,7 @@ def cmd_chat(args):
         "toolsets": args.toolsets,
         "verbose": args.verbose,
         "query": args.query,
+        "resume": getattr(args, "resume", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -763,6 +764,12 @@ For more help on a command:
         action="store_true",
         help="Show version and exit"
     )
+    parser.add_argument(
+        "--resume", "-r",
+        metavar="SESSION_ID",
+        default=None,
+        help="Resume a previous session by ID (shortcut for: hermes chat --resume ID)"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -796,6 +803,11 @@ For more help on a command:
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
+    )
+    chat_parser.add_argument(
+        "--resume", "-r",
+        metavar="SESSION_ID",
+        help="Resume a previous session by ID (shown on exit)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -1303,6 +1315,17 @@ For more help on a command:
         cmd_version(args)
         return
     
+    # Handle top-level --resume as shortcut to chat --resume
+    if args.resume and args.command is None:
+        args.command = "chat"
+        args.query = None
+        args.model = None
+        args.provider = None
+        args.toolsets = None
+        args.verbose = False
+        cmd_chat(args)
+        return
+    
     # Default to chat if no command specified
     if args.command is None:
         args.query = None
@@ -1310,6 +1333,7 @@ For more help on a command:
         args.provider = None
         args.toolsets = None
         args.verbose = False
+        args.resume = None
         cmd_chat(args)
         return
     

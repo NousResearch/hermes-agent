@@ -613,6 +613,7 @@ def run_setup_wizard(args):
         get_active_provider, get_provider_auth_state, PROVIDER_REGISTRY,
         format_auth_error, AuthError, fetch_nous_models,
         resolve_nous_runtime_credentials, _update_config_for_provider,
+        _login_openai_codex, get_codex_auth_status, DEFAULT_CODEX_BASE_URL,
     )
     existing_custom = get_env_value("OPENAI_BASE_URL")
     existing_or = get_env_value("OPENROUTER_API_KEY")
@@ -633,6 +634,7 @@ def run_setup_wizard(args):
 
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
+        "Login with OpenAI Codex (ChatGPT/Codex CLI auth)",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
@@ -640,7 +642,7 @@ def run_setup_wizard(args):
         provider_choices.append(keep_label)
     
     # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
-    default_provider = len(provider_choices) - 1 if has_any_provider else 1
+    default_provider = len(provider_choices) - 1 if has_any_provider else 2
     
     if not has_any_provider:
         print_warning("An inference provider is required for Hermes to work.")
@@ -649,7 +651,7 @@ def run_setup_wizard(args):
     provider_idx = prompt_choice("Select your inference provider:", provider_choices, default_provider)
 
     # Track which provider was selected for model step
-    selected_provider = None  # "nous", "openrouter", "custom", or None (keep)
+    selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
     nous_models = []  # populated if Nous login succeeds
 
     if provider_idx == 0:  # Nous Portal
@@ -692,7 +694,33 @@ def run_setup_wizard(args):
             print_info("You can try again later with: hermes login")
             selected_provider = None
 
-    elif provider_idx == 1:  # OpenRouter
+    elif provider_idx == 1:  # OpenAI Codex
+        selected_provider = "openai-codex"
+        print()
+        print_header("OpenAI Codex Login")
+        print_info("This uses your Codex CLI auth state from CODEX_HOME/auth.json.")
+        print_info("If you're not logged in, Hermes will run `codex login`.")
+        print()
+
+        try:
+            import argparse
+            mock_args = argparse.Namespace()
+            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+            # Clear custom endpoint vars that would override provider routing.
+            if existing_custom:
+                save_env_value("OPENAI_BASE_URL", "")
+                save_env_value("OPENAI_API_KEY", "")
+            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        except SystemExit:
+            print_warning("OpenAI Codex login was cancelled or failed.")
+            print_info("You can try again later with: hermes login --provider openai-codex")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes login --provider openai-codex")
+            selected_provider = None
+
+    elif provider_idx == 2:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -719,7 +747,7 @@ def run_setup_wizard(args):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
-    elif provider_idx == 2:  # Custom endpoint
+    elif provider_idx == 3:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -746,14 +774,14 @@ def run_setup_wizard(args):
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
         print_success("Custom endpoint configured")
-    # else: provider_idx == 3 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 4 (Keep current) — only shown when a provider already exists
 
     # =========================================================================
     # Step 1b: OpenRouter API Key for tools (if not already set)
     # =========================================================================
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "custom") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "custom") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -799,6 +827,29 @@ def run_setup_wizard(args):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
+        elif selected_provider == "openai-codex":
+            codex_models = [
+                "gpt-5-codex",
+                "gpt-5.3-codex",
+                "gpt-5.2-codex",
+                "gpt-5.1-codex",
+            ]
+            model_choices = [f"{m}" for m in codex_models]
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(codex_models):
+                config['model'] = codex_models[model_idx]
+                save_env_value("LLM_MODEL", codex_models[model_idx])
+            elif model_idx == len(codex_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

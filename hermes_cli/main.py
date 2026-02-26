@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.auth import get_auth_status
 
     # Check env vars (may be set by .env or shell)
     if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
@@ -81,8 +82,8 @@ def _has_any_provider_configured() -> bool:
             auth = json.loads(auth_file.read_text())
             active = auth.get("active_provider")
             if active:
-                state = auth.get("providers", {}).get(active, {})
-                if state.get("access_token") or state.get("refresh_token"):
+                status = get_auth_status(active)
+                if status.get("logged_in"):
                     return True
         except Exception:
             pass
@@ -145,7 +146,7 @@ def cmd_model(args):
         resolve_provider, get_provider_auth_state, PROVIDER_REGISTRY,
         _prompt_model_selection, _save_model_choice, _update_config_for_provider,
         resolve_nous_runtime_credentials, fetch_nous_models, AuthError, format_auth_error,
-        _login_nous, ProviderConfig,
+        _login_nous,
     )
     from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 
@@ -168,7 +169,12 @@ def cmd_model(args):
         or config_provider
         or "auto"
     )
-    active = resolve_provider(effective_provider)
+    try:
+        active = resolve_provider(effective_provider)
+    except AuthError as exc:
+        warning = format_auth_error(exc)
+        print(f"Warning: {warning} Falling back to auto provider detection.")
+        active = resolve_provider("auto")
 
     # Detect custom endpoint
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
@@ -177,6 +183,7 @@ def cmd_model(args):
     provider_labels = {
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
+        "openai-codex": "OpenAI Codex",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -190,11 +197,12 @@ def cmd_model(args):
     providers = [
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
+        ("openai-codex", "OpenAI Codex (ChatGPT/Codex CLI login)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous") else "custom"
+    active_key = active if active in ("openrouter", "nous", "openai-codex") else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -215,6 +223,8 @@ def cmd_model(args):
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
         _model_flow_nous(config, current_model)
+    elif selected_provider == "openai-codex":
+        _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
 
@@ -364,6 +374,52 @@ def _model_flow_nous(config, current_model=""):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
+    else:
+        print("No change.")
+
+
+def _model_flow_openai_codex(config, current_model=""):
+    """OpenAI Codex provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_codex_auth_status, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, _login_openai_codex,
+        PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+    import argparse
+
+    status = get_codex_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into OpenAI Codex. Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    # Codex models are not discoverable through /models with this auth path,
+    # so provide curated IDs with custom fallback.
+    codex_models = [
+        "gpt-5-codex",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex",
+    ]
+
+    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        # Clear custom endpoint env vars that would otherwise override Codex.
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
 
@@ -678,7 +734,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous"],
+        choices=["auto", "openrouter", "nous", "openai-codex"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -765,9 +821,9 @@ For more help on a command:
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous"],
+        choices=["nous", "openai-codex"],
         default=None,
-        help="Provider to authenticate with (default: interactive selection)"
+        help="Provider to authenticate with (default: nous)"
     )
     login_parser.add_argument(
         "--portal-url",
@@ -819,7 +875,7 @@ For more help on a command:
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous"],
+        choices=["nous", "openai-codex"],
         default=None,
         help="Provider to log out from (default: active provider)"
     )

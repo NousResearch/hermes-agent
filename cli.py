@@ -751,7 +751,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous")
+            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -766,28 +766,26 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
-        
-        # Base URL: custom endpoint (OPENAI_BASE_URL) takes precedence over OpenRouter
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        
-        # API key: custom endpoint (OPENAI_API_KEY) takes precedence over OpenRouter
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 
-        # Provider resolution: determines whether to use OAuth credentials or env var keys
-        from hermes_cli.auth import resolve_provider
+        self._explicit_api_key = api_key
+        self._explicit_base_url = base_url
+
+        # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or CLI_CONFIG["model"].get("provider")
             or "auto"
         )
-        self.provider = resolve_provider(
-            self.requested_provider,
-            explicit_api_key=api_key,
-            explicit_base_url=base_url,
+        self._provider_source: Optional[str] = None
+        self.provider = self.requested_provider
+        self.api_mode = "chat_completions"
+        self.base_url = (
+            base_url
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
         )
-        self._nous_key_expires_at: Optional[str] = None
-        self._nous_key_source: Optional[str] = None
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
         if max_turns != 60:  # CLI arg was explicitly set
             self.max_turns = max_turns
@@ -844,45 +842,51 @@ class HermesCLI:
 
     def _ensure_runtime_credentials(self) -> bool:
         """
-        Ensure OAuth provider credentials are fresh before agent use.
-        For Nous Portal: checks agent key TTL, refreshes/re-mints as needed.
-        If the key changed, tears down the agent so it rebuilds with new creds.
+        Ensure runtime credentials are resolved before agent use.
+        Re-resolves provider credentials so key rotation and token refresh
+        are picked up without restarting the CLI.
         Returns True if credentials are ready, False on auth failure.
         """
-        if self.provider != "nous":
-            return True
-
-        from hermes_cli.auth import format_auth_error, resolve_nous_runtime_credentials
+        from hermes_cli.runtime_provider import (
+            resolve_runtime_provider,
+            format_runtime_provider_error,
+        )
 
         try:
-            credentials = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(
-                    60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))
-                ),
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            runtime = resolve_runtime_provider(
+                requested=self.requested_provider,
+                explicit_api_key=self._explicit_api_key,
+                explicit_base_url=self._explicit_base_url,
             )
         except Exception as exc:
-            message = format_auth_error(exc)
+            message = format_runtime_provider_error(exc)
             self.console.print(f"[bold red]{message}[/]")
             return False
 
-        api_key = credentials.get("api_key")
-        base_url = credentials.get("base_url")
+        api_key = runtime.get("api_key")
+        base_url = runtime.get("base_url")
+        resolved_provider = runtime.get("provider", "openrouter")
+        resolved_api_mode = runtime.get("api_mode", self.api_mode)
         if not isinstance(api_key, str) or not api_key:
-            self.console.print("[bold red]Nous credential resolver returned an empty API key.[/]")
+            self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
         if not isinstance(base_url, str) or not base_url:
-            self.console.print("[bold red]Nous credential resolver returned an empty base URL.[/]")
+            self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url
+        routing_changed = (
+            resolved_provider != self.provider
+            or resolved_api_mode != self.api_mode
+        )
+        self.provider = resolved_provider
+        self.api_mode = resolved_api_mode
+        self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
-        self._nous_key_expires_at = credentials.get("expires_at")
-        self._nous_key_source = credentials.get("source")
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
-        if credentials_changed and self.agent is not None:
+        if (credentials_changed or routing_changed) and self.agent is not None:
             self.agent = None
 
         return True
@@ -897,7 +901,7 @@ class HermesCLI:
         if self.agent is not None:
             return True
 
-        if self.provider == "nous" and not self._ensure_runtime_credentials():
+        if not self._ensure_runtime_credentials():
             return False
 
         # Initialize SQLite session store for CLI sessions
@@ -913,6 +917,8 @@ class HermesCLI:
                 model=self.model,
                 api_key=self.api_key,
                 base_url=self.base_url,
+                provider=self.provider,
+                api_mode=self.api_mode,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -1004,8 +1010,8 @@ class HermesCLI:
             toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
         provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
-        if self.provider == "nous" and self._nous_key_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]key: {self._nous_key_source}[/]"
+        if self._provider_source:
+            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
 
         self.console.print(
             f"  {api_indicator} [#FFBF00]{model_short}[/] "
@@ -1786,8 +1792,8 @@ class HermesCLI:
         Returns:
             The agent's response, or None on error
         """
-        # Refresh OAuth credentials if needed (handles key rotation transparently)
-        if self.provider == "nous" and not self._ensure_runtime_credentials():
+        # Refresh provider credentials if needed (handles key rotation transparently)
+        if not self._ensure_runtime_credentials():
             return None
 
         # Initialize agent if needed

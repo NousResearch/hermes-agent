@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import stat
+import subprocess
 import time
 import webbrowser
 from contextlib import contextmanager
@@ -55,6 +57,7 @@ DEFAULT_NOUS_SCOPE = "inference:mint_agent_key"
 DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
+DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
 # =============================================================================
@@ -84,7 +87,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         client_id=DEFAULT_NOUS_CLIENT_ID,
         scope=DEFAULT_NOUS_SCOPE,
     ),
-    # Future: "openai_codex", "anthropic", etc.
+    "openai-codex": ProviderConfig(
+        id="openai-codex",
+        name="OpenAI Codex",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
 }
 
 
@@ -298,12 +306,15 @@ def resolve_provider(
     """
     normalized = (requested or "auto").strip().lower()
 
+    if normalized in {"openrouter", "custom"}:
+        return "openrouter"
     if normalized in PROVIDER_REGISTRY:
         return normalized
-    if normalized == "openrouter":
-        return "openrouter"
     if normalized != "auto":
-        return "openrouter"
+        raise AuthError(
+            f"Unknown provider '{normalized}'.",
+            code="invalid_provider",
+        )
 
     # Explicit one-off CLI creds always mean openrouter/custom
     if explicit_api_key or explicit_base_url:
@@ -314,8 +325,8 @@ def resolve_provider(
         auth_store = _load_auth_store()
         active = auth_store.get("active_provider")
         if active and active in PROVIDER_REGISTRY:
-            state = _load_provider_state(auth_store, active)
-            if state and (state.get("access_token") or state.get("refresh_token")):
+            status = get_auth_status(active)
+            if status.get("logged_in"):
                 return active
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
@@ -376,6 +387,108 @@ def _optional_base_url(value: Any) -> Optional[str]:
 def _is_remote_session() -> bool:
     """Detect if running in an SSH session where webbrowser.open() won't work."""
     return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+
+
+# =============================================================================
+# OpenAI Codex auth file helpers
+# =============================================================================
+
+def resolve_codex_home_path() -> Path:
+    """Resolve CODEX_HOME, defaulting to ~/.codex."""
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home:
+        codex_home = str(Path.home() / ".codex")
+    return Path(codex_home).expanduser()
+
+
+def _codex_auth_file_path() -> Path:
+    return resolve_codex_home_path() / "auth.json"
+
+
+def read_codex_auth_file() -> Dict[str, Any]:
+    """Read and validate Codex auth.json shape."""
+    codex_home = resolve_codex_home_path()
+    if not codex_home.exists():
+        raise AuthError(
+            f"Codex home directory not found at {codex_home}.",
+            provider="openai-codex",
+            code="codex_home_missing",
+            relogin_required=True,
+        )
+
+    auth_path = codex_home / "auth.json"
+    if not auth_path.exists():
+        raise AuthError(
+            f"Codex auth file not found at {auth_path}.",
+            provider="openai-codex",
+            code="codex_auth_missing",
+            relogin_required=True,
+        )
+
+    try:
+        payload = json.loads(auth_path.read_text())
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to parse Codex auth file at {auth_path}.",
+            provider="openai-codex",
+            code="codex_auth_invalid_json",
+            relogin_required=True,
+        ) from exc
+
+    tokens = payload.get("tokens")
+    if not isinstance(tokens, dict):
+        raise AuthError(
+            "Codex auth file is missing a valid 'tokens' object.",
+            provider="openai-codex",
+            code="codex_auth_invalid_shape",
+            relogin_required=True,
+        )
+
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise AuthError(
+            "Codex auth file is missing tokens.access_token.",
+            provider="openai-codex",
+            code="codex_auth_missing_access_token",
+            relogin_required=True,
+        )
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise AuthError(
+            "Codex auth file is missing tokens.refresh_token.",
+            provider="openai-codex",
+            code="codex_auth_missing_refresh_token",
+            relogin_required=True,
+        )
+
+    return {
+        "payload": payload,
+        "tokens": tokens,
+        "auth_path": auth_path,
+        "codex_home": codex_home,
+    }
+
+
+def resolve_codex_runtime_credentials() -> Dict[str, Any]:
+    """Resolve runtime credentials from Codex CLI auth state."""
+    data = read_codex_auth_file()
+    payload = data["payload"]
+    tokens = data["tokens"]
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+
+    return {
+        "provider": "openai-codex",
+        "base_url": base_url,
+        "api_key": tokens["access_token"],
+        "source": "codex-auth-json",
+        "last_refresh": payload.get("last_refresh"),
+        "auth_mode": payload.get("auth_mode"),
+        "auth_file": str(data["auth_path"]),
+        "codex_home": str(data["codex_home"]),
+    }
 
 
 # =============================================================================
@@ -806,11 +919,37 @@ def get_nous_auth_status() -> Dict[str, Any]:
     }
 
 
+def get_codex_auth_status() -> Dict[str, Any]:
+    """Status snapshot for Codex auth."""
+    state = get_provider_auth_state("openai-codex") or {}
+    auth_file = state.get("auth_file") or str(_codex_auth_file_path())
+    codex_home = state.get("codex_home") or str(resolve_codex_home_path())
+    try:
+        creds = resolve_codex_runtime_credentials()
+        return {
+            "logged_in": True,
+            "auth_file": creds.get("auth_file"),
+            "codex_home": creds.get("codex_home"),
+            "last_refresh": creds.get("last_refresh"),
+            "auth_mode": creds.get("auth_mode"),
+            "source": creds.get("source"),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "auth_file": auth_file,
+            "codex_home": codex_home,
+            "error": str(exc),
+        }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
     if target == "nous":
         return get_nous_auth_status()
+    if target == "openai-codex":
+        return get_codex_auth_status()
     return {"logged_in": False}
 
 
@@ -982,9 +1121,62 @@ def login_command(args) -> None:
 
     if provider_id == "nous":
         _login_nous(args, pconfig)
+    elif provider_id == "openai-codex":
+        _login_openai_codex(args, pconfig)
     else:
         print(f"Login for provider '{provider_id}' is not yet implemented.")
         raise SystemExit(1)
+
+
+def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
+    """OpenAI Codex login flow using Codex CLI auth state."""
+    codex_path = shutil.which("codex")
+    if not codex_path:
+        print("Codex CLI was not found in PATH.")
+        print("Install Codex CLI, then retry `hermes login --provider openai-codex`.")
+        raise SystemExit(1)
+
+    print(f"Starting Hermes login via {pconfig.name}...")
+    print(f"Using Codex CLI: {codex_path}")
+    print(f"Codex home: {resolve_codex_home_path()}")
+
+    creds: Dict[str, Any]
+    try:
+        creds = resolve_codex_runtime_credentials()
+    except AuthError:
+        print("No usable Codex auth found. Running `codex login`...")
+        try:
+            subprocess.run(["codex", "login"], check=True)
+        except subprocess.CalledProcessError as exc:
+            print(f"Codex login failed with exit code {exc.returncode}.")
+            raise SystemExit(1)
+        except KeyboardInterrupt:
+            print("\nLogin cancelled.")
+            raise SystemExit(130)
+        try:
+            creds = resolve_codex_runtime_credentials()
+        except AuthError as exc:
+            print(format_auth_error(exc))
+            raise SystemExit(1)
+
+    auth_state = {
+        "auth_file": creds.get("auth_file"),
+        "codex_home": creds.get("codex_home"),
+        "last_refresh": creds.get("last_refresh"),
+        "auth_mode": creds.get("auth_mode"),
+        "source": creds.get("source"),
+    }
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "openai-codex", auth_state)
+        saved_to = _save_auth_store(auth_store)
+
+    config_path = _update_config_for_provider("openai-codex", creds["base_url"])
+    print()
+    print("Login successful!")
+    print(f"  Auth state: {saved_to}")
+    print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:

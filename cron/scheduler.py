@@ -170,8 +170,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True, encoding="latin-1")
 
         model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
         try:
             import yaml
@@ -184,14 +182,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     model = _model_cfg
                 elif isinstance(_model_cfg, dict):
                     model = _model_cfg.get("default", model)
-                    base_url = _model_cfg.get("base_url", base_url)
         except Exception:
             pass
 
+        from hermes_cli.runtime_provider import (
+            resolve_runtime_provider,
+            format_runtime_provider_error,
+        )
+        try:
+            runtime = resolve_runtime_provider(
+                requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+            )
+        except Exception as exc:
+            message = format_runtime_provider_error(exc)
+            raise RuntimeError(message) from exc
+
         agent = AIAgent(
             model=model,
-            api_key=api_key,
-            base_url=base_url,
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
             quiet_mode=True,
             session_id=f"cron_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )

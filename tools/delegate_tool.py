@@ -101,7 +101,10 @@ def _run_single_child(
     try:
         child = AIAgent(
             base_url=parent_agent.base_url,
+            api_key=getattr(parent_agent, "api_key", None),
             model=model or parent_agent.model,
+            provider=getattr(parent_agent, "provider", None),
+            api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,
             enabled_toolsets=child_toolsets,
             quiet_mode=True,

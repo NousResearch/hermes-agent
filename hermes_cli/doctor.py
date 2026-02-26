@@ -181,7 +181,7 @@ def run_doctor(args):
     print()
     print(color("◆ Directory Structure", Colors.CYAN, Colors.BOLD))
     
-    hermes_home = Path.home() / ".hermes"
+    hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok("~/.hermes directory exists")
     else:

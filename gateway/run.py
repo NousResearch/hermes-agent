@@ -1407,6 +1407,22 @@ class GatewayRunner:
             except Exception:
                 pass
 
+            # If the configured provider is Nous, resolve OAuth credentials
+            # (short-lived API key minted from the Nous portal access token).
+            # This mirrors what the CLI does in cli.py via resolve_nous_runtime_credentials().
+            # Only run OAuth if no API key was provided via environment variables.
+            if "nousresearch.com" in base_url and not os.getenv("OPENAI_API_KEY"):
+                try:
+                    from hermes_cli.auth import resolve_nous_runtime_credentials
+                    _nous_creds = resolve_nous_runtime_credentials(
+                        min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                        timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                    )
+                    api_key = _nous_creds.get("api_key", api_key)
+                    base_url = _nous_creds.get("base_url", base_url)
+                except Exception as _nous_err:
+                    logger.warning("Could not resolve Nous OAuth credentials: %s", _nous_err)
+
             agent = AIAgent(
                 model=model,
                 api_key=api_key,

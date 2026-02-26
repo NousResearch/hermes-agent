@@ -363,6 +363,7 @@ install_node() {
 
     # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
     rm -rf "$HERMES_HOME/node"
+    mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 

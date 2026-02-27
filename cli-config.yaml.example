@@ -187,6 +187,33 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Session Reset Policy (Messaging Platforms)
+# =============================================================================
+# Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
+# automatically cleared. Without resets, conversation context grows indefinitely
+# which increases API costs with every message.
+#
+# When a reset triggers, the agent first saves important information to its
+# persistent memory — but the conversation context is wiped. The agent starts
+# fresh but retains learned facts via its memory system.
+#
+# Users can always manually reset with /reset or /new in chat.
+#
+# Modes:
+#   "both"  - Reset on EITHER inactivity timeout or daily boundary (recommended)
+#   "idle"  - Reset only after N minutes of inactivity
+#   "daily" - Reset only at a fixed hour each day
+#   "none"  - Never auto-reset; context lives until /reset or compression kicks in
+#
+# When a reset triggers, the agent gets one turn to save important memories and
+# skills before the context is wiped. Persistent memory carries across sessions.
+#
+session_reset:
+  mode: both           # "both", "idle", "daily", or "none"
+  idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
+  at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
+
+# =============================================================================
 # Skills Configuration
 # =============================================================================
 # Skills are reusable procedures the agent can load and follow. The agent can

@@ -450,6 +450,21 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
+    def _max_tokens_param(self, value: int) -> dict:
+        """Return the correct max tokens kwarg for the current provider.
+        
+        OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
+        'max_completion_tokens'. OpenRouter, local models, and older
+        OpenAI models use 'max_tokens'.
+        """
+        _is_direct_openai = (
+            "api.openai.com" in self.base_url.lower()
+            and "openrouter" not in self.base_url.lower()
+        )
+        if _is_direct_openai:
+            return {"max_completion_tokens": value}
+        return {"max_tokens": value}
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any <think></think> blocks.
@@ -1190,7 +1205,7 @@ class AIAgent:
         }
 
         if self.max_tokens is not None:
-            api_kwargs["max_tokens"] = self.max_tokens
+            api_kwargs.update(self._max_tokens_param(self.max_tokens))
 
         extra_body = {}
 
@@ -1324,7 +1339,7 @@ class AIAgent:
                 "messages": api_messages,
                 "tools": [memory_tool_def],
                 "temperature": 0.3,
-                "max_tokens": 1024,
+                **self._max_tokens_param(1024),
             }
 
             response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
@@ -1452,14 +1467,17 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
-            elif function_name == "session_search" and self._session_db:
-                from tools.session_search_tool import session_search as _session_search
-                function_result = _session_search(
-                    query=function_args.get("query", ""),
-                    role_filter=function_args.get("role_filter"),
-                    limit=function_args.get("limit", 3),
-                    db=self._session_db,
-                )
+            elif function_name == "session_search":
+                if not self._session_db:
+                    function_result = json.dumps({"success": False, "error": "Session database not available."})
+                else:
+                    from tools.session_search_tool import session_search as _session_search
+                    function_result = _session_search(
+                        query=function_args.get("query", ""),
+                        role_filter=function_args.get("role_filter"),
+                        limit=function_args.get("limit", 3),
+                        db=self._session_db,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
@@ -1644,7 +1662,7 @@ class AIAgent:
                 "messages": api_messages,
             }
             if self.max_tokens is not None:
-                summary_kwargs["max_tokens"] = self.max_tokens
+                summary_kwargs.update(self._max_tokens_param(self.max_tokens))
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
 

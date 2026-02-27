@@ -93,3 +93,65 @@ class TestApproveAndCheckSession:
         approve_session(key, "rm")
         clear_session(key)
         assert is_approved(key, "rm") is False
+
+
+class TestRmFalsePositiveFix:
+    """Regression tests: filenames starting with 'r' must NOT trigger recursive delete."""
+
+    def test_rm_readme_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm readme.txt")
+        assert is_dangerous is False, f"'rm readme.txt' should be safe, got: {desc}"
+
+    def test_rm_requirements_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm requirements.txt")
+        assert is_dangerous is False, f"'rm requirements.txt' should be safe, got: {desc}"
+
+    def test_rm_report_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm report.csv")
+        assert is_dangerous is False, f"'rm report.csv' should be safe, got: {desc}"
+
+    def test_rm_results_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm results.json")
+        assert is_dangerous is False, f"'rm results.json' should be safe, got: {desc}"
+
+    def test_rm_robots_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm robots.txt")
+        assert is_dangerous is False, f"'rm robots.txt' should be safe, got: {desc}"
+
+    def test_rm_run_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm run.sh")
+        assert is_dangerous is False, f"'rm run.sh' should be safe, got: {desc}"
+
+    def test_rm_force_readme_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -f readme.txt")
+        assert is_dangerous is False, f"'rm -f readme.txt' should be safe, got: {desc}"
+
+    def test_rm_verbose_readme_not_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -v readme.txt")
+        assert is_dangerous is False, f"'rm -v readme.txt' should be safe, got: {desc}"
+
+
+class TestRmRecursiveFlagVariants:
+    """Ensure all recursive delete flag styles are still caught."""
+
+    def test_rm_r(self):
+        assert detect_dangerous_command("rm -r mydir")[0] is True
+
+    def test_rm_rf(self):
+        assert detect_dangerous_command("rm -rf /tmp/test")[0] is True
+
+    def test_rm_rfv(self):
+        assert detect_dangerous_command("rm -rfv /var/log")[0] is True
+
+    def test_rm_fr(self):
+        assert detect_dangerous_command("rm -fr .")[0] is True
+
+    def test_rm_irf(self):
+        assert detect_dangerous_command("rm -irf somedir")[0] is True
+
+    def test_rm_recursive_long(self):
+        assert detect_dangerous_command("rm --recursive /tmp")[0] is True
+
+    def test_sudo_rm_rf(self):
+        assert detect_dangerous_command("sudo rm -rf /tmp")[0] is True
+

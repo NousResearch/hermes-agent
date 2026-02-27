@@ -971,25 +971,25 @@ class GatewayRunner:
     
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
-        args = event.get_command_args().strip()
+        import yaml
 
-        # Resolve current model using the same chain as _run_agent
-        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL")
-        if not current:
-            try:
-                import yaml as _y
-                _cfg_path = _hermes_home / "config.yaml"
-                if _cfg_path.exists():
-                    with open(_cfg_path) as _f:
-                        _cfg = _y.safe_load(_f) or {}
-                    _model_cfg = _cfg.get("model", {})
-                    if isinstance(_model_cfg, str):
-                        current = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        current = _model_cfg.get("default")
-            except Exception:
-                pass
-        current = current or "anthropic/claude-opus-4.6"
+        args = event.get_command_args().strip()
+        config_path = _hermes_home / 'config.yaml'
+
+        # Resolve current model the same way the agent init does:
+        # env vars first, then config.yaml always overrides.
+        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        try:
+            if config_path.exists():
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, str):
+                    current = model_cfg
+                elif isinstance(model_cfg, dict):
+                    current = model_cfg.get("default", current)
+        except Exception:
+            pass
 
         if not args:
             return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
@@ -1003,28 +1003,47 @@ class GatewayRunner:
                 f"• `openai/gpt-4o`"
             )
 
+        # Write to config.yaml (source of truth), same pattern as CLI save_config_value.
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    user_config = yaml.safe_load(f) or {}
+            if "model" not in user_config or not isinstance(user_config["model"], dict):
+                user_config["model"] = {}
+            user_config["model"]["default"] = args
+            with open(config_path, 'w') as f:
+                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            return f"⚠️ Failed to save model change: {e}"
+
+        # Also set env var so code reading it before the next agent init sees the update.
         os.environ["HERMES_MODEL"] = args
+
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
+        import yaml
+
         args = event.get_command_args().strip().lower()
-        
+        config_path = _hermes_home / 'config.yaml'
+
         try:
-            import yaml
-            config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
+                config = {}
                 personalities = {}
         except Exception:
+            config = {}
             personalities = {}
-        
+
         if not personalities:
             return "No personalities configured in `~/.hermes/config.yaml`"
-        
+
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
             for name, prompt in personalities.items():
@@ -1032,11 +1051,25 @@ class GatewayRunner:
                 lines.append(f"• `{name}` — {preview}")
             lines.append(f"\nUsage: `/personality <name>`")
             return "\n".join(lines)
-        
+
         if args in personalities:
-            os.environ["HERMES_PERSONALITY"] = personalities[args]
+            new_prompt = personalities[args]
+
+            # Write to config.yaml, same pattern as CLI save_config_value.
+            try:
+                if "agent" not in config or not isinstance(config.get("agent"), dict):
+                    config["agent"] = {}
+                config["agent"]["system_prompt"] = new_prompt
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return f"⚠️ Failed to save personality change: {e}"
+
+            # Update in-memory so it takes effect on the very next message.
+            self._ephemeral_system_prompt = new_prompt
+
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
-        
+
         available = ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     

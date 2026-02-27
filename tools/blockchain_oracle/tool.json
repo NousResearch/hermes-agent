@@ -1,0 +1,108 @@
+{
+  "name": "blockchain_oracle",
+  "description": "A Solana blockchain intelligence toolset for Hermes Agent. Query wallets, inspect transactions, research tokens, browse NFT portfolios, detect whale movements, and monitor network health — all through natural language via MCP.",
+  "version": "0.1.0",
+  "author": "gizdusum",
+  "repository": "https://github.com/gizdusum/hermes-blockchain-oracle",
+  "tools": [
+    {
+      "name": "solana_wallet_info",
+      "description": "Query a Solana wallet address to get its SOL balance, SPL token holdings (top 20), account type, and owner program. Validates base58 addresses.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Solana wallet address (base58 public key)"
+          }
+        },
+        "required": ["address"]
+      }
+    },
+    {
+      "name": "solana_transaction",
+      "description": "Look up a Solana transaction by its signature. Returns parsed instructions, SOL and token balance changes, fees, status, slot, and block time. Great for investigating specific on-chain activity.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "signature": {
+            "type": "string",
+            "description": "Transaction signature (base58 encoded)"
+          }
+        },
+        "required": ["signature"]
+      }
+    },
+    {
+      "name": "solana_token_info",
+      "description": "Get information about a Solana SPL token by its mint address. Returns total supply, decimals, mint/freeze authorities, and the top 10 largest holders. Useful for researching tokens and their distribution.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mint_address": {
+            "type": "string",
+            "description": "Token mint address (base58 public key)"
+          }
+        },
+        "required": ["mint_address"]
+      }
+    },
+    {
+      "name": "solana_recent_activity",
+      "description": "Get recent transaction history for a Solana wallet. Returns the latest transactions (up to 25) with signatures, timestamps, success status, and memos.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Solana wallet address (base58 public key)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Number of recent transactions to fetch (max 25, default 10)",
+            "default": 10
+          }
+        },
+        "required": ["address"]
+      }
+    },
+    {
+      "name": "solana_nft_portfolio",
+      "description": "List NFTs owned by a Solana wallet. Identifies NFTs by finding tokens with amount=1 and decimals=0. Returns up to 50 NFT mint addresses.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Solana wallet address (base58 public key)"
+          }
+        },
+        "required": ["address"]
+      }
+    },
+    {
+      "name": "whale_detector",
+      "description": "Scan recent Solana blocks for large SOL transfers (whale movements). Detects transfers above a configurable threshold. Returns deduplicated whale transactions sorted by size.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "min_sol": {
+            "type": "number",
+            "description": "Minimum SOL amount to flag as whale activity (default: 1000)",
+            "default": 1000
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "solana_network_stats",
+      "description": "Get current Solana network health and statistics. Returns current slot, epoch progress, average TPS, total/circulating supply, node version, and health status.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}

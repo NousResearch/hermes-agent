@@ -513,10 +513,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 # Check file size (Telegram Bot API limit: 20 MB)
-                if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+                MAX_DOC_BYTES = 20 * 1024 * 1024
+                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
                     event.text = (
-                        "The document is too large (over 20 MB). "
-                        "Please send a smaller file."
+                        "The document is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
                     )
                     print(f"[Telegram] Document too large: {doc.file_size} bytes", flush=True)
                     await self.handle_message(event)
@@ -532,8 +533,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [mime_type]
                 print(f"[Telegram] Cached user document: {cached_path}", flush=True)
 
-                # For text files, inject content into event.text
-                if ext in (".md", ".txt"):
+                # For text files, inject content into event.text (capped at 100 KB)
+                MAX_TEXT_INJECT_BYTES = 100 * 1024
+                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"

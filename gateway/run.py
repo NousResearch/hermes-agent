@@ -757,6 +757,9 @@ class GatewayRunner:
                 # Format: doc_<12hex>_<original_filename>
                 parts = basename.split("_", 2)
                 display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
 
                 if mtype.startswith("text/"):
                     context_note = (

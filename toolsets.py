@@ -67,6 +67,10 @@ _HERMES_CORE_TOOLS = [
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+    "git": {
+        "description": "Git repository intelligence — repo summary, commit history, diff stats, contributor leaderboard, file history, branch comparison (pure stdlib, zero dependencies)",
+        "tools": ["git_repo_summary", "git_log", "git_diff_stats", "git_contributors", "git_file_history", "git_branch_compare"],
+    },
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
@@ -487,3 +491,4 @@ if __name__ == "__main__":
     print(f"  Created 'my_custom' toolset:")
     print(f"    Description: {custom_info['description']}")
     print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+

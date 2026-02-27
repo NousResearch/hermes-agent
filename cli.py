@@ -765,14 +765,14 @@ class HermesCLI:
         provider: str = None,
         api_key: str = None,
         base_url: str = None,
-        max_turns: int = 60,
+        max_turns: int = None,
         verbose: bool = False,
         compact: bool = False,
         resume: str = None,
     ):
         """
         Initialize the Hermes CLI.
-        
+
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
@@ -815,7 +815,7 @@ class HermesCLI:
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
-        if max_turns != 60:  # CLI arg was explicitly set
+        if max_turns is not None:
             self.max_turns = max_turns
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
@@ -2669,7 +2669,7 @@ def main(
     provider: str = None,
     api_key: str = None,
     base_url: str = None,
-    max_turns: int = 60,
+    max_turns: int = None,
     verbose: bool = False,
     compact: bool = False,
     list_tools: bool = False,

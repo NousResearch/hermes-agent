@@ -43,16 +43,41 @@ if _env_path.exists():
 load_dotenv()
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# Values already set in the environment (from .env or shell) take precedence.
+# config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
         with open(_config_path) as _f:
             _cfg = _yaml.safe_load(_f) or {}
+        # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
+        # Terminal config is nested — bridge to TERMINAL_* env vars.
+        # config.yaml overrides .env for these since it's the documented config path.
+        _terminal_cfg = _cfg.get("terminal", {})
+        if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            _terminal_env_map = {
+                "backend": "TERMINAL_ENV",
+                "cwd": "TERMINAL_CWD",
+                "timeout": "TERMINAL_TIMEOUT",
+                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+                "docker_image": "TERMINAL_DOCKER_IMAGE",
+                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+                "modal_image": "TERMINAL_MODAL_IMAGE",
+                "ssh_host": "TERMINAL_SSH_HOST",
+                "ssh_user": "TERMINAL_SSH_USER",
+                "ssh_port": "TERMINAL_SSH_PORT",
+                "ssh_key": "TERMINAL_SSH_KEY",
+                "container_cpu": "TERMINAL_CONTAINER_CPU",
+                "container_memory": "TERMINAL_CONTAINER_MEMORY",
+                "container_disk": "TERMINAL_CONTAINER_DISK",
+                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            }
+            for _cfg_key, _env_var in _terminal_env_map.items():
+                if _cfg_key in _terminal_cfg:
+                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

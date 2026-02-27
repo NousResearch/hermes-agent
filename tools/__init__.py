@@ -260,5 +260,19 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+    # Git intelligence toolset
+    'git_repo_summary',
+    'git_log',
+    'git_diff_stats',
+    'git_contributors',
+    'git_file_history',
+    'git_branch_compare',
 ]
-
+from .git_intel_tool import (
+    git_repo_summary,
+    git_log,
+    git_diff_stats,
+    git_contributors,
+    git_file_history,
+    git_branch_compare,
+)

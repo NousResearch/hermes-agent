@@ -22,6 +22,10 @@ from .web_tools import (
     web_crawl_tool,
     check_firecrawl_api_key
 )
+# Crypto price tracking tool
+from .crypto_price import (
+    crypto_price_tool,
+)
 
 # Primary terminal tool (mini-swe-agent backend: local/docker/singularity/modal)
 from .terminal_tool import (

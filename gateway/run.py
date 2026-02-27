@@ -623,7 +623,12 @@ class GatewayRunner:
             return await self._handle_set_home_command(event)
         
         # Check for pending exec approval responses
-        session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
+        if source.chat_type != "dm":
+            session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform and source.platform.value == "whatsapp" and source.chat_id:
+            session_key_preview = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            session_key_preview = f"agent:main:{source.platform.value}:dm"
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):

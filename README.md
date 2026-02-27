@@ -363,6 +363,7 @@ hermes uninstall          # Uninstall (can keep configs for later reinstall)
 hermes gateway            # Run gateway in foreground
 hermes gateway install    # Install as system service (messaging + cron)
 hermes gateway status     # Check service status
+hermes whatsapp           # Pair WhatsApp via QR code
 
 # Skills, cron, misc
 hermes skills search k8s  # Search skill registries
@@ -571,6 +572,18 @@ compression:
   threshold: 0.85    # Compress at 85% of limit
 ```
 
+### 🧠 Reasoning Effort
+
+Control how much "thinking" the model does before responding. This works with models that support extended thinking on OpenRouter and Nous Portal.
+
+```yaml
+# In ~/.hermes/config.yaml under agent:
+agent:
+  reasoning_effort: "xhigh"   # xhigh (max), high, medium, low, minimal, none
+```
+
+Higher reasoning effort gives better results on complex tasks (multi-step planning, debugging, research) at the cost of more tokens and latency. Set to `"none"` to disable extended thinking entirely.
+
 ### 🗄️ Session Store
 
 All CLI and messaging sessions are stored in a SQLite database (`~/.hermes/state.db`) with full-text search:
@@ -639,6 +652,23 @@ When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, 
 > ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
 
 Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
+
+### 🔒 Security Hardening
+
+Hermes includes multiple layers of security beyond sandboxed terminals and exec approval:
+
+| Protection | Description |
+|------------|-------------|
+| **Shell injection prevention** | Sudo password piping uses `shlex.quote()` to prevent metacharacter injection |
+| **Cron prompt injection scanning** | Scheduled task prompts are scanned for instruction-override patterns (multi-word variants, Unicode obfuscation) |
+| **Write deny list with symlink resolution** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`, etc.) are resolved via `os.path.realpath()` before comparison, preventing symlink bypass |
+| **Recursive delete false-positive fix** | Dangerous command detection uses precise flag-matching to avoid blocking safe commands |
+| **Code execution sandbox** | `execute_code` scripts run in a child process with API keys and credentials stripped from the environment |
+| **Container hardening** | Docker containers run with read-only root, all capabilities dropped, no privilege escalation, PID limits |
+| **DM pairing** | Cryptographically random pairing codes with 1-hour expiry and rate limiting |
+| **User allowlists** | Default deny-all for messaging platforms; explicit allowlists or DM pairing required |
+
+For sandboxed terminal options, see [Terminal & Process Management](#-terminal--process-management).
 
 ### 🔊 Text-to-Speech
 
@@ -1424,7 +1454,6 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
-| `ANTHROPIC_API_KEY` | Direct Anthropic access |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
 | `LLM_MODEL` | Default model name (fallback when `HERMES_MODEL` is not set) |
@@ -1475,6 +1504,12 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
 | `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
+| `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
+| `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
+| `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
+| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |
 

@@ -154,6 +154,12 @@ def build_session_context_prompt(context: SessionContext) -> str:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
         lines.append(f"**Source:** {platform_name} ({context.source.description})")
+
+    # User identity (especially useful for WhatsApp where multiple people DM)
+    if context.source.user_name:
+        lines.append(f"**User:** {context.source.user_name}")
+    elif context.source.user_id:
+        lines.append(f"**User ID:** {context.source.user_id}")
     
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
@@ -325,8 +331,12 @@ class SessionStore:
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         platform = source.platform.value
-        
+
         if source.chat_type == "dm":
+            # WhatsApp DMs come from different people, each needs its own session.
+            # Other platforms (Telegram, Discord) have a single DM with the bot owner.
+            if platform == "whatsapp" and source.chat_id:
+                return f"agent:main:{platform}:dm:{source.chat_id}"
             return f"agent:main:{platform}:dm"
         else:
             return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"

@@ -1958,7 +1958,9 @@ class HermesCLI:
             else:
                 duration_str = f"{seconds}s"
             
-            print(f"Resume this session with:")
+            if not os.getenv("HERMES_PLAIN_OUTPUT"):
+            
+                print(f"Resume this session with:")
             print(f"  hermes --resume {self.session_id}")
             print()
             print(f"Session:        {self.session_id}")
@@ -1970,7 +1972,8 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
-        self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
+        if not os.getenv("HERMES_PLAIN_OUTPUT"):
+            self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
         self.console.print()
         
         # State for async operation

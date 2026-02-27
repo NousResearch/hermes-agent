@@ -112,6 +112,13 @@ def _resolve_last_cli_session() -> Optional[str]:
 
 
 def cmd_chat(args):
+    # Plain output for scripting
+    if getattr(args, 'plain', False):
+        import os
+        os.environ['HERMES_PLAIN_OUTPUT'] = '1'
+        os.environ['HERMES_TOOL_PROGRESS'] = 'false'
+        os.environ['HERMES_TOOL_PROGRESS_MODE'] = 'new'
+
     """Run interactive chat CLI."""
     # Resolve --continue into --resume with the latest CLI session
     if getattr(args, "continue_last", False) and not getattr(args, "resume", None):
@@ -856,6 +863,12 @@ For more help on a command:
         default=False,
         help="Resume the most recent CLI session"
     )
+    chat_parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="Print only the assistant text (no banners/metadata/tool progress). Useful for scripting.",
+    )
+
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
@@ -1387,6 +1400,12 @@ For more help on a command:
     
     # Execute the command
     if hasattr(args, 'func'):
+        # Plain output mode (useful for scripting)
+        if getattr(args, "plain", False):
+            os.environ["HERMES_PLAIN_OUTPUT"] = "1"
+            os.environ["HERMES_TOOL_PROGRESS"] = "false"
+            os.environ["HERMES_TOOL_PROGRESS_MODE"] = "new"
+
         args.func(args)
     else:
         parser.print_help()

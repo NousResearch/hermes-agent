@@ -430,8 +430,8 @@ Tools are organized into logical **toolsets**:
 # Use specific toolsets
 hermes --toolsets "web,terminal"
 
-# List all toolsets
-hermes --list-tools
+# Configure tools per platform (interactive)
+hermes tools
 ```
 
 **Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.

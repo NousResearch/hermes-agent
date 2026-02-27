@@ -153,7 +153,6 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         from simple_term_menu import TerminalMenu
 
         menu_items = [f"  {label}" for label in labels]
-        preselected = [menu_items[i] for i in pre_selected_indices if i < len(menu_items)]
 
         menu = TerminalMenu(
             menu_items,
@@ -162,12 +161,13 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             multi_select_cursor="[✓] ",
             multi_select_select_on_accept=False,
             multi_select_empty_ok=True,
-            preselected_entries=preselected if preselected else None,
+            preselected_entries=pre_selected_indices if pre_selected_indices else None,
             menu_cursor="→ ",
             menu_cursor_style=("fg_green", "bold"),
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=False,
+            clear_menu_on_exit=False,
         )
 
         menu.show()

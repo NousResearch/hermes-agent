@@ -50,10 +50,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> dict:
           - "transcript" (str): The transcribed text (empty on failure)
           - "error" (str, optional): Error message if success is False
     """
-    # Use VOICE_TOOLS_OPENAI_KEY to avoid interference with the OpenAI SDK's
-    # auto-detection of OPENAI_API_KEY (which would break OpenRouter calls).
-    # Falls back to OPENAI_API_KEY for backward compatibility.
-    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY")
     if not api_key:
         return {
             "success": False,

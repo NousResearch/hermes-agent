@@ -1015,6 +1015,14 @@ def run_setup_wizard(args):
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     
+    # Sync terminal backend to .env so terminal_tool picks it up directly.
+    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
+    if selected_backend:
+        save_env_value("TERMINAL_ENV", selected_backend)
+        docker_image = config.get('terminal', {}).get('docker_image')
+        if docker_image:
+            save_env_value("TERMINAL_DOCKER_IMAGE", docker_image)
+    
     # =========================================================================
     # Step 5: Agent Settings
     # =========================================================================
@@ -1077,6 +1085,82 @@ def run_setup_wizard(args):
         pass
     
     print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}")
+    
+    # =========================================================================
+    # Step 6b: Session Reset Policy (Messaging)
+    # =========================================================================
+    print_header("Session Reset Policy")
+    print_info("Messaging sessions (Telegram, Discord, etc.) accumulate context over time.")
+    print_info("Each message adds to the conversation history, which means growing API costs.")
+    print_info("")
+    print_info("To manage this, sessions can automatically reset after a period of inactivity")
+    print_info("or at a fixed time each day. When a reset happens, the agent saves important")
+    print_info("things to its persistent memory first — but the conversation context is cleared.")
+    print_info("")
+    print_info("You can also manually reset anytime by typing /reset in chat.")
+    print_info("")
+    
+    reset_choices = [
+        "Inactivity + daily reset (recommended — reset whichever comes first)",
+        "Inactivity only (reset after N minutes of no messages)",
+        "Daily only (reset at a fixed hour each day)",
+        "Never auto-reset (context lives until /reset or context compression)",
+        "Keep current settings",
+    ]
+    
+    current_policy = config.get('session_reset', {})
+    current_mode = current_policy.get('mode', 'both')
+    current_idle = current_policy.get('idle_minutes', 1440)
+    current_hour = current_policy.get('at_hour', 4)
+    
+    default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_mode, 0)
+    
+    reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
+    
+    config.setdefault('session_reset', {})
+    
+    if reset_idx == 0:  # Both
+        config['session_reset']['mode'] = 'both'
+        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        try:
+            idle_val = int(idle_str)
+            if idle_val > 0:
+                config['session_reset']['idle_minutes'] = idle_val
+        except ValueError:
+            pass
+        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        try:
+            hour_val = int(hour_str)
+            if 0 <= hour_val <= 23:
+                config['session_reset']['at_hour'] = hour_val
+        except ValueError:
+            pass
+        print_success(f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00")
+    elif reset_idx == 1:  # Idle only
+        config['session_reset']['mode'] = 'idle'
+        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        try:
+            idle_val = int(idle_str)
+            if idle_val > 0:
+                config['session_reset']['idle_minutes'] = idle_val
+        except ValueError:
+            pass
+        print_success(f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity")
+    elif reset_idx == 2:  # Daily only
+        config['session_reset']['mode'] = 'daily'
+        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        try:
+            hour_val = int(hour_str)
+            if 0 <= hour_val <= 23:
+                config['session_reset']['at_hour'] = hour_val
+        except ValueError:
+            pass
+        print_success(f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00")
+    elif reset_idx == 3:  # None
+        config['session_reset']['mode'] = 'none'
+        print_info("Sessions will never auto-reset. Context is managed only by compression.")
+        print_warning("Long conversations will grow in cost. Use /reset manually when needed.")
+    # else: keep current (idx == 4)
     
     # =========================================================================
     # Step 7: Messaging Platforms (Optional)

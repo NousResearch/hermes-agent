@@ -242,7 +242,7 @@ Create a markdown summary that captures all key information in a well-organized,
             if _aux_async_client is None:
                 logger.warning("No auxiliary model available for web content processing")
                 return None
-            from agent.auxiliary_client import get_auxiliary_extra_body
+            from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
             _extra = get_auxiliary_extra_body()
             response = await _aux_async_client.chat.completions.create(
                 model=model,
@@ -251,7 +251,7 @@ Create a markdown summary that captures all key information in a well-organized,
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=max_tokens,
+                **auxiliary_max_tokens_param(max_tokens),
                 **({} if not _extra else {"extra_body": _extra}),
             )
             return response.choices[0].message.content.strip()
@@ -365,7 +365,7 @@ Create a single, unified markdown summary."""
                 fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
             return fallback
 
-        from agent.auxiliary_client import get_auxiliary_extra_body
+        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
         _extra = get_auxiliary_extra_body()
         response = await _aux_async_client.chat.completions.create(
             model=model,
@@ -374,7 +374,7 @@ Create a single, unified markdown summary."""
                 {"role": "user", "content": synthesis_prompt}
             ],
             temperature=0.1,
-            max_tokens=4000,
+            **auxiliary_max_tokens_param(4000),
             **({} if not _extra else {"extra_body": _extra}),
         )
         final_summary = response.choices[0].message.content.strip()
@@ -1240,7 +1240,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
     "parameters": {
         "type": "object",
         "properties": {

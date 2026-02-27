@@ -43,16 +43,41 @@ if _env_path.exists():
 load_dotenv()
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# Values already set in the environment (from .env or shell) take precedence.
+# config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
         with open(_config_path) as _f:
             _cfg = _yaml.safe_load(_f) or {}
+        # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
+        # Terminal config is nested — bridge to TERMINAL_* env vars.
+        # config.yaml overrides .env for these since it's the documented config path.
+        _terminal_cfg = _cfg.get("terminal", {})
+        if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            _terminal_env_map = {
+                "backend": "TERMINAL_ENV",
+                "cwd": "TERMINAL_CWD",
+                "timeout": "TERMINAL_TIMEOUT",
+                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+                "docker_image": "TERMINAL_DOCKER_IMAGE",
+                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+                "modal_image": "TERMINAL_MODAL_IMAGE",
+                "ssh_host": "TERMINAL_SSH_HOST",
+                "ssh_user": "TERMINAL_SSH_USER",
+                "ssh_port": "TERMINAL_SSH_PORT",
+                "ssh_key": "TERMINAL_SSH_KEY",
+                "container_cpu": "TERMINAL_CONTAINER_CPU",
+                "container_memory": "TERMINAL_CONTAINER_MEMORY",
+                "container_disk": "TERMINAL_CONTAINER_DISK",
+                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            }
+            for _cfg_key, _env_var in _terminal_env_map.items():
+                if _cfg_key in _terminal_cfg:
+                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -109,6 +134,7 @@ class GatewayRunner:
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            on_auto_reset=self._flush_memories_before_reset,
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
@@ -123,6 +149,66 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
         
+    def _flush_memories_before_reset(self, old_entry):
+        """Prompt the agent to save memories/skills before an auto-reset.
+        
+        Called synchronously by SessionStore before destroying an expired session.
+        Loads the transcript, gives the agent a real turn with memory + skills
+        tools, and explicitly asks it to preserve anything worth keeping.
+        """
+        try:
+            history = self.session_store.load_transcript(old_entry.session_id)
+            if not history or len(history) < 4:
+                return
+
+            from run_agent import AIAgent
+            _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+            _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+
+            if not _flush_api_key:
+                return
+
+            tmp_agent = AIAgent(
+                model=_flush_model,
+                api_key=_flush_api_key,
+                base_url=_flush_base_url,
+                max_iterations=8,
+                quiet_mode=True,
+                enabled_toolsets=["memory", "skills"],
+                session_id=old_entry.session_id,
+            )
+
+            # Build conversation history from transcript
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+
+            # Give the agent a real turn to think about what to save
+            flush_prompt = (
+                "[System: This session is about to be automatically reset due to "
+                "inactivity or a scheduled daily reset. The conversation context "
+                "will be cleared after this turn.\n\n"
+                "Review the conversation above and:\n"
+                "1. Save any important facts, preferences, or decisions to memory "
+                "(user profile or your notes) that would be useful in future sessions.\n"
+                "2. If you discovered a reusable workflow or solved a non-trivial "
+                "problem, consider saving it as a skill.\n"
+                "3. If nothing is worth saving, that's fine — just skip.\n\n"
+                "Do NOT respond to the user. Just use the memory and skill_manage "
+                "tools if needed, then stop.]"
+            )
+
+            tmp_agent.run_conversation(
+                user_message=flush_prompt,
+                conversation_history=msgs,
+            )
+            logger.info("Pre-reset save completed for session %s", old_entry.session_id)
+        except Exception as e:
+            logger.debug("Pre-reset save failed for session %s: %s", old_entry.session_id, e)
+
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()

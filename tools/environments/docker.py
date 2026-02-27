@@ -73,8 +73,14 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--cpus", str(cpu)])
         if memory > 0:
             resource_args.extend(["--memory", f"{memory}m"])
-        if disk > 0 and sys.platform != "darwin" and self._storage_opt_supported():
-            resource_args.extend(["--storage-opt", f"size={disk}m"])
+        if disk > 0 and sys.platform != "darwin":
+            if self._storage_opt_supported():
+                resource_args.extend(["--storage-opt", f"size={disk}m"])
+            else:
+                logger.warning(
+                    "Docker storage driver does not support per-container disk limits "
+                    "(requires overlay2 on XFS with pquota). Container will run without disk quota."
+                )
         if not network:
             resource_args.append("--network=none")
 

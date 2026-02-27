@@ -70,8 +70,13 @@ from tools.environments.singularity import _get_scratch_dir
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
 
-def _check_disk_usage_warning():
-    """Check if total disk usage exceeds warning threshold."""
+def _check_disk_usage_warning() -> bool:
+    """
+    Check if total disk usage exceeds warning threshold.
+    
+    Returns:
+        bool: True if disk usage exceeds threshold, False otherwise
+    """
     scratch_dir = _get_scratch_dir()
     
     try:
@@ -83,7 +88,9 @@ def _check_disk_usage_warning():
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
-                    except OSError:
+                    except OSError as e:
+                        # Log individual file access errors at debug level
+                        logger.debug("Could not access file %s: %s", f, e)
                         pass
         
         total_gb = total_bytes / (1024 ** 3)
@@ -95,6 +102,8 @@ def _check_disk_usage_warning():
         
         return False
     except Exception as e:
+        # Log unexpected errors at warning level for debugging
+        logger.warning("Failed to check disk usage: %s", e, exc_info=True)
         return False
 
 
@@ -110,14 +119,24 @@ _sudo_password_callback = None
 _approval_callback = None
 
 
-def set_sudo_password_callback(cb):
-    """Register a callback for sudo password prompts (used by CLI)."""
+def set_sudo_password_callback(cb) -> None:
+    """
+    Register a callback for sudo password prompts (used by CLI).
+    
+    Args:
+        cb: Callable that returns a password string or empty string to skip
+    """
     global _sudo_password_callback
     _sudo_password_callback = cb
 
 
-def set_approval_callback(cb):
-    """Register a callback for dangerous command approval prompts (used by CLI)."""
+def set_approval_callback(cb) -> None:
+    """
+    Register a callback for dangerous command approval prompts (used by CLI).
+    
+    Args:
+        cb: Callable that takes (command, description) and returns "once"/"session"/"always"/"deny"
+    """
     global _approval_callback
     _approval_callback = cb
 
@@ -144,7 +163,12 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
     
-    Returns enhanced output if sudo failed in messaging context, else original.
+    Args:
+        output: The command output to check
+        env_type: The environment type (e.g., "local", "docker")
+        
+    Returns:
+        str: Enhanced output if sudo failed in messaging context, else original output
     """
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     
@@ -371,7 +395,7 @@ _cleanup_running = False
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 
-def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]) -> None:
     """
     Register environment overrides for a specific task/rollout.
 
@@ -390,7 +414,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     _task_env_overrides[task_id] = overrides
 
 
-def clear_task_env_overrides(task_id: str):
+def clear_task_env_overrides(task_id: str) -> None:
     """
     Clear environment overrides for a task after rollout completes.
 
@@ -520,8 +544,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', or 'ssh'")
 
 
-def _cleanup_inactive_envs(lifetime_seconds: int = 300):
-    """Clean up environments that have been inactive for longer than lifetime_seconds."""
+def _cleanup_inactive_envs(lifetime_seconds: int = 300) -> None:
+    """
+    Clean up environments that have been inactive for longer than lifetime_seconds.
+    
+    Args:
+        lifetime_seconds: Number of seconds of inactivity before cleanup (default: 300)
+    """
     global _active_environments, _last_activity
 
     current_time = time.time()
@@ -584,7 +613,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
-def _cleanup_thread_worker():
+def _cleanup_thread_worker() -> None:
     """Background thread worker that periodically cleans up inactive environments."""
     global _cleanup_running
 
@@ -593,7 +622,7 @@ def _cleanup_thread_worker():
             config = _get_env_config()
             _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:
-            logger.warning("Error in cleanup thread: %s", e)
+            logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
         for _ in range(60):
             if not _cleanup_running:
@@ -601,7 +630,7 @@ def _cleanup_thread_worker():
             time.sleep(1)
 
 
-def _start_cleanup_thread():
+def _start_cleanup_thread() -> None:
     """Start the background cleanup thread if not already running."""
     global _cleanup_thread, _cleanup_running
 
@@ -612,7 +641,7 @@ def _start_cleanup_thread():
             _cleanup_thread.start()
 
 
-def _stop_cleanup_thread():
+def _stop_cleanup_thread() -> None:
     """Stop the background cleanup thread."""
     global _cleanup_running
     _cleanup_running = False
@@ -646,8 +675,13 @@ def get_active_environments_info() -> Dict[str, Any]:
     return info
 
 
-def cleanup_all_environments():
-    """Clean up ALL active environments. Use with caution."""
+def cleanup_all_environments() -> int:
+    """
+    Clean up ALL active environments. Use with caution.
+    
+    Returns:
+        int: Number of environments cleaned up
+    """
     global _active_environments, _last_activity
     
     task_ids = list(_active_environments.keys())
@@ -658,7 +692,7 @@ def cleanup_all_environments():
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
-            logger.error("Error cleaning %s: %s", task_id, e)
+            logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()
@@ -667,16 +701,21 @@ def cleanup_all_environments():
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Could not remove orphaned directory %s: %s", path, e)
     
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
     return cleaned
 
 
-def cleanup_vm(task_id: str):
-    """Manually clean up a specific environment by task_id."""
+def cleanup_vm(task_id: str) -> None:
+    """
+    Manually clean up a specific environment by task_id.
+    
+    Args:
+        task_id: The task ID of the environment to clean up
+    """
     global _active_environments, _last_activity
 
     # Remove from tracking dicts while holding the lock, but defer the
@@ -719,7 +758,7 @@ def cleanup_vm(task_id: str):
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
-def _atexit_cleanup():
+def _atexit_cleanup() -> None:
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
     if _active_environments:

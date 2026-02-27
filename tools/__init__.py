@@ -20,6 +20,9 @@ from .web_tools import (
     web_search_tool,
     web_extract_tool,
     web_crawl_tool,
+    web_list_pages_tool,
+    web_search_pages_tool,
+    web_get_page_tool,
     check_firecrawl_api_key
 )
 
@@ -166,6 +169,9 @@ __all__ = [
     'web_search_tool',
     'web_extract_tool',
     'web_crawl_tool',
+    'web_list_pages_tool',
+    'web_search_pages_tool',
+    'web_get_page_tool',
     'check_firecrawl_api_key',
     # Terminal tools (mini-swe-agent backend)
     'terminal_tool',

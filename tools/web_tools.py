@@ -36,15 +36,14 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
-#TODO: Search Capabilities over the scraped pages
-#TODO: Store the pages in something
-#TODO: Tool to see what pages are available/saved to search over
-
 import json
 import logging
 import os
 import re
 import asyncio
+import hashlib
+from pathlib import Path
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from firecrawl import Firecrawl
 from openai import AsyncOpenAI
@@ -54,6 +53,11 @@ from tools.debug_helpers import DebugSession
 logger = logging.getLogger(__name__)
 
 _firecrawl_client = None
+
+# Page storage configuration
+HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+WEB_CACHE_DIR = HERMES_HOME / "web_cache"
+WEB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 def _get_firecrawl_client():
     """Get or create the Firecrawl client (lazy initialization)."""
@@ -84,6 +88,135 @@ if _aux_sync_client is not None:
     _aux_async_client = AsyncOpenAI(**_async_kwargs)
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
+
+
+# ---------------------------------------------------------------------------
+# Page Storage Functions
+# ---------------------------------------------------------------------------
+
+def _get_page_id(url: str) -> str:
+    """Generate a unique ID for a page based on its URL."""
+    return hashlib.md5(url.encode()).hexdigest()
+
+
+def _save_page(url: str, content: str, title: str = "", metadata: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Save a scraped page to the cache directory.
+    
+    Args:
+        url: The URL of the page
+        content: The page content (markdown or text)
+        title: Optional title of the page
+        metadata: Optional metadata dictionary
+        
+    Returns:
+        The file path where the page was saved
+    """
+    page_id = _get_page_id(url)
+    page_file = WEB_CACHE_DIR / f"{page_id}.json"
+    
+    page_data = {
+        "url": url,
+        "title": title or url,
+        "content": content,
+        "saved_at": datetime.utcnow().isoformat(),
+        "metadata": metadata or {}
+    }
+    
+    try:
+        with open(page_file, "w", encoding="utf-8") as f:
+            json.dump(page_data, f, ensure_ascii=False, indent=2)
+        logger.debug("Saved page to cache: %s", page_file)
+        return str(page_file)
+    except Exception as e:
+        logger.error("Failed to save page to cache: %s", e)
+        return ""
+
+
+def _load_page(page_id: str) -> Optional[Dict[str, Any]]:
+    """Load a page from cache by its ID."""
+    page_file = WEB_CACHE_DIR / f"{page_id}.json"
+    if not page_file.exists():
+        return None
+    
+    try:
+        with open(page_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error("Failed to load page from cache: %s", e)
+        return None
+
+
+def _list_all_pages() -> List[Dict[str, Any]]:
+    """List all pages in the cache."""
+    pages = []
+    for page_file in WEB_CACHE_DIR.glob("*.json"):
+        try:
+            with open(page_file, "r", encoding="utf-8") as f:
+                page_data = json.load(f)
+                pages.append({
+                    "id": page_file.stem,
+                    "url": page_data.get("url", ""),
+                    "title": page_data.get("title", ""),
+                    "saved_at": page_data.get("saved_at", ""),
+                    "content_length": len(page_data.get("content", ""))
+                })
+        except Exception as e:
+            logger.error("Failed to read page file %s: %s", page_file, e)
+    
+    # Sort by saved_at (most recent first)
+    pages.sort(key=lambda x: x.get("saved_at", ""), reverse=True)
+    return pages
+
+
+def _search_pages(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Search through cached pages by URL, title, or content.
+    
+    Args:
+        query: Search query (searches in URL, title, and content)
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching pages with relevance information
+    """
+    query_lower = query.lower()
+    matches = []
+    
+    for page_file in WEB_CACHE_DIR.glob("*.json"):
+        try:
+            with open(page_file, "r", encoding="utf-8") as f:
+                page_data = json.load(f)
+                
+            url = page_data.get("url", "").lower()
+            title = page_data.get("title", "").lower()
+            content = page_data.get("content", "").lower()
+            
+            # Calculate relevance score
+            score = 0
+            if query_lower in url:
+                score += 10  # URL matches are most relevant
+            if query_lower in title:
+                score += 5   # Title matches are relevant
+            if query_lower in content:
+                score += 1   # Content matches are less relevant
+            
+            if score > 0:
+                matches.append({
+                    "id": page_file.stem,
+                    "url": page_data.get("url", ""),
+                    "title": page_data.get("title", ""),
+                    "saved_at": page_data.get("saved_at", ""),
+                    "content_length": len(page_data.get("content", "")),
+                    "relevance_score": score,
+                    "content_preview": content[:200] + "..." if len(content) > 200 else content
+                })
+        except Exception as e:
+            logger.error("Failed to search page file %s: %s", page_file, e)
+    
+    # Sort by relevance score (highest first)
+    matches.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    return matches[:limit]
 
 
 async def process_content_with_llm(
@@ -804,6 +937,21 @@ async def web_extract_tool(
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
         
+        # Save pages to cache
+        try:
+            result_data = json.loads(cleaned_result)
+            if "results" in result_data:
+                for page in result_data.get("results", []):
+                    if "url" in page and "content" in page and page.get("content"):
+                        _save_page(
+                            url=page["url"],
+                            content=page.get("content", ""),
+                            title=page.get("title", ""),
+                            metadata=page.get("metadata", {})
+                        )
+        except Exception as save_err:
+            logger.debug("Failed to save pages to cache: %s", save_err)
+        
         # Log debug information
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
@@ -1097,6 +1245,21 @@ async def web_crawl_tool(
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
         
+        # Save pages to cache
+        try:
+            result_data = json.loads(cleaned_result)
+            if "results" in result_data:
+                for page in result_data.get("results", []):
+                    if "url" in page and "content" in page and page.get("content"):
+                        _save_page(
+                            url=page["url"],
+                            content=page.get("content", ""),
+                            title=page.get("title", ""),
+                            metadata=page.get("metadata", {})
+                        )
+        except Exception as save_err:
+            logger.debug("Failed to save pages to cache: %s", save_err)
+        
         # Log debug information
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
@@ -1111,6 +1274,115 @@ async def web_crawl_tool(
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
         
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Page Management Tools
+# ---------------------------------------------------------------------------
+
+def web_list_pages_tool(limit: int = 50) -> str:
+    """
+    List all pages stored in the web cache.
+    
+    Args:
+        limit: Maximum number of pages to return (default: 50)
+        
+    Returns:
+        JSON string with list of cached pages
+    """
+    try:
+        pages = _list_all_pages()
+        if not pages:
+            return json.dumps({
+                "pages": [],
+                "count": 0,
+                "message": "No pages found in cache. Pages are automatically saved when using web_extract or web_crawl tools."
+            }, ensure_ascii=False, indent=2)
+        
+        limited_pages = pages[:limit]
+        return json.dumps({
+            "pages": limited_pages,
+            "count": len(limited_pages),
+            "total": len(pages),
+            "message": f"Found {len(pages)} cached pages (showing {len(limited_pages)})"
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        error_msg = f"Error listing pages: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+
+def web_search_pages_tool(query: str, limit: int = 10) -> str:
+    """
+    Search through cached pages by URL, title, or content.
+    
+    Args:
+        query: Search query (searches in URL, title, and content)
+        limit: Maximum number of results to return (default: 10)
+        
+    Returns:
+        JSON string with matching pages
+    """
+    try:
+        if not query or not query.strip():
+            return json.dumps({
+                "error": "Query parameter is required"
+            }, ensure_ascii=False)
+        
+        matches = _search_pages(query.strip(), limit=limit)
+        
+        if not matches:
+            return json.dumps({
+                "matches": [],
+                "count": 0,
+                "query": query,
+                "message": f"No pages found matching '{query}'"
+            }, ensure_ascii=False, indent=2)
+        
+        return json.dumps({
+            "matches": matches,
+            "count": len(matches),
+            "query": query,
+            "message": f"Found {len(matches)} matching pages"
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        error_msg = f"Error searching pages: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
+
+
+def web_get_page_tool(page_id: Optional[str] = None, url: Optional[str] = None) -> str:
+    """
+    Retrieve a specific page from cache by ID or URL.
+    
+    Args:
+        page_id: The page ID (from web_list_pages)
+        url: The page URL (alternative to page_id)
+        
+    Returns:
+        JSON string with the full page content
+    """
+    try:
+        if not page_id and not url:
+            return json.dumps({
+                "error": "Either page_id or url parameter is required"
+            }, ensure_ascii=False)
+        
+        if url:
+            page_id = _get_page_id(url)
+        
+        page_data = _load_page(page_id)
+        
+        if not page_data:
+            return json.dumps({
+                "error": f"Page not found (ID: {page_id})"
+            }, ensure_ascii=False)
+        
+        return json.dumps(page_data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        error_msg = f"Error retrieving page: {str(e)}"
+        logger.error(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
@@ -1272,4 +1544,111 @@ registry.register(
     check_fn=check_firecrawl_api_key,
     requires_env=["FIRECRAWL_API_KEY"],
     is_async=True,
+)
+
+WEB_CRAWL_SCHEMA = {
+    "name": "web_crawl",
+    "description": "Crawl a website following links and extracting content. Returns multiple pages in markdown format. Pages under 5000 chars return full markdown; larger pages are LLM-summarized. Use this for comprehensive site exploration.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The base URL of the website to crawl (e.g., 'example.com' or 'https://example.com')"
+            },
+            "instructions": {
+                "type": "string",
+                "description": "Instructions for what to find or extract during the crawl"
+            }
+        },
+        "required": ["url", "instructions"]
+    }
+}
+
+WEB_LIST_PAGES_SCHEMA = {
+    "name": "web_list_pages",
+    "description": "List all pages stored in the web cache. Pages are automatically saved when using web_extract or web_crawl tools. Use this to see what pages are available for searching.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of pages to return (default: 50)",
+                "default": 50
+            }
+        }
+    }
+}
+
+WEB_SEARCH_PAGES_SCHEMA = {
+    "name": "web_search_pages",
+    "description": "Search through cached pages by URL, title, or content. Returns matching pages with relevance scores. Use this to find previously scraped pages without making new API calls.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query (searches in URL, title, and content)"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: 10)",
+                "default": 10
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+WEB_GET_PAGE_SCHEMA = {
+    "name": "web_get_page",
+    "description": "Retrieve a specific page from cache by ID (from web_list_pages) or URL. Returns the full page content including metadata.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "page_id": {
+                "type": "string",
+                "description": "The page ID from web_list_pages (optional if url is provided)"
+            },
+            "url": {
+                "type": "string",
+                "description": "The page URL (optional if page_id is provided)"
+            }
+        }
+    }
+}
+
+registry.register(
+    name="web_crawl",
+    toolset="web",
+    schema=WEB_CRAWL_SCHEMA,
+    handler=lambda args, **kw: web_crawl_tool(
+        args.get("url", ""), args.get("instructions", "")),
+    check_fn=check_firecrawl_api_key,
+    requires_env=["FIRECRAWL_API_KEY"],
+    is_async=True,
+)
+
+registry.register(
+    name="web_list_pages",
+    toolset="web",
+    schema=WEB_LIST_PAGES_SCHEMA,
+    handler=lambda args, **kw: web_list_pages_tool(args.get("limit", 50)),
+    check_fn=lambda: True,  # No API key required for listing cached pages
+)
+
+registry.register(
+    name="web_search_pages",
+    toolset="web",
+    schema=WEB_SEARCH_PAGES_SCHEMA,
+    handler=lambda args, **kw: web_search_pages_tool(args.get("query", ""), args.get("limit", 10)),
+    check_fn=lambda: True,  # No API key required for searching cached pages
+)
+
+registry.register(
+    name="web_get_page",
+    toolset="web",
+    schema=WEB_GET_PAGE_SCHEMA,
+    handler=lambda args, **kw: web_get_page_tool(args.get("page_id"), args.get("url")),
+    check_fn=lambda: True,  # No API key required for retrieving cached pages
 )

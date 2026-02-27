@@ -1593,3 +1593,37 @@ Common issues:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+## Troubleshooting
+
+### Check Your Environment
+
+Run the environment checker to diagnose issues:
+
+```bash
+python scripts/check_env.py
+```
+
+This validates:
+- Python version (3.10+ required)
+- Core and optional dependencies
+- API key configuration
+- HERMES_HOME setup
+
+### Common Issues
+
+| Problem | Solution |
+|---------|----------|
+| `OPENROUTER_API_KEY not set` | Run `hermes setup` or set the key in `~/.hermes/.env` |
+| `ModuleNotFoundError` | Activate venv: `source ~/.hermes/hermes-agent/.venv/bin/activate` |
+| `Permission denied` on install | Don't use sudo — uv manages Python in user space |
+| Tool returns "not available" | Check if the tool's dependencies are installed (e.g., `ffmpeg` for TTS) |
+| Slow first response | OpenRouter is fetching model metadata — subsequent calls are faster |
+
+### Getting Help
+
+- [Discord](https://discord.gg/NousResearch) — fastest response
+- [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues) — bugs and features
+- [DeepWiki Docs](https://deepwiki.com/NousResearch/hermes-agent) — detailed documentation

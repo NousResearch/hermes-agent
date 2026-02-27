@@ -815,6 +815,19 @@ def set_config_value(key: str, value: str):
     with open(config_path, 'w') as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
+    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
+    # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
+    _config_to_env_sync = {
+        "terminal.backend": "TERMINAL_ENV",
+        "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
+        "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
+        "terminal.cwd": "TERMINAL_CWD",
+        "terminal.timeout": "TERMINAL_TIMEOUT",
+    }
+    if key in _config_to_env_sync:
+        save_env_value(_config_to_env_sync[key], str(value))
+
     print(f"✓ Set {key} = {value} in {config_path}")
 
 

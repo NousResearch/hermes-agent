@@ -972,11 +972,37 @@ class GatewayRunner:
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
         args = event.get_command_args().strip()
-        current = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        
+
+        # Resolve current model using the same chain as _run_agent
+        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL")
+        if not current:
+            try:
+                import yaml as _y
+                _cfg_path = _hermes_home / "config.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path) as _f:
+                        _cfg = _y.safe_load(_f) or {}
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, str):
+                        current = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        current = _model_cfg.get("default")
+            except Exception:
+                pass
+        current = current or "anthropic/claude-opus-4.6"
+
         if not args:
             return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
-        
+
+        if "/" not in args:
+            return (
+                f"🤖 Invalid model format: `{args}`\n\n"
+                f"Use `provider/model-name` format, e.g.:\n"
+                f"• `anthropic/claude-sonnet-4`\n"
+                f"• `google/gemini-2.5-pro`\n"
+                f"• `openai/gpt-4o`"
+            )
+
         os.environ["HERMES_MODEL"] = args
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     

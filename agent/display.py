@@ -182,8 +182,9 @@ class KawaiiSpinner:
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            clear = '\r' + ' ' * self.last_line_len + '\r'
-            self._write(clear + line, end='', flush=True)
+            # Use \r + ANSI erase-to-EOL in a single write to avoid the
+            # two-phase clear+redraw that flickers under patch_stdout.
+            self._write(f"\r\033[K{line}", end='', flush=True)
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -203,7 +204,7 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        self._write('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
+        self._write('\r\033[K', end='', flush=True)
         if final_message:
             self._write(f"  {final_message}", flush=True)
 

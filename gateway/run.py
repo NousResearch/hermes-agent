@@ -185,7 +185,6 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_entry.session_id,
-                session_db=self._session_db,
             )
 
             # Build conversation history from transcript
@@ -871,7 +870,6 @@ class GatewayRunner:
                     _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
                     _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
                     _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
-                    _flush_session_db = self._session_db
                     def _do_flush():
                         tmp_agent = AIAgent(
                             model=_flush_model,
@@ -881,7 +879,6 @@ class GatewayRunner:
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
                             session_id=old_entry.session_id,
-                            session_db=_flush_session_db,
                         )
                         # Build simple message list from transcript
                         msgs = []

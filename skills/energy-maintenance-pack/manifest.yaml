@@ -1,0 +1,22 @@
+name: energy-maintenance-intelligence-pack
+version: 1.0.0
+author: Serhat Dolmaci
+category: renewable-energy/industrial-maintenance
+description: >
+  A domain-specific AI skill pack for wind turbine condition-based maintenance.
+  Foundation module includes gearbox degradation intelligence.
+  Designed for extension into yaw, pitch, and CMS diagnostics.
+
+skills:
+  - name: gearbox-intelligence
+    path: gearbox/SKILL.md
+    description: >
+      Evaluates wind turbine gearbox condition using inspection findings,
+      oil iron (Fe ppm) levels, vibration status, and thermal indicators.
+
+future_extensions:
+  - yaw-bearing-intelligence
+  - pitch-system-intelligence
+  - cms-anomaly-interpreter
+
+license: MIT

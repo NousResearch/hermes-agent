@@ -136,9 +136,6 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
-    print(color(f"Tools for {platform_label}", Colors.YELLOW))
-    print(color("  SPACE to toggle, ENTER to confirm.", Colors.DIM))
-    print()
 
     labels = []
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
@@ -154,6 +151,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
         menu_items = [f"  {label}" for label in labels]
 
+        title_lines = [
+            f"Tools for {platform_label}",
+            "  SPACE to toggle, ENTER to confirm.",
+            "",
+        ]
+
         menu = TerminalMenu(
             menu_items,
             multi_select=True,
@@ -166,8 +169,8 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             menu_cursor_style=("fg_green", "bold"),
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
-            clear_screen=False,
-            clear_menu_on_exit=False,
+            clear_screen=True,
+            title="\n".join(title_lines),
         )
 
         menu.show()
@@ -181,6 +184,9 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
 
     except (ImportError, NotImplementedError):
         # Fallback: numbered toggle
+        print(color(f"Tools for {platform_label}", Colors.YELLOW))
+        print(color("  SPACE to toggle, ENTER to confirm.", Colors.DIM))
+        print()
         selected = set(pre_selected_indices)
         while True:
             for i, label in enumerate(labels):

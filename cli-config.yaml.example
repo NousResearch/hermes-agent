@@ -206,15 +206,48 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
-  
+
   # Enable verbose logging
   verbose: false
-  
+
+# =============================================================================
+# Dynamic Parts (Segmented Motivational Systems)
+# =============================================================================
+# Dynamic Parts are persistent perspectives that can bid for attention and
+# influence agent behavior. Each Part represents a voice/perspective with
+# its own triggers, wants, and suggestions. The agent activates relevant
+# parts on each turn based on conversation context.
+#
+# HOW IT WORKS:
+# 1. Parts are stored in ~/.hermes/parts/parts.json
+# 2. Each turn, parts matching conversation context are activated
+# 3. Activated parts generate "bids" for attention with urgency scores
+# 4. A persona/self layer decides which bids to follow
+# 5. Parts can make predictions that need evaluation later
+# 6. Due predictions are surfaced automatically when their time comes
+#
+# USE CASES:
+# - Persistent perspectives: "Security expert" part triggers on security topics
+# - Habit building: "Testing advocate" part reminds to write tests
+# - Domain expertise: "Python expert" part offers Python-specific guidance
+# - Emotional states: "Helpful encourager" part adds positive framing
+# - Project memory: "Project context" part recalls project-specific conventions
+#
+# ENVIRONMENT VARIABLE:
+#   HERMES_PARTS_RUNTIME_ENABLED: "true" or "false" (default: "true")
+#   Can also be set in .env file
+#
+# parts:
+#   # Enable runtime integration (default: true)
+#   # When disabled, parts can still be managed via tools but won't auto-activate
+#   runtime_enabled: true
+
+agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "xhigh"
-  
+
   # Predefined personalities (use with /personality command)
   personalities:
     helpful: "You are a helpful, friendly AI assistant."

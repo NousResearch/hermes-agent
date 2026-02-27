@@ -149,6 +149,14 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
         
+        # Initialize session database for session_search tool support
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
+        
     def _flush_memories_before_reset(self, old_entry):
         """Prompt the agent to save memories/skills before an auto-reset.
         
@@ -177,6 +185,7 @@ class GatewayRunner:
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_entry.session_id,
+                session_db=self._session_db,
             )
 
             # Build conversation history from transcript
@@ -862,6 +871,7 @@ class GatewayRunner:
                     _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
                     _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
                     _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+                    _flush_session_db = self._session_db
                     def _do_flush():
                         tmp_agent = AIAgent(
                             model=_flush_model,
@@ -871,6 +881,7 @@ class GatewayRunner:
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
                             session_id=old_entry.session_id,
+                            session_db=_flush_session_db,
                         )
                         # Build simple message list from transcript
                         msgs = []
@@ -1530,6 +1541,7 @@ class GatewayRunner:
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 platform=platform_key,
+                session_db=self._session_db,
             )
             
             # Store agent reference for interrupt support

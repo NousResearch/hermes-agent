@@ -134,12 +134,23 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                 sys.exit(0)
 
 
+def _toolset_has_keys(ts_key: str) -> bool:
+    """Check if a toolset's required API keys are configured."""
+    requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
+    if not requirements:
+        return True
+    return all(get_env_value(var) for var, _ in requirements)
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
 
     labels = []
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
-        labels.append(f"{ts_label}  ({ts_desc})")
+        suffix = ""
+        if not _toolset_has_keys(ts_key) and TOOLSET_ENV_REQUIREMENTS.get(ts_key):
+            suffix = "  ⚠ no API key"
+        labels.append(f"{ts_label}  ({ts_desc}){suffix}")
 
     pre_selected_indices = [
         i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)
@@ -150,12 +161,6 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         from simple_term_menu import TerminalMenu
 
         menu_items = [f"  {label}" for label in labels]
-
-        title_lines = [
-            f"Tools for {platform_label}",
-            "  SPACE to toggle, ENTER to confirm.",
-            "",
-        ]
 
         menu = TerminalMenu(
             menu_items,
@@ -170,7 +175,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=True,
-            title="\n".join(title_lines),
+            title=f"Tools for {platform_label}  —  SPACE to toggle, ENTER to confirm",
         )
 
         menu.show()

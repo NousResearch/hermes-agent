@@ -2092,11 +2092,44 @@ class AIAgent:
                             "interrupted": True,
                         }
                     
+                    # Check for 413 payload-too-large BEFORE generic 4xx handler.
+                    # A 413 is a payload-size error — the correct response is to
+                    # compress history and retry, not abort immediately.
+                    status_code = getattr(api_error, "status_code", None)
+                    is_payload_too_large = (
+                        status_code == 413
+                        or 'request entity too large' in error_msg
+                        or 'error code: 413' in error_msg
+                    )
+
+                    if is_payload_too_large:
+                        print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
+
+                        original_len = len(messages)
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message, approx_tokens=approx_tokens
+                        )
+
+                        if len(messages) < original_len:
+                            print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            continue  # Retry with compressed messages
+                        else:
+                            print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
+                            logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": "Request payload too large (413). Cannot compress further.",
+                                "partial": True
+                            }
+
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    status_code = getattr(api_error, "status_code", None)
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500
+                    # Note: 413 is excluded — it's handled above via compression.
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
                     is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 400', 'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
@@ -2104,7 +2137,7 @@ class AIAgent:
                         'invalid api key', 'invalid_api_key', 'authentication',
                         'unauthorized', 'forbidden', 'not found',
                     ])
-                    
+
                     if is_client_error:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -2124,8 +2157,9 @@ class AIAgent:
                     
                     # Check for non-retryable errors (context length exceeded)
                     is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'maximum context', 'token limit', 
-                        'too many tokens', 'reduce the length', 'exceeds the limit'
+                        'context length', 'maximum context', 'token limit',
+                        'too many tokens', 'reduce the length', 'exceeds the limit',
+                        'request entity too large',  # OpenRouter/Nous 413 safety net
                     ])
                     
                     if is_context_length_error:

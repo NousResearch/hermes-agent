@@ -34,12 +34,12 @@ python cli.py --gateway  # Runs in foreground, useful for debugging
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Telegram   │  │   Discord    │  │   WhatsApp   │          │
-│  │   Adapter    │  │   Adapter    │  │   Adapter    │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-│         │                 │                 │                   │
-│         └─────────────────┼─────────────────┘                   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+│  │ Telegram │ │ Discord  │ │ WhatsApp │ │  Slack   │           │
+│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │ Adapter  │           │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘           │
+│       │             │            │             │                │
+│       └─────────────┼────────────┼─────────────┘                │
 │                           │                                     │
 │                  ┌────────▼────────┐                            │
 │                  │  Session Store  │                            │
@@ -134,29 +134,39 @@ pip install discord.py>=2.0
 
 ### WhatsApp
 
-WhatsApp integration is more complex due to the lack of a simple bot API.
+WhatsApp uses a built-in bridge powered by [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
 
-**Options:**
-1. **WhatsApp Business API** (requires Meta verification)
-2. **whatsapp-web.js** via Node.js bridge (for personal accounts)
+**Setup:**
 
-**Bridge Setup:**
-1. Install Node.js
-2. Set up the bridge script (see `scripts/whatsapp-bridge/` for reference)
-3. Configure in gateway:
-   ```json
-   {
-     "platforms": {
-       "whatsapp": {
-         "enabled": true,
-         "extra": {
-           "bridge_script": "/path/to/bridge.js",
-           "bridge_port": 3000
-         }
-       }
-     }
-   }
-   ```
+```bash
+hermes whatsapp
+```
+
+This will:
+- Enable WhatsApp in your `.env`
+- Ask for your phone number (for the allowlist)
+- Install bridge dependencies (Node.js required)
+- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
+- Exit automatically once paired
+
+Then start the gateway:
+
+```bash
+hermes gateway
+```
+
+The gateway starts the WhatsApp bridge automatically using the saved session credentials in `~/.hermes/whatsapp/session/`.
+
+**Environment variables:**
+
+```bash
+WHATSAPP_ENABLED=true
+WHATSAPP_ALLOWED_USERS=15551234567    # Comma-separated phone numbers with country code
+```
+
+Agent responses are prefixed with "⚕ **Hermes Agent**" so you can distinguish them from your own messages when messaging yourself.
+
+> **Re-pairing:** If WhatsApp Web sessions disconnect (protocol updates, phone reset), re-pair with `hermes whatsapp`.
 
 ## Configuration
 
@@ -187,8 +197,17 @@ DISCORD_ALLOWED_USERS=123456789012345678      # Security: restrict to these user
 DISCORD_HOME_CHANNEL=123456789012345678
 DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 
-# WhatsApp - requires Node.js bridge setup
+# Slack - get from Slack API (api.slack.com/apps)
+SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
+SLACK_APP_TOKEN=xapp-your-slack-app-token      # Required for Socket Mode
+SLACK_ALLOWED_USERS=U01234ABCDE                # Security: restrict to these user IDs
+
+# Optional: Default channel for cron job delivery
+# SLACK_HOME_CHANNEL=C01234567890
+
+# WhatsApp - pair via: hermes whatsapp
 WHATSAPP_ENABLED=true
+WHATSAPP_ALLOWED_USERS=15551234567             # Phone numbers with country code
 
 # =============================================================================
 # AGENT SETTINGS
@@ -272,6 +291,7 @@ Each platform has its own toolset for security:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| Slack | `hermes-slack` | Full tools including terminal |
 
 ## User Experience Features
 

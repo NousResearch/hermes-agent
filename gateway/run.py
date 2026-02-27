@@ -149,6 +149,22 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
         
+        # Initialize session database for session_search tool support
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
+        
+        # DM pairing store for code-based user authorization
+        from gateway.pairing import PairingStore
+        self.pairing_store = PairingStore()
+        
+        # Event hook system
+        from gateway.hooks import HookRegistry
+        self.hooks = HookRegistry()
+    
     def _flush_memories_before_reset(self, old_entry):
         """Prompt the agent to save memories/skills before an auto-reset.
         
@@ -208,14 +224,6 @@ class GatewayRunner:
             logger.info("Pre-reset save completed for session %s", old_entry.session_id)
         except Exception as e:
             logger.debug("Pre-reset save failed for session %s: %s", old_entry.session_id, e)
-
-        # DM pairing store for code-based user authorization
-        from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
-        
-        # Event hook system
-        from gateway.hooks import HookRegistry
-        self.hooks = HookRegistry()
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -615,7 +623,12 @@ class GatewayRunner:
             return await self._handle_set_home_command(event)
         
         # Check for pending exec approval responses
-        session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
+        if source.chat_type != "dm":
+            session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform and source.platform.value == "whatsapp" and source.chat_id:
+            session_key_preview = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            session_key_preview = f"agent:main:{source.platform.value}:dm"
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -1530,6 +1543,7 @@ class GatewayRunner:
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 platform=platform_key,
+                session_db=self._session_db,
             )
             
             # Store agent reference for interrupt support

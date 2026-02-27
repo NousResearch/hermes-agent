@@ -319,7 +319,9 @@ def _transform_sudo_command(command: str) -> str:
         # Replace 'sudo' with password-piped version
         # The -S flag makes sudo read password from stdin
         # The -p '' suppresses the password prompt
-        return f"echo '{sudo_password}' | sudo -S -p ''"
+        # Use shlex.quote() to prevent shell injection via password content
+        import shlex
+        return f"echo {shlex.quote(sudo_password)} | sudo -S -p ''"
     
     # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
     # This handles: sudo, sudo -flag, etc.
@@ -593,7 +595,7 @@ def _cleanup_thread_worker():
             config = _get_env_config()
             _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:
-            logger.warning("Error in cleanup thread: %s", e)
+            logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
         for _ in range(60):
             if not _cleanup_running:
@@ -617,7 +619,10 @@ def _stop_cleanup_thread():
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
-        _cleanup_thread.join(timeout=5)
+        try:
+            _cleanup_thread.join(timeout=5)
+        except (SystemExit, KeyboardInterrupt):
+            pass
 
 
 def get_active_environments_info() -> Dict[str, Any]:
@@ -658,7 +663,7 @@ def cleanup_all_environments():
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
-            logger.error("Error cleaning %s: %s", task_id, e)
+            logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()

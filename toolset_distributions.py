@@ -19,7 +19,7 @@ Usage:
     all_dists = list_distributions()
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import random
 from toolsets import validate_toolset
 
@@ -220,26 +220,25 @@ DISTRIBUTIONS = {
 }
 
 
-def get_distribution(name: str) -> Optional[Dict[str, any]]:
+def get_distribution(name: str) -> Optional[Dict[str, Any]]:
     """
     Get a toolset distribution by name.
     
     Args:
-        name (str): Name of the distribution
+        name: Name of the distribution
         
     Returns:
-        Dict: Distribution definition with description and toolsets
-        None: If distribution not found
+        Distribution definition with description and toolsets, or None if not found
     """
     return DISTRIBUTIONS.get(name)
 
 
-def list_distributions() -> Dict[str, Dict]:
+def list_distributions() -> Dict[str, Dict[str, Any]]:
     """
     List all available distributions.
     
     Returns:
-        Dict: All distribution definitions
+        Copy of all distribution definitions
     """
     return DISTRIBUTIONS.copy()
 
@@ -252,10 +251,10 @@ def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
     This allows multiple toolsets to be active simultaneously.
     
     Args:
-        distribution_name (str): Name of the distribution to sample from
+        distribution_name: Name of the distribution to sample from
         
     Returns:
-        List[str]: List of sampled toolset names
+        List of sampled toolset names
         
     Raises:
         ValueError: If distribution name is not found
@@ -293,10 +292,10 @@ def validate_distribution(distribution_name: str) -> bool:
     Check if a distribution name is valid.
     
     Args:
-        distribution_name (str): Distribution name to validate
+        distribution_name: Distribution name to validate
         
     Returns:
-        bool: True if valid, False otherwise
+        True if valid, False otherwise
     """
     return distribution_name in DISTRIBUTIONS
 
@@ -306,7 +305,7 @@ def print_distribution_info(distribution_name: str) -> None:
     Print detailed information about a distribution.
     
     Args:
-        distribution_name (str): Distribution name
+        distribution_name: Distribution name to display
     """
     dist = get_distribution(distribution_name)
     if not dist:

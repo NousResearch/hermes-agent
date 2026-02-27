@@ -101,6 +101,32 @@ class AIAgent:
     This class manages the conversation flow, tool execution, and response handling
     for AI models that support function calling.
     """
+
+    # Fields allowed per role when sending messages to the model API.
+    # Internal fields (finish_reason, reasoning, _flush_sentinel, etc.) are
+    # excluded automatically, preventing 422 errors on strict providers like Mistral.
+    _API_FIELDS_BY_ROLE = {
+        "system":    {"role", "content"},
+        "user":      {"role", "content", "name"},
+        "assistant": {"role", "content", "tool_calls", "name", "refusal",
+                      "reasoning_content", "reasoning_details"},
+        "tool":      {"role", "content", "tool_call_id", "name"},
+    }
+
+    def _sanitize_for_api(self, msg: dict) -> dict:
+        """Strip internal fields before sending a message to the model API.
+
+        Uses a per-role whitelist so any future internal bookkeeping fields
+        are excluded automatically.
+        """
+        role = msg.get("role", "user")
+        allowed = self._API_FIELDS_BY_ROLE.get(role, {"role", "content"})
+        api_msg = {k: v for k, v in msg.items() if k in allowed}
+        # Copy reasoning -> reasoning_content for providers that support it
+        # (Moonshot AI, Novita, OpenRouter multi-turn reasoning)
+        if role == "assistant" and msg.get("reasoning"):
+            api_msg["reasoning_content"] = msg["reasoning"]
+        return api_msg
     
     def __init__(
         self,
@@ -1309,15 +1335,7 @@ class AIAgent:
 
         try:
             # Build API messages for the flush call
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-                if msg.get("role") == "assistant":
-                    reasoning = msg.get("reasoning")
-                    if reasoning:
-                        api_msg["reasoning_content"] = reasoning
-                api_msg.pop("reasoning", None)
-                api_messages.append(api_msg)
+            api_messages = [self._sanitize_for_api(msg) for msg in messages]
 
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
@@ -1641,7 +1659,7 @@ class AIAgent:
         messages.append({"role": "user", "content": summary_request})
 
         try:
-            api_messages = messages.copy()
+            api_messages = [self._sanitize_for_api(msg) for msg in messages]
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
@@ -1814,25 +1832,7 @@ class AIAgent:
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
             # However, providers like Moonshot AI require a separate 'reasoning_content' field
             # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-                
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
-                
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-                # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
+            api_messages = [self._sanitize_for_api(msg) for msg in messages]
             
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)

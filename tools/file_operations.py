@@ -42,32 +42,36 @@ from pathlib import Path
 _HOME = str(Path.home())
 
 WRITE_DENIED_PATHS = {
-    os.path.join(_HOME, ".ssh", "authorized_keys"),
-    os.path.join(_HOME, ".ssh", "id_rsa"),
-    os.path.join(_HOME, ".ssh", "id_ed25519"),
-    os.path.join(_HOME, ".ssh", "config"),
-    os.path.join(_HOME, ".hermes", ".env"),
-    os.path.join(_HOME, ".bashrc"),
-    os.path.join(_HOME, ".zshrc"),
-    os.path.join(_HOME, ".profile"),
-    os.path.join(_HOME, ".bash_profile"),
-    os.path.join(_HOME, ".zprofile"),
-    os.path.join(_HOME, ".netrc"),
-    os.path.join(_HOME, ".pgpass"),
-    os.path.join(_HOME, ".npmrc"),
-    os.path.join(_HOME, ".pypirc"),
-    "/etc/sudoers",
-    "/etc/passwd",
-    "/etc/shadow",
+    os.path.realpath(p) for p in [
+        os.path.join(_HOME, ".ssh", "authorized_keys"),
+        os.path.join(_HOME, ".ssh", "id_rsa"),
+        os.path.join(_HOME, ".ssh", "id_ed25519"),
+        os.path.join(_HOME, ".ssh", "config"),
+        os.path.join(_HOME, ".hermes", ".env"),
+        os.path.join(_HOME, ".bashrc"),
+        os.path.join(_HOME, ".zshrc"),
+        os.path.join(_HOME, ".profile"),
+        os.path.join(_HOME, ".bash_profile"),
+        os.path.join(_HOME, ".zprofile"),
+        os.path.join(_HOME, ".netrc"),
+        os.path.join(_HOME, ".pgpass"),
+        os.path.join(_HOME, ".npmrc"),
+        os.path.join(_HOME, ".pypirc"),
+        "/etc/sudoers",
+        "/etc/passwd",
+        "/etc/shadow",
+    ]
 }
 
 WRITE_DENIED_PREFIXES = [
-    os.path.join(_HOME, ".ssh") + os.sep,
-    os.path.join(_HOME, ".aws") + os.sep,
-    os.path.join(_HOME, ".gnupg") + os.sep,
-    os.path.join(_HOME, ".kube") + os.sep,
-    "/etc/sudoers.d" + os.sep,
-    "/etc/systemd" + os.sep,
+    os.path.realpath(p) + os.sep for p in [
+        os.path.join(_HOME, ".ssh"),
+        os.path.join(_HOME, ".aws"),
+        os.path.join(_HOME, ".gnupg"),
+        os.path.join(_HOME, ".kube"),
+        "/etc/sudoers.d",
+        "/etc/systemd",
+    ]
 ]
 
 
@@ -441,8 +445,8 @@ class ShellFileOperations(FileOperations):
         # Clamp limit
         limit = min(limit, MAX_LINES)
         
-        # Check if file exists and get metadata
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
+        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
+        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
@@ -518,8 +522,8 @@ class ShellFileOperations(FileOperations):
 
     def _read_image(self, path: str) -> ReadResult:
         """Read an image file, returning base64 content."""
-        # Get file size
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
+        # Get file size (wc -c is POSIX, works on Linux + macOS)
+        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         try:
             file_size = int(stat_result.stdout.strip())
@@ -648,8 +652,8 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         
-        # Get bytes written
-        stat_cmd = f"stat -c '%s' {self._escape_shell_arg(path)} 2>/dev/null"
+        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
+        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
         try:

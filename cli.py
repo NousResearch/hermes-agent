@@ -400,6 +400,29 @@ def _cprint(text: str):
     """
     _pt_print(_PT_ANSI(text))
 
+
+class ChatConsole:
+    """Rich Console adapter for prompt_toolkit's patch_stdout context.
+
+    Captures Rich's rendered ANSI output and routes it through _cprint
+    so colors and markup render correctly inside the interactive chat loop.
+    Drop-in replacement for Rich Console — just pass this to any function
+    that expects a console.print() interface.
+    """
+
+    def __init__(self):
+        from io import StringIO
+        self._buffer = StringIO()
+        self._inner = Console(file=self._buffer, force_terminal=True, highlight=False)
+
+    def print(self, *args, **kwargs):
+        self._buffer.seek(0)
+        self._buffer.truncate()
+        self._inner.print(*args, **kwargs)
+        output = self._buffer.getvalue()
+        for line in output.rstrip("\n").split("\n"):
+            _cprint(line)
+
 # ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -1088,8 +1111,10 @@ class HermesCLI:
             if toolset not in toolsets:
                 toolsets[toolset] = []
             desc = tool["function"].get("description", "")
-            # Get first sentence or first 60 chars
-            desc = desc.split(".")[0][:60]
+            # First sentence: split on ". " (period+space) to avoid breaking on "e.g." or "v2.0"
+            desc = desc.split("\n")[0]
+            if ". " in desc:
+                desc = desc[:desc.index(". ") + 1]
             toolsets[toolset].append((name, desc))
         
         # Display by toolset
@@ -1514,7 +1539,7 @@ class HermesCLI:
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
-        handle_skills_slash(cmd, self.console)
+        handle_skills_slash(cmd, ChatConsole())
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""

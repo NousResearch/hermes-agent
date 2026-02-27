@@ -154,3 +154,20 @@ def get_auxiliary_extra_body() -> dict:
     by Nous Portal. Returns empty dict otherwise.
     """
     return dict(NOUS_EXTRA_BODY) if auxiliary_is_nous else {}
+
+
+def auxiliary_max_tokens_param(value: int) -> dict:
+    """Return the correct max tokens kwarg for the auxiliary client's provider.
+    
+    OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
+    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
+    """
+    custom_base = os.getenv("OPENAI_BASE_URL", "")
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    # Only use max_completion_tokens when the auxiliary client resolved to
+    # direct OpenAI (no OpenRouter key, no Nous auth, custom endpoint is api.openai.com)
+    if (not or_key
+            and _read_nous_auth() is None
+            and "api.openai.com" in custom_base.lower()):
+        return {"max_completion_tokens": value}
+    return {"max_tokens": value}

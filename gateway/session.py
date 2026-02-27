@@ -277,12 +277,14 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None,
+                 on_auto_reset=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._has_active_processes_fn = has_active_processes_fn
+        self._on_auto_reset = on_auto_reset  # callback(old_entry) before auto-reset
         
         # Initialize SQLite session database
         self._db = None
@@ -345,6 +347,9 @@ class SessionStore:
             session_type=source.chat_type
         )
         
+        if policy.mode == "none":
+            return False
+        
         now = datetime.now()
         
         if policy.mode in ("idle", "both"):
@@ -396,8 +401,13 @@ class SessionStore:
                 self._save()
                 return entry
             else:
-                # Session is being reset -- end the old one in SQLite
+                # Session is being auto-reset — flush memories before destroying
                 was_auto_reset = True
+                if self._on_auto_reset:
+                    try:
+                        self._on_auto_reset(entry)
+                    except Exception as e:
+                        logger.debug("Auto-reset callback failed: %s", e)
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")

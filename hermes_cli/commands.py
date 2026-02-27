@@ -25,6 +25,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/parts": "Manage Dynamic Parts (list, create, search, stats)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

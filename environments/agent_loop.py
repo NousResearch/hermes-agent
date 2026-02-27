@@ -136,6 +136,7 @@ class HermesAgentLoop:
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
         extra_body: Optional[Dict[str, Any]] = None,
+        enable_parts_runtime: bool = True,
     ):
         """
         Initialize the agent loop.
@@ -152,6 +153,7 @@ class HermesAgentLoop:
             extra_body: Extra parameters passed to the OpenAI client's create() call.
                         Used for OpenRouter provider preferences, transforms, etc.
                         e.g. {"provider": {"ignore": ["DeepInfra"]}}
+            enable_parts_runtime: Enable Dynamic Parts runtime integration (default: True)
         """
         self.server = server
         self.tool_schemas = tool_schemas
@@ -161,6 +163,19 @@ class HermesAgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra_body = extra_body
+        self.enable_parts_runtime = enable_parts_runtime
+
+        # Initialize PartsRuntime for Dynamic Parts integration (Issue #90)
+        self.parts_runtime = None
+        if enable_parts_runtime:
+            try:
+                from tools.parts.storage import get_parts_storage
+                from tools.parts.runtime import create_parts_runtime
+                storage = get_parts_storage()
+                self.parts_runtime = create_parts_runtime(storage)
+            except Exception as e:
+                logger.warning(f"Failed to initialize PartsRuntime: {e}")
+                self.parts_runtime = None
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -191,8 +206,66 @@ class HermesAgentLoop:
 
         import time as _time
 
+        # Build conversation context for parts processing
+        def get_conversation_context(msgs: List[Dict[str, Any]]) -> str:
+            """Extract conversation context for parts processing."""
+            context_parts = []
+            for msg in msgs[-10:]:  # Last 10 messages for context
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    context_parts.append(f"{role}: {content[:200]}")
+            return "\n".join(context_parts)
+
         for turn in range(self.max_turns):
             turn_start = _time.monotonic()
+
+            # Process Dynamic Parts - Issue #90
+            # Activate parts, generate bids, get due predictions
+            parts_context = None
+            if self.parts_runtime:
+                try:
+                    conversation_context = get_conversation_context(messages)
+                    # Get latest user message
+                    latest_user_msg = ""
+                    for msg in reversed(messages):
+                        if msg.get("role") == "user":
+                            latest_user_msg = msg.get("content", "")
+                            break
+
+                    parts_context = self.parts_runtime.process_turn(
+                        context=conversation_context,
+                        user_message=latest_user_msg
+                    )
+
+                    # Inject parts context into system prompt if active
+                    parts_addition = self.parts_runtime.get_system_prompt_addition(parts_context)
+                    if parts_addition:
+                        # Find or create system message
+                        system_msg_idx = None
+                        for i, msg in enumerate(messages):
+                            if msg.get("role") == "system":
+                                system_msg_idx = i
+                                break
+
+                        if system_msg_idx is not None:
+                            # Append to existing system message
+                            existing_content = messages[system_msg_idx].get("content", "")
+                            messages[system_msg_idx]["content"] = existing_content + "\n\n" + parts_addition
+                        else:
+                            # Prepend new system message
+                            messages.insert(0, {"role": "system", "content": parts_addition})
+
+                        # Log parts activity
+                        if parts_context.active_bids:
+                            logger.debug(
+                                "Turn %d: %d active parts bidding, %d due predictions",
+                                turn + 1,
+                                len(parts_context.active_bids),
+                                len(parts_context.due_evaluations)
+                            )
+                except Exception as e:
+                    logger.warning("Parts runtime processing failed on turn %d: %s", turn + 1, e)
 
             # Build the chat_completion kwargs
             chat_kwargs = {

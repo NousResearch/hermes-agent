@@ -335,7 +335,26 @@ class AIAgent:
             missing_reqs = [name for name, available in requirements.items() if not available]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
-        
+
+        # Initialize PartsRuntime for Dynamic Parts integration (Issue #90)
+        self.parts_runtime = None
+        self._enable_parts_runtime = os.getenv("HERMES_PARTS_RUNTIME_ENABLED", "true").lower() in ("true", "1", "yes")
+        if self._enable_parts_runtime:
+            try:
+                from tools.parts.storage import get_parts_storage
+                from tools.parts.runtime import create_parts_runtime
+                storage = get_parts_storage()
+                self.parts_runtime = create_parts_runtime(storage)
+                if not self.quiet_mode:
+                    stats = storage.get_stats()
+                    print(f"🧩 Dynamic Parts: {stats['active_parts']} active, {stats['parts_needing_evaluation']} needing evaluation")
+            except Exception as e:
+                logger.warning("Failed to initialize PartsRuntime: %s", e)
+                self.parts_runtime = None
+                self._enable_parts_runtime = False
+        elif not self.quiet_mode:
+            print("🧩 Dynamic Parts: Disabled via HERMES_PARTS_RUNTIME_ENABLED")
+
         # Show trajectory saving status
         if self.save_trajectories and not self.quiet_mode:
             print("📝 Trajectory saving enabled")
@@ -1056,7 +1075,29 @@ class AIAgent:
     def is_interrupted(self) -> bool:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
-    
+
+    def enable_parts_runtime(self) -> None:
+        """Enable Dynamic Parts runtime integration at runtime."""
+        self._enable_parts_runtime = True
+        if not self.parts_runtime:
+            try:
+                from tools.parts.storage import get_parts_storage
+                from tools.parts.runtime import create_parts_runtime
+                storage = get_parts_storage()
+                self.parts_runtime = create_parts_runtime(storage)
+                logger.info("Parts runtime enabled")
+            except Exception as e:
+                logger.warning("Failed to enable Parts runtime: %s", e)
+
+    def disable_parts_runtime(self) -> None:
+        """Disable Dynamic Parts runtime integration at runtime."""
+        self._enable_parts_runtime = False
+        logger.info("Parts runtime disabled")
+
+    def is_parts_runtime_enabled(self) -> bool:
+        """Check if Dynamic Parts runtime integration is enabled."""
+        return self._enable_parts_runtime and self.parts_runtime is not None
+
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
@@ -1813,6 +1854,48 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+
+            # Process Dynamic Parts - Issue #90
+            # Activate parts, generate bids, get due predictions on each turn
+            if self._enable_parts_runtime and self.parts_runtime:
+                try:
+                    # Build conversation context for parts processing
+                    context_parts = []
+                    for msg in messages[-10:]:  # Last 10 messages for context
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            context_parts.append(f"{role}: {content[:200]}")
+                    conversation_context = "\n".join(context_parts)
+
+                    # Get latest user message
+                    latest_user_msg = ""
+                    for msg in reversed(messages):
+                        if msg.get("role") == "user":
+                            latest_user_msg = msg.get("content", "")
+                            break
+
+                    # Process turn through PartsRuntime
+                    parts_context = self.parts_runtime.process_turn(
+                        context=conversation_context,
+                        user_message=latest_user_msg
+                    )
+
+                    # Inject parts context into system prompt if active
+                    parts_addition = self.parts_runtime.get_system_prompt_addition(parts_context)
+                    if parts_addition:
+                        effective_system = (effective_system + "\n\n" + parts_addition).strip()
+
+                        # Log parts activity
+                        if parts_context.active_bids and self.verbose_logging:
+                            logger.debug(
+                                "Turn %d: %d active parts bidding, %d due predictions",
+                                api_call_count,
+                                len(parts_context.active_bids),
+                                len(parts_context.due_evaluations)
+                            )
+                except Exception as e:
+                    logger.warning("Parts runtime processing failed on turn %d: %s", api_call_count, e)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             

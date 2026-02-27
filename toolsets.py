@@ -60,6 +60,12 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Dynamic Parts - Segmented Motivational Systems
+    "parts_list", "parts_get", "parts_create", "parts_update",
+    "parts_delete", "parts_archive", "parts_unarchive",
+    "parts_search", "parts_get_bids", "parts_semantic_search", "parts_reindex_vectors",
+    "parts_evaluate", "parts_add_suggestion", "parts_split", "parts_merge",
+    "parts_due_evaluations", "parts_stats",
 ]
 
 
@@ -159,6 +165,18 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+    
+    "parts": {
+        "description": "Dynamic Parts - Segmented Motivational Systems for persistent perspectives",
+        "tools": [
+            "parts_list", "parts_get", "parts_create", "parts_update",
+            "parts_delete", "parts_archive", "parts_unarchive",
+            "parts_search", "parts_get_bids", "parts_semantic_search", "parts_reindex_vectors",
+            "parts_evaluate", "parts_add_suggestion", "parts_split", "parts_merge",
+            "parts_due_evaluations", "parts_stats"
+        ],
         "includes": []
     },
     

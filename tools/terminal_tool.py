@@ -595,7 +595,7 @@ def _cleanup_thread_worker():
             config = _get_env_config()
             _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:
-            logger.warning("Error in cleanup thread: %s", e)
+            logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
         for _ in range(60):
             if not _cleanup_running:
@@ -663,7 +663,7 @@ def cleanup_all_environments():
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
-            logger.error("Error cleaning %s: %s", task_id, e)
+            logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()

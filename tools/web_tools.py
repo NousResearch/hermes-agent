@@ -242,7 +242,7 @@ Create a markdown summary that captures all key information in a well-organized,
             if _aux_async_client is None:
                 logger.warning("No auxiliary model available for web content processing")
                 return None
-            from agent.auxiliary_client import get_auxiliary_extra_body
+            from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
             _extra = get_auxiliary_extra_body()
             response = await _aux_async_client.chat.completions.create(
                 model=model,
@@ -251,7 +251,7 @@ Create a markdown summary that captures all key information in a well-organized,
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=max_tokens,
+                **auxiliary_max_tokens_param(max_tokens),
                 **({} if not _extra else {"extra_body": _extra}),
             )
             return response.choices[0].message.content.strip()
@@ -365,7 +365,7 @@ Create a single, unified markdown summary."""
                 fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
             return fallback
 
-        from agent.auxiliary_client import get_auxiliary_extra_body
+        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
         _extra = get_auxiliary_extra_body()
         response = await _aux_async_client.chat.completions.create(
             model=model,
@@ -374,7 +374,7 @@ Create a single, unified markdown summary."""
                 {"role": "user", "content": synthesis_prompt}
             ],
             temperature=0.1,
-            max_tokens=4000,
+            **auxiliary_max_tokens_param(4000),
             **({} if not _extra else {"extra_body": _extra}),
         )
         final_summary = response.choices[0].message.content.strip()

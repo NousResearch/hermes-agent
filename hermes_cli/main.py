@@ -61,8 +61,11 @@ def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home
 
-    # Check env vars (may be set by .env or shell)
-    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
+    # Check env vars (may be set by .env or shell).
+    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
+    # often don't require an API key.
+    provider_env_vars = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL")
+    if any(os.getenv(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys
@@ -75,7 +78,7 @@ def _has_any_provider_configured() -> bool:
                     continue
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
-                if key.strip() in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY") and val:
+                if key.strip() in provider_env_vars and val:
                     return True
         except Exception:
             pass

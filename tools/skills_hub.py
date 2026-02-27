@@ -1148,6 +1148,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
+        HuggingFaceSource(),
     ]
 
     return sources
@@ -1175,3 +1176,165 @@ def unified_search(query: str, sources: List[SkillSource],
     deduped = list(seen.values())
 
     return deduped[:limit]
+# ---------------------------------------------------------------------------
+# HuggingFace source adapter
+# ---------------------------------------------------------------------------
+
+class HuggingFaceSource(SkillSource):
+    """
+    Fetch skills from HuggingFace Hub (huggingface.co).
+    Searches for Spaces and repos tagged with 'hermes-skill' or 'agent-skill'.
+    Converts HuggingFace Space metadata into SKILL.md format on fetch.
+    """
+
+    BASE_URL = "https://huggingface.co/api"
+    SKILL_TAGS = ["hermes-skill", "agent-skill", "llm-tool"]
+
+    def source_id(self) -> str:
+        return "huggingface"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        cache_key = f"huggingface_search_{hashlib.md5(query.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**s) for s in cached][:limit]
+
+        results: List[SkillMeta] = []
+
+        try:
+            # Search HuggingFace models and spaces with skill-related tags
+            resp = httpx.get(
+                f"{self.BASE_URL}/models",
+                params={
+                    "search": query,
+                    "tags": "agent-skill",
+                    "limit": limit,
+                    "full": "false",
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                items = resp.json()
+                if isinstance(items, list):
+                    for item in items[:limit]:
+                        model_id = item.get("id", item.get("modelId", ""))
+                        if not model_id:
+                            continue
+                        tags = item.get("tags", [])
+                        results.append(SkillMeta(
+                            name=model_id.split("/")[-1],
+                            description=item.get("description", f"HuggingFace model: {model_id}"),
+                            source="huggingface",
+                            identifier=f"huggingface/{model_id}",
+                            trust_level="community",
+                            repo=model_id,
+                            tags=tags if isinstance(tags, list) else [],
+                        ))
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug(f"HuggingFace search failed: {e}")
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+        return results[:limit]
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        # Strip "huggingface/" prefix if present
+        model_id = identifier.split("/", 1)[-1] if identifier.startswith("huggingface/") else identifier
+
+        # Try to fetch README.md from HuggingFace repo
+        skill_md = self._fetch_readme(model_id)
+        if not skill_md:
+            skill_md = self._generate_skill_md(model_id)
+
+        return SkillBundle(
+            name=model_id.split("/")[-1],
+            files={"SKILL.md": skill_md},
+            source="huggingface",
+            identifier=f"huggingface/{model_id}",
+            trust_level="community",
+        )
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        model_id = identifier.split("/", 1)[-1] if identifier.startswith("huggingface/") else identifier
+
+        try:
+            resp = httpx.get(
+                f"{self.BASE_URL}/models/{model_id}",
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        tags = data.get("tags", [])
+        return SkillMeta(
+            name=model_id.split("/")[-1],
+            description=data.get("description", f"HuggingFace model: {model_id}"),
+            source="huggingface",
+            identifier=f"huggingface/{model_id}",
+            trust_level="community",
+            repo=model_id,
+            tags=tags if isinstance(tags, list) else [],
+        )
+
+    def _fetch_readme(self, model_id: str) -> Optional[str]:
+        """Try to fetch and convert the HuggingFace model card (README.md)."""
+        url = f"https://huggingface.co/{model_id}/raw/main/README.md"
+        try:
+            resp = httpx.get(url, timeout=15)
+            if resp.status_code == 200 and resp.text.strip():
+                return self._convert_to_skill_md(model_id, resp.text)
+        except httpx.HTTPError as e:
+            logger.debug(f"HuggingFace README fetch failed: {e}")
+        return None
+
+    def _generate_skill_md(self, model_id: str) -> str:
+        """Generate a minimal SKILL.md when no README is available."""
+        name = model_id.split("/")[-1]
+        return (
+            f"---\n"
+            f"name: {name}\n"
+            f"description: HuggingFace model {model_id}\n"
+            f"metadata:\n"
+            f"  hermes:\n"
+            f"    tags: [huggingface]\n"
+            f"  huggingface:\n"
+            f"    model_id: {model_id}\n"
+            f"---\n\n"
+            f"# {name}\n\n"
+            f"Source: https://huggingface.co/{model_id}\n\n"
+            f"## Usage\n\n"
+            f"This skill was imported from HuggingFace Hub.\n"
+            f"Visit the model page for full documentation.\n"
+        )
+
+    @staticmethod
+    def _convert_to_skill_md(model_id: str, readme_content: str) -> str:
+        """Convert a HuggingFace model card into SKILL.md format."""
+        name = model_id.split("/")[-1]
+
+        # Strip HuggingFace YAML frontmatter if present
+        body = readme_content
+        if readme_content.startswith("---"):
+            match = re.search(r'\n---\s*\n', readme_content[3:])
+            if match:
+                body = readme_content[match.end() + 3:]
+
+        fm = (
+            f"---\n"
+            f"name: {name}\n"
+            f"description: HuggingFace model {model_id}\n"
+            f"metadata:\n"
+            f"  hermes:\n"
+            f"    tags: [huggingface]\n"
+            f"  huggingface:\n"
+            f"    model_id: {model_id}\n"
+            f"    source: https://huggingface.co/{model_id}\n"
+            f"---\n\n"
+        )
+
+        return fm + body.strip() + "\n"

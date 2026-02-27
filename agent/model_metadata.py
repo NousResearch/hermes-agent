@@ -2,6 +2,21 @@
 
 Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
+
+This module provides:
+
+- **fetch_model_metadata()**: Fetches model info from OpenRouter API with
+  1-hour caching. Returns context lengths, max completion tokens, and pricing.
+
+- **get_model_context_length()**: Resolves the context window size for a model,
+  using API metadata first then falling back to hardcoded defaults.
+
+- **estimate_tokens_rough()**: Quick ~4 chars/token estimate for pre-flight
+  checks before API calls. Not accurate enough for billing, but sufficient
+  for compression threshold decisions.
+
+The hardcoded DEFAULT_CONTEXT_LENGTHS dict covers popular models for offline
+fallback when the OpenRouter API is unavailable.
 """
 
 import logging

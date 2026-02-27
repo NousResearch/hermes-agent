@@ -1,8 +1,36 @@
 """Trajectory saving utilities and static helpers.
 
-_convert_to_trajectory_format stays as an AIAgent method (batch_runner.py
-calls agent._convert_to_trajectory_format). Only the static helpers and
-the file-write logic live here.
+This module handles exporting agent conversations in ShareGPT format
+for training data generation and analysis.
+
+Functions:
+    convert_scratchpad_to_think(content):
+        Converts <REASONING_SCRATCHPAD> tags to <think> tags for
+        compatibility with training pipelines.
+    
+    has_incomplete_scratchpad(content):
+        Checks if content has an unclosed reasoning scratchpad tag,
+        which can happen when context is truncated mid-thought.
+    
+    save_trajectory(trajectory, model, completed, filename):
+        Appends a trajectory entry to a JSONL file. Completed trajectories
+        go to trajectory_samples.jsonl, failed ones to failed_trajectories.jsonl.
+
+Note: The _convert_to_trajectory_format method stays as an AIAgent method
+because batch_runner.py calls agent._convert_to_trajectory_format directly.
+Only the static helpers and file-write logic live here.
+
+Output Format (ShareGPT):
+    {
+        "conversations": [
+            {"from": "system", "value": "..."},
+            {"from": "human", "value": "..."},
+            {"from": "gpt", "value": "...", "reasoning": "..."}
+        ],
+        "timestamp": "2024-01-01T00:00:00",
+        "model": "anthropic/claude-sonnet-4",
+        "completed": true
+    }
 """
 
 import json

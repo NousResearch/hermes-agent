@@ -4,16 +4,43 @@ Provides a single resolution chain so every consumer (context compression,
 session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
+Purpose:
+    Many agent features need an LLM for side tasks that don't require the
+    user's primary (expensive) model. This module provides a shared client
+    that automatically resolves to the best available cheap/fast backend.
+
 Resolution order for text tasks:
-  1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
-  4. None
+  1. OpenRouter  (OPENROUTER_API_KEY) -> google/gemini-3-flash-preview
+  2. Nous Portal (~/.hermes/auth.json active provider) -> gemini-3-flash
+  3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) -> user's model
+  4. None (caller must handle gracefully)
 
 Resolution order for vision/multimodal tasks:
-  1. OpenRouter
-  2. Nous Portal
-  3. None  (custom endpoints can't substitute for Gemini multimodal)
+  1. OpenRouter -> google/gemini-3-flash-preview
+  2. Nous Portal -> gemini-3-flash
+  3. None (custom endpoints can't substitute for Gemini multimodal)
+
+Public API:
+    get_text_auxiliary_client() -> (OpenAI | None, model_slug | None)
+        Returns a client/model tuple for text-only tasks.
+    
+    get_vision_auxiliary_client() -> (OpenAI | None, model_slug | None)
+        Returns a client/model tuple for vision/multimodal tasks.
+    
+    get_auxiliary_extra_body() -> dict
+        Returns extra_body kwargs (e.g., Nous Portal product tags).
+    
+    auxiliary_max_tokens_param(value) -> dict
+        Returns the correct max tokens kwarg for the resolved provider.
+
+Usage:
+    client, model = get_text_auxiliary_client()
+    if client:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[...],
+            **get_auxiliary_extra_body()
+        )
 """
 
 import json

@@ -148,7 +148,15 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
-        
+
+        # DM pairing store for code-based user authorization
+        from gateway.pairing import PairingStore
+        self.pairing_store = PairingStore()
+
+        # Event hook system
+        from gateway.hooks import HookRegistry
+        self.hooks = HookRegistry()
+
     def _flush_memories_before_reset(self, old_entry):
         """Prompt the agent to save memories/skills before an auto-reset.
         
@@ -209,14 +217,6 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Pre-reset save failed for session %s: %s", old_entry.session_id, e)
 
-        # DM pairing store for code-based user authorization
-        from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
-        
-        # Event hook system
-        from gateway.hooks import HookRegistry
-        self.hooks = HookRegistry()
-    
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.

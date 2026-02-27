@@ -41,10 +41,11 @@ env:
   test_timeout_s: 60
 
   # Training configuration
-  group_size: 4
-  total_steps: 1000
-  steps_per_eval: 100
-  
+  group_size: 8
+  total_steps: 10000
+  steps_per_eval: 500
+  num_eval_tasks: 10
+
   # Logging
   use_wandb: true
   wandb_name: "endless-terminals"

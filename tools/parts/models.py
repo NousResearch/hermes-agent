@@ -123,11 +123,19 @@ class PartsStore:
             self._load()
 
     def _load(self):
-        with open(self.storage_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            for part_data in data.get("parts", []):
-                part = Part.from_dict(part_data)
-                self._parts[part.id] = part
+        try:
+            with open(self.storage_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    # Empty file, start fresh
+                    return
+                data = json.loads(content)
+                for part_data in data.get("parts", []):
+                    part = Part.from_dict(part_data)
+                    self._parts[part.id] = part
+        except (json.JSONDecodeError, IOError):
+            # If file is corrupted or unreadable, start fresh
+            pass
 
     def _save(self):
         if not self.storage_path:

@@ -14,6 +14,11 @@ from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
 
+# Safe default for unknown models. 128k is too optimistic and causes failures
+# on models with smaller contexts (e.g., 65k Mistral, 32k Qwen). 8192 is
+# conservative but won't crash - users can override via model config.
+SAFE_DEFAULT_CONTEXT_LENGTH = 8192
+
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
@@ -52,7 +57,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         for model in data.get("data", []):
             model_id = model.get("id", "")
             cache[model_id] = {
-                "context_length": model.get("context_length", 128000),
+                "context_length": model.get("context_length", SAFE_DEFAULT_CONTEXT_LENGTH),
                 "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
@@ -72,16 +77,26 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
 
 def get_model_context_length(model: str) -> int:
-    """Get the context length for a model (API first, then fallback defaults)."""
+    """Get the context length for a model (API first, then fallback defaults).
+    
+    Returns the context length from:
+    1. OpenRouter API metadata (if available)
+    2. DEFAULT_CONTEXT_LENGTHS hardcoded values
+    3. SAFE_DEFAULT_CONTEXT_LENGTH (8192) with a warning
+    """
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        return metadata[model].get("context_length", SAFE_DEFAULT_CONTEXT_LENGTH)
 
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
         if default_model in model or model in default_model:
             return length
 
-    return 128000
+    logger.warning(
+        f"Unknown model '{model}' - using safe default context of {SAFE_DEFAULT_CONTEXT_LENGTH}. "
+        "Add it to DEFAULT_CONTEXT_LENGTHS or use OpenRouter for auto-detection."
+    )
+    return SAFE_DEFAULT_CONTEXT_LENGTH
 
 
 def estimate_tokens_rough(text: str) -> int:

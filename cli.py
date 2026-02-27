@@ -1096,11 +1096,17 @@ class HermesCLI:
             print("(;_;) No tools available")
             return
         
-        # Header
+        # Header - use consistent width with centered title
+        WIDTH = 78
+        title = "(^_^)/ Available Tools"
+        padding = WIDTH - len(title)
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        
         print()
-        print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
-        print("+" + "-" * 78 + "+")
+        print("+" + "-" * WIDTH + "+")
+        print("|" + " " * left_pad + title + " " * right_pad + "|")
+        print("+" + "-" * WIDTH + "+")
         print()
         
         # Group tools by toolset
@@ -1117,10 +1123,14 @@ class HermesCLI:
                 desc = desc[:desc.index(". ") + 1]
             toolsets[toolset].append((name, desc))
         
-        # Display by toolset
+        # Display by toolset with proper description truncation
+        MAX_DESC = 50  # Max description width before truncation
         for toolset in sorted(toolsets.keys()):
             print(f"  [{toolset}]")
             for name, desc in toolsets[toolset]:
+                # Truncate long descriptions with ellipsis indicator
+                if len(desc) > MAX_DESC:
+                    desc = desc[:MAX_DESC-3] + "..."
                 print(f"    * {name:<20} - {desc}")
             print()
         
@@ -1131,18 +1141,27 @@ class HermesCLI:
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
         
-        # Header
+        # Header - use consistent width with centered title
+        WIDTH = 58
+        title = "(^_^)b Available Toolsets"
+        padding = WIDTH - len(title)
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        
         print()
-        print("+" + "-" * 58 + "+")
-        print("|" + " " * 15 + "(^_^)b Available Toolsets" + " " * 17 + "|")
-        print("+" + "-" * 58 + "+")
+        print("+" + "-" * WIDTH + "+")
+        print("|" + " " * left_pad + title + " " * right_pad + "|")
+        print("+" + "-" * WIDTH + "+")
         print()
         
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
-                desc = info["description"][:45]
+                desc = info["description"]
+                # Truncate with ellipsis if needed
+                if len(desc) > 42:
+                    desc = desc[:39] + "..."
                 
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "

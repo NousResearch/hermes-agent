@@ -631,6 +631,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 # CLI Commands
 # ============================================================================
 
+BOX_WIDTH = 80                      # total terminal columns for slash command output
+BOX_BORDER = 2                      # '+' border chars (one on each side)
+BOX_INNER = BOX_WIDTH - BOX_BORDER  # usable width between the borders
+
 COMMANDS = {
     "/help": "Show this help message",
     "/tools": "List available tools",
@@ -965,7 +969,18 @@ class HermesCLI:
         except Exception as e:
             self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
-    
+
+    def _print_box_header(self, title: str):
+        """Print a box header with a centered title."""
+        pad_total = BOX_INNER - len(title)
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        print()
+        print("+" + "-" * BOX_INNER + "+")
+        print("|" + " " * pad_left + title + " " * pad_right + "|")
+        print("+" + "-" * BOX_INNER + "+")
+        print()
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -1051,11 +1066,7 @@ class HermesCLI:
     
     def show_help(self):
         """Display help information with kawaii ASCII art."""
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 14 + "(^_^)? Available Commands" + " " * 10 + "|")
-        print("+" + "-" * 50 + "+")
-        print()
+        self._print_box_header("(^_^)? Available Commands")
         
         for cmd, desc in COMMANDS.items():
             print(f"  {cmd:<15} - {desc}")
@@ -1073,12 +1084,7 @@ class HermesCLI:
             print("(;_;) No tools available")
             return
         
-        # Header
-        print()
-        print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
-        print("+" + "-" * 78 + "+")
-        print()
+        self._print_box_header("(^_^)/ Available Tools")
         
         # Group tools by toolset
         toolsets = {}
@@ -1108,12 +1114,7 @@ class HermesCLI:
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
         
-        # Header
-        print()
-        print("+" + "-" * 58 + "+")
-        print("|" + " " * 15 + "(^_^)b Available Toolsets" + " " * 17 + "|")
-        print("+" + "-" * 58 + "+")
-        print()
+        self._print_box_header("(^_^)b Available Toolsets")
         
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
@@ -1144,11 +1145,7 @@ class HermesCLI:
         
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 15 + "(^_^) Configuration" + " " * 15 + "|")
-        print("+" + "-" * 50 + "+")
-        print()
+        self._print_box_header("(^_^) Configuration")
         print("  -- Model --")
         print(f"  Model:     {self.model}")
         print(f"  Base URL:  {self.base_url}")
@@ -1180,10 +1177,7 @@ class HermesCLI:
             print("(._.) No conversation history yet.")
             return
         
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
-        print("+" + "-" * 50 + "+")
+        self._print_box_header("(^_^) Conversation History")
         
         for i, msg in enumerate(self.conversation_history, 1):
             role = msg.get("role", "unknown")
@@ -1315,11 +1309,7 @@ class HermesCLI:
                 print(f"  \"{new_prompt[:60]}{'...' if len(new_prompt) > 60 else ''}\"")
         else:
             # Show current prompt
-            print()
-            print("+" + "-" * 50 + "+")
-            print("|" + " " * 15 + "(^_^) System Prompt" + " " * 15 + "|")
-            print("+" + "-" * 50 + "+")
-            print()
+            self._print_box_header("(^_^) System Prompt")
             if self.system_prompt:
                 # Word wrap the prompt for display
                 words = self.system_prompt.split()
@@ -1365,11 +1355,7 @@ class HermesCLI:
                 print(f"  Available: {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
-            print()
-            print("+" + "-" * 50 + "+")
-            print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
-            print("+" + "-" * 50 + "+")
-            print()
+            self._print_box_header("(^o^)/ Personalities")
             for name, prompt in self.personalities.items():
                 truncated = prompt[:40] + "..." if len(prompt) > 40 else prompt
                 print(f"  {name:<12} - \"{truncated}\"")
@@ -1383,11 +1369,7 @@ class HermesCLI:
         
         if len(parts) == 1:
             # /cron - show help and list
-            print()
-            print("+" + "-" * 60 + "+")
-            print("|" + " " * 18 + "(^_^) Scheduled Tasks" + " " * 19 + "|")
-            print("+" + "-" * 60 + "+")
-            print()
+            self._print_box_header("(^_^) Scheduled Tasks")
             print("  Commands:")
             print("    /cron                     - List scheduled jobs")
             print("    /cron list                - List scheduled jobs")
@@ -1522,19 +1504,15 @@ class HermesCLI:
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
         
-        print()
-        print("+" + "-" * 60 + "+")
-        print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
-        print("+" + "-" * 60 + "+")
-        print()
-        
+        self._print_box_header("(✿◠‿◠) Gateway Status")
+
         try:
             config = load_gateway_config()
             connected = config.get_connected_platforms()
-            
+
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
-            
+
             platform_status = {
                 Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),

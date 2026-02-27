@@ -111,10 +111,15 @@ async function startSocket() {
       const senderNumber = senderId.replace(/@.*/, '');
 
       // Skip own messages UNLESS it's a self-chat ("Message Yourself")
-      // Self-chat JID ends with the user's own number
-      if (msg.key.fromMe && !chatId.includes('status') && isGroup) continue;
-      // In non-group chats, fromMe means we sent it — skip unless allowed user sent to themselves
-      if (msg.key.fromMe && !isGroup && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) continue;
+      if (msg.key.fromMe) {
+        // Always skip in groups and status
+        if (isGroup || chatId.includes('status')) continue;
+        // In DMs: only allow self-chat (remoteJid matches our own number)
+        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const chatNumber = chatId.replace(/@.*/, '');
+        const isSelfChat = myNumber && chatNumber === myNumber;
+        if (!isSelfChat) continue;
+      }
 
       // Check allowlist for messages from others
       if (!msg.key.fromMe && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) {

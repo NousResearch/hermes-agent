@@ -1015,6 +1015,14 @@ def run_setup_wizard(args):
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     
+    # Sync terminal backend to .env so terminal_tool picks it up directly.
+    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
+    if selected_backend:
+        save_env_value("TERMINAL_ENV", selected_backend)
+        docker_image = config.get('terminal', {}).get('docker_image')
+        if docker_image:
+            save_env_value("TERMINAL_DOCKER_IMAGE", docker_image)
+    
     # =========================================================================
     # Step 5: Agent Settings
     # =========================================================================

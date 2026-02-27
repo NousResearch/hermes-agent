@@ -110,6 +110,36 @@ curl -s "https://export.arxiv.org/api/query?id_list=2402.03300"
 curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.00001"
 ```
 
+## BibTeX Generation
+
+After fetching metadata for a paper, generate a BibTeX entry:
+
+```bash
+curl -s "https://export.arxiv.org/api/query?id_list=1706.03762" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+ns = {'a': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
+root = ET.parse(sys.stdin).getroot()
+entry = root.find('a:entry', ns)
+if entry is None: sys.exit('Paper not found')
+title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
+authors = ' and '.join(a.find('a:name', ns).text for a in entry.findall('a:author', ns))
+year = entry.find('a:published', ns).text[:4]
+raw_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
+cat = entry.find('arxiv:primary_category', ns)
+primary = cat.get('term') if cat is not None else 'cs.LG'
+last_name = entry.find('a:author', ns).find('a:name', ns).text.split()[-1]
+print(f'@article{{{last_name}{year}_{raw_id.replace(\".\", \"\")},')
+print(f'  title     = {{{title}}},')
+print(f'  author    = {{{authors}}},')
+print(f'  year      = {{{year}}},')
+print(f'  eprint    = {{{raw_id}}},')
+print(f'  archivePrefix = {{arXiv}},')
+print(f'  primaryClass  = {{{primary}}},')
+print(f'  url       = {{https://arxiv.org/abs/{raw_id}}}')
+print('}')
+"
+```
+
 ## Reading Paper Content
 
 After finding a paper, read it:
@@ -233,3 +263,17 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 - PDF: `https://arxiv.org/pdf/{id}` — Abstract: `https://arxiv.org/abs/{id}`
 - HTML (when available): `https://arxiv.org/html/{id}`
 - For local PDF processing, see the `ocr-and-documents` skill
+
+## ID Versioning
+
+- `arxiv.org/abs/1706.03762` always resolves to the **latest** version
+- `arxiv.org/abs/1706.03762v1` points to a **specific** immutable version
+- When generating citations, preserve the version suffix you actually read to prevent citation drift (a later version may substantially change content)
+- The API `<id>` field returns the versioned URL (e.g., `http://arxiv.org/abs/1706.03762v7`)
+
+## Withdrawn Papers
+
+Papers can be withdrawn after submission. When this happens:
+- The `<summary>` field contains a withdrawal notice (look for "withdrawn" or "retracted")
+- Metadata fields may be incomplete
+- Always check the summary before treating a result as a valid paper

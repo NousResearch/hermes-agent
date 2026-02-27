@@ -2248,13 +2248,17 @@ class HermesCLI:
 
         # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
+        _prev_text_len = [0]
 
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference."""
             text = buf.text
             line_count = text.count('\n')
-            # Heuristic: if text jumps to 5+ lines in one change, it's a paste
-            if line_count >= 5 and not text.startswith('/'):
+            chars_added = len(text) - _prev_text_len[0]
+            _prev_text_len[0] = len(text)
+            # Heuristic: a real paste adds many characters at once (not just a
+            # single newline from Alt+Enter) AND the result has 5+ lines.
+            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))

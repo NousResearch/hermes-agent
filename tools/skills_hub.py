@@ -1248,13 +1248,35 @@ class HuggingFaceSource(SkillSource):
         if not skill_md:
             skill_md = self._generate_skill_md(model_id)
 
-        return SkillBundle(
+        bundle = SkillBundle(
             name=model_id.split("/")[-1],
             files={"SKILL.md": skill_md},
             source="huggingface",
             identifier=f"huggingface/{model_id}",
             trust_level="community",
         )
+
+        import tempfile, os, shutil
+        from tools.skills_guard import scan_skill, should_allow_install
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            skill_dir = os.path.join(tmp_dir, bundle.name)
+            os.makedirs(skill_dir)
+            for fname, content in bundle.files.items():
+                with open(os.path.join(skill_dir, fname), "w") as f:
+                    f.write(content)
+            from pathlib import Path
+            scan_result = scan_skill(Path(skill_dir), source="huggingface")
+            allowed, reason = should_allow_install(scan_result)
+            if not allowed:
+                logger.warning(f"HuggingFace skill '{model_id}' blocked by security scan: {reason}")
+                return None
+        except Exception as e:
+            logger.debug(f"Security scan failed for {model_id}: {e}")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         model_id = identifier.split("/", 1)[-1] if identifier.startswith("huggingface/") else identifier

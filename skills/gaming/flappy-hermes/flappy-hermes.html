@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Flappy Bird - Hermes Agent</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Courier New', monospace;
+    color: white;
+  }
+  h1 {
+    color: #a855f7;
+    font-size: 28px;
+    margin-bottom: 10px;
+    text-shadow: 0 0 20px #a855f7;
+  }
+  p { color: #888; font-size: 13px; margin-bottom: 15px; }
+  canvas {
+    border: 3px solid #a855f7;
+    border-radius: 10px;
+    box-shadow: 0 0 30px #a855f7;
+  }
+  #score-board {
+    margin-top: 15px;
+    font-size: 16px;
+    color: #0f0;
+  }
+</style>
+</head>
+<body>
+<h1>🤖 Flappy Hermes</h1>
+<p>SPACE veya tıkla ile uç!</p>
+<canvas id="c" width="400" height="600"></canvas>
+<div id="score-board">Skor: 0 | En Yüksek: 0</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let bird, pipes, score, highScore, state, frame;
+highScore = 0;
+
+const BIRD_X = 80;
+const GRAVITY = 0.3;
+const JUMP = -7;
+const PIPE_W = 60;
+const PIPE_GAP = 240;
+const PIPE_SPEED = 2;
+
+function init() {
+  bird = { y: H/2, vy: 0, r: 18 };
+  pipes = [];
+  score = 0;
+  frame = 0;
+  state = 'waiting'; // waiting, playing, dead
+}
+
+function addPipe() {
+  const top = 80 + Math.random() * (H - PIPE_GAP - 160);
+  pipes.push({ x: W, top, bottom: top + PIPE_GAP });
+}
+
+function jump() {
+  if (state === 'waiting') { state = 'playing'; bird.vy = JUMP; return; }
+  if (state === 'playing') { bird.vy = JUMP; }
+  if (state === 'dead') { init(); }
+}
+
+document.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); jump(); } });
+canvas.addEventListener('click', jump);
+
+function drawBird() {
+  // Gövde
+  ctx.save();
+  ctx.translate(BIRD_X, bird.y);
+  const angle = Math.min(Math.max(bird.vy * 3, -30), 90);
+  ctx.rotate(angle * Math.PI / 180);
+
+  // Vücut
+  ctx.beginPath();
+  ctx.fillStyle = '#facc15';
+  ctx.ellipse(0, 0, bird.r, bird.r * 0.85, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Göz
+  ctx.beginPath();
+  ctx.fillStyle = 'white';
+  ctx.arc(8, -6, 6, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.fillStyle = '#1a1a2e';
+  ctx.arc(10, -6, 3, 0, Math.PI*2);
+  ctx.fill();
+
+  // Gaga
+  ctx.beginPath();
+  ctx.fillStyle = '#f97316';
+  ctx.moveTo(bird.r - 2, -2);
+  ctx.lineTo(bird.r + 10, 0);
+  ctx.lineTo(bird.r - 2, 4);
+  ctx.closePath();
+  ctx.fill();
+
+  // Kanat
+  ctx.beginPath();
+  ctx.fillStyle = '#fbbf24';
+  const wingFlap = Math.sin(frame * 0.3) * 8;
+  ctx.ellipse(-4, wingFlap, 10, 7, -0.4, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawPipe(pipe) {
+  const grad1 = ctx.createLinearGradient(pipe.x, 0, pipe.x + PIPE_W, 0);
+  grad1.addColorStop(0, '#16a34a');
+  grad1.addColorStop(0.5, '#22c55e');
+  grad1.addColorStop(1, '#15803d');
+
+  // Üst boru
+  ctx.fillStyle = grad1;
+  ctx.fillRect(pipe.x, 0, PIPE_W, pipe.top);
+  ctx.fillStyle = '#15803d';
+  ctx.fillRect(pipe.x - 6, pipe.top - 30, PIPE_W + 12, 30);
+
+  // Alt boru
+  ctx.fillStyle = grad1;
+  ctx.fillRect(pipe.x, pipe.bottom, PIPE_W, H - pipe.bottom);
+  ctx.fillStyle = '#15803d';
+  ctx.fillRect(pipe.x - 6, pipe.bottom, PIPE_W + 12, 30);
+}
+
+function drawBackground() {
+  // Gökyüzü
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#0f172a');
+  sky.addColorStop(1, '#1e3a5f');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Yıldızlar
+  ctx.fillStyle = 'white';
+  for(let i = 0; i < 40; i++) {
+    const x = (i * 137 + frame * 0.2) % W;
+    const y = (i * 97) % (H * 0.7);
+    const size = (i % 3 === 0) ? 2 : 1;
+    ctx.globalAlpha = 0.5 + 0.5 * Math.sin(frame * 0.05 + i);
+    ctx.fillRect(x, y, size, size);
+  }
+  ctx.globalAlpha = 1;
+
+  // Zemin
+  ctx.fillStyle = '#854d0e';
+  ctx.fillRect(0, H - 30, W, 30);
+  ctx.fillStyle = '#15803d';
+  ctx.fillRect(0, H - 30, W, 8);
+}
+
+function checkCollision() {
+  if (bird.y + bird.r > H - 30 || bird.y - bird.r < 0) return true;
+  for (const p of pipes) {
+    if (BIRD_X + bird.r > p.x + 6 && BIRD_X - bird.r < p.x + PIPE_W - 6) {
+      if (bird.y - bird.r < p.top || bird.y + bird.r > p.bottom) return true;
+    }
+  }
+  return false;
+}
+
+function drawOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'waiting') {
+    ctx.fillStyle = '#a855f7';
+    ctx.font = 'bold 32px Courier New';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#a855f7';
+    ctx.shadowBlur = 20;
+    ctx.fillText('🤖 FLAPPY HERMES', W/2, H/2 - 40);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'white';
+    ctx.font = '18px Courier New';
+    ctx.fillText('SPACE veya tıkla!', W/2, H/2 + 10);
+    ctx.fillStyle = '#888';
+    ctx.font = '14px Courier New';
+    ctx.fillText('Nous Research', W/2, H/2 + 50);
+  }
+
+  if (state === 'dead') {
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 36px Courier New';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#ef4444';
+    ctx.shadowBlur = 20;
+    ctx.fillText('GAME OVER', W/2, H/2 - 60);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#facc15';
+    ctx.font = 'bold 24px Courier New';
+    ctx.fillText('Skor: ' + score, W/2, H/2 - 20);
+    ctx.fillStyle = '#a855f7';
+    ctx.font = '20px Courier New';
+    ctx.fillText('En Yuksek: ' + highScore, W/2, H/2 + 20);
+    ctx.fillStyle = 'white';
+    ctx.font = '16px Courier New';
+    ctx.fillText('Tekrar oynamak icin tikla!', W/2, H/2 + 60);
+  }
+}
+
+function update() {
+  frame++;
+
+  if (state === 'playing') {
+    bird.vy += GRAVITY;
+    bird.y += bird.vy;
+
+    if (frame % 140 === 0) addPipe();
+
+    for (const p of pipes) { p.x -= PIPE_SPEED; }
+    pipes = pipes.filter(p => p.x + PIPE_W > 0);
+
+    for (const p of pipes) {
+      if (!p.passed && p.x + PIPE_W < BIRD_X - bird.r) {
+        p.passed = true;
+        score++;
+        if (score > highScore) highScore = score;
+        document.getElementById('score-board').textContent =
+          'Skor: ' + score + ' | En Yüksek: ' + highScore;
+      }
+    }
+
+    if (checkCollision()) { state = 'dead'; }
+  }
+}
+
+function draw() {
+  drawBackground();
+  pipes.forEach(drawPipe);
+  drawBird();
+
+  // Skor (oyun sırasında)
+  if (state === 'playing') {
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 28px Courier New';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'black';
+    ctx.shadowBlur = 5;
+    ctx.fillText(score, W/2, 50);
+    ctx.shadowBlur = 0;
+  }
+
+  if (state !== 'playing') drawOverlay();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+loop();
+</script>
+</body>
+</html>

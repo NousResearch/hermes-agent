@@ -661,6 +661,7 @@ COMMANDS = {
     "/model": "Show or change the current model",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
+    "/verbose": "Toggle verbose mode (show reasoning, full tool args, results)",
     "/clear": "Clear screen and reset conversation (fresh start)",
     "/history": "Show conversation history",
     "/new": "Start a new conversation (reset history)",
@@ -975,7 +976,7 @@ class HermesCLI:
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
-                quiet_mode=True,
+                quiet_mode=not self.verbose,  # When verbose is on, show detailed tool output
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
@@ -1400,6 +1401,30 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _toggle_verbose_mode(self):
+        """Toggle verbose mode on/off.
+        
+        When verbose mode is enabled:
+        - Full tool call arguments are displayed (not truncated)
+        - Full tool results are shown (not summarized)
+        - Reasoning tokens are displayed when available
+        """
+        self.verbose = not self.verbose
+        
+        # Force agent re-init to apply the new verbose setting
+        self.agent = None
+        
+        status = "ON ✓" if self.verbose else "OFF"
+        print()
+        print(f"(^_^) Verbose mode: {status}")
+        if self.verbose:
+            print("  → Full tool arguments will be shown")
+            print("  → Full tool results will be displayed")
+            print("  → Reasoning will be shown when available")
+        else:
+            print("  → Compact tool output (default)")
+        print()
+    
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         parts = cmd.split(maxsplit=2)
@@ -1661,6 +1686,8 @@ class HermesCLI:
         elif cmd_lower.startswith("/personality"):
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
+        elif cmd_lower == "/verbose":
+            self._toggle_verbose_mode()
         elif cmd_lower == "/retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):

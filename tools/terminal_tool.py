@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import glob
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -82,7 +83,6 @@ def _check_disk_usage_warning() -> bool:
     try:
         # Get total size of hermes directories
         total_bytes = 0
-        import glob
         for path in glob.glob(str(scratch_dir / "hermes-*")):
             for f in Path(path).rglob('*'):
                 if f.is_file():
@@ -695,9 +695,8 @@ def cleanup_all_environments() -> int:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
     # Also clean any orphaned directories
-    scratch_dir = _get_scratch_dir()
-    import glob
-    for path in glob.glob(str(scratch_dir / "hermes-*")):
+        scratch_dir = _get_scratch_dir()
+        for path in glob.glob(str(scratch_dir / "hermes-*")):
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)

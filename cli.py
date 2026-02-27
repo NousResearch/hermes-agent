@@ -15,6 +15,7 @@ Usage:
 import logging
 import os
 import sys
+import unicodedata
 import json
 import atexit
 import uuid
@@ -634,6 +635,31 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 BOX_WIDTH = 80                      # total terminal columns for slash command output
 BOX_BORDER = 2                      # '+' border chars (one on each side)
 BOX_INNER = BOX_WIDTH - BOX_BORDER  # usable width between the borders
+BOX_RIGHT_PAD = 2                   # right margin when truncating
+
+
+def _char_width(c: str) -> int:
+    """Return the terminal display width of a character (2 for wide chars like emoji, 1 otherwise)."""
+    return 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+
+
+def _truncate_to_width(s: str, max_width: int) -> str:
+    """Truncate string to fit within max_width display columns."""
+    width = 0
+    for i, c in enumerate(s):
+        cw = _char_width(c)
+        if width + cw > max_width:
+            return s[:i]
+        width += cw
+    return s
+
+
+def _fit_to_box(s: str, prefix_width: int) -> str:
+    """Truncate string to fit within the box content area given a prefix width."""
+    return _truncate_to_width(s, BOX_WIDTH - prefix_width - BOX_RIGHT_PAD)
+
+
+
 
 COMMANDS = {
     "/help": "Show this help message",
@@ -1068,8 +1094,10 @@ class HermesCLI:
         """Display help information with kawaii ASCII art."""
         self._print_box_header("(^_^)? Available Commands")
         
+        prefix, suffix, cmd_name_len = "  ", " - ", 15
+        used = len(prefix) + cmd_name_len + len(suffix)
         for cmd, desc in COMMANDS.items():
-            print(f"  {cmd:<15} - {desc}")
+            print(f"{prefix}{cmd:<{cmd_name_len}}{suffix}{_fit_to_box(desc, used)}")
         
         print()
         print("  Tip: Just type your message to chat with Hermes!")
@@ -1087,6 +1115,8 @@ class HermesCLI:
         self._print_box_header("(^_^)/ Available Tools")
         
         # Group tools by toolset
+        prefix, suffix, name_len = "    * ", " - ", 20
+        used = len(prefix) + name_len + len(suffix)
         toolsets = {}
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
             name = tool["function"]["name"]
@@ -1098,13 +1128,14 @@ class HermesCLI:
             desc = desc.split("\n")[0]
             if ". " in desc:
                 desc = desc[:desc.index(". ") + 1]
+            desc = _fit_to_box(desc, used)
             toolsets[toolset].append((name, desc))
-        
+
         # Display by toolset
         for toolset in sorted(toolsets.keys()):
             print(f"  [{toolset}]")
             for name, desc in toolsets[toolset]:
-                print(f"    * {name:<20} - {desc}")
+                print(f"{prefix}{name:<{name_len}}{suffix}{desc}")
             print()
         
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
@@ -1116,15 +1147,17 @@ class HermesCLI:
         
         self._print_box_header("(^_^)b Available Toolsets")
         
+        marker_len, name_len, tool_len = 3, 18, 2
+        used = len("  ") + marker_len + len(" ") + name_len + len(" [") + tool_len + len(" tools] - ")
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
-                desc = info["description"][:45]
-                
+                desc = _fit_to_box(info["description"], used)
+
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
+                print(f"  {marker} {name:<{name_len}} [{tool_count:>{tool_len}} tools] - {desc}")
         
         print()
         print("  (*) = currently enabled")
@@ -1309,6 +1342,7 @@ class HermesCLI:
                 print(f"  \"{new_prompt[:60]}{'...' if len(new_prompt) > 60 else ''}\"")
         else:
             # Show current prompt
+            wrap_width = BOX_WIDTH - len("  ") - BOX_RIGHT_PAD
             self._print_box_header("(^_^) System Prompt")
             if self.system_prompt:
                 # Word wrap the prompt for display
@@ -1316,7 +1350,7 @@ class HermesCLI:
                 lines = []
                 current_line = ""
                 for word in words:
-                    if len(current_line) + len(word) + 1 <= 50:
+                    if len(current_line) + len(word) + 1 <= wrap_width:
                         current_line += (" " if current_line else "") + word
                     else:
                         lines.append(current_line)
@@ -1356,9 +1390,10 @@ class HermesCLI:
         else:
             # Show available personalities
             self._print_box_header("(^o^)/ Personalities")
+            prefix, suffix, name_len = "  ", " - ", 12
+            used = len(prefix) + name_len + len(suffix)
             for name, prompt in self.personalities.items():
-                truncated = prompt[:40] + "..." if len(prompt) > 40 else prompt
-                print(f"  {name:<12} - \"{truncated}\"")
+                print(f"{prefix}{name:<{name_len}}{suffix}{_fit_to_box(prompt, used)}")
             print()
             print("  Usage: /personality <name>")
             print()
@@ -1397,8 +1432,9 @@ class HermesCLI:
                         repeat_str = f"{completed}/{times}"
                     
                     print(f"    {job['id'][:12]:<12} | {job['schedule_display']:<15} | {repeat_str:<8}")
-                    prompt_preview = job['prompt'][:45] + "..." if len(job['prompt']) > 45 else job['prompt']
-                    print(f"      {prompt_preview}")
+                    indent = "      "
+                    prompt_preview = _fit_to_box(job['prompt'], len(indent))
+                    print(f"{indent}{prompt_preview}")
                     if job.get("next_run_at"):
                         from datetime import datetime
                         next_run = datetime.fromisoformat(job["next_run_at"])

@@ -1,6 +1,7 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -17,6 +18,7 @@ class LocalEnvironment(BaseEnvironment):
     - Background stdout drain thread to prevent pipe buffer deadlocks
     - stdin_data support for piping content (bypasses ARG_MAX limits)
     - sudo -S transform via SUDO_PASSWORD env var
+    - Uses bash login shell so user env (.profile/.bashrc) is available
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
@@ -32,9 +34,14 @@ class LocalEnvironment(BaseEnvironment):
         exec_command = self._prepare_command(command)
 
         try:
+            # Use the user's login shell so that rc files (.profile, .bashrc,
+            # .zprofile, .zshrc, etc.) are sourced and user-installed tools
+            # (nvm, pyenv, cargo, etc.) are available. Without this, Python's
+            # Popen(shell=True) uses /bin/sh which is dash on Debian/Ubuntu
+            # and old bash on macOS — neither sources the user's environment.
+            user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
             proc = subprocess.Popen(
-                exec_command,
-                shell=True,
+                [user_shell, "-lc", exec_command],
                 text=True,
                 cwd=work_dir,
                 env=os.environ | self.env,

@@ -32,6 +32,7 @@ Usage:
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -127,8 +128,9 @@ class ProcessRegistry:
             # Try PTY mode for interactive CLI tools
             try:
                 import ptyprocess
+                user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
                 pty_proc = ptyprocess.PtyProcess.spawn(
-                    ["bash", "-c", command],
+                    [user_shell, "-lc", command],
                     cwd=session.cwd,
                     env=os.environ | (env_vars or {}),
                     dimensions=(30, 120),
@@ -160,9 +162,11 @@ class ProcessRegistry:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
+        # Use the user's login shell for consistency with LocalEnvironment --
+        # ensures rc files are sourced and user tools are available.
+        user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
         proc = subprocess.Popen(
-            command,
-            shell=True,
+            [user_shell, "-lc", command],
             text=True,
             cwd=session.cwd,
             env=os.environ | (env_vars or {}),

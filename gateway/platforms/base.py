@@ -171,6 +171,84 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
         return cache_audio_from_bytes(response.content, ext)
 
 
+# ---------------------------------------------------------------------------
+# Document cache utilities
+#
+# Same pattern as image/audio cache -- documents from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+DOCUMENT_CACHE_DIR = Path(os.path.expanduser("~/.hermes/document_cache"))
+
+SUPPORTED_DOCUMENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+
+
+def get_document_cache_dir() -> Path:
+    """Return the document cache directory, creating it if it doesn't exist."""
+    DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return DOCUMENT_CACHE_DIR
+
+
+def cache_document_from_bytes(data: bytes, filename: str) -> str:
+    """
+    Save raw document bytes to the cache and return the absolute file path.
+
+    The cached filename preserves the original human-readable name with a
+    unique prefix: ``doc_{uuid12}_{original_filename}``.
+
+    Args:
+        data: Raw document bytes.
+        filename: Original filename (e.g. "report.pdf").
+
+    Returns:
+        Absolute path to the cached document file as a string.
+
+    Raises:
+        ValueError: If the sanitized path escapes the cache directory.
+    """
+    cache_dir = get_document_cache_dir()
+    # Sanitize: strip directory components, null bytes, and control characters
+    safe_name = Path(filename).name if filename else "document"
+    safe_name = safe_name.replace("\x00", "").strip()
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = "document"
+    cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+    filepath = cache_dir / cached_name
+    # Final safety check: ensure path stays inside cache dir
+    if not filepath.resolve().is_relative_to(cache_dir.resolve()):
+        raise ValueError(f"Path traversal rejected: {filename!r}")
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+def cleanup_document_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached documents older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_document_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"

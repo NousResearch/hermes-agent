@@ -742,7 +742,39 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
-        
+
+        # -----------------------------------------------------------------
+        # Enrich document messages with context notes for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                if not (mtype.startswith("application/") or mtype.startswith("text/")):
+                    continue
+                # Extract display filename by stripping the doc_{uuid12}_ prefix
+                import os as _os
+                basename = _os.path.basename(path)
+                # Format: doc_<12hex>_<original_filename>
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
+                message_text = f"{context_note}\n\n{message_text}"
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -1813,10 +1845,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     needing a separate `hermes cron daemon` or system cron entry.
 
     Also refreshes the channel directory every 5 minutes and prunes the
-    image/audio cache once per hour.
+    image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -1845,6 +1877,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
+            try:
+                removed = cleanup_document_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Document cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Document cache cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

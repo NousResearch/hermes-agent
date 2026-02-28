@@ -1701,6 +1701,9 @@ class GatewayRunner:
                             content = f"[Delivered from {mirror_src}] {content}"
                         agent_history.append({"role": role, "content": content})
             
+            # Track history length to only scan NEW messages for MEDIA tags
+            history_len = len(agent_history)
+            
             result = agent.run_conversation(message, conversation_history=agent_history)
             result_holder[0] = result
             
@@ -1721,10 +1724,17 @@ class GatewayRunner:
             # doesn't include them.  We collect unique tags from tool results and
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
+            #
+            # IMPORTANT: Only scan messages from the CURRENT turn (after history_len),
+            # not the full history. This prevents TTS voice messages from earlier
+            # turns being re-attached to every subsequent reply. (Fixes #160)
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
-                for msg in result.get("messages", []):
+                all_messages = result.get("messages", [])
+                # Only process new messages from this turn
+                new_messages = all_messages[history_len:] if len(all_messages) > history_len else []
+                for msg in new_messages:
                     if msg.get("role") == "tool" or msg.get("role") == "function":
                         content = msg.get("content", "")
                         if "MEDIA:" in content:

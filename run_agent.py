@@ -124,6 +124,7 @@ class AIAgent:
         session_id: str = None,
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
+        step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -158,6 +159,10 @@ class AIAgent:
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
+            step_callback (callable): Optional callback invoked at the start of each tool-calling iteration.
+                Signature: step_callback(iteration: int, tool_names: list[str]) -> None.
+                Used by the gateway to emit agent:step hook events without importing gateway modules
+                into the agent core. Errors in the callback are caught and logged.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "xhigh"} for OpenRouter. Set to disable/customize reasoning.
@@ -195,6 +200,7 @@ class AIAgent:
             )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
+        self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -1933,6 +1939,26 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # Fire step_callback so the gateway (or other callers) can emit agent:step
+            # hook events without importing gateway modules into the agent core.
+            # We extract tool names called in the *previous* iteration (if any) so
+            # hooks receive meaningful context about what the agent is doing.
+            if self.step_callback is not None:
+                try:
+                    prev_tool_names: list = []
+                    if messages:
+                        for _msg in reversed(messages):
+                            if _msg.get("role") == "assistant" and _msg.get("tool_calls"):
+                                prev_tool_names = [
+                                    tc["function"]["name"]
+                                    for tc in _msg["tool_calls"]
+                                    if isinstance(tc, dict)
+                                ]
+                                break
+                    self.step_callback(api_call_count, prev_tool_names)
+                except Exception as _step_err:
+                    logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
             # Track tool-calling iterations for skill nudge.
             # Counter resets whenever skill_manage is actually used.

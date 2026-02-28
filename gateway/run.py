@@ -88,6 +88,10 @@ if _config_path.exists():
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:
                     os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        _agent_cfg = _cfg.get("agent", {})
+        if _agent_cfg and isinstance(_agent_cfg, dict):
+            if "max_turns" in _agent_cfg:
+                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

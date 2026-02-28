@@ -1614,6 +1614,18 @@ class GatewayRunner:
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
             if "MEDIA:" not in final_response:
+                # Collect MEDIA paths already delivered in previous turns
+                # so we don't re-send old voice messages (fixes #160).
+                # Uses agent_history (uncompressed) rather than index-based
+                # slicing, which breaks when context compression shrinks the list.
+                delivered_media = set()
+                for msg in agent_history:
+                    if msg.get("role") in ("tool", "function"):
+                        for match in re.finditer(r'MEDIA:(\S+)', msg.get("content", "")):
+                            path = match.group(1).strip().rstrip('",}')
+                            if path:
+                                delivered_media.add(f"MEDIA:{path}")
+
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
@@ -1623,9 +1635,11 @@ class GatewayRunner:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')
                                 if path:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
+                                    tag = f"MEDIA:{path}"
+                                    if tag not in delivered_media:
+                                        media_tags.append(tag)
+                                        if not has_voice_directive and "[[audio_as_voice]]" in content:
+                                            has_voice_directive = True
                 
                 if media_tags:
                     # Deduplicate while preserving order

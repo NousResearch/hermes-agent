@@ -29,7 +29,7 @@ python cli.py --gateway  # Runs in foreground, useful for debugging
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
@@ -283,7 +283,7 @@ The gateway keeps the "typing..." indicator active throughout processing, refres
 
 When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
 
-```
+```text
 💻 `ls -la`...
 🔍 web_search...
 📄 web_extract...
@@ -345,7 +345,7 @@ Cron jobs are executed automatically by the gateway daemon. When the gateway is 
 
 When scheduling cron jobs, you can specify where the output should be delivered:
 
-```
+```text
 User: "Remind me to check the server in 30 minutes"
 
 Agent uses: schedule_cronjob(
@@ -369,7 +369,7 @@ Agent uses: schedule_cronjob(
 
 The agent knows where it is via injected context:
 
-```
+```text
 ## Current Session Context
 
 **Source:** Telegram (group: Dev Team, ID: -1001234567890)

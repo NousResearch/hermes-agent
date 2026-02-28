@@ -132,7 +132,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 All your settings are stored in `~/.hermes/` for easy access:
 
-```
+```text
 ~/.hermes/
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
@@ -863,7 +863,7 @@ code_execution:
 The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently -- only its final summary enters the parent's context.
 
 **Single task:**
-```
+```python
 delegate_task(goal="Debug why tests fail", context="Error: assertion in test_foo.py line 42", toolsets=["terminal", "file"])
 ```
 

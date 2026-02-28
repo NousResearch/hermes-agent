@@ -199,6 +199,13 @@ class MiniSWERunner:
             client_kwargs["base_url"] = base_url
         else:
             client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
+
+        if base_url and "api.anthropic.com" in base_url.strip().lower():
+            raise ValueError(
+                "Anthropic /v1/messages is not supported yet. "
+                "Hermes uses OpenAI-compatible /chat/completions. "
+                "Use OpenRouter or leave base_url unset."
+            )
         
         # Handle API key - OpenRouter is the primary provider
         if api_key:

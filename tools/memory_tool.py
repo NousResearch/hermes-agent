@@ -345,7 +345,9 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        entries = [e.strip() for e in raw.split("§")]
+        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
+        # alone would incorrectly split entries that contain "§" in their content.
+        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
     @staticmethod

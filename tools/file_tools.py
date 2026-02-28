@@ -81,11 +81,20 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             cwd = overrides.get("cwd") or config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
+            container_config = None
+            if env_type in ("docker", "singularity", "modal"):
+                container_config = {
+                    "container_cpu": config.get("container_cpu", 1),
+                    "container_memory": config.get("container_memory", 5120),
+                    "container_disk": config.get("container_disk", 51200),
+                    "container_persistent": config.get("container_persistent", True),
+                }
             terminal_env = _create_environment(
                 env_type=env_type,
                 image=image,
                 cwd=cwd,
                 timeout=config["timeout"],
+                container_config=container_config,
             )
 
             with _env_lock:

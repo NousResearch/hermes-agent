@@ -186,6 +186,13 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
+        if base_url and "api.anthropic.com" in base_url.strip().lower():
+            raise ValueError(
+                "Anthropic's native /v1/messages API is not supported yet (planned for a future release). "
+                "Hermes currently requires OpenAI-compatible /chat/completions endpoints. "
+                "To use Claude models now, route through OpenRouter (OPENROUTER_API_KEY) "
+                "or any OpenAI-compatible proxy that wraps the Anthropic API."
+            )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode
@@ -493,6 +500,21 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
+    def _max_tokens_param(self, value: int) -> dict:
+        """Return the correct max tokens kwarg for the current provider.
+        
+        OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
+        'max_completion_tokens'. OpenRouter, local models, and older
+        OpenAI models use 'max_tokens'.
+        """
+        _is_direct_openai = (
+            "api.openai.com" in self.base_url.lower()
+            and "openrouter" not in self.base_url.lower()
+        )
+        if _is_direct_openai:
+            return {"max_completion_tokens": value}
+        return {"max_tokens": value}
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any <think></think> blocks.
@@ -624,7 +646,7 @@ class AIAgent:
         if not self._session_db:
             return
         try:
-            start_idx = (len(conversation_history) if conversation_history else 0) + 1
+            start_idx = len(conversation_history) if conversation_history else 0
             for msg in messages[start_idx:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -971,8 +993,6 @@ class AIAgent:
         if not content:
             return content
         content = convert_scratchpad_to_think(content)
-        # Strip extra newlines before/after think blocks
-        import re
         content = re.sub(r'\n+(<think>)', r'\n\1', content)
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
@@ -1290,11 +1310,11 @@ class AIAgent:
             "model": self.model,
             "messages": api_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": 600.0,
+            "timeout": 900.0,
         }
 
         if self.max_tokens is not None:
-            api_kwargs["max_tokens"] = self.max_tokens
+            api_kwargs.update(self._max_tokens_param(self.max_tokens))
 
         extra_body = {}
 
@@ -1394,7 +1414,8 @@ class AIAgent:
             "[System: The session is being compressed. "
             "Please save anything worth remembering to your memories.]"
         )
-        flush_msg = {"role": "user", "content": flush_content}
+        _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
+        flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
         messages.append(flush_msg)
 
         try:
@@ -1428,7 +1449,7 @@ class AIAgent:
                 "messages": api_messages,
                 "tools": [memory_tool_def],
                 "temperature": 0.3,
-                "max_tokens": 1024,
+                **self._max_tokens_param(1024),
             }
 
             response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
@@ -1460,10 +1481,13 @@ class AIAgent:
         except Exception as e:
             logger.debug("Memory flush API call failed: %s", e)
         finally:
-            # Strip flush artifacts: remove everything from the flush message onward
-            while messages and messages[-1] is not flush_msg and len(messages) > 0:
+            # Strip flush artifacts: remove everything from the flush message onward.
+            # Use sentinel marker instead of identity check for robustness.
+            while messages and messages[-1].get("_flush_sentinel") != _sentinel:
                 messages.pop()
-            if messages and messages[-1] is flush_msg:
+                if not messages:
+                    break
+            if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None) -> tuple:
@@ -1560,14 +1584,17 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
-            elif function_name == "session_search" and self._session_db:
-                from tools.session_search_tool import session_search as _session_search
-                function_result = _session_search(
-                    query=function_args.get("query", ""),
-                    role_filter=function_args.get("role_filter"),
-                    limit=function_args.get("limit", 3),
-                    db=self._session_db,
-                )
+            elif function_name == "session_search":
+                if not self._session_db:
+                    function_result = json.dumps({"success": False, "error": "Session database not available."})
+                else:
+                    from tools.session_search_tool import session_search as _session_search
+                    function_result = _session_search(
+                        query=function_args.get("query", ""),
+                        role_filter=function_args.get("role_filter"),
+                        limit=function_args.get("limit", 3),
+                        db=self._session_db,
+                    )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
@@ -1659,12 +1686,19 @@ class AIAgent:
                 try:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
                     _spinner_result = function_result
+                except Exception as tool_error:
+                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                     spinner.stop(cute_msg)
             else:
-                function_result = handle_function_call(function_name, function_args, effective_task_id)
+                try:
+                    function_result = handle_function_call(function_name, function_args, effective_task_id)
+                except Exception as tool_error:
+                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result[:200] if len(function_result) > 200 else function_result
@@ -1756,7 +1790,7 @@ class AIAgent:
                 "messages": api_messages,
             }
             if self.max_tokens is not None:
-                summary_kwargs["max_tokens"] = self.max_tokens
+                summary_kwargs.update(self._max_tokens_param(self.max_tokens))
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
 
@@ -1985,7 +2019,7 @@ class AIAgent:
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
 
-            while retry_count <= max_retries:
+            while retry_count < max_retries:
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
 
@@ -2079,6 +2113,7 @@ class AIAgent:
                             if self._interrupt_requested:
                                 print(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
                                 self._persist_session(messages, conversation_history)
+                                self.clear_interrupt()
                                 return {
                                     "final_response": "Operation interrupted.",
                                     "messages": messages,
@@ -2181,6 +2216,7 @@ class AIAgent:
                     if self._interrupt_requested:
                         print(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.")
                         self._persist_session(messages, conversation_history)
+                        self.clear_interrupt()
                         return {
                             "final_response": "Operation interrupted.",
                             "messages": messages,
@@ -2189,11 +2225,45 @@ class AIAgent:
                             "interrupted": True,
                         }
                     
+                    # Check for 413 payload-too-large BEFORE generic 4xx handler.
+                    # A 413 is a payload-size error — the correct response is to
+                    # compress history and retry, not abort immediately.
+                    status_code = getattr(api_error, "status_code", None)
+                    is_payload_too_large = (
+                        status_code == 413
+                        or 'request entity too large' in error_msg
+                        or 'payload too large' in error_msg
+                        or 'error code: 413' in error_msg
+                    )
+
+                    if is_payload_too_large:
+                        print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
+
+                        original_len = len(messages)
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message, approx_tokens=approx_tokens
+                        )
+
+                        if len(messages) < original_len:
+                            print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            continue  # Retry with compressed messages
+                        else:
+                            print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
+                            logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": "Request payload too large (413). Cannot compress further.",
+                                "partial": True
+                            }
+
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    status_code = getattr(api_error, "status_code", None)
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500
+                    # Note: 413 is excluded — it's handled above via compression.
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
                     is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 400', 'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
@@ -2201,7 +2271,7 @@ class AIAgent:
                         'invalid api key', 'invalid_api_key', 'authentication',
                         'unauthorized', 'forbidden', 'not found',
                     ])
-                    
+
                     if is_client_error:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -2221,8 +2291,9 @@ class AIAgent:
                     
                     # Check for non-retryable errors (context length exceeded)
                     is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'maximum context', 'token limit', 
-                        'too many tokens', 'reduce the length', 'exceeds the limit'
+                        'context length', 'maximum context', 'token limit',
+                        'too many tokens', 'reduce the length', 'exceeds the limit',
+                        'request entity too large',  # OpenRouter/Nous 413 safety net
                     ])
                     
                     if is_context_length_error:
@@ -2257,9 +2328,10 @@ class AIAgent:
                         raise api_error
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
-                    print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
-                    print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
+                    if retry_count >= max_retries:
+                        print(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
+                        print(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
                     
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
@@ -2268,6 +2340,7 @@ class AIAgent:
                         if self._interrupt_requested:
                             print(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
                             self._persist_session(messages, conversation_history)
+                            self.clear_interrupt()
                             return {
                                 "final_response": "Operation interrupted.",
                                 "messages": messages,

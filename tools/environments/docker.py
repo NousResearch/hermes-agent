@@ -55,6 +55,7 @@ class DockerEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
+        volumes: list = None,
         network: bool = True,
     ):
         if cwd == "~":
@@ -64,6 +65,11 @@ class DockerEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._container_id: Optional[str] = None
+        logger.info(f"DockerEnvironment volumes: {volumes}")
+        # Ensure volumes is a list (config.yaml could be malformed)
+        if volumes is not None and not isinstance(volumes, list):
+            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
+            volumes = []
 
         from minisweagent.environments.docker import DockerEnvironment as _Docker
 
@@ -111,7 +117,23 @@ class DockerEnvironment(BaseEnvironment):
         # All containers get full security hardening (read-only root + writable
         # mounts for the workspace). Persistence uses Docker volumes, not
         # filesystem layer commits, so --read-only is always safe.
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
+        # User-configured volume mounts (from config.yaml docker_volumes)
+        volume_args = []
+        for vol in (volumes or []):
+            if not isinstance(vol, str):
+                logger.warning(f"Docker volume entry is not a string: {vol!r}")
+                continue
+            vol = vol.strip()
+            if not vol:
+                continue
+            if ":" in vol:
+                volume_args.extend(["-v", vol])
+            else:
+                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+
+        logger.info(f"Docker volume_args: {volume_args}")
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        logger.info(f"Docker run_args: {all_run_args}")
 
         self._inner = _Docker(
             image=image, cwd=cwd, timeout=timeout,

@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Desktop notifications
+    "notify", "notify_sound",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -70,7 +72,7 @@ TOOLSETS = {
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
+        "includes": []
     },
     
     "search": {
@@ -173,6 +175,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "notification": {
+        "description": "Desktop/system notifications — alert the user when tasks complete (Linux, macOS, Windows)",
+        "tools": ["notify", "notify_sound"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -192,7 +200,7 @@ TOOLSETS = {
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],
-        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
+        "includes": ["web", "file"]
     },
     
     "safe": {
@@ -203,10 +211,6 @@ TOOLSETS = {
     
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
-    #
-    # All platforms share the same core tools. Messaging platforms add
-    # All platforms share the same core tools (including send_message,
-    # which is gated on gateway running via its check_fn).
     # ==========================================================================
     
     "hermes-cli": {
@@ -249,63 +253,32 @@ TOOLSETS = {
 
 
 def get_toolset(name: str) -> Optional[Dict[str, Any]]:
-    """
-    Get a toolset definition by name.
-    
-    Args:
-        name (str): Name of the toolset
-        
-    Returns:
-        Dict: Toolset definition with description, tools, and includes
-        None: If toolset not found
-    """
-    # Return toolset definition
     return TOOLSETS.get(name)
 
 
 def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
-    """
-    Recursively resolve a toolset to get all tool names.
-    
-    This function handles toolset composition by recursively resolving
-    included toolsets and combining all tools.
-    
-    Args:
-        name (str): Name of the toolset to resolve
-        visited (Set[str]): Set of already visited toolsets (for cycle detection)
-        
-    Returns:
-        List[str]: List of all tool names in the toolset
-    """
     if visited is None:
         visited = set()
     
-    # Special aliases that represent all tools across every toolset
-    # This ensures future toolsets are automatically included without changes.
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
-            # Use a fresh visited set per branch to avoid cross-branch contamination
             resolved = resolve_toolset(toolset_name, visited.copy())
             all_tools.update(resolved)
         return list(all_tools)
 
-    # Check for cycles
     if name in visited:
         print(f"⚠️  Circular dependency detected in toolset '{name}'")
         return []
     
     visited.add(name)
     
-    # Get toolset definition
     toolset = TOOLSETS.get(name)
     if not toolset:
         return []
     
-    # Collect direct tools
     tools = set(toolset.get("tools", []))
     
-    # Recursively resolve included toolsets
     for included_name in toolset.get("includes", []):
         included_tools = resolve_toolset(included_name, visited.copy())
         tools.update(included_tools)
@@ -314,57 +287,22 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
 
 
 def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-    
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-        
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
     all_tools = set()
-    
     for name in toolset_names:
         tools = resolve_toolset(name)
         all_tools.update(tools)
-    
     return list(all_tools)
 
 
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
-    """
-    Get all available toolsets with their definitions.
-    
-    Returns:
-        Dict: All toolset definitions
-    """
     return TOOLSETS.copy()
 
 
 def get_toolset_names() -> List[str]:
-    """
-    Get names of all available toolsets (excluding aliases).
-    
-    Returns:
-        List[str]: List of toolset names
-    """
     return list(TOOLSETS.keys())
 
 
-
-
 def validate_toolset(name: str) -> bool:
-    """
-    Check if a toolset name is valid.
-    
-    Args:
-        name (str): Toolset name to validate
-        
-    Returns:
-        bool: True if valid, False otherwise
-    """
-    # Accept special alias names for convenience
     if name in {"all", "*"}:
         return True
     return name in TOOLSETS
@@ -376,15 +314,6 @@ def create_custom_toolset(
     tools: List[str] = None,
     includes: List[str] = None
 ) -> None:
-    """
-    Create a custom toolset at runtime.
-    
-    Args:
-        name (str): Name for the new toolset
-        description (str): Description of the toolset
-        tools (List[str]): Direct tools to include
-        includes (List[str]): Other toolsets to include
-    """
     TOOLSETS[name] = {
         "description": description,
         "tools": tools or [],
@@ -392,18 +321,7 @@ def create_custom_toolset(
     }
 
 
-
-
 def get_toolset_info(name: str) -> Dict[str, Any]:
-    """
-    Get detailed information about a toolset including resolved tools.
-    
-    Args:
-        name (str): Toolset name
-        
-    Returns:
-        Dict: Detailed toolset information
-    """
     toolset = get_toolset(name)
     if not toolset:
         return None
@@ -422,13 +340,6 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
 
 
 def print_toolset_tree(name: str, indent: int = 0) -> None:
-    """
-    Print a tree view of a toolset and its composition.
-    
-    Args:
-        name (str): Toolset name
-        indent (int): Current indentation level
-    """
     prefix = "  " * indent
     toolset = get_toolset(name)
     
@@ -436,14 +347,11 @@ def print_toolset_tree(name: str, indent: int = 0) -> None:
         print(f"{prefix}❌ Unknown toolset: {name}")
         return
     
-    # Print toolset name and description
     print(f"{prefix}📦 {name}: {toolset['description']}")
     
-    # Print direct tools
     if toolset["tools"]:
         print(f"{prefix}  🔧 Tools: {', '.join(toolset['tools'])}")
     
-    # Print included toolsets
     if toolset["includes"]:
         print(f"{prefix}  📂 Includes:")
         for included in toolset["includes"]:

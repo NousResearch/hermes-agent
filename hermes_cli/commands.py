@@ -25,7 +25,11 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+ issue-90
     "/parts": "Manage Dynamic Parts (list, create, search, stats)",
+
+    "/verbose": "Cycle tool progress display: off → new → all → verbose",
+ main
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

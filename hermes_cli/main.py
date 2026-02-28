@@ -61,8 +61,11 @@ def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home
 
-    # Check env vars (may be set by .env or shell)
-    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
+    # Check env vars (may be set by .env or shell).
+    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
+    # often don't require an API key.
+    provider_env_vars = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL")
+    if any(os.getenv(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys
@@ -75,7 +78,7 @@ def _has_any_provider_configured() -> bool:
                     continue
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
-                if key.strip() in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY") and val:
+                if key.strip() in provider_env_vars and val:
                     return True
         except Exception:
             pass
@@ -751,12 +754,31 @@ def cmd_update(args):
         
         print()
         print("✓ Update complete!")
+        
+        # Auto-restart gateway if it's running as a systemd service
+        try:
+            check = subprocess.run(
+                ["systemctl", "--user", "is-active", "hermes-gateway"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if check.stdout.strip() == "active":
+                print()
+                print("→ Gateway service is running — restarting to pick up changes...")
+                restart = subprocess.run(
+                    ["systemctl", "--user", "restart", "hermes-gateway"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if restart.returncode == 0:
+                    print("✓ Gateway restarted.")
+                else:
+                    print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                    print("  Try manually: hermes gateway restart")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass  # No systemd (macOS, WSL1, etc.) — skip silently
+        
         print()
         print("Tip: You can now log in with Nous Portal for inference:")
         print("  hermes login              # Authenticate with Nous Portal")
-        print()
-        print("Note: If you have the gateway service running, restart it:")
-        print("  hermes gateway restart")
         
     except subprocess.CalledProcessError as e:
         print(f"✗ Update failed: {e}")

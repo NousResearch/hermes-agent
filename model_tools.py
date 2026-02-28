@@ -93,7 +93,11 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+ issue-90
         "tools.parts_tool",
+
+        "tools.honcho_tools",
+ main
     ]
     import importlib
     for mod_name in _modules:

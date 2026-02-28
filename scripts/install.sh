@@ -38,6 +38,15 @@ USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
 
+# Detect non-interactive mode (e.g. curl | bash)
+# When stdin is not a terminal, read -p will fail with EOF,
+# causing set -e to silently abort the entire script.
+if [ -t 0 ]; then
+    IS_INTERACTIVE=true
+else
+    IS_INTERACTIVE=false
+fi
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -467,15 +476,20 @@ install_system_packages() {
             fi
         # sudo needs password — ask once for everything
         elif command -v sudo &> /dev/null; then
-            echo ""
-            read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r < /dev/tty
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                if sudo $install_cmd; then
-                    [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                    [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
-                    return 0
+            if [ "$IS_INTERACTIVE" = true ]; then
+                echo ""
+                read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    if sudo $install_cmd; then
+                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        return 0
+                    fi
                 fi
+            else
+                log_warn "Non-interactive mode: cannot prompt for sudo password"
+                log_info "Install missing packages manually: sudo $install_cmd"
             fi
         fi
     fi
@@ -709,7 +723,7 @@ setup_path() {
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
         for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
-            if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qE 'PATH=.*\.local/bin'; then
                 echo "" >> "$SHELL_CONFIG"
                 echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
                 echo "$PATH_LINE" >> "$SHELL_CONFIG"
@@ -829,6 +843,11 @@ run_setup_wizard() {
         return 0
     fi
 
+    if [ "$IS_INTERACTIVE" = false ]; then
+        log_info "Setup wizard skipped (non-interactive). Run 'hermes setup' after install."
+        return 0
+    fi
+
     echo ""
     log_info "Starting setup wizard..."
     echo ""
@@ -872,17 +891,26 @@ maybe_start_gateway() {
     WHATSAPP_VAL=$(grep "^WHATSAPP_ENABLED=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
     WHATSAPP_SESSION="$HERMES_HOME/whatsapp/session/creds.json"
     if [ "$WHATSAPP_VAL" = "true" ] && [ ! -f "$WHATSAPP_SESSION" ]; then
-        echo ""
-        log_info "WhatsApp is enabled but not yet paired."
-        log_info "Running 'hermes whatsapp' to pair via QR code..."
-        echo ""
-        read -p "Pair WhatsApp now? [Y/n] " -n 1 -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-            HERMES_CMD="$HOME/.local/bin/hermes"
-            [ ! -x "$HERMES_CMD" ] && HERMES_CMD="hermes"
-            $HERMES_CMD whatsapp || true
+        if [ "$IS_INTERACTIVE" = true ]; then
+            echo ""
+            log_info "WhatsApp is enabled but not yet paired."
+            log_info "Running 'hermes whatsapp' to pair via QR code..."
+            echo ""
+            read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                HERMES_CMD="$HOME/.local/bin/hermes"
+                [ ! -x "$HERMES_CMD" ] && HERMES_CMD="hermes"
+                $HERMES_CMD whatsapp || true
+            fi
+        else
+            log_info "WhatsApp pairing skipped (non-interactive). Run 'hermes whatsapp' to pair."
         fi
+    fi
+
+    if [ "$IS_INTERACTIVE" = false ]; then
+        log_info "Gateway setup skipped (non-interactive). Run 'hermes gateway install' later."
+        return 0
     fi
 
     echo ""

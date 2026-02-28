@@ -58,6 +58,7 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
+        issue-90
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Dynamic Parts - Segmented Motivational Systems
@@ -67,6 +68,13 @@ _HERMES_CORE_TOOLS = [
     "parts_evaluate", "parts_add_suggestion", "parts_split", "parts_merge",
     "parts_due_evaluations", "parts_stats",
 ]
+
+    # Cross-platform messaging (gated on gateway running via check_fn)
+    "send_message",
+    # Honcho user context (gated on honcho being active via check_fn)
+    "query_user_context",
+]
+ main
 
 
 # Core toolset definitions
@@ -201,6 +209,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "honcho": {
+        "description": "Honcho AI-native memory for persistent cross-session user modeling",
+        "tools": ["query_user_context"],
         "includes": []
     },
     

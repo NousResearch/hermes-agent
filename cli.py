@@ -201,7 +201,7 @@ def load_cli_config() -> Dict[str, Any]:
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
         "delegation": {
-            "max_iterations": 25,  # Max tool-calling turns per child agent
+            "max_iterations": 45,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
         },
     }
@@ -286,6 +286,7 @@ def load_cli_config() -> Dict[str, Any]:
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }
@@ -298,7 +299,12 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
             if _file_has_terminal_config or env_var not in os.environ:
-                os.environ[env_var] = str(terminal_config[config_key])
+                val = terminal_config[config_key]
+                if isinstance(val, list):
+                    import json
+                    os.environ[env_var] = json.dumps(val)
+                else:
+                    os.environ[env_var] = str(val)
     
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})
@@ -399,6 +405,29 @@ def _cprint(text: str):
     prompt_toolkit parse the escapes and render real colors.
     """
     _pt_print(_PT_ANSI(text))
+
+
+class ChatConsole:
+    """Rich Console adapter for prompt_toolkit's patch_stdout context.
+
+    Captures Rich's rendered ANSI output and routes it through _cprint
+    so colors and markup render correctly inside the interactive chat loop.
+    Drop-in replacement for Rich Console — just pass this to any function
+    that expects a console.print() interface.
+    """
+
+    def __init__(self):
+        from io import StringIO
+        self._buffer = StringIO()
+        self._inner = Console(file=self._buffer, force_terminal=True, highlight=False)
+
+    def print(self, *args, **kwargs):
+        self._buffer.seek(0)
+        self._buffer.truncate()
+        self._inner.print(*args, **kwargs)
+        output = self._buffer.getvalue()
+        for line in output.rstrip("\n").split("\n"):
+            _cprint(line)
 
 # ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
@@ -653,23 +682,44 @@ COMMANDS = {
 }
 
 
+# ============================================================================
+# Skill Slash Commands — dynamic commands generated from installed skills
+# ============================================================================
+
+from agent.skill_commands import scan_skill_commands, get_skill_commands, build_skill_invocation_message
+
+_skill_commands = scan_skill_commands()
+
+
 class SlashCommandCompleter(Completer):
-    """Autocomplete for /commands in the input area."""
+    """Autocomplete for /commands and /skill-name in the input area."""
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        # Only complete at the start of input, after /
         if not text.startswith("/"):
             return
         word = text[1:]  # strip the leading /
+
+        # Built-in commands
         for cmd, desc in COMMANDS.items():
-            cmd_name = cmd[1:]  # strip leading / from key
+            cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
                     cmd_name,
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        # Skill commands
+        for cmd, info in _skill_commands.items():
+            cmd_name = cmd[1:]
+            if cmd_name.startswith(word):
+                yield Completion(
+                    cmd_name,
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=f"⚡ {info['description'][:50]}",
                 )
 
 
@@ -708,7 +758,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         keys = key_path.split('.')
         current = config
         for key in keys[:-1]:
-            if key not in current:
+            if key not in current or not isinstance(current[key], dict):
                 current[key] = {}
             current = current[key]
         current[keys[-1]] = value
@@ -742,14 +792,14 @@ class HermesCLI:
         provider: str = None,
         api_key: str = None,
         base_url: str = None,
-        max_turns: int = 60,
+        max_turns: int = None,
         verbose: bool = False,
         compact: bool = False,
         resume: str = None,
     ):
         """
         Initialize the Hermes CLI.
-        
+
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
@@ -764,7 +814,9 @@ class HermesCLI:
         # Initialize Rich console
         self.console = Console()
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
+        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
+        self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
+        self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
@@ -791,15 +843,15 @@ class HermesCLI:
         )
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
-        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
-        if max_turns != 60:  # CLI arg was explicitly set
+        # Max turns priority: CLI arg > config file > env var > default
+        if max_turns is not None:
             self.max_turns = max_turns
-        elif os.getenv("HERMES_MAX_ITERATIONS"):
-            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         elif CLI_CONFIG["agent"].get("max_turns"):
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
         elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
             self.max_turns = CLI_CONFIG["max_turns"]
+        elif os.getenv("HERMES_MAX_ITERATIONS"):
+            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 60
         
@@ -960,6 +1012,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
+                honcho_session_key=self.session_id,
             )
             return True
         except Exception as e:
@@ -1050,20 +1103,21 @@ class HermesCLI:
         )
     
     def show_help(self):
-        """Display help information with kawaii ASCII art."""
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 14 + "(^_^)? Available Commands" + " " * 10 + "|")
-        print("+" + "-" * 50 + "+")
-        print()
+        """Display help information."""
+        _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
+        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
         
         for cmd, desc in COMMANDS.items():
-            print(f"  {cmd:<15} - {desc}")
+            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
         
-        print()
-        print("  Tip: Just type your message to chat with Hermes!")
-        print("  Multi-line: Alt+Enter for a new line")
-        print()
+        if _skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
+            for cmd, info in sorted(_skill_commands.items()):
+                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+
+        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -1142,7 +1196,12 @@ class HermesCLI:
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
         
-        config_path = Path(__file__).parent / 'cli-config.yaml'
+        user_config_path = Path.home() / '.hermes' / 'config.yaml'
+        project_config_path = Path(__file__).parent / 'cli-config.yaml'
+        if user_config_path.exists():
+            config_path = user_config_path
+        else:
+            config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
@@ -1174,7 +1233,7 @@ class HermesCLI:
         print()
         print("  -- Session --")
         print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  Config File: cli-config.yaml {config_status}")
+        print(f"  Config File: {config_path} {config_status}")
         print()
     
     def show_history(self):
@@ -1519,7 +1578,7 @@ class HermesCLI:
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
-        handle_skills_slash(cmd, self.console)
+        handle_skills_slash(cmd, ChatConsole())
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
@@ -1656,12 +1715,58 @@ class HermesCLI:
             self._handle_skills_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
+        elif cmd_lower == "/verbose":
+            self._toggle_verbose()
         else:
-            self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-            self.console.print("[dim #B8860B]Type /help for available commands[/]")
+            # Check for skill slash commands (/gif-search, /axolotl, etc.)
+            base_cmd = cmd_lower.split()[0]
+            if base_cmd in _skill_commands:
+                user_instruction = cmd_original[len(base_cmd):].strip()
+                msg = build_skill_invocation_message(base_cmd, user_instruction)
+                if msg:
+                    skill_name = _skill_commands[base_cmd]["name"]
+                    print(f"\n⚡ Loading skill: {skill_name}")
+                    if hasattr(self, '_pending_input'):
+                        self._pending_input.put(msg)
+                else:
+                    self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+            else:
+                self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
+                self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     
+    def _toggle_verbose(self):
+        """Cycle tool progress mode: off → new → all → verbose → off."""
+        cycle = ["off", "new", "all", "verbose"]
+        try:
+            idx = cycle.index(self.tool_progress_mode)
+        except ValueError:
+            idx = 2  # default to "all"
+        self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
+        self.verbose = self.tool_progress_mode == "verbose"
+
+        if self.agent:
+            self.agent.verbose_logging = self.verbose
+            self.agent.quiet_mode = not self.verbose
+
+        labels = {
+            "off": "[dim]Tool progress: OFF[/] — silent mode, just the final response.",
+            "new": "[yellow]Tool progress: NEW[/] — show each new tool (skip repeats).",
+            "all": "[green]Tool progress: ALL[/] — show every tool call.",
+            "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, and debug logs.",
+        }
+        self.console.print(labels.get(self.tool_progress_mode, ""))
+
+        if self.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+            for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
+                logging.getLogger(noisy).setLevel(logging.WARNING)
+        else:
+            logging.getLogger().setLevel(logging.INFO)
+            for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
+                logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -2228,13 +2333,17 @@ class HermesCLI:
 
         # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
+        _prev_text_len = [0]
 
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference."""
             text = buf.text
             line_count = text.count('\n')
-            # Heuristic: if text jumps to 5+ lines in one change, it's a paste
-            if line_count >= 5 and not text.startswith('/'):
+            chars_added = len(text) - _prev_text_len[0]
+            _prev_text_len[0] = len(text)
+            # Heuristic: a real paste adds many characters at once (not just a
+            # single newline from Alt+Enter) AND the result has 5+ lines.
+            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
@@ -2645,7 +2754,7 @@ def main(
     provider: str = None,
     api_key: str = None,
     base_url: str = None,
-    max_turns: int = 60,
+    max_turns: int = None,
     verbose: bool = False,
     compact: bool = False,
     list_tools: bool = False,

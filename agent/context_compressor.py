@@ -33,6 +33,7 @@ class ContextCompressor:
         protect_last_n: int = 4,
         summary_target_tokens: int = 500,
         quiet_mode: bool = False,
+        summary_model_override: str = None,
     ):
         self.model = model
         self.threshold_percent = threshold_percent
@@ -49,7 +50,8 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, self.summary_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client()
+        self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -113,13 +115,26 @@ TURNS TO SUMMARIZE:
 Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.summary_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=self.summary_target_tokens * 2,
-                timeout=30.0,
-            )
+            kwargs = {
+                "model": self.summary_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "timeout": 30.0,
+            }
+            # Most providers (OpenRouter, local models) use max_tokens.
+            # Direct OpenAI with newer models (gpt-4o, o-series, gpt-5+)
+            # requires max_completion_tokens instead.
+            try:
+                kwargs["max_tokens"] = self.summary_target_tokens * 2
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as first_err:
+                if "max_tokens" in str(first_err) or "unsupported_parameter" in str(first_err):
+                    kwargs.pop("max_tokens", None)
+                    kwargs["max_completion_tokens"] = self.summary_target_tokens * 2
+                    response = self.client.chat.completions.create(**kwargs)
+                else:
+                    raise
+
             summary = response.choices[0].message.content.strip()
             if not summary.startswith("[CONTEXT SUMMARY]:"):
                 summary = "[CONTEXT SUMMARY]: " + summary

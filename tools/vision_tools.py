@@ -54,7 +54,7 @@ if _aux_sync_client is not None:
         _async_kwargs["default_headers"] = {
             "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
             "X-OpenRouter-Title": "Hermes Agent",
-            "X-OpenRouter-Categories": "cli-agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
         }
     _aux_async_client = AsyncOpenAI(**_async_kwargs)
 
@@ -314,13 +314,13 @@ async def vision_analyze_tool(
         logger.info("Processing image with %s...", model)
         
         # Call the vision API
-        from agent.auxiliary_client import get_auxiliary_extra_body
+        from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
         _extra = get_auxiliary_extra_body()
         response = await _aux_async_client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.1,
-            max_tokens=2000,
+            **auxiliary_max_tokens_param(2000),
             **({} if not _extra else {"extra_body": _extra}),
         )
         

@@ -369,7 +369,7 @@ The `skill_manage` tool lets the agent create, update, and delete its own skills
 | `write_file` | Add/overwrite a supporting file | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
 
-### patch vs edit
+### Patch vs Edit
 
 `patch` and `edit` both modify skill files, but serve different purposes:
 

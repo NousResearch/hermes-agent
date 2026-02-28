@@ -133,7 +133,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 All your settings are stored in `~/.hermes/` for easy access:
 
-```
+```text
 ~/.hermes/
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
@@ -648,7 +648,7 @@ Even if no messaging platforms are configured, the gateway stays running for cro
 
 ### 🛡️ Exec Approval (Messaging Platforms)
 
-When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
+When the agent tries to run a potentially dangerous command (`rm -rf`, `chmod 777`, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
 
 > ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
 
@@ -894,7 +894,7 @@ code_execution:
 The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently -- only its final summary enters the parent's context.
 
 **Single task:**
-```
+```python
 delegate_task(goal="Debug why tests fail", context="Error: assertion in test_foo.py line 42", toolsets=["terminal", "file"])
 ```
 
@@ -973,7 +973,7 @@ python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
 
 ### 🧪 Atropos RL Environments
 
-Hermes-Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using hermes-agent's tools.
+Hermes Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using Hermes Agent's tools.
 
 #### Architecture
 

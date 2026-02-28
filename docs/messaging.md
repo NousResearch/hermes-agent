@@ -223,11 +223,9 @@ MESSAGING_CWD=/home/myuser
 # TOOL PROGRESS NOTIFICATIONS
 # =============================================================================
 
-# Show progress messages as agent uses tools
-HERMES_TOOL_PROGRESS=true
-
-# Mode: "new" (only when tool changes) or "all" (every tool call)
-HERMES_TOOL_PROGRESS_MODE=new
+# Tool progress is now configured in config.yaml:
+#   display:
+#     tool_progress: all    # off | new | all | verbose
 
 # =============================================================================
 # SESSION SETTINGS
@@ -301,7 +299,7 @@ The gateway keeps the "typing..." indicator active throughout processing, refres
 
 ### Tool Progress Notifications
 
-When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+When `tool_progress` is enabled in `config.yaml`, the bot sends status messages as it works:
 
 ```text
 💻 `ls -la`...

@@ -136,7 +136,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 3,
+    "_config_version": 4,
 }
 
 # =============================================================================
@@ -318,16 +318,19 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
+    # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
+    # Gateway falls back to these env vars for backward compatibility.
     "HERMES_TOOL_PROGRESS": {
-        "description": "Send tool progress messages in messaging channels (true/false)",
-        "prompt": "Enable tool progress messages",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Tool progress (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
     },
     "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
-        "prompt": "Progress mode (all/new)",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Progress mode (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
@@ -441,6 +444,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # Check config version
     current_ver, latest_ver = check_config_version()
+    
+    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
+    if current_ver < 4:
+        config = load_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "tool_progress" not in display:
+            old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
+            old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
+            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+                display["tool_progress"] = "off"
+                results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
+            elif old_mode and old_mode.lower() in ("new", "all"):
+                display["tool_progress"] = old_mode.lower()
+                results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
+            else:
+                display["tool_progress"] = "all"
+                results["config_added"].append("display.tool_progress=all (default)")
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

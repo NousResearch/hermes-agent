@@ -325,13 +325,21 @@ TERMINAL_CWD=/workspace                # All terminal sessions (local or contain
 
 ### Tool Progress Notifications
 
-Get real-time updates as the agent works:
+Control how much tool activity is displayed. Set in `~/.hermes/config.yaml`:
 
-```bash
-# Enable in ~/.hermes/.env
-HERMES_TOOL_PROGRESS=true
-HERMES_TOOL_PROGRESS_MODE=all    # or "new" for only when tool changes
+```yaml
+display:
+  tool_progress: all    # off | new | all | verbose
 ```
+
+| Mode | What you see |
+|------|-------------|
+| `off` | Silent — just the final response |
+| `new` | Tool indicator only when the tool changes (skip repeats) |
+| `all` | Every tool call with a short preview (default) |
+| `verbose` | Full args, results, and debug logs |
+
+Toggle at runtime in the CLI with `/verbose` (cycles through all four modes).
 
 ---
 
@@ -1568,8 +1576,6 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
-| `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
-| `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
 
 **Context Compression:**
 | Variable | Description |

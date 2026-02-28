@@ -1044,27 +1044,25 @@ def run_setup_wizard(args):
     except ValueError:
         print_warning("Invalid number, keeping current value")
     
-    # Tool progress notifications (for messaging)
+    # Tool progress notifications
     print_info("")
-    print_info("Tool Progress Notifications (Messaging only)")
-    print_info("Send status messages when the agent uses tools.")
-    print_info("Example: '💻 ls -la...' or '🔍 web_search...'")
+    print_info("Tool Progress Display")
+    print_info("Controls how much tool activity is shown (CLI and messaging).")
+    print_info("  off     — Silent, just the final response")
+    print_info("  new     — Show tool name only when it changes (less noise)")
+    print_info("  all     — Show every tool call with a short preview")
+    print_info("  verbose — Full args, results, and debug logs")
     
-    current_progress = get_env_value('HERMES_TOOL_PROGRESS') or 'true'
-    if prompt_yes_no("Enable tool progress messages?", current_progress.lower() in ('1', 'true', 'yes')):
-        save_env_value("HERMES_TOOL_PROGRESS", "true")
-        
-        # Progress mode
-        current_mode = get_env_value('HERMES_TOOL_PROGRESS_MODE') or 'all'
-        print_info("  Mode options:")
-        print_info("    'new' - Only when switching tools (less spam)")
-        print_info("    'all' - Every tool call")
-        mode = prompt("  Progress mode", current_mode)
-        if mode.lower() in ('all', 'new'):
-            save_env_value("HERMES_TOOL_PROGRESS_MODE", mode.lower())
-        print_success("Tool progress enabled")
+    current_mode = config.get("display", {}).get("tool_progress", "all")
+    mode = prompt("Tool progress mode", current_mode)
+    if mode.lower() in ("off", "new", "all", "verbose"):
+        if "display" not in config:
+            config["display"] = {}
+        config["display"]["tool_progress"] = mode.lower()
+        save_config(config)
+        print_success(f"Tool progress set to: {mode.lower()}")
     else:
-        save_env_value("HERMES_TOOL_PROGRESS", "false")
+        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
     
     # =========================================================================
     # Step 6: Context Compression

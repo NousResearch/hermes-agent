@@ -443,7 +443,19 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            target_file = skill_dir / file_path
+            # Prevent path traversal
+            normalized = Path(file_path)
+            if ".." in normalized.parts:
+                return json.dumps({
+                    "success": False,
+                    "error": "Path traversal ('..') is not allowed.",
+                }, ensure_ascii=False)
+            target_file = (skill_dir / file_path).resolve()
+            if not str(target_file).startswith(str(skill_dir.resolve())):
+                return json.dumps({
+                    "success": False,
+                    "error": "Path traversal is not allowed.",
+                }, ensure_ascii=False)
             if not target_file.exists():
                 # List available files in the skill directory, organized by type
                 available_files = {

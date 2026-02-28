@@ -758,3 +758,41 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Flush sentinel leak
+# ---------------------------------------------------------------------------
+
+class TestFlushSentinelNotLeaked:
+    """_flush_sentinel must be stripped before sending messages to the API."""
+
+    def test_flush_sentinel_stripped_from_api_messages(self, agent_with_memory_tool):
+        """Verify _flush_sentinel is not sent to the API provider."""
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+        agent._memory_flush_min_turns = 1
+        agent._user_turn_count = 10
+        agent._cached_system_prompt = "system"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "remember this"},
+        ]
+
+        # Mock the API to return a simple response (no tool calls)
+        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
+        mock_choice = SimpleNamespace(message=mock_msg)
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        agent.client.chat.completions.create.return_value = mock_response
+
+        agent.flush_memories(messages, min_turns=0)
+
+        # Check what was actually sent to the API
+        call_args = agent.client.chat.completions.create.call_args
+        api_messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        for msg in api_messages:
+            assert "_flush_sentinel" not in msg, (
+                f"_flush_sentinel leaked to API in message: {msg}"
+            )

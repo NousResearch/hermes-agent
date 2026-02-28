@@ -146,9 +146,20 @@ class ToolRegistry:
         return {name: e.toolset for name, e in self._tools.items()}
 
     def is_toolset_available(self, toolset: str) -> bool:
-        """Check if a toolset's requirements are met."""
+        """Check if a toolset's requirements are met.
+
+        If the toolset's check_fn raises (e.g. network/config/import error),
+        we treat the toolset as unavailable and do not propagate the exception,
+        so CLI, banner, and doctor remain stable.
+        """
         check = self._toolset_checks.get(toolset)
-        return check() if check else True
+        if not check:
+            return True
+        try:
+            return check()
+        except Exception as e:
+            logger.debug("Toolset %s check raised; treating as unavailable: %s", toolset, e)
+            return False
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""

@@ -437,3 +437,7 @@ health("SKILL_DIR/scripts/system_monitor.py")
 - macOS fallback: uses `vm_stat`, `df`, `ps`, `sysctl`
 - Results are structured JSON — summarize key findings for the user
 - Highlight WARNING status on disk (≥90% full) or swap usage
+
+---
+
+*Contributed by [@dogiladeveloper](https://github.com/dogiladeveloper)*

@@ -723,7 +723,7 @@ setup_path() {
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
         for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
-            if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qE 'PATH=.*\.local/bin'; then
                 echo "" >> "$SHELL_CONFIG"
                 echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
                 echo "$PATH_LINE" >> "$SHELL_CONFIG"

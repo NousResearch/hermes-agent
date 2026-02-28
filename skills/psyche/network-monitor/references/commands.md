@@ -29,7 +29,7 @@ curl -s "https://huggingface.co/api/models?author=PsycheFoundation" | \
   python3 -c "
 import sys, json
 models = json.load(sys.stdin)
-print(f'{'Model ID':55s}  {'Created':12s}  {'Downloads':>10s}')
+print(f'{\"Model ID\":55s}  {\"Created\":12s}  {\"Downloads\":>10s}')
 print('-' * 82)
 for m in sorted(models, key=lambda x: x.get('createdAt',''), reverse=True):
     print(f\"{m['id']:55s}  {m.get('createdAt','N/A')[:10]:12s}  {m.get('downloads',0):>10d}\")
@@ -129,9 +129,9 @@ curl -s -X POST "${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}" \
 
 ---
 
-## Psyche CLI (run-manager)
+## Psyche CLI
 
-Requires the Psyche client. Install via Docker or build from source.
+The Psyche CLI binary is `psyche-solana-client`. The `run-manager` subcommand handles run management operations. Install via Docker or build from source.
 
 ### Install
 
@@ -144,6 +144,21 @@ git clone https://github.com/PsycheFoundation/psyche
 cd psyche
 cargo build --release --bin psyche-solana-client
 ```
+
+### Invocation
+
+```bash
+# If built from source:
+cargo run --release --bin psyche-solana-client -- run-manager <SUBCOMMAND>
+
+# Or if the binary is in PATH:
+psyche-solana-client run-manager <SUBCOMMAND>
+
+# Docker:
+docker run ghcr.io/psychefoundation/psyche run-manager <SUBCOMMAND>
+```
+
+The examples below use the short form `run-manager` for readability. Replace with the full invocation above based on your setup.
 
 ### Dump Run State
 

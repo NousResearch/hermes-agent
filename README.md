@@ -291,6 +291,7 @@ See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 | `/stop` | Stop the running agent |
 | `/sethome` | Set this chat as the home channel |
 | `/help` | Show available commands |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 ### DM Pairing (Alternative to Allowlists)
 
@@ -421,6 +422,7 @@ Type `/` to see an autocomplete dropdown of all commands.
 | `/skills` | Search, install, inspect, or manage skills from registries |
 | `/platforms` | Show gateway/messaging platform status |
 | `/quit` | Exit (also: `/exit`, `/q`) |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 **Keybindings:**
 - `Enter` — send message
@@ -820,6 +822,22 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 All skills live in **`~/.hermes/skills/`** -- a single directory that is the source of truth. On fresh install, bundled skills are copied there from the repo. Hub-installed skills and agent-created skills also go here. The agent can modify or delete any skill. `hermes update` adds only genuinely new bundled skills (via a manifest) without overwriting your changes or re-adding skills you deleted.
 
 **Using Skills:**
+
+Every installed skill is automatically available as a slash command — type `/<skill-name>` to invoke it directly:
+
+```bash
+# In the CLI or any messaging platform (Telegram, Discord, Slack, WhatsApp):
+/gif-search funny cats
+/axolotl help me fine-tune Llama 3 on my dataset
+/github-pr-workflow create a PR for the auth refactor
+
+# Just the skill name (no prompt) loads the skill and lets the agent ask what you need:
+/excalidraw
+```
+
+The skill's full instructions (SKILL.md) are loaded into the conversation, and any supporting files (references, templates, scripts) are listed for the agent to pull on demand via the `skill_view` tool. Type `/help` to see all available skill commands.
+
+You can also use skills through natural conversation:
 ```bash
 hermes --toolsets skills -q "What skills do you have?"
 hermes --toolsets skills -q "Show me the axolotl skill"

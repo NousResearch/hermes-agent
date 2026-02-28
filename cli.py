@@ -682,23 +682,44 @@ COMMANDS = {
 }
 
 
+# ============================================================================
+# Skill Slash Commands — dynamic commands generated from installed skills
+# ============================================================================
+
+from agent.skill_commands import scan_skill_commands, get_skill_commands, build_skill_invocation_message
+
+_skill_commands = scan_skill_commands()
+
+
 class SlashCommandCompleter(Completer):
-    """Autocomplete for /commands in the input area."""
+    """Autocomplete for /commands and /skill-name in the input area."""
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        # Only complete at the start of input, after /
         if not text.startswith("/"):
             return
         word = text[1:]  # strip the leading /
+
+        # Built-in commands
         for cmd, desc in COMMANDS.items():
-            cmd_name = cmd[1:]  # strip leading / from key
+            cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
                     cmd_name,
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        # Skill commands
+        for cmd, info in _skill_commands.items():
+            cmd_name = cmd[1:]
+            if cmd_name.startswith(word):
+                yield Completion(
+                    cmd_name,
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=f"⚡ {info['description'][:50]}",
                 )
 
 
@@ -1082,20 +1103,21 @@ class HermesCLI:
         )
     
     def show_help(self):
-        """Display help information with kawaii ASCII art."""
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 14 + "(^_^)? Available Commands" + " " * 10 + "|")
-        print("+" + "-" * 50 + "+")
-        print()
+        """Display help information."""
+        _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
+        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
+        _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
         
         for cmd, desc in COMMANDS.items():
-            print(f"  {cmd:<15} - {desc}")
+            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
         
-        print()
-        print("  Tip: Just type your message to chat with Hermes!")
-        print("  Multi-line: Alt+Enter for a new line")
-        print()
+        if _skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
+            for cmd, info in sorted(_skill_commands.items()):
+                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+
+        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -1693,8 +1715,21 @@ class HermesCLI:
         elif cmd_lower == "/verbose":
             self._toggle_verbose()
         else:
-            self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-            self.console.print("[dim #B8860B]Type /help for available commands[/]")
+            # Check for skill slash commands (/gif-search, /axolotl, etc.)
+            base_cmd = cmd_lower.split()[0]
+            if base_cmd in _skill_commands:
+                user_instruction = cmd_original[len(base_cmd):].strip()
+                msg = build_skill_invocation_message(base_cmd, user_instruction)
+                if msg:
+                    skill_name = _skill_commands[base_cmd]["name"]
+                    print(f"\n⚡ Loading skill: {skill_name}")
+                    if hasattr(self, '_pending_input'):
+                        self._pending_input.put(msg)
+                else:
+                    self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
+            else:
+                self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
+                self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     

@@ -593,6 +593,40 @@ class SessionStore:
         
         return messages
 
+    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Replace the session transcript with *messages*.
+
+        Used by /retry and /undo to truncate conversation history.
+
+        SQLite path: keeps the first len(messages) rows via truncate_after().
+        JSONL path:  atomic overwrite (write to .tmp, os.replace).
+        """
+        keep = len(messages)
+
+        # SQLite
+        if self._db:
+            try:
+                self._db.truncate_after(session_id, keep)
+            except Exception as e:
+                logger.debug("Transcript truncation in DB failed: %s", e)
+
+        # Legacy JSONL — atomic rewrite
+        transcript_path = self.get_transcript_path(session_id)
+        if transcript_path.exists():
+            tmp_path = transcript_path.with_suffix(".tmp")
+            try:
+                with open(tmp_path, "w") as f:
+                    for msg in messages:
+                        f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                os.replace(tmp_path, transcript_path)
+            except Exception as e:
+                logger.debug("Transcript JSONL rewrite failed: %s", e)
+                # Clean up temp file on failure
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
 
 def build_session_context(
     source: SessionSource,

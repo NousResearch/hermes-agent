@@ -318,6 +318,42 @@ class SessionDB:
             messages.append(msg)
         return messages
 
+    def truncate_after(self, session_id: str, keep_count: int) -> int:
+        """Delete messages beyond *keep_count* for a session.
+
+        Messages are ordered by (timestamp, id) — the same order used by
+        ``get_messages_as_conversation`` — and the first *keep_count* are
+        retained.  FTS5 DELETE triggers maintain the full-text index
+        automatically.  The session's ``message_count`` is updated.
+
+        Returns the number of deleted rows.
+        """
+        cursor = self._conn.execute(
+            """DELETE FROM messages
+               WHERE session_id = ? AND id NOT IN (
+                   SELECT id FROM messages
+                   WHERE session_id = ?
+                   ORDER BY timestamp, id
+                   LIMIT ?
+               )""",
+            (session_id, session_id, keep_count),
+        )
+        deleted = cursor.rowcount
+
+        if deleted:
+            # Recalculate the true count rather than trusting arithmetic
+            actual = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            self._conn.execute(
+                "UPDATE sessions SET message_count = ? WHERE id = ?",
+                (actual, session_id),
+            )
+            self._conn.commit()
+
+        return deleted
+
     # =========================================================================
     # Search
     # =========================================================================

@@ -389,16 +389,20 @@ def execute_code(
                               "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
-        child_env = {}
-        for k, v in os.environ.items():
-            if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-                continue
-            if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
-                child_env[k] = v
-        child_env["HERMES_RPC_SOCKET"] = sock_path
-        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Mevcut ortam değişkenlerini temiz bir şekilde kopyala
+if child_env is None:
+    child_env = os.environ.copy()
 
-        proc = subprocess.Popen(
+# Sistemin kütüphane yollarını (site-packages) sandbox'a zorla öğret
+import site
+sys_paths = site.getsitepackages() + [site.getusersitepackages()] + sys.path
+child_env["PYTHONPATH"] = ":".join(sys_paths + [os.getcwd()])
+
+       # Sandbox Fixer: Kütüphane yollarını enjekte et
+        if child_env is None:
+            child_env = os.environ.copy()
+        child_env["PYTHONPATH"] = os.getcwd() + ":" + ":".join(sys.path)
+ proc = subprocess.Popen(
             [sys.executable, "script.py"],
             cwd=tmpdir,
             env=child_env,

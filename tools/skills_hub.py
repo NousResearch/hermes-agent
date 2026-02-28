@@ -282,10 +282,13 @@ class GitHubSource(SkillSource):
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
 
-        # Deduplicate by name (prefer trusted sources)
+        # Deduplicate by name, preferring higher trust levels
+        _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in results:
-            if r.name not in seen or r.trust_level == "trusted":
+            if r.name not in seen:
+                seen[r.name] = r
+            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.name].trust_level, 0):
                 seen[r.name] = r
         results = list(seen.values())
 
@@ -1167,10 +1170,13 @@ def unified_search(query: str, sources: List[SkillSource],
         except Exception as e:
             logger.debug(f"Search failed for {src.source_id()}: {e}")
 
-    # Deduplicate by name, preferring trusted sources
+    # Deduplicate by name, preferring higher trust levels
+    _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
     seen: Dict[str, SkillMeta] = {}
     for r in all_results:
-        if r.name not in seen or r.trust_level == "trusted":
+        if r.name not in seen:
+            seen[r.name] = r
+        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.name].trust_level, 0):
             seen[r.name] = r
     deduped = list(seen.values())
 

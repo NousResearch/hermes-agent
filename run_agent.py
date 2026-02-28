@@ -1199,7 +1199,7 @@ class AIAgent:
             "model": self.model,
             "messages": api_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": 600.0,
+            "timeout": 900.0,
         }
 
         if self.max_tokens is not None:
@@ -2160,9 +2160,10 @@ class AIAgent:
                         raise api_error
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
-                    print(f"⚠️  OpenAI-compatible API call failed (attempt {retry_count}/{max_retries}): {str(api_error)[:100]}")
-                    print(f"⏳ Retrying in {wait_time}s...")
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
+                    if retry_count >= max_retries:
+                        print(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
+                        print(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
                     
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call

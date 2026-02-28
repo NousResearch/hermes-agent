@@ -201,7 +201,7 @@ def load_cli_config() -> Dict[str, Any]:
             "max_tool_calls": 50,  # Max RPC tool calls per execution
         },
         "delegation": {
-            "max_iterations": 25,  # Max tool-calling turns per child agent
+            "max_iterations": 45,  # Max tool-calling turns per child agent
             "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
         },
     }

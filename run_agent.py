@@ -2314,7 +2314,7 @@ class AIAgent:
                 
                 else:
                     # No tool calls - this is the final response
-                    final_response = assistant_message.content or ""
+                    final_response = self._strip_think_blocks(assistant_message.content or "").strip()
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):

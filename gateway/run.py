@@ -901,13 +901,12 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        session_key = self.session_store._generate_session_key(source)
         
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.
         try:
-            old_entry = self.session_store._sessions.get(session_key)
+            old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
@@ -1135,7 +1134,7 @@ class GatewayRunner:
         
         # Truncate history to before the last user message
         truncated = history[:last_user_idx]
-        session_entry.conversation_history = truncated
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -1167,7 +1166,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        session_entry.conversation_history = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""

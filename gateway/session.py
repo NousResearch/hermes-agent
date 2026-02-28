@@ -567,6 +567,37 @@ class SessionStore:
         with open(transcript_path, "a") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     
+    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Replace a session's transcript with the given messages."""
+        # Rewrite SQLite
+        if self._db:
+            try:
+                self._db._conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                )
+                self._db._conn.execute(
+                    "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+                    (session_id,),
+                )
+                self._db._conn.commit()
+                for msg in messages:
+                    self._db.append_message(
+                        session_id=session_id,
+                        role=msg.get("role", "unknown"),
+                        content=msg.get("content"),
+                        tool_name=msg.get("tool_name"),
+                        tool_calls=msg.get("tool_calls"),
+                        tool_call_id=msg.get("tool_call_id"),
+                    )
+            except Exception as e:
+                logger.debug("Session DB rewrite failed: %s", e)
+
+        # Rewrite legacy JSONL
+        transcript_path = self.get_transcript_path(session_id)
+        with open(transcript_path, "w") as f:
+            for msg in messages:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
         # Try SQLite first

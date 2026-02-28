@@ -634,7 +634,7 @@ Even if no messaging platforms are configured, the gateway stays running for cro
 
 ### 🛡️ Exec Approval (Messaging Platforms)
 
-When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
+When the agent tries to run a potentially dangerous command (`rm -rf`, `chmod 777`, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
 
 > ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
 
@@ -942,7 +942,7 @@ python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
 
 ### 🧪 Atropos RL Environments
 
-Hermes-Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using hermes-agent's tools.
+Hermes Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using Hermes Agent's tools.
 
 #### Architecture
 

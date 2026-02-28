@@ -247,8 +247,9 @@ class ProcessRegistry:
         # Run the command in the sandbox with output capture
         log_path = f"/tmp/hermes_bg_{session.id}.log"
         pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        safe_command = command.replace("'", "'\''")
         bg_command = (
-            f"nohup bash -c '{command}' > {log_path} 2>&1 & "
+            f"nohup bash -c '{safe_command}' > {log_path} 2>&1 & "
             f"echo $! > {pid_path} && cat {pid_path}"
         )
 

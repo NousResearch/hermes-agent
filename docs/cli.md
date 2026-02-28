@@ -34,7 +34,7 @@ The CLI is implemented in `cli.py` and uses:
 - **prompt_toolkit** - Fixed input area with command history
 - **KawaiiSpinner** - Animated feedback during operations
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │  HERMES-AGENT ASCII Logo                        │
 │  ┌─────────────┐ ┌────────────────────────────┐ │

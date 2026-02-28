@@ -791,7 +791,7 @@ This is probably a PR to vercel-labs/skills — they already support 35+ agents 
 
 ### 7. Marketplace.json for Hermes Skills
 
-Create a `.claude-plugin/marketplace.json` in the Hermes-Agent repo so Hermes's built-in skills (axolotl, vllm, etc.) are installable by Claude Code users too:
+Create a `.claude-plugin/marketplace.json` in the Hermes Agent repo so Hermes's built-in skills (axolotl, vllm, etc.) are installable by Claude Code users too:
 
 ```json
 {

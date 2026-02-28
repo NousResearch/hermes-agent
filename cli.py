@@ -793,7 +793,9 @@ class HermesCLI:
         # Initialize Rich console
         self.console = Console()
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        self.verbose = verbose if verbose is not None else CLI_CONFIG["agent"].get("verbose", False)
+        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
+        self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
+        self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
@@ -1697,24 +1699,35 @@ class HermesCLI:
         return True
     
     def _toggle_verbose(self):
-        """Toggle verbose mode on/off at runtime."""
-        self.verbose = not self.verbose
+        """Cycle tool progress mode: off → new → all → verbose → off."""
+        cycle = ["off", "new", "all", "verbose"]
+        try:
+            idx = cycle.index(self.tool_progress_mode)
+        except ValueError:
+            idx = 2  # default to "all"
+        self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
+        self.verbose = self.tool_progress_mode == "verbose"
 
         if self.agent:
             self.agent.verbose_logging = self.verbose
             self.agent.quiet_mode = not self.verbose
 
-        # Reconfigure logging level to match new state
+        labels = {
+            "off": "[dim]Tool progress: OFF[/] — silent mode, just the final response.",
+            "new": "[yellow]Tool progress: NEW[/] — show each new tool (skip repeats).",
+            "all": "[green]Tool progress: ALL[/] — show every tool call.",
+            "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, and debug logs.",
+        }
+        self.console.print(labels.get(self.tool_progress_mode, ""))
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
                 logging.getLogger(noisy).setLevel(logging.WARNING)
-            self.console.print("[bold green]Verbose mode ON[/] — tool calls, parameters, and results will be shown.")
         else:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
-            self.console.print("[dim]Verbose mode OFF[/] — returning to normal display.")
 
     def _clarify_callback(self, question, choices):
         """

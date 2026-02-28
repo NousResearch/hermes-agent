@@ -1462,9 +1462,24 @@ class GatewayRunner:
             default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
             enabled_toolsets = [default_toolset]
         
-        # Check if tool progress notifications are enabled
-        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "true").lower() in ("1", "true", "yes")
-        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "all")  # "all" or "new" (only new tools)
+        # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
+        # Falls back to env vars for backward compatibility
+        _progress_cfg = {}
+        try:
+            _tp_cfg_path = _hermes_home / "config.yaml"
+            if _tp_cfg_path.exists():
+                import yaml as _tp_yaml
+                with open(_tp_cfg_path) as _tp_f:
+                    _tp_data = _tp_yaml.safe_load(_tp_f) or {}
+                _progress_cfg = _tp_data.get("display", {})
+        except Exception:
+            pass
+        progress_mode = (
+            _progress_cfg.get("tool_progress")
+            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
+            or "all"
+        )
+        tool_progress_enabled = progress_mode != "off"
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -1627,6 +1642,7 @@ class GatewayRunner:
                 base_url=base_url,
                 max_iterations=max_iterations,
                 quiet_mode=True,
+                verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,

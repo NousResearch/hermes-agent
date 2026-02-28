@@ -324,12 +324,12 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
+    if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
     if os.getenv("CHUTES_API_KEY"):
         return "chutes"
     if os.getenv("NVIDIA_API_KEY"):
         return "nvidia"
-    if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
-        return "openrouter"
 
     return "openrouter"
 

@@ -640,9 +640,9 @@ def run_setup_wizard(args):
 
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
+        "OpenRouter API key (100+ models, pay-per-use)",
         "Chutes.ai API key (400+ open-source models incl. Hermes, DeepSeek, Llama)",
         "NVIDIA NIM API key (optimized inference via build.nvidia.com)",
-        "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
     if keep_label:
@@ -701,7 +701,34 @@ def run_setup_wizard(args):
             print_info("You can try again later with: hermes login")
             selected_provider = None
 
-    elif provider_idx == 1:  # Chutes.ai
+    elif provider_idx == 1:  # OpenRouter
+        selected_provider = "openrouter"
+        print()
+        print_header("OpenRouter API Key")
+        print_info("OpenRouter provides access to 100+ models from multiple providers.")
+        print_info("Get your API key at: https://openrouter.ai/keys")
+
+        if existing_or:
+            print_info(f"Current: {existing_or[:8]}... (configured)")
+            if prompt_yes_no("Update OpenRouter API key?", False):
+                api_key = prompt("  OpenRouter API key", password=True)
+                if api_key:
+                    save_env_value("OPENROUTER_API_KEY", api_key)
+                    print_success("OpenRouter API key updated")
+        else:
+            api_key = prompt("  OpenRouter API key", password=True)
+            if api_key:
+                save_env_value("OPENROUTER_API_KEY", api_key)
+                print_success("OpenRouter API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear any custom endpoint if switching to OpenRouter
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+    elif provider_idx == 2:  # Chutes.ai
         selected_provider = "chutes"
         print()
         print_header("Chutes.ai API Key")
@@ -731,7 +758,7 @@ def run_setup_wizard(args):
         # Clear OpenRouter as primary if switching to Chutes
         # (OPENROUTER_API_KEY can stay for tools)
 
-    elif provider_idx == 2:  # NVIDIA NIM
+    elif provider_idx == 3:  # NVIDIA NIM
         selected_provider = "nvidia"
         print()
         print_header("NVIDIA NIM API Key")
@@ -757,33 +784,6 @@ def run_setup_wizard(args):
         from hermes_constants import NVIDIA_BASE_URL
         save_env_value("OPENAI_BASE_URL", NVIDIA_BASE_URL)
         save_env_value("OPENAI_API_KEY", get_env_value("NVIDIA_API_KEY") or "")
-
-    elif provider_idx == 3:  # OpenRouter
-        selected_provider = "openrouter"
-        print()
-        print_header("OpenRouter API Key")
-        print_info("OpenRouter provides access to 100+ models from multiple providers.")
-        print_info("Get your API key at: https://openrouter.ai/keys")
-
-        if existing_or:
-            print_info(f"Current: {existing_or[:8]}... (configured)")
-            if prompt_yes_no("Update OpenRouter API key?", False):
-                api_key = prompt("  OpenRouter API key", password=True)
-                if api_key:
-                    save_env_value("OPENROUTER_API_KEY", api_key)
-                    print_success("OpenRouter API key updated")
-        else:
-            api_key = prompt("  OpenRouter API key", password=True)
-            if api_key:
-                save_env_value("OPENROUTER_API_KEY", api_key)
-                print_success("OpenRouter API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear any custom endpoint if switching to OpenRouter
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
 
     elif provider_idx == 4:  # Custom endpoint
         selected_provider = "custom"

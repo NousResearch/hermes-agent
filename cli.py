@@ -1688,12 +1688,34 @@ class HermesCLI:
             self._handle_skills_command(cmd_original)
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
+        elif cmd_lower == "/verbose":
+            self._toggle_verbose()
         else:
             self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
             self.console.print("[dim #B8860B]Type /help for available commands[/]")
         
         return True
     
+    def _toggle_verbose(self):
+        """Toggle verbose mode on/off at runtime."""
+        self.verbose = not self.verbose
+
+        if self.agent:
+            self.agent.verbose_logging = self.verbose
+            self.agent.quiet_mode = not self.verbose
+
+        # Reconfigure logging level to match new state
+        if self.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+            for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
+                logging.getLogger(noisy).setLevel(logging.WARNING)
+            self.console.print("[bold green]Verbose mode ON[/] — tool calls, parameters, and results will be shown.")
+        else:
+            logging.getLogger().setLevel(logging.INFO)
+            for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
+                logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+            self.console.print("[dim]Verbose mode OFF[/] — returning to normal display.")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.

@@ -447,6 +447,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_memory": int(os.getenv("TERMINAL_CONTAINER_MEMORY", "5120")),     # MB (default 5GB)
         "container_disk": int(os.getenv("TERMINAL_CONTAINER_DISK", "51200")),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
+        "docker_volumes": json.loads(os.getenv("TERMINAL_DOCKER_VOLUMES", "[]")),
     }
 
 
@@ -473,6 +474,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
+    volumes = cc.get("docker_volumes", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -482,6 +484,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            volumes=volumes,
         )
     
     elif env_type == "singularity":
@@ -853,6 +856,7 @@ def terminal_tool(
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "docker_volumes": config.get("docker_volumes", []),
                             }
 
                         new_env = _create_environment(

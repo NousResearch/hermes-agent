@@ -130,13 +130,13 @@ class TestBuildServicePayload:
         payload = _build_service_payload()
         assert payload == {}
 
-    def test_data_does_not_overwrite_entity_id(self):
+    def test_entity_id_param_takes_precedence_over_data(self):
         payload = _build_service_payload(
             entity_id="light.a",
             data={"entity_id": "light.b"},
         )
-        # data.update overwrites entity_id set earlier
-        assert payload["entity_id"] == "light.b"
+        # explicit entity_id parameter wins over data["entity_id"]
+        assert payload["entity_id"] == "light.a"
 
 
 # ---------------------------------------------------------------------------

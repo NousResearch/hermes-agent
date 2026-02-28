@@ -62,6 +62,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Honcho user context (gated on honcho being active via check_fn)
     "query_user_context",
+    # System vibe check
+    "vibe_check",
 ]
 
 
@@ -191,6 +193,12 @@ TOOLSETS = {
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
         "tools": ["query_user_context"],
+        "includes": []
+    },
+
+    "system": {
+        "description": "System and project health diagnostics",
+        "tools": ["vibe_check"],
         "includes": []
     },
     

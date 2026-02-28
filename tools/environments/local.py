@@ -1,6 +1,7 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -8,6 +9,9 @@ import threading
 import time
 
 from tools.environments.base import BaseEnvironment
+
+# Detect platform once at import time.
+_IS_WINDOWS = platform.system() == "Windows"
 
 # Noise lines emitted by interactive shells when stdin is not a terminal.
 # Filtered from output to keep tool results clean.
@@ -27,6 +31,41 @@ def _clean_shell_noise(output: str) -> str:
     return output
 
 
+def _kill_process_tree(proc: subprocess.Popen, *, force: bool = False) -> None:
+    """Terminate a process and its entire process group/tree.
+
+    On POSIX systems this sends SIGTERM (or SIGKILL when *force* is True) to
+    the entire process group so child processes spawned by the shell are also
+    cleaned up.  On Windows, ``proc.kill()`` is used directly because there is
+    no ``os.killpg`` equivalent in the standard library.
+
+    Args:
+        proc: The subprocess to terminate.
+        force: If True, send SIGKILL (POSIX) or ``proc.kill()`` immediately
+               without attempting a graceful SIGTERM first.
+    """
+    if _IS_WINDOWS:
+        # Windows: terminate the process directly.  For more thorough child
+        # cleanup a future improvement could use ``taskkill /F /T /PID``.
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return
+
+    # POSIX: send signal to the whole process group.
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        # Fallback: kill the process directly if we can't reach the group.
+        try:
+            proc.kill() if force else proc.terminate()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -36,6 +75,7 @@ class LocalEnvironment(BaseEnvironment):
     - stdin_data support for piping content (bypasses ARG_MAX limits)
     - sudo -S transform via SUDO_PASSWORD env var
     - Uses interactive login shell so full user env is available
+    - Cross-platform: works on Linux, macOS, and Windows
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
@@ -51,15 +91,32 @@ class LocalEnvironment(BaseEnvironment):
         exec_command = self._prepare_command(command)
 
         try:
-            # Use the user's shell as an interactive login shell (-lic) so
-            # that ALL rc files are sourced — including content after the
-            # interactive guard in .bashrc (case $- in *i*)..esac) where
-            # tools like nvm, pyenv, and cargo install their init scripts.
-            # -l alone isn't enough: .profile sources .bashrc, but the guard
-            # returns early because the shell isn't interactive.
-            user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+            if _IS_WINDOWS:
+                # On Windows, use cmd.exe with /C to run the command.
+                # There is no interactive login shell equivalent, so tools
+                # relying on shell init scripts (nvm, pyenv, etc.) may need
+                # the user to configure PATH explicitly.
+                shell_cmd = ["cmd.exe", "/C", exec_command]
+                popen_kwargs: dict = {}
+            else:
+                # Use the user's shell as an interactive login shell (-lic) so
+                # that ALL rc files are sourced — including content after the
+                # interactive guard in .bashrc (case $- in *i*)..esac) where
+                # tools like nvm, pyenv, and cargo install their init scripts.
+                # -l alone isn't enough: .profile sources .bashrc, but the guard
+                # returns early because the shell isn't interactive.
+                user_shell = (
+                    os.environ.get("SHELL")
+                    or shutil.which("bash")
+                    or "/bin/bash"
+                )
+                shell_cmd = [user_shell, "-lic", exec_command]
+                # setsid creates a new process group so we can kill all
+                # child processes atomically via killpg.  POSIX-only.
+                popen_kwargs = {"preexec_fn": os.setsid}
+
             proc = subprocess.Popen(
-                [user_shell, "-lic", exec_command],
+                shell_cmd,
                 text=True,
                 cwd=work_dir,
                 env=os.environ | self.env,
@@ -68,7 +125,7 @@ class LocalEnvironment(BaseEnvironment):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-                preexec_fn=os.setsid,
+                **popen_kwargs,
             )
 
             if stdin_data is not None:
@@ -100,25 +157,18 @@ class LocalEnvironment(BaseEnvironment):
 
             while proc.poll() is None:
                 if _interrupt_event.is_set():
+                    _kill_process_tree(proc)
                     try:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pgid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        proc.kill()
+                        proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        _kill_process_tree(proc, force=True)
                     reader.join(timeout=2)
                     return {
                         "output": "".join(_output_chunks) + "\n[Command interrupted — user sent a new message]",
                         "returncode": 130,
                     }
                 if time.monotonic() > deadline:
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        proc.kill()
+                    _kill_process_tree(proc)
                     reader.join(timeout=2)
                     return self._timeout_result(effective_timeout)
                 time.sleep(0.2)

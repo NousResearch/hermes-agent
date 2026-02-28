@@ -325,7 +325,7 @@ The `text_to_speech` tool generates audio that the gateway delivers as native vo
 
 Voice and provider are configured by the user in `~/.hermes/config.yaml` under the `tts:` key. The model only sends text; it does not choose the voice.
 
-The tool returns a `MEDIA:<path>` tag that the gateway send pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
+The tool returns a `MEDIA:<path>` tag that the gateway sending pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
 
 **Telegram voice bubbles & ffmpeg:**
 

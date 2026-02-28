@@ -94,6 +94,7 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.honcho_tools",
+        "tools.homeassistant_tool",
     ]
     import importlib
     for mod_name in _modules:

@@ -469,7 +469,14 @@ class GatewayRunner:
                 logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
             return SlackAdapter(config)
-        
+
+        elif platform == Platform.HOMEASSISTANT:
+            from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
+            if not check_ha_requirements():
+                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
+                return None
+            return HomeAssistantAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:

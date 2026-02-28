@@ -46,6 +46,7 @@ slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
 pty = ["ptyprocess>=0.7.0"]
+honcho = ["honcho-ai>=2.0.1"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
@@ -55,6 +56,7 @@ all = [
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[honcho]",
 ]
 
 [project.scripts]
@@ -65,4 +67,11 @@ hermes-agent = "run_agent:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants"]
 
 [tool.setuptools.packages.find]
-include = ["tools", "hermes_cli", "gateway", "cron"]
+include = ["tools", "hermes_cli", "gateway", "cron", "honcho_integration"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests requiring external services (API keys, Modal, etc.)",
+]
+addopts = "-m 'not integration'"

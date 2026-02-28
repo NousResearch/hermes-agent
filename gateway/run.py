@@ -28,25 +28,56 @@ from typing import Dict, Optional, Any, List
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Resolve Hermes home directory (respects HERMES_HOME override)
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
 # Load environment variables from ~/.hermes/.env first
 from dotenv import load_dotenv
-_env_path = Path.home() / '.hermes' / '.env'
+_env_path = _hermes_home / '.env'
 if _env_path.exists():
-    load_dotenv(_env_path)
+    try:
+        load_dotenv(_env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(_env_path, encoding="latin-1")
 # Also try project .env as fallback
 load_dotenv()
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# Values already set in the environment (from .env or shell) take precedence.
-_config_path = Path.home() / '.hermes' / 'config.yaml'
+# config.yaml is authoritative for terminal settings — overrides .env.
+_config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
         with open(_config_path) as _f:
             _cfg = _yaml.safe_load(_f) or {}
+        # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
+        # Terminal config is nested — bridge to TERMINAL_* env vars.
+        # config.yaml overrides .env for these since it's the documented config path.
+        _terminal_cfg = _cfg.get("terminal", {})
+        if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            _terminal_env_map = {
+                "backend": "TERMINAL_ENV",
+                "cwd": "TERMINAL_CWD",
+                "timeout": "TERMINAL_TIMEOUT",
+                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+                "docker_image": "TERMINAL_DOCKER_IMAGE",
+                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+                "modal_image": "TERMINAL_MODAL_IMAGE",
+                "ssh_host": "TERMINAL_SSH_HOST",
+                "ssh_user": "TERMINAL_SSH_USER",
+                "ssh_port": "TERMINAL_SSH_PORT",
+                "ssh_key": "TERMINAL_SSH_KEY",
+                "container_cpu": "TERMINAL_CONTAINER_CPU",
+                "container_memory": "TERMINAL_CONTAINER_MEMORY",
+                "container_disk": "TERMINAL_CONTAINER_DISK",
+                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            }
+            for _cfg_key, _env_var in _terminal_env_map.items():
+                if _cfg_key in _terminal_cfg:
+                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -103,6 +134,7 @@ class GatewayRunner:
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            on_auto_reset=self._flush_memories_before_reset,
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
@@ -117,6 +149,14 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
         
+        # Initialize session database for session_search tool support
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
+        
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
@@ -124,6 +164,66 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+    
+    def _flush_memories_before_reset(self, old_entry):
+        """Prompt the agent to save memories/skills before an auto-reset.
+        
+        Called synchronously by SessionStore before destroying an expired session.
+        Loads the transcript, gives the agent a real turn with memory + skills
+        tools, and explicitly asks it to preserve anything worth keeping.
+        """
+        try:
+            history = self.session_store.load_transcript(old_entry.session_id)
+            if not history or len(history) < 4:
+                return
+
+            from run_agent import AIAgent
+            _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+            _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+
+            if not _flush_api_key:
+                return
+
+            tmp_agent = AIAgent(
+                model=_flush_model,
+                api_key=_flush_api_key,
+                base_url=_flush_base_url,
+                max_iterations=8,
+                quiet_mode=True,
+                enabled_toolsets=["memory", "skills"],
+                session_id=old_entry.session_id,
+            )
+
+            # Build conversation history from transcript
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+
+            # Give the agent a real turn to think about what to save
+            flush_prompt = (
+                "[System: This session is about to be automatically reset due to "
+                "inactivity or a scheduled daily reset. The conversation context "
+                "will be cleared after this turn.\n\n"
+                "Review the conversation above and:\n"
+                "1. Save any important facts, preferences, or decisions to memory "
+                "(user profile or your notes) that would be useful in future sessions.\n"
+                "2. If you discovered a reusable workflow or solved a non-trivial "
+                "problem, consider saving it as a skill.\n"
+                "3. If nothing is worth saving, that's fine — just skip.\n\n"
+                "Do NOT respond to the user. Just use the memory and skill_manage "
+                "tools if needed, then stop.]"
+            )
+
+            tmp_agent.run_conversation(
+                user_message=flush_prompt,
+                conversation_history=msgs,
+            )
+            logger.info("Pre-reset save completed for session %s", old_entry.session_id)
+        except Exception as e:
+            logger.debug("Pre-reset save failed for session %s: %s", old_entry.session_id, e)
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -138,7 +238,7 @@ class GatewayRunner:
         if not file_path:
             try:
                 import yaml as _y
-                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
                     with open(cfg_path) as _f:
                         cfg = _y.safe_load(_f) or {}
@@ -149,7 +249,7 @@ class GatewayRunner:
             return []
         path = Path(file_path).expanduser()
         if not path.is_absolute():
-            path = Path.home() / ".hermes" / path
+            path = _hermes_home / path
         if not path.exists():
             logger.warning("Prefill messages file not found: %s", path)
             return []
@@ -176,7 +276,7 @@ class GatewayRunner:
             return prompt
         try:
             import yaml as _y
-            cfg_path = Path.home() / ".hermes" / "config.yaml"
+            cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path) as _f:
                     cfg = _y.safe_load(_f) or {}
@@ -197,7 +297,7 @@ class GatewayRunner:
         if not effort:
             try:
                 import yaml as _y
-                cfg_path = Path.home() / ".hermes" / "config.yaml"
+                cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
                     with open(cfg_path) as _f:
                         cfg = _y.safe_load(_f) or {}
@@ -425,7 +525,11 @@ class GatewayRunner:
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
-        return user_id in allowed_ids
+        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+        return bool(check_ids & allowed_ids)
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -519,7 +623,12 @@ class GatewayRunner:
             return await self._handle_set_home_command(event)
         
         # Check for pending exec approval responses
-        session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
+        if source.chat_type != "dm":
+            session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform and source.platform.value == "whatsapp" and source.chat_id:
+            session_key_preview = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            session_key_preview = f"agent:main:{source.platform.value}:dm"
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -633,7 +742,39 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
-        
+
+        # -----------------------------------------------------------------
+        # Enrich document messages with context notes for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                if not (mtype.startswith("application/") or mtype.startswith("text/")):
+                    continue
+                # Extract display filename by stripping the doc_{uuid12}_ prefix
+                import os as _os
+                basename = _os.path.basename(path)
+                # Format: doc_<12hex>_<original_filename>
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
+                message_text = f"{context_note}\n\n{message_text}"
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -762,9 +903,15 @@ class GatewayRunner:
                 if old_history:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
+                    # Resolve credentials so the flush agent can reach the LLM
+                    _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+                    _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                            model=_flush_model,
+                            api_key=_flush_api_key,
+                            base_url=_flush_base_url,
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
@@ -856,34 +1003,79 @@ class GatewayRunner:
     
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
+        import yaml
+
         args = event.get_command_args().strip()
-        current = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        
+        config_path = _hermes_home / 'config.yaml'
+
+        # Resolve current model the same way the agent init does:
+        # env vars first, then config.yaml always overrides.
+        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        try:
+            if config_path.exists():
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, str):
+                    current = model_cfg
+                elif isinstance(model_cfg, dict):
+                    current = model_cfg.get("default", current)
+        except Exception:
+            pass
+
         if not args:
             return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
-        
+
+        if "/" not in args:
+            return (
+                f"🤖 Invalid model format: `{args}`\n\n"
+                f"Use `provider/model-name` format, e.g.:\n"
+                f"• `anthropic/claude-sonnet-4`\n"
+                f"• `google/gemini-2.5-pro`\n"
+                f"• `openai/gpt-4o`"
+            )
+
+        # Write to config.yaml (source of truth), same pattern as CLI save_config_value.
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    user_config = yaml.safe_load(f) or {}
+            if "model" not in user_config or not isinstance(user_config["model"], dict):
+                user_config["model"] = {}
+            user_config["model"]["default"] = args
+            with open(config_path, 'w') as f:
+                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            return f"⚠️ Failed to save model change: {e}"
+
+        # Also set env var so code reading it before the next agent init sees the update.
         os.environ["HERMES_MODEL"] = args
+
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
+        import yaml
+
         args = event.get_command_args().strip().lower()
-        
+        config_path = _hermes_home / 'config.yaml'
+
         try:
-            import yaml
-            config_path = Path.home() / '.hermes' / 'config.yaml'
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
+                config = {}
                 personalities = {}
         except Exception:
+            config = {}
             personalities = {}
-        
+
         if not personalities:
             return "No personalities configured in `~/.hermes/config.yaml`"
-        
+
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
             for name, prompt in personalities.items():
@@ -891,11 +1083,25 @@ class GatewayRunner:
                 lines.append(f"• `{name}` — {preview}")
             lines.append(f"\nUsage: `/personality <name>`")
             return "\n".join(lines)
-        
+
         if args in personalities:
-            os.environ["HERMES_PERSONALITY"] = personalities[args]
+            new_prompt = personalities[args]
+
+            # Write to config.yaml, same pattern as CLI save_config_value.
+            try:
+                if "agent" not in config or not isinstance(config.get("agent"), dict):
+                    config["agent"] = {}
+                config["agent"]["system_prompt"] = new_prompt
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return f"⚠️ Failed to save personality change: {e}"
+
+            # Update in-memory so it takes effect on the very next message.
+            self._ephemeral_system_prompt = new_prompt
+
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
-        
+
         available = ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
@@ -968,7 +1174,7 @@ class GatewayRunner:
         # Save to config.yaml
         try:
             import yaml
-            config_path = Path.home() / '.hermes' / 'config.yaml'
+            config_path = _hermes_home / 'config.yaml'
             user_config = {}
             if config_path.exists():
                 with open(config_path) as f:
@@ -1230,7 +1436,7 @@ class GatewayRunner:
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
         try:
-            config_path = Path.home() / '.hermes' / 'config.yaml'
+            config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 import yaml
                 with open(config_path, 'r') as f:
@@ -1256,9 +1462,24 @@ class GatewayRunner:
             default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
             enabled_toolsets = [default_toolset]
         
-        # Check if tool progress notifications are enabled
-        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "true").lower() in ("1", "true", "yes")
-        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "all")  # "all" or "new" (only new tools)
+        # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
+        # Falls back to env vars for backward compatibility
+        _progress_cfg = {}
+        try:
+            _tp_cfg_path = _hermes_home / "config.yaml"
+            if _tp_cfg_path.exists():
+                import yaml as _tp_yaml
+                with open(_tp_cfg_path) as _tp_f:
+                    _tp_data = _tp_yaml.safe_load(_tp_f) or {}
+                _progress_cfg = _tp_data.get("display", {})
+        except Exception:
+            pass
+        progress_mode = (
+            _progress_cfg.get("tool_progress")
+            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
+            or "all"
+        )
+        tool_progress_enabled = progress_mode != "off"
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -1376,10 +1597,52 @@ class GatewayRunner:
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
             
+            # Re-read .env and config for fresh credentials (gateway is long-lived,
+            # keys may change without restart).
+            try:
+                load_dotenv(_env_path, override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(_env_path, override=True, encoding="latin-1")
+            except Exception:
+                pass
+
+            # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+
+            try:
+                import yaml as _y
+                _cfg_path = _hermes_home / "config.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path) as _f:
+                        _cfg = _y.safe_load(_f) or {}
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
+                        base_url = _model_cfg.get("base_url", base_url)
+                    # Check if provider is nous — resolve OAuth credentials
+                    provider = _model_cfg.get("provider", "") if isinstance(_model_cfg, dict) else ""
+                    if provider == "nous":
+                        try:
+                            from hermes_cli.auth import resolve_nous_runtime_credentials
+                            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
+                            api_key = creds.get("api_key", api_key)
+                            base_url = creds.get("base_url", base_url)
+                        except Exception as nous_err:
+                            logger.warning("Nous Portal credential resolution failed: %s", nous_err)
+            except Exception:
+                pass
+
             agent = AIAgent(
-                model=os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6"),
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
                 max_iterations=max_iterations,
                 quiet_mode=True,
+                verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
@@ -1387,6 +1650,8 @@ class GatewayRunner:
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 platform=platform_key,
+                honcho_session_key=session_key,
+                session_db=self._session_db,
             )
             
             # Store agent reference for interrupt support
@@ -1597,10 +1862,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     needing a separate `hermes cron daemon` or system cron entry.
 
     Also refreshes the channel directory every 5 minutes and prunes the
-    image/audio cache once per hour.
+    image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -1629,6 +1894,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
+            try:
+                removed = cleanup_document_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Document cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Document cache cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
@@ -1643,7 +1914,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
     # Configure rotating file log so gateway output is persisted for debugging
-    log_dir = Path.home() / '.hermes' / 'logs'
+    log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
         log_dir / 'gateway.log',

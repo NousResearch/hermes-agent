@@ -31,10 +31,17 @@ from agent.auxiliary_client import get_text_auxiliary_client
 _aux_client, _SUMMARIZER_MODEL = get_text_auxiliary_client()
 _async_aux_client: AsyncOpenAI | None = None
 if _aux_client is not None:
-    _async_aux_client = AsyncOpenAI(
-        api_key=_aux_client.api_key,
-        base_url=str(_aux_client.base_url),
-    )
+    _async_kwargs = {
+        "api_key": _aux_client.api_key,
+        "base_url": str(_aux_client.base_url),
+    }
+    if "openrouter" in str(_aux_client.base_url).lower():
+        _async_kwargs["default_headers"] = {
+            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+            "X-OpenRouter-Title": "Hermes Agent",
+            "X-OpenRouter-Categories": "cli-agent",
+        }
+    _async_aux_client = AsyncOpenAI(**_async_kwargs)
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 2000
 
@@ -163,14 +170,17 @@ async def _summarize_session(
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
+            _extra = get_auxiliary_extra_body()
             response = await _async_aux_client.chat.completions.create(
                 model=_SUMMARIZER_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                **({} if not _extra else {"extra_body": _extra}),
                 temperature=0.1,
-                max_tokens=MAX_SUMMARY_TOKENS,
+                **auxiliary_max_tokens_param(MAX_SUMMARY_TOKENS),
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

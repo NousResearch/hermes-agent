@@ -24,15 +24,64 @@ Design:
 """
 
 import json
+import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Where memory files live
 MEMORY_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+
+# ---------------------------------------------------------------------------
+# Memory content scanning — lightweight check for injection/exfiltration
+# in content that gets injected into the system prompt.
+# ---------------------------------------------------------------------------
+
+_MEMORY_THREAT_PATTERNS = [
+    # Prompt injection
+    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
+    (r'you\s+are\s+now\s+', "role_hijack"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    # Exfiltration via curl/wget with secrets
+    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
+    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
+    # Persistence via shell rc
+    (r'authorized_keys', "ssh_backdoor"),
+    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
+    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
+]
+
+# Subset of invisible chars for injection detection
+_INVISIBLE_CHARS = {
+    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+}
+
+
+def _scan_memory_content(content: str) -> Optional[str]:
+    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    # Check invisible unicode
+    for char in _INVISIBLE_CHARS:
+        if char in content:
+            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
+
+    # Check threat patterns
+    for pattern, pid in _MEMORY_THREAT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
+
+    return None
 
 
 class MemoryStore:
@@ -108,6 +157,11 @@ class MemoryStore:
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
+        # Scan for injection/exfiltration before accepting
+        scan_error = _scan_memory_content(content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
         entries = self._entries_for(target)
         limit = self._char_limit(target)
 
@@ -146,6 +200,11 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+
+        # Scan replacement content for injection/exfiltration
+        scan_error = _scan_memory_content(new_content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
 
         entries = self._entries_for(target)
         matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -286,7 +345,9 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        entries = [e.strip() for e in raw.split("§")]
+        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
+        # alone would incorrectly split entries that contain "§" in their content.
+        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 Instructions for AI coding assistants (GitHub Copilot, Cursor, etc.) and human developers.
 
-Hermes-Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
+Hermes Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
 
 ## Development Environment
 
@@ -248,9 +248,7 @@ DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
 HERMES_MAX_ITERATIONS=60                  # Max tool-calling iterations
 MESSAGING_CWD=/home/myuser                # Terminal working directory for messaging
 
-# Tool Progress (optional)
-HERMES_TOOL_PROGRESS=true                 # Send progress messages
-HERMES_TOOL_PROGRESS_MODE=new             # "new" or "all"
+# Tool progress is configured in config.yaml (display.tool_progress: off|new|all|verbose)
 ```
 
 ### Working Directory Behavior
@@ -301,7 +299,7 @@ Files: `gateway/hooks.py`
 
 ### Tool Progress Notifications
 
-When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+When `tool_progress` is enabled in `config.yaml`, the bot sends status messages as it works:
 - `💻 \`ls -la\`...` (terminal commands show the actual command)
 - `🔍 web_search...`
 - `📄 web_extract...`
@@ -411,8 +409,7 @@ Terminal tool configuration (in `~/.hermes/config.yaml`):
 Agent behavior (in `~/.hermes/.env`):
 - `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 60)
 - `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
-- `HERMES_TOOL_PROGRESS` - Enable tool progress messages (`true`/`false`)
-- `HERMES_TOOL_PROGRESS_MODE` - Progress mode: `new` (tool changes) or `all`
+- `display.tool_progress` in config.yaml - Tool progress: `off`, `new`, `all`, `verbose`
 - `OPENAI_API_KEY` - Voice transcription (Whisper STT)
 - `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` - Slack integration (Socket Mode)
 - `SLACK_ALLOWED_USERS` - Comma-separated Slack user IDs

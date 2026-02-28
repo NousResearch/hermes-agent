@@ -98,9 +98,36 @@ def _run_single_child(
 
     child_prompt = _build_child_system_prompt(goal, context)
 
+    # Build a progress callback that surfaces subagent tool activity.
+    # CLI: updates the parent's delegate spinner text.
+    # Gateway: forwards to the parent's progress callback (feeds message queue).
+    parent_progress_cb = getattr(parent_agent, 'tool_progress_callback', None)
+    def _child_progress(tool_name: str, preview: str = None):
+        tag = f"[subagent-{task_index+1}] {tool_name}"
+        # Update CLI spinner
+        spinner = getattr(parent_agent, '_delegate_spinner', None)
+        if spinner:
+            detail = f'"{preview}"' if preview else ""
+            try:
+                spinner.update_text(f"🔀 {tag} {detail}")
+            except Exception:
+                pass
+        # Forward to gateway progress queue
+        if parent_progress_cb:
+            try:
+                parent_progress_cb(tag, preview)
+            except Exception:
+                pass
+
     try:
+        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal)
+        parent_api_key = None
+        if hasattr(parent_agent, '_client_kwargs'):
+            parent_api_key = parent_agent._client_kwargs.get("api_key")
+
         child = AIAgent(
             base_url=parent_agent.base_url,
+            api_key=parent_api_key,
             model=model or parent_agent.model,
             max_iterations=max_iterations,
             enabled_toolsets=child_toolsets,
@@ -116,6 +143,7 @@ def _run_single_child(
             providers_ignored=parent_agent.providers_ignored,
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
+            tool_progress_callback=_child_progress,
         )
 
         # Set delegation depth so children can't spawn grandchildren

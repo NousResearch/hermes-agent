@@ -7,6 +7,7 @@ and optional filesystem persistence via `docker commit`/`docker create --image`.
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -30,6 +31,9 @@ _SECURITY_ARGS = [
 ]
 
 
+_storage_opt_ok: Optional[bool] = None  # cached result across instances
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
@@ -44,20 +48,28 @@ class DockerEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "~",
+        cwd: str = "/root",
         timeout: int = 60,
         cpu: float = 0,
         memory: int = 0,
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
+        volumes: list = None,
         network: bool = True,
     ):
+        if cwd == "~":
+            cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._container_id: Optional[str] = None
+        logger.info(f"DockerEnvironment volumes: {volumes}")
+        # Ensure volumes is a list (config.yaml could be malformed)
+        if volumes is not None and not isinstance(volumes, list):
+            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
+            volumes = []
 
         from minisweagent.environments.docker import DockerEnvironment as _Docker
 
@@ -67,8 +79,14 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--cpus", str(cpu)])
         if memory > 0:
             resource_args.extend(["--memory", f"{memory}m"])
-        if disk > 0:
-            resource_args.extend(["--storage-opt", f"size={disk}m"])
+        if disk > 0 and sys.platform != "darwin":
+            if self._storage_opt_supported():
+                resource_args.extend(["--storage-opt", f"size={disk}m"])
+            else:
+                logger.warning(
+                    "Docker storage driver does not support per-container disk limits "
+                    "(requires overlay2 on XFS with pquota). Container will run without disk quota."
+                )
         if not network:
             resource_args.append("--network=none")
 
@@ -99,13 +117,68 @@ class DockerEnvironment(BaseEnvironment):
         # All containers get full security hardening (read-only root + writable
         # mounts for the workspace). Persistence uses Docker volumes, not
         # filesystem layer commits, so --read-only is always safe.
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
+        # User-configured volume mounts (from config.yaml docker_volumes)
+        volume_args = []
+        for vol in (volumes or []):
+            if not isinstance(vol, str):
+                logger.warning(f"Docker volume entry is not a string: {vol!r}")
+                continue
+            vol = vol.strip()
+            if not vol:
+                continue
+            if ":" in vol:
+                volume_args.extend(["-v", vol])
+            else:
+                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+
+        logger.info(f"Docker volume_args: {volume_args}")
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        logger.info(f"Docker run_args: {all_run_args}")
 
         self._inner = _Docker(
-            image=effective_image, cwd=cwd, timeout=timeout,
+            image=image, cwd=cwd, timeout=timeout,
             run_args=all_run_args,
         )
         self._container_id = self._inner.container_id
+
+    @staticmethod
+    def _storage_opt_supported() -> bool:
+        """Check if Docker's storage driver supports --storage-opt size=.
+        
+        Only overlay2 on XFS with pquota supports per-container disk quotas.
+        Ubuntu (and most distros) default to ext4, where this flag errors out.
+        """
+        global _storage_opt_ok
+        if _storage_opt_ok is not None:
+            return _storage_opt_ok
+        try:
+            result = subprocess.run(
+                ["docker", "info", "--format", "{{.Driver}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            driver = result.stdout.strip().lower()
+            if driver != "overlay2":
+                _storage_opt_ok = False
+                return False
+            # overlay2 only supports storage-opt on XFS with pquota.
+            # Probe by attempting a dry-ish run — the fastest reliable check.
+            probe = subprocess.run(
+                ["docker", "create", "--storage-opt", "size=1m", "hello-world"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if probe.returncode == 0:
+                # Clean up the created container
+                container_id = probe.stdout.strip()
+                if container_id:
+                    subprocess.run(["docker", "rm", container_id],
+                                   capture_output=True, timeout=5)
+                _storage_opt_ok = True
+            else:
+                _storage_opt_ok = False
+        except Exception:
+            _storage_opt_ok = False
+        logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
+        return _storage_opt_ok
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,

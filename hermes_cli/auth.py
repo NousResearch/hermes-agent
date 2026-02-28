@@ -923,7 +923,7 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
-    except ImportError:
+    except (ImportError, NotImplementedError):
         pass
 
     # Fallback: numbered list

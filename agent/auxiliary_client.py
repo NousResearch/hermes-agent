@@ -28,6 +28,21 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+# OpenRouter app attribution headers
+_OR_HEADERS = {
+    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+    "X-OpenRouter-Title": "Hermes Agent",
+    "X-OpenRouter-Categories": "cli-agent",
+}
+
+# Nous Portal extra_body for product attribution.
+# Callers should pass this as extra_body in chat.completions.create()
+# when the auxiliary client is backed by Nous Portal.
+NOUS_EXTRA_BODY = {"tags": ["product=hermes-agent"]}
+
+# Set at resolve time — True if the auxiliary client points to Nous Portal
+auxiliary_is_nous: bool = False
+
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
@@ -78,11 +93,14 @@ def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         logger.debug("Auxiliary text client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL), _OPENROUTER_MODEL
+        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     # 2. Nous Portal
     nous = _read_nous_auth()
     if nous:
+        global auxiliary_is_nous
+        auxiliary_is_nous = True
         logger.debug("Auxiliary text client: Nous Portal")
         return (
             OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
@@ -112,7 +130,8 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
         logger.debug("Auxiliary vision client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL), _OPENROUTER_MODEL
+        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
     # 2. Nous Portal
     nous = _read_nous_auth()
@@ -126,3 +145,29 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     # 3. Nothing suitable
     logger.debug("Auxiliary vision client: none available")
     return None, None
+
+
+def get_auxiliary_extra_body() -> dict:
+    """Return extra_body kwargs for auxiliary API calls.
+    
+    Includes Nous Portal product tags when the auxiliary client is backed
+    by Nous Portal. Returns empty dict otherwise.
+    """
+    return dict(NOUS_EXTRA_BODY) if auxiliary_is_nous else {}
+
+
+def auxiliary_max_tokens_param(value: int) -> dict:
+    """Return the correct max tokens kwarg for the auxiliary client's provider.
+    
+    OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
+    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
+    """
+    custom_base = os.getenv("OPENAI_BASE_URL", "")
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    # Only use max_completion_tokens when the auxiliary client resolved to
+    # direct OpenAI (no OpenRouter key, no Nous auth, custom endpoint is api.openai.com)
+    if (not or_key
+            and _read_nous_auth() is None
+            and "api.openai.com" in custom_base.lower()):
+        return {"max_completion_tokens": value}
+    return {"max_tokens": value}

@@ -812,10 +812,11 @@ def _extract_relevant_content(
         )
 
     try:
+        from agent.auxiliary_client import auxiliary_max_tokens_param
         response = _aux_vision_client.chat.completions.create(
             model=EXTRACTION_MODEL,
             messages=[{"role": "user", "content": extraction_prompt}],
-            max_tokens=4000,
+            **auxiliary_max_tokens_param(4000),
             temperature=0.1,
         )
         return response.choices[0].message.content
@@ -1283,6 +1284,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         )
 
         # Use the sync auxiliary vision client directly
+        from agent.auxiliary_client import auxiliary_max_tokens_param
         response = _aux_vision_client.chat.completions.create(
             model=EXTRACTION_MODEL,
             messages=[
@@ -1294,7 +1296,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
                     ],
                 }
             ],
-            max_tokens=2000,
+            **auxiliary_max_tokens_param(2000),
             temperature=0.1,
         )
         

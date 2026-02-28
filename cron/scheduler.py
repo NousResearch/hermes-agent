@@ -9,11 +9,20 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
-import fcntl
 import logging
 import os
 import sys
 import traceback
+
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -25,8 +34,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 
+# Resolve Hermes home directory (respects HERMES_HOME override)
+_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
-_LOCK_DIR = Path.home() / ".hermes" / "cron"
+_LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
@@ -155,15 +167,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
-        load_dotenv(os.path.expanduser("~/.hermes/.env"), override=True)
+        try:
+            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
         model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
         try:
             import yaml
-            _cfg_path = os.path.expanduser("~/.hermes/config.yaml")
+            _cfg_path = str(_hermes_home / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path) as _f:
                     _cfg = yaml.safe_load(_f) or {}
@@ -173,6 +189,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 elif isinstance(_model_cfg, dict):
                     model = _model_cfg.get("default", model)
                     base_url = _model_cfg.get("base_url", base_url)
+                # Check if provider is nous — resolve OAuth credentials
+                provider = _model_cfg.get("provider", "") if isinstance(_model_cfg, dict) else ""
+                if provider == "nous":
+                    try:
+                        from hermes_cli.auth import resolve_nous_runtime_credentials
+                        creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
+                        api_key = creds.get("api_key", api_key)
+                        base_url = creds.get("base_url", base_url)
+                    except Exception as nous_err:
+                        logging.warning("Nous Portal credential resolution failed for cron: %s", nous_err)
         except Exception:
             pass
 
@@ -253,9 +279,13 @@ def tick(verbose: bool = True) -> int:
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     try:
         lock_fd = open(_LOCK_FILE, "w")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
         return 0
@@ -296,7 +326,13 @@ def tick(verbose: bool = True) -> int:
 
         return executed
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt:
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
         lock_fd.close()
 
 

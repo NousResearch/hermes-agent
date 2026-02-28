@@ -19,9 +19,16 @@ HERMES_HOME = get_hermes_home()
 from dotenv import load_dotenv
 _env_path = get_env_path()
 if _env_path.exists():
-    load_dotenv(_env_path)
-# Also try project .env as fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+    try:
+        load_dotenv(_env_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(_env_path, encoding="latin-1")
+# Also try project .env as dev fallback
+load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+
+# Point mini-swe-agent at ~/.hermes/ so it shares our config
+os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(HERMES_HOME))
+os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -174,7 +181,7 @@ def run_doctor(args):
     print()
     print(color("◆ Directory Structure", Colors.CYAN, Colors.BOLD))
     
-    hermes_home = Path.home() / ".hermes"
+    hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok("~/.hermes directory exists")
     else:
@@ -221,17 +228,6 @@ def run_doctor(args):
             )
             check_ok("Created ~/.hermes/SOUL.md with basic template")
             fixed_count += 1
-    
-    logs_dir = PROJECT_ROOT / "logs"
-    if logs_dir.exists():
-        check_ok("logs/ directory exists (project root)")
-    else:
-        if should_fix:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            check_ok("Created logs/ directory")
-            fixed_count += 1
-        else:
-            check_warn("logs/ not found", "(will be created on first use)")
     
     # Check memory directory
     memories_dir = hermes_home / "memories"
@@ -341,6 +337,41 @@ def run_doctor(args):
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     
+    # npm audit for all Node.js packages
+    if shutil.which("npm"):
+        npm_dirs = [
+            (PROJECT_ROOT, "Browser tools (agent-browser)"),
+            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+        ]
+        for npm_dir, label in npm_dirs:
+            if not (npm_dir / "node_modules").exists():
+                continue
+            try:
+                audit_result = subprocess.run(
+                    ["npm", "audit", "--json"],
+                    cwd=str(npm_dir),
+                    capture_output=True, text=True, timeout=30,
+                )
+                import json as _json
+                audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
+                vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
+                critical = vuln_count.get("critical", 0)
+                high = vuln_count.get("high", 0)
+                moderate = vuln_count.get("moderate", 0)
+                total = critical + high + moderate
+                if total == 0:
+                    check_ok(f"{label} deps", "(no known vulnerabilities)")
+                elif critical > 0 or high > 0:
+                    check_warn(
+                        f"{label} deps",
+                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                    )
+                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                else:
+                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
+            except Exception:
+                pass
+
     # =========================================================================
     # Check: API connectivity
     # =========================================================================
@@ -444,14 +475,15 @@ def run_doctor(args):
             check_ok(info.get("name", tid))
         
         for item in unavailable:
-            if item["missing_vars"]:
-                vars_str = ", ".join(item["missing_vars"])
+            env_vars = item.get("missing_vars") or item.get("env_vars") or []
+            if env_vars:
+                vars_str = ", ".join(env_vars)
                 check_warn(item["name"], f"(missing {vars_str})")
             else:
                 check_warn(item["name"], "(system dependency not met)")
-        
+
         # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if u["missing_vars"]]
+        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
@@ -463,7 +495,7 @@ def run_doctor(args):
     print()
     print(color("◆ Skills Hub", Colors.CYAN, Colors.BOLD))
 
-    hub_dir = PROJECT_ROOT / "skills" / ".hub"
+    hub_dir = HERMES_HOME / "skills" / ".hub"
     if hub_dir.exists():
         check_ok("Skills Hub directory exists")
         lock_file = hub_dir / "lock.json"
@@ -482,7 +514,8 @@ def run_doctor(args):
     else:
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
-    github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    from hermes_cli.config import get_env_value
+    github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
     else:

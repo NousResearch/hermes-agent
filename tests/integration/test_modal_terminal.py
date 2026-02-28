@@ -8,10 +8,13 @@ and can execute commands in Modal sandboxes.
 Usage:
     # Run with Modal backend
     TERMINAL_ENV=modal python tests/test_modal_terminal.py
-    
+
     # Or run directly (will use whatever TERMINAL_ENV is set in .env)
     python tests/test_modal_terminal.py
 """
+
+import pytest
+pytestmark = pytest.mark.integration
 
 import os
 import sys
@@ -24,7 +27,7 @@ try:
     load_dotenv()
 except ImportError:
     # Manually load .env if dotenv not available
-    env_file = Path(__file__).parent.parent / ".env"
+    env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
         with open(env_file) as f:
             for line in f:
@@ -35,8 +38,8 @@ except ImportError:
                     value = value.strip().strip('"').strip("'")
                     os.environ.setdefault(key.strip(), value)
 
-# Add parent directory to path for imports
-parent_dir = Path(__file__).parent.parent
+# Add project root to path for imports
+parent_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(parent_dir))
 sys.path.insert(0, str(parent_dir / "mini-swe-agent" / "src"))
 

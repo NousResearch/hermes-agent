@@ -5,9 +5,9 @@ Hermes Agent can connect to messaging platforms like Telegram, Discord, and What
 ## Quick Start
 
 ```bash
-# 1. Set your bot token(s) in .env file
-echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> .env
-echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> .env
+# 1. Set your bot token(s) in ~/.hermes/.env
+echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> ~/.hermes/.env
+echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> ~/.hermes/.env
 
 # 2. Test the gateway (foreground)
 ./scripts/hermes-gateway run
@@ -29,17 +29,17 @@ python cli.py --gateway  # Runs in foreground, useful for debugging
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Hermes Gateway                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Telegram   │  │   Discord    │  │   WhatsApp   │          │
-│  │   Adapter    │  │   Adapter    │  │   Adapter    │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-│         │                 │                 │                   │
-│         └─────────────────┼─────────────────┘                   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+│  │ Telegram │ │ Discord  │ │ WhatsApp │ │  Slack   │           │
+│  │ Adapter  │ │ Adapter  │ │ Adapter  │ │ Adapter  │           │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘           │
+│       │             │            │             │                │
+│       └─────────────┼────────────┼─────────────┘                │
 │                           │                                     │
 │                  ┌────────▼────────┐                            │
 │                  │  Session Store  │                            │
@@ -134,29 +134,39 @@ pip install discord.py>=2.0
 
 ### WhatsApp
 
-WhatsApp integration is more complex due to the lack of a simple bot API.
+WhatsApp uses a built-in bridge powered by [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
 
-**Options:**
-1. **WhatsApp Business API** (requires Meta verification)
-2. **whatsapp-web.js** via Node.js bridge (for personal accounts)
+**Setup:**
 
-**Bridge Setup:**
-1. Install Node.js
-2. Set up the bridge script (see `scripts/whatsapp-bridge/` for reference)
-3. Configure in gateway:
-   ```json
-   {
-     "platforms": {
-       "whatsapp": {
-         "enabled": true,
-         "extra": {
-           "bridge_script": "/path/to/bridge.js",
-           "bridge_port": 3000
-         }
-       }
-     }
-   }
-   ```
+```bash
+hermes whatsapp
+```
+
+This will:
+- Enable WhatsApp in your `.env`
+- Ask for your phone number (for the allowlist)
+- Install bridge dependencies (Node.js required)
+- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
+- Exit automatically once paired
+
+Then start the gateway:
+
+```bash
+hermes gateway
+```
+
+The gateway starts the WhatsApp bridge automatically using the saved session credentials in `~/.hermes/whatsapp/session/`.
+
+**Environment variables:**
+
+```bash
+WHATSAPP_ENABLED=true
+WHATSAPP_ALLOWED_USERS=15551234567    # Comma-separated phone numbers with country code
+```
+
+Agent responses are prefixed with "⚕ **Hermes Agent**" so you can distinguish them from your own messages when messaging yourself.
+
+> **Re-pairing:** If WhatsApp Web sessions disconnect (protocol updates, phone reset), re-pair with `hermes whatsapp`.
 
 ## Configuration
 
@@ -187,8 +197,17 @@ DISCORD_ALLOWED_USERS=123456789012345678      # Security: restrict to these user
 DISCORD_HOME_CHANNEL=123456789012345678
 DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 
-# WhatsApp - requires Node.js bridge setup
+# Slack - get from Slack API (api.slack.com/apps)
+SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
+SLACK_APP_TOKEN=xapp-your-slack-app-token      # Required for Socket Mode
+SLACK_ALLOWED_USERS=U01234ABCDE                # Security: restrict to these user IDs
+
+# Optional: Default channel for cron job delivery
+# SLACK_HOME_CHANNEL=C01234567890
+
+# WhatsApp - pair via: hermes whatsapp
 WHATSAPP_ENABLED=true
+WHATSAPP_ALLOWED_USERS=15551234567             # Phone numbers with country code
 
 # =============================================================================
 # AGENT SETTINGS
@@ -204,11 +223,9 @@ MESSAGING_CWD=/home/myuser
 # TOOL PROGRESS NOTIFICATIONS
 # =============================================================================
 
-# Show progress messages as agent uses tools
-HERMES_TOOL_PROGRESS=true
-
-# Mode: "new" (only when tool changes) or "all" (every tool call)
-HERMES_TOOL_PROGRESS_MODE=new
+# Tool progress is now configured in config.yaml:
+#   display:
+#     tool_progress: all    # off | new | all | verbose
 
 # =============================================================================
 # SESSION SETTINGS
@@ -272,6 +289,7 @@ Each platform has its own toolset for security:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| Slack | `hermes-slack` | Full tools including terminal |
 
 ## User Experience Features
 
@@ -281,9 +299,9 @@ The gateway keeps the "typing..." indicator active throughout processing, refres
 
 ### Tool Progress Notifications
 
-When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+When `tool_progress` is enabled in `config.yaml`, the bot sends status messages as it works:
 
-```
+```text
 💻 `ls -la`...
 🔍 web_search...
 📄 web_extract...
@@ -325,7 +343,7 @@ The `text_to_speech` tool generates audio that the gateway delivers as native vo
 
 Voice and provider are configured by the user in `~/.hermes/config.yaml` under the `tts:` key. The model only sends text; it does not choose the voice.
 
-The tool returns a `MEDIA:<path>` tag that the gateway send pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
+The tool returns a `MEDIA:<path>` tag that the gateway sending pipeline intercepts and delivers as a native audio message. If `[[audio_as_voice]]` is present (Opus format available), Telegram sends it as a voice bubble instead of an audio file.
 
 **Telegram voice bubbles & ffmpeg:**
 
@@ -345,7 +363,7 @@ Cron jobs are executed automatically by the gateway daemon. When the gateway is 
 
 When scheduling cron jobs, you can specify where the output should be delivered:
 
-```
+```text
 User: "Remind me to check the server in 30 minutes"
 
 Agent uses: schedule_cronjob(
@@ -369,7 +387,7 @@ Agent uses: schedule_cronjob(
 
 The agent knows where it is via injected context:
 
-```
+```text
 ## Current Session Context
 
 **Source:** Telegram (group: Dev Team, ID: -1001234567890)

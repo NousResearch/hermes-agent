@@ -5,40 +5,48 @@ description: Read, search, and create notes in the Obsidian vault.
 
 # Obsidian Vault
 
-**Location:** `/home/teknium/Documents/Primary Vault`
+**Location:** Set via `OBSIDIAN_VAULT_PATH` environment variable (e.g. in `~/.hermes/.env`).
 
-Note: Path contains a space - always quote it.
+If unset, defaults to `~/Documents/Obsidian Vault`.
+
+Note: Vault paths may contain spaces - always quote them.
 
 ## Read a note
 
 ```bash
-cat "/home/teknium/Documents/Primary Vault/Note Name.md"
+VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
+cat "$VAULT/Note Name.md"
 ```
 
 ## List notes
 
 ```bash
+VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
+
 # All notes
-find "/home/teknium/Documents/Primary Vault" -name "*.md" -type f
+find "$VAULT" -name "*.md" -type f
 
 # In a specific folder
-ls "/home/teknium/Documents/Primary Vault/AI Research/"
+ls "$VAULT/Subfolder/"
 ```
 
 ## Search
 
 ```bash
+VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
+
 # By filename
-find "/home/teknium/Documents/Primary Vault" -name "*.md" -iname "*keyword*"
+find "$VAULT" -name "*.md" -iname "*keyword*"
 
 # By content
-grep -rli "keyword" "/home/teknium/Documents/Primary Vault" --include="*.md"
+grep -rli "keyword" "$VAULT" --include="*.md"
 ```
 
 ## Create a note
 
 ```bash
-cat > "/home/teknium/Documents/Primary Vault/New Note.md" << 'ENDNOTE'
+VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
+cat > "$VAULT/New Note.md" << 'ENDNOTE'
 # Title
 
 Content here.
@@ -48,8 +56,9 @@ ENDNOTE
 ## Append to a note
 
 ```bash
+VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
 echo "
-New content here." >> "/home/teknium/Documents/Primary Vault/Existing Note.md"
+New content here." >> "$VAULT/Existing Note.md"
 ```
 
 ## Wikilinks

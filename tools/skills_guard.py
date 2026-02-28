@@ -43,6 +43,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
+    "agent-created": ("allow",  "block",   "block"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}

@@ -6,20 +6,24 @@ The Hermes Agent CLI provides an interactive terminal interface for working with
 
 ```bash
 # Basic usage
-./hermes
+hermes
 
 # With specific model
-./hermes --model "anthropic/claude-sonnet-4"
+hermes --model "anthropic/claude-sonnet-4"
 
 # With specific provider
-./hermes --provider nous        # Use Nous Portal (requires: hermes login)
-./hermes --provider openrouter  # Force OpenRouter
+hermes --provider nous        # Use Nous Portal (requires: hermes login)
+hermes --provider openrouter  # Force OpenRouter
 
 # With specific toolsets
-./hermes --toolsets "web,terminal,skills"
+hermes --toolsets "web,terminal,skills"
+
+# Resume previous sessions
+hermes --continue             # Resume the most recent CLI session (-c)
+hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
 # Verbose mode
-./hermes --verbose
+hermes --verbose
 ```
 
 ## Architecture
@@ -30,7 +34,7 @@ The CLI is implemented in `cli.py` and uses:
 - **prompt_toolkit** - Fixed input area with command history
 - **KawaiiSpinner** - Animated feedback during operations
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │  HERMES-AGENT ASCII Logo                        │
 │  ┌─────────────┐ ┌────────────────────────────┐ │
@@ -73,10 +77,10 @@ The CLI is implemented in `cli.py` and uses:
 
 ## Configuration
 
-The CLI is configured via `cli-config.yaml`. Copy from `cli-config.yaml.example`:
+The CLI reads `~/.hermes/config.yaml` first and falls back to `cli-config.yaml` in the project directory. Copy from `cli-config.yaml.example`:
 
 ```bash
-cp cli-config.yaml.example cli-config.yaml
+cp cli-config.yaml.example ~/.hermes/config.yaml
 ```
 
 ### Model & Provider Configuration
@@ -147,7 +151,7 @@ The CLI supports interactive sudo prompts:
 
 **Options:**
 - **Interactive**: Leave `sudo_password` unset - you'll be prompted when needed
-- **Configured**: Set `sudo_password` in `cli-config.yaml` to auto-fill
+- **Configured**: Set `sudo_password` in `~/.hermes/config.yaml` (or `cli-config.yaml` fallback) to auto-fill
 - **Environment**: Set `SUDO_PASSWORD` in `.env` for all runs
 
 Password is cached for the session once entered.
@@ -223,12 +227,13 @@ For multi-line input, end a line with `\` to continue:
 
 ## Environment Variable Priority
 
-For terminal settings, `cli-config.yaml` takes precedence over `.env`:
+For terminal settings, `~/.hermes/config.yaml` takes precedence, then `cli-config.yaml` (fallback), then `.env`:
 
-1. `cli-config.yaml` (highest priority in CLI)
-2. `.env` file
-3. System environment variables
-4. Default values
+1. `~/.hermes/config.yaml`
+2. `cli-config.yaml` (project fallback)
+3. `.env` file
+4. System environment variables
+5. Default values
 
 This allows you to have different terminal configs for CLI vs batch processing.
 
@@ -238,6 +243,34 @@ This allows you to have different terminal configs for CLI vs batch processing.
 - **Conversations**: Use `/save` to export conversations
 - **Reset**: Use `/clear` for full reset, `/reset` to just clear history
 - **Session Logs**: Every session automatically logs to `logs/session_{session_id}.json`
+- **Resume**: Pick up any previous session with `--resume` or `--continue`
+
+### Resuming Sessions
+
+When you exit a CLI session, a resume command is printed:
+
+```
+Resume this session with:
+  hermes --resume 20260225_143052_a1b2c3
+
+Session:        20260225_143052_a1b2c3
+Duration:       12m 34s
+Messages:       28 (5 user, 18 tool calls)
+```
+
+To resume:
+
+```bash
+hermes --continue                          # Resume the most recent CLI session
+hermes -c                                  # Short form
+hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
+hermes -r 20260225_143052_a1b2c3           # Short form
+hermes chat --resume 20260225_143052_a1b2c3  # Explicit subcommand form
+```
+
+Resuming restores the full conversation history from SQLite (`~/.hermes/state.db`). The agent sees all previous messages, tool calls, and responses — just as if you never left. New messages append to the same session in the database.
+
+Use `hermes sessions list` to browse past sessions and find IDs.
 
 ### Session Logging
 
@@ -267,7 +300,7 @@ This is useful for:
 Long conversations can exceed model context limits. The CLI automatically compresses context when approaching the limit:
 
 ```yaml
-# In cli-config.yaml
+# In ~/.hermes/config.yaml (or cli-config.yaml fallback)
 compression:
   enabled: true                    # Enable auto-compression
   threshold: 0.85                  # Compress at 85% of context limit  

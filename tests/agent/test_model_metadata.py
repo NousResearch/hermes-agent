@@ -1,15 +1,18 @@
 """Tests for agent/model_metadata.py — token estimation and context lengths."""
 
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
     DEFAULT_CONTEXT_LENGTHS,
+    SAFE_DEFAULT_CONTEXT_LENGTH,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
+    _get_fallback_context_length,
 )
 
 
@@ -101,10 +104,11 @@ class TestGetModelContextLength:
         assert result == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")
-    def test_unknown_model_returns_128k(self, mock_fetch):
+    def test_unknown_model_returns_safe_default(self, mock_fetch):
+        """Unknown models get conservative 8k default instead of risky 128k."""
         mock_fetch.return_value = {}
         result = get_model_context_length("unknown/never-heard-of-this")
-        assert result == 128000
+        assert result == SAFE_DEFAULT_CONTEXT_LENGTH
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):
@@ -112,6 +116,24 @@ class TestGetModelContextLength:
         # "gpt-4o" is a substring match for "openai/gpt-4o"
         result = get_model_context_length("openai/gpt-4o")
         assert result == 128000
+
+    @patch.dict(os.environ, {"MODEL_CONTEXT_LENGTH": "32000"})
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_env_override_for_unknown_model(self, mock_fetch):
+        """MODEL_CONTEXT_LENGTH env var overrides default for unknown models."""
+        mock_fetch.return_value = {}
+        result = get_model_context_length("unknown/custom-model")
+        assert result == 32000
+
+    def test_get_fallback_uses_env_var(self):
+        """_get_fallback_context_length respects env var."""
+        with patch.dict(os.environ, {"MODEL_CONTEXT_LENGTH": "65536"}):
+            assert _get_fallback_context_length() == 65536
+
+    def test_get_fallback_invalid_env_returns_default(self):
+        """Invalid env var falls back to safe default."""
+        with patch.dict(os.environ, {"MODEL_CONTEXT_LENGTH": "not-a-number"}):
+            assert _get_fallback_context_length() == SAFE_DEFAULT_CONTEXT_LENGTH
 
 
 # =========================================================================

@@ -47,6 +47,7 @@ cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
 pty = ["ptyprocess>=0.7.0"]
 honcho = ["honcho-ai>=2.0.1"]
+homeassistant = ["aiohttp>=3.9.0"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
@@ -57,6 +58,7 @@ all = [
   "hermes-agent[slack]",
   "hermes-agent[pty]",
   "hermes-agent[honcho]",
+  "hermes-agent[homeassistant]",
 ]
 
 [project.scripts]

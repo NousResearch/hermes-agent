@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _OR_HEADERS = {
     "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
     "X-OpenRouter-Title": "Hermes Agent",
-    "X-OpenRouter-Categories": "cli-agent",
+    "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
 # Nous Portal extra_body for product attribution.

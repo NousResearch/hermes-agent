@@ -297,7 +297,7 @@ class AIAgent:
             client_kwargs["default_headers"] = {
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
                 "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "cli-agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
             }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt

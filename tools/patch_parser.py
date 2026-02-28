@@ -324,8 +324,7 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
     
-    # Delete by writing empty and then removing
-    # Use shell command via the underlying environment
+    # Delete directly via shell command using the underlying environment
     rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
     
     if rm_result.exit_code != 0:

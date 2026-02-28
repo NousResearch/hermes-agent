@@ -183,6 +183,12 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
+        if base_url and "api.anthropic.com" in base_url.strip().lower():
+            raise ValueError(
+                "Anthropic /v1/messages is not supported yet. "
+                "Hermes uses OpenAI-compatible /chat/completions. "
+                "Use OpenRouter or leave base_url unset."
+            )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode

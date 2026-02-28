@@ -122,6 +122,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes login` (OAuth, subscription-based) |
 | **Chutes.ai** | `CHUTES_API_KEY` in `~/.hermes/.env` |
+| **NVIDIA NIM** | `NVIDIA_API_KEY` in `~/.hermes/.env` |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
@@ -1423,6 +1424,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `CHUTES_API_KEY` | Chutes.ai API key — get one at https://chutes.ai |
+| `NVIDIA_API_KEY` | NVIDIA NIM API key — get one at https://build.nvidia.com — get one at https://chutes.ai |
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `ANTHROPIC_API_KEY` | Direct Anthropic access |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |

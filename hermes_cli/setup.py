@@ -641,6 +641,7 @@ def run_setup_wizard(args):
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
         "Chutes.ai API key (400+ open-source models incl. Hermes, DeepSeek, Llama)",
+        "NVIDIA NIM API key (optimized inference via build.nvidia.com)",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
@@ -730,7 +731,34 @@ def run_setup_wizard(args):
         # Clear OpenRouter as primary if switching to Chutes
         # (OPENROUTER_API_KEY can stay for tools)
 
-    elif provider_idx == 2:  # OpenRouter
+    elif provider_idx == 2:  # NVIDIA NIM
+        selected_provider = "nvidia"
+        print()
+        print_header("NVIDIA NIM API Key")
+        print_info("NVIDIA NIM provides optimized inference for 100+ models via build.nvidia.com.")
+        print_info("Get your API key at: https://build.nvidia.com (sign in → Get API Key)")
+
+        existing_nvidia = get_env_value("NVIDIA_API_KEY")
+        if existing_nvidia:
+            print_info(f"Current: {existing_nvidia[:8]}... (configured)")
+            if prompt_yes_no("Update NVIDIA API key?", False):
+                api_key = prompt("  NVIDIA API key (nvapi-...)", password=True)
+                if api_key:
+                    save_env_value("NVIDIA_API_KEY", api_key)
+                    print_success("NVIDIA API key updated")
+        else:
+            api_key = prompt("  NVIDIA API key (nvapi-...)", password=True)
+            if api_key:
+                save_env_value("NVIDIA_API_KEY", api_key)
+                print_success("NVIDIA API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        from hermes_constants import NVIDIA_BASE_URL
+        save_env_value("OPENAI_BASE_URL", NVIDIA_BASE_URL)
+        save_env_value("OPENAI_API_KEY", get_env_value("NVIDIA_API_KEY") or "")
+
+    elif provider_idx == 3:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -757,7 +785,7 @@ def run_setup_wizard(args):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
-    elif provider_idx == 3:  # Custom endpoint
+    elif provider_idx == 4:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -791,7 +819,7 @@ def run_setup_wizard(args):
     # =========================================================================
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "custom", "chutes") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "custom", "chutes", "nvidia") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")

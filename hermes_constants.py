@@ -10,3 +10,6 @@ OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
 
 CHUTES_BASE_URL = "https://llm.chutes.ai/v1"
 CHUTES_API_KEY_ENV = "CHUTES_API_KEY"
+
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_API_KEY_ENV = "NVIDIA_API_KEY"

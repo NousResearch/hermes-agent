@@ -302,6 +302,10 @@ def resolve_provider(
         return normalized
     if normalized == "openrouter":
         return "openrouter"
+    if normalized == "chutes":
+        return "chutes"
+    if normalized == "nvidia":
+        return "nvidia"
     if normalized != "auto":
         return "openrouter"
 
@@ -322,6 +326,10 @@ def resolve_provider(
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
+    if os.getenv("CHUTES_API_KEY"):
+        return "chutes"
+    if os.getenv("NVIDIA_API_KEY"):
+        return "nvidia"
 
     return "openrouter"
 

@@ -15,10 +15,12 @@ curl -s "https://huggingface.co/api/models?author=PsycheFoundation"
 **Response:** JSON array. Each element contains:
 - `id` — Full model ID (e.g., `PsycheFoundation/consilience-40b-CqX3FUm4`)
 - `modelId` — Same as `id`
-- `lastModified` — ISO 8601 timestamp
+- `createdAt` — ISO 8601 timestamp
 - `downloads` — Total download count
 - `tags` — List of tags (architecture, library, etc.)
 - `pipeline_tag` — Model pipeline type
+
+Note: `lastModified` is only available on the individual model detail endpoint (see below).
 
 **Parse to table:**
 
@@ -27,10 +29,10 @@ curl -s "https://huggingface.co/api/models?author=PsycheFoundation" | \
   python3 -c "
 import sys, json
 models = json.load(sys.stdin)
-print(f'{'Model ID':55s}  {'Modified':12s}  {'Downloads':>10s}')
+print(f'{'Model ID':55s}  {'Created':12s}  {'Downloads':>10s}')
 print('-' * 82)
-for m in sorted(models, key=lambda x: x.get('lastModified',''), reverse=True):
-    print(f\"{m['id']:55s}  {m.get('lastModified','N/A')[:10]:12s}  {m.get('downloads',0):>10d}\")
+for m in sorted(models, key=lambda x: x.get('createdAt',''), reverse=True):
+    print(f\"{m['id']:55s}  {m.get('createdAt','N/A')[:10]:12s}  {m.get('downloads',0):>10d}\")
 print(f'\\nTotal: {len(models)} models')
 "
 ```
@@ -41,7 +43,7 @@ print(f'\\nTotal: {len(models)} models')
 curl -s "https://huggingface.co/api/models/PsycheFoundation/<model-id>"
 ```
 
-**Response:** JSON object with full metadata including `siblings` (file list), `cardData`, `config`, etc.
+**Response:** JSON object with full metadata including `lastModified`, `siblings` (file list), `cardData`, `config`, etc.
 
 ### List Files (Tree)
 

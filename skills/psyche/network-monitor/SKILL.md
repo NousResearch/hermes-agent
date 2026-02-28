@@ -53,12 +53,12 @@ curl -s "https://huggingface.co/api/models?author=PsycheFoundation" | \
   python3 -c "
 import sys, json
 models = json.load(sys.stdin)
-for m in sorted(models, key=lambda x: x.get('lastModified',''), reverse=True):
-    print(f\"{m['id']:55s}  modified: {m.get('lastModified','N/A')[:10]}  downloads: {m.get('downloads',0)}\")
+for m in sorted(models, key=lambda x: x.get('createdAt',''), reverse=True):
+    print(f\"{m['id']:55s}  created: {m.get('createdAt','N/A')[:10]}  downloads: {m.get('downloads',0)}\")
 "
 ```
 
-This returns all training run models with their last modification date. The most recently modified model is likely the currently active run.
+This returns all training run models sorted by creation date. To get the last modification date for a specific model, use Step 2.
 
 ### Step 2: Get Run Details
 

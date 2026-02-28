@@ -86,6 +86,14 @@ class ProcessRegistry:
       - Cleanup thread (sandbox reaping coordination)
     """
 
+    # Noise lines emitted by interactive shells when stdin is not a terminal.
+    _SHELL_NOISE = frozenset({
+        "bash: no job control in this shell",
+        "bash: no job control in this shell\n",
+        "no job control in this shell",
+        "no job control in this shell\n",
+    })
+
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
@@ -93,6 +101,14 @@ class ProcessRegistry:
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _clean_shell_noise(text: str) -> str:
+        """Strip shell startup warnings from the beginning of output."""
+        lines = text.split("\n", 2)
+        if lines and lines[0].strip() in ProcessRegistry._SHELL_NOISE:
+            return "\n".join(lines[1:])
+        return text
 
     # ----- Spawn -----
 
@@ -130,7 +146,7 @@ class ProcessRegistry:
                 import ptyprocess
                 user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
                 pty_proc = ptyprocess.PtyProcess.spawn(
-                    [user_shell, "-lc", command],
+                    [user_shell, "-lic", command],
                     cwd=session.cwd,
                     env=os.environ | (env_vars or {}),
                     dimensions=(30, 120),
@@ -166,7 +182,7 @@ class ProcessRegistry:
         # ensures rc files are sourced and user tools are available.
         user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
         proc = subprocess.Popen(
-            [user_shell, "-lc", command],
+            [user_shell, "-lic", command],
             text=True,
             cwd=session.cwd,
             env=os.environ | (env_vars or {}),
@@ -272,11 +288,15 @@ class ProcessRegistry:
 
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
+        first_chunk = True
         try:
             while True:
                 chunk = session.process.stdout.read(4096)
                 if not chunk:
                     break
+                if first_chunk:
+                    chunk = self._clean_shell_noise(chunk)
+                    first_chunk = False
                 with session._lock:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:

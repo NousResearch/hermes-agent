@@ -209,7 +209,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                     break
                 chars.append(b)
             result["password"] = b"".join(chars).decode("utf-8", errors="replace")
-        except (EOFError, KeyboardInterrupt, OSError):
+        except (EOFError, KeyboardInterrupt, OSError, ImportError, NotImplementedError):
             result["password"] = ""
         except Exception:
             result["password"] = ""
@@ -218,12 +218,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 try:
                     import termios as _termios
                     _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
-                except Exception:
+                except (Exception, ImportError, NotImplementedError):
                     pass
             if tty_fd is not None:
                 try:
                     os.close(tty_fd)
-                except Exception:
+                except (Exception, ImportError, NotImplementedError):
                     pass
             result["done"] = True
     

@@ -88,18 +88,24 @@ class TestHTTP413Compression:
         ok_resp = _mock_response(content="Success after compression", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
 
+        # Prefill so there are multiple messages for compression to reduce
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
         with (
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Compression removes messages, enabling retry
+            # Compression reduces 3 messages down to 1
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
             )
-            result = agent.run_conversation("hello")
+            result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
         assert result["completed"] is True
@@ -111,6 +117,11 @@ class TestHTTP413Compression:
         ok_resp = _mock_response(content="Recovered", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
 
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
         with (
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -121,7 +132,7 @@ class TestHTTP413Compression:
                 [{"role": "user", "content": "hello"}],
                 "compressed",
             )
-            result = agent.run_conversation("hello")
+            result = agent.run_conversation("hello", conversation_history=prefill)
 
         # If 413 were treated as generic 4xx, result would have "failed": True
         assert result.get("failed") is not True
@@ -133,6 +144,11 @@ class TestHTTP413Compression:
         ok_resp = _mock_response(content="OK", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [err, ok_resp]
 
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
         with (
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -143,7 +159,7 @@ class TestHTTP413Compression:
                 [{"role": "user", "content": "hello"}],
                 "compressed",
             )
-            result = agent.run_conversation("hello")
+            result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
         assert result["completed"] is True

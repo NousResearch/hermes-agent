@@ -468,7 +468,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
-        assert kwargs["timeout"] == 600.0
+        assert kwargs["timeout"] == 900.0
 
     def test_provider_preferences_injected(self, agent):
         agent.providers_allowed = ["Anthropic"]

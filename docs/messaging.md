@@ -5,9 +5,9 @@ Hermes Agent can connect to messaging platforms like Telegram, Discord, and What
 ## Quick Start
 
 ```bash
-# 1. Set your bot token(s) in .env file
-echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> .env
-echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> .env
+# 1. Set your bot token(s) in ~/.hermes/.env
+echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> ~/.hermes/.env
+echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> ~/.hermes/.env
 
 # 2. Test the gateway (foreground)
 ./scripts/hermes-gateway run

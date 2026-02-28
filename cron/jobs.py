@@ -6,6 +6,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
 import json
+import tempfile
 import os
 import re
 import uuid
@@ -200,8 +201,19 @@ def load_jobs() -> List[Dict[str, Any]]:
 def save_jobs(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
-    with open(JOBS_FILE, 'w', encoding='utf-8') as f:
-        json.dump({"jobs": jobs, "updated_at": datetime.now().isoformat()}, f, indent=2)
+    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({"jobs": jobs, "updated_at": datetime.now().isoformat()}, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, JOBS_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def create_job(

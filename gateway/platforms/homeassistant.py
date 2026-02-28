@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -228,6 +229,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""
+        if self._ws is None or self._ws.closed:
+            return
         async for ws_msg in self._ws:
             if ws_msg.type == aiohttp.WSMsgType.TEXT:
                 try:
@@ -390,7 +393,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status < 300:
-                        return SendResult(success=True, message_id=str(self._next_id()))
+                        return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
                     else:
                         body = await resp.text()
                         return SendResult(success=False, error=f"HTTP {resp.status}: {body}")

@@ -490,6 +490,12 @@ class GatewayRunner:
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
         """
+        # Home Assistant events are system-generated (state changes), not
+        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # connection, so HA events are always authorized.
+        if source.platform == Platform.HOMEASSISTANT:
+            return True
+
         user_id = source.user_id
         if not user_id:
             return False

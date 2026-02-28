@@ -106,10 +106,11 @@ def _build_service_payload(
 ) -> Dict[str, Any]:
     """Build the JSON payload for a HA service call."""
     payload: Dict[str, Any] = {}
-    if entity_id:
-        payload["entity_id"] = entity_id
     if data:
         payload.update(data)
+    # entity_id parameter takes precedence over data["entity_id"]
+    if entity_id:
+        payload["entity_id"] = entity_id
     return payload
 
 

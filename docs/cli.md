@@ -77,10 +77,10 @@ The CLI is implemented in `cli.py` and uses:
 
 ## Configuration
 
-The CLI is configured via `cli-config.yaml`. Copy from `cli-config.yaml.example`:
+The CLI reads `~/.hermes/config.yaml` first and falls back to `cli-config.yaml` in the project directory. Copy from `cli-config.yaml.example`:
 
 ```bash
-cp cli-config.yaml.example cli-config.yaml
+cp cli-config.yaml.example ~/.hermes/config.yaml
 ```
 
 ### Model & Provider Configuration
@@ -151,7 +151,7 @@ The CLI supports interactive sudo prompts:
 
 **Options:**
 - **Interactive**: Leave `sudo_password` unset - you'll be prompted when needed
-- **Configured**: Set `sudo_password` in `cli-config.yaml` to auto-fill
+- **Configured**: Set `sudo_password` in `~/.hermes/config.yaml` (or `cli-config.yaml` fallback) to auto-fill
 - **Environment**: Set `SUDO_PASSWORD` in `.env` for all runs
 
 Password is cached for the session once entered.
@@ -227,12 +227,13 @@ For multi-line input, end a line with `\` to continue:
 
 ## Environment Variable Priority
 
-For terminal settings, `cli-config.yaml` takes precedence over `.env`:
+For terminal settings, `~/.hermes/config.yaml` takes precedence, then `cli-config.yaml` (fallback), then `.env`:
 
-1. `cli-config.yaml` (highest priority in CLI)
-2. `.env` file
-3. System environment variables
-4. Default values
+1. `~/.hermes/config.yaml`
+2. `cli-config.yaml` (project fallback)
+3. `.env` file
+4. System environment variables
+5. Default values
 
 This allows you to have different terminal configs for CLI vs batch processing.
 
@@ -299,7 +300,7 @@ This is useful for:
 Long conversations can exceed model context limits. The CLI automatically compresses context when approaching the limit:
 
 ```yaml
-# In cli-config.yaml
+# In ~/.hermes/config.yaml (or cli-config.yaml fallback)
 compression:
   enabled: true                    # Enable auto-compression
   threshold: 0.85                  # Compress at 85% of context limit  

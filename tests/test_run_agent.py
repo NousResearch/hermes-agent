@@ -278,6 +278,23 @@ class TestMaskApiKey:
 
 
 class TestInit:
+    def test_anthropic_base_url_fails_fast(self):
+        """Anthropic native endpoints should error before building an OpenAI client."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            with pytest.raises(ValueError, match="Anthropic /v1/messages is not supported yet"):
+                AIAgent(
+                    api_key="test-key-1234567890",
+                    base_url="https://api.anthropic.com/v1/messages",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            mock_openai.assert_not_called()
+
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
         with (

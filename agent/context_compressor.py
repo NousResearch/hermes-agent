@@ -133,7 +133,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 else:
                     raise
 
-            summary = response.choices[0].message.content.strip()
+            if not response.choices:
+                logging.warning("Context summary API returned empty choices")
+                return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+            content = response.choices[0].message.content
+            if content is None:
+                return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+            summary = content.strip()
             if not summary.startswith("[CONTEXT SUMMARY]:"):
                 summary = "[CONTEXT SUMMARY]: " + summary
             return summary

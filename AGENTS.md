@@ -2,7 +2,7 @@
 
 Instructions for AI coding assistants (GitHub Copilot, Cursor, etc.) and human developers.
 
-Hermes-Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
+Hermes Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
 
 ## Development Environment
 

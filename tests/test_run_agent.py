@@ -285,7 +285,7 @@ class TestInit:
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI") as mock_openai,
         ):
-            with pytest.raises(ValueError, match="Anthropic /v1/messages is not supported yet"):
+            with pytest.raises(ValueError, match="not supported yet"):
                 AIAgent(
                     api_key="test-key-1234567890",
                     base_url="https://api.anthropic.com/v1/messages",

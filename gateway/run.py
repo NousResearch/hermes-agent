@@ -1634,6 +1634,7 @@ class GatewayRunner:
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 platform=platform_key,
+                honcho_session_key=session_key,
                 session_db=self._session_db,
             )
             

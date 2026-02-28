@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Honcho user context (gated on honcho being active via check_fn)
+    "query_user_context",
 ]
 
 
@@ -183,6 +185,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "honcho": {
+        "description": "Honcho AI-native memory for persistent cross-session user modeling",
+        "tools": ["query_user_context"],
         "includes": []
     },
     

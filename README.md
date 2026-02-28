@@ -171,6 +171,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
+| Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 
 ---
 
@@ -546,6 +547,45 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 ```
+
+### 🔗 Honcho Integration (Cross-Session User Modeling)
+
+Optional cloud-based user modeling via [Honcho](https://honcho.dev/) by Plastic Labs. While MEMORY.md and USER.md are local file-based memory, Honcho builds a deeper, AI-generated understanding of the user that persists across sessions and works across tools (Claude Code, Cursor, Hermes, etc.).
+
+When enabled, Honcho runs **alongside** existing memory — USER.md stays as-is, and Honcho adds an additional layer of user context:
+
+- **Prefetch**: Each turn, Honcho's user representation is fetched and injected into the system prompt
+- **Sync**: After each conversation, messages are synced to Honcho for ongoing user modeling
+- **Query tool**: The agent can actively query its understanding of the user via `query_user_context`
+
+**Setup:**
+```bash
+# 1. Install the optional dependency
+uv pip install honcho-ai
+
+# 2. Get an API key from https://app.honcho.dev
+
+# 3. Create ~/.honcho/config.json (shared with other Honcho-enabled tools)
+cat > ~/.honcho/config.json << 'EOF'
+{
+  "enabled": true,
+  "apiKey": "your-honcho-api-key",
+  "peerName": "your-name",
+  "hosts": {
+    "hermes": {
+      "workspace": "hermes"
+    }
+  }
+}
+EOF
+```
+
+Or configure via environment variable:
+```bash
+hermes config set HONCHO_API_KEY your-key
+```
+
+Fully opt-in — zero behavior change when disabled or unconfigured. All Honcho calls are non-fatal; if the service is unreachable, the agent continues normally.
 
 ### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
 
@@ -1477,6 +1517,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `BROWSERBASE_API_KEY` | Browser automation |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project |
 | `FAL_KEY` | Image generation (fal.ai) |
+| `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 
 **Terminal Backend:**
 | Variable | Description |

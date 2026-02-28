@@ -2099,6 +2099,7 @@ class AIAgent:
                     is_payload_too_large = (
                         status_code == 413
                         or 'request entity too large' in error_msg
+                        or 'payload too large' in error_msg
                         or 'error code: 413' in error_msg
                     )
 

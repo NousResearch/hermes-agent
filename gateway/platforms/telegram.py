@@ -539,6 +539,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         text_content = raw_bytes.decode("utf-8")
                         display_name = original_filename or f"document{ext}"
+                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
                         injection = f"[Content of {display_name}]:\n{text_content}"
                         if event.text:
                             event.text = f"{injection}\n\n{event.text}"

@@ -82,39 +82,46 @@ class TestCacheSticker:
 
 
 class TestBuildStickerInjection:
-    def test_basic_injection(self):
+    def test_exact_format_no_context(self):
         result = build_sticker_injection("A cat waving")
-        assert "A cat waving" in result
-        assert "sticker" in result.lower()
+        assert result == '[The user sent a sticker~ It shows: "A cat waving" (=^.w.^=)]'
 
-    def test_with_emoji(self):
+    def test_exact_format_emoji_only(self):
         result = build_sticker_injection("A cat", emoji="😀")
-        assert "😀" in result
+        assert result == '[The user sent a sticker 😀~ It shows: "A cat" (=^.w.^=)]'
 
-    def test_with_emoji_and_set_name(self):
+    def test_exact_format_emoji_and_set_name(self):
         result = build_sticker_injection("A cat", emoji="😀", set_name="MyPack")
-        assert "😀" in result
-        assert "MyPack" in result
+        assert result == '[The user sent a sticker 😀 from "MyPack"~ It shows: "A cat" (=^.w.^=)]'
 
-    def test_no_emoji_no_set_name(self):
-        result = build_sticker_injection("A cat")
-        assert "A cat" in result
-        assert "sticker" in result.lower()
+    def test_set_name_without_emoji_ignored(self):
+        """set_name alone (no emoji) produces no context — only emoji+set_name triggers 'from' clause."""
+        result = build_sticker_injection("A cat", set_name="MyPack")
+        assert result == '[The user sent a sticker~ It shows: "A cat" (=^.w.^=)]'
+        assert "MyPack" not in result
+
+    def test_description_with_quotes(self):
+        result = build_sticker_injection('A "happy" dog')
+        assert '"A \\"happy\\" dog"' not in result  # no escaping happens
+        assert 'A "happy" dog' in result
+
+    def test_empty_description(self):
+        result = build_sticker_injection("")
+        assert result == '[The user sent a sticker~ It shows: "" (=^.w.^=)]'
 
 
 class TestBuildAnimatedStickerInjection:
-    def test_with_emoji(self):
+    def test_exact_format_with_emoji(self):
         result = build_animated_sticker_injection(emoji="🎉")
-        assert "animated sticker" in result.lower()
-        assert "🎉" in result
+        assert result == (
+            "[The user sent an animated sticker 🎉~ "
+            "I can't see animated ones yet, but the emoji suggests: 🎉]"
+        )
 
-    def test_without_emoji(self):
+    def test_exact_format_without_emoji(self):
         result = build_animated_sticker_injection()
-        assert "animated sticker" in result.lower()
-        assert "can't see" in result.lower()
+        assert result == "[The user sent an animated sticker~ I can't see animated ones yet]"
 
-
-class TestVisionPrompt:
-    def test_prompt_exists(self):
-        assert len(STICKER_VISION_PROMPT) > 0
-        assert "sticker" in STICKER_VISION_PROMPT.lower()
+    def test_empty_emoji_same_as_no_emoji(self):
+        result = build_animated_sticker_injection(emoji="")
+        assert result == build_animated_sticker_injection()

@@ -1369,8 +1369,9 @@ class AIAgent:
             ]
 
         if assistant_message.tool_calls:
-            msg["tool_calls"] = [
-                {
+            tc_list = []
+            for tool_call in assistant_message.tool_calls:
+                tc_dict = {
                     "id": tool_call.id,
                     "type": tool_call.type,
                     "function": {
@@ -1378,8 +1379,17 @@ class AIAgent:
                         "arguments": tool_call.function.arguments
                     }
                 }
-                for tool_call in assistant_message.tool_calls
-            ]
+                # Preserve extra_content (e.g. Gemini thought_signature) so it
+                # is sent back on subsequent API calls.  Without this, Gemini 3
+                # thinking models reject the request with a 400 error.
+                extra = getattr(tool_call, "extra_content", None)
+                if extra is not None:
+                    # Convert Pydantic models to plain dicts for JSON safety
+                    if hasattr(extra, "model_dump"):
+                        extra = extra.model_dump()
+                    tc_dict["extra_content"] = extra
+                tc_list.append(tc_dict)
+            msg["tool_calls"] = tc_list
 
         return msg
 

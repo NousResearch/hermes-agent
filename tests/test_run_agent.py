@@ -546,6 +546,24 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == ""
 
+    def test_tool_call_extra_content_preserved(self, agent):
+        """Gemini thinking models attach extra_content with thought_signature
+        to tool calls. This must be preserved so subsequent API calls include it."""
+        tc = _mock_tool_call(name="get_weather", arguments='{"city":"NYC"}', call_id="c2")
+        tc.extra_content = {"google": {"thought_signature": "abc123"}}
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert result["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "abc123"}
+        }
+
+    def test_tool_call_without_extra_content(self, agent):
+        """Standard tool calls (no thinking model) should not have extra_content."""
+        tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c3")
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        assert "extra_content" not in result["tool_calls"][0]
+
 
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):

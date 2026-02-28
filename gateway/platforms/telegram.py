@@ -372,8 +372,10 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        #    [^*\n]+ prevents matching across newlines (which would corrupt
+        #    bullet lists using * markers and multi-line content).
         text = re.sub(
-            r'\*([^*]+)\*',
+            r'\*([^*\n]+)\*',
             lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
             text,
         )

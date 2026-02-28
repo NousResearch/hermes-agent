@@ -596,30 +596,84 @@ class GatewayRunner:
         # Check for commands
         command = event.get_command()
         if command in ["new", "reset"]:
+            await self.hooks.emit(f"command:{command}", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
             return await self._handle_reset_command(event)
-        
+
         if command == "help":
+            await self.hooks.emit("command:help", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_help_command(event)
-        
+
         if command == "status":
+            await self.hooks.emit("command:status", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_status_command(event)
-        
+
         if command == "stop":
+            await self.hooks.emit("command:stop", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_stop_command(event)
-        
+
         if command == "model":
+            await self.hooks.emit("command:model", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
             return await self._handle_model_command(event)
-        
+
         if command == "personality":
+            await self.hooks.emit("command:personality", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
             return await self._handle_personality_command(event)
-        
+
         if command == "retry":
+            await self.hooks.emit("command:retry", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_retry_command(event)
-        
+
         if command == "undo":
+            await self.hooks.emit("command:undo", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_undo_command(event)
-        
+
         if command in ["sethome", "set-home"]:
+            await self.hooks.emit(f"command:{command}", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": "",
+            })
             return await self._handle_set_home_command(event)
         
         # Check for pending exec approval responses
@@ -649,6 +703,23 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        # Emit session:start hook when a brand-new session has been created.
+        # was_auto_reset=True means an *existing* session was automatically expired
+        # and replaced — that still counts as a new session for hook purposes.
+        # We detect "new" by comparing created_at ≈ updated_at (both set by
+        # get_or_create_session at the same datetime.now() call).
+        _session_is_new = (
+            session_entry.created_at == session_entry.updated_at
+            or getattr(session_entry, "was_auto_reset", False)
+        )
+        if _session_is_new:
+            await self.hooks.emit("session:start", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "session_key": session_key,
+            })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -1579,7 +1650,29 @@ class GatewayRunner:
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
-        
+
+        # Capture the event loop now so the sync step_callback can schedule
+        # the async hooks.emit via run_coroutine_threadsafe from the thread pool.
+        _event_loop_for_step = asyncio.get_event_loop()
+        _hooks_ref = self.hooks  # capture self.hooks for closure
+
+        def _step_callback_sync(iteration: int, tool_names: list) -> None:
+            """Synchronous adapter: bridges the agent loop thread to the async hook system."""
+            ctx = {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_id,
+                "iteration": iteration,
+                "tool_names": tool_names,
+            }
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _hooks_ref.emit("agent:step", ctx),
+                    _event_loop_for_step,
+                )
+            except Exception as _hook_err:
+                logger.debug("agent:step hook scheduling error: %s", _hook_err)
+
         def run_sync():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -1649,6 +1742,7 @@ class GatewayRunner:
                 reasoning_config=self._reasoning_config,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,

@@ -636,6 +636,21 @@ class GatewayRunner:
         if command in ["sethome", "set-home"]:
             return await self._handle_set_home_command(event)
         
+        # Skill slash commands: /skill-name loads the skill and sends to agent
+        if command:
+            try:
+                from agent.skill_commands import get_skill_commands, build_skill_invocation_message
+                skill_cmds = get_skill_commands()
+                cmd_key = f"/{command}"
+                if cmd_key in skill_cmds:
+                    user_instruction = event.get_command_args().strip()
+                    msg = build_skill_invocation_message(cmd_key, user_instruction)
+                    if msg:
+                        event.text = msg
+                        # Fall through to normal message processing with skill content
+            except Exception as e:
+                logger.debug("Skill command check failed (non-fatal): %s", e)
+        
         # Check for pending exec approval responses
         if source.chat_type != "dm":
             session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
@@ -1000,20 +1015,29 @@ class GatewayRunner:
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        return (
-            "📖 **Hermes Commands**\n"
-            "\n"
-            "`/new` — Start a new conversation\n"
-            "`/reset` — Reset conversation history\n"
-            "`/status` — Show session info\n"
-            "`/stop` — Interrupt the running agent\n"
-            "`/model [name]` — Show or change the model\n"
-            "`/personality [name]` — Set a personality\n"
-            "`/retry` — Retry your last message\n"
-            "`/undo` — Remove the last exchange\n"
-            "`/sethome` — Set this chat as the home channel\n"
-            "`/help` — Show this message"
-        )
+        lines = [
+            "📖 **Hermes Commands**\n",
+            "`/new` — Start a new conversation",
+            "`/reset` — Reset conversation history",
+            "`/status` — Show session info",
+            "`/stop` — Interrupt the running agent",
+            "`/model [name]` — Show or change the model",
+            "`/personality [name]` — Set a personality",
+            "`/retry` — Retry your last message",
+            "`/undo` — Remove the last exchange",
+            "`/sethome` — Set this chat as the home channel",
+            "`/help` — Show this message",
+        ]
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+            if skill_cmds:
+                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} installed):")
+                for cmd in sorted(skill_cmds):
+                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+        except Exception:
+            pass
+        return "\n".join(lines)
     
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""

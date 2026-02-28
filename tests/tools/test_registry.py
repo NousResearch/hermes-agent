@@ -103,6 +103,27 @@ class TestToolsetAvailability:
         assert reqs["ok"] is True
         assert reqs["nope"] is False
 
+    def test_is_toolset_available_handles_raising_check_fn(self):
+        """When a toolset's check_fn raises, treat as unavailable and do not propagate."""
+        reg = ToolRegistry()
+
+        def raising_check():
+            raise RuntimeError("network or config error")
+
+        reg.register(
+            name="broken_tool",
+            toolset="broken_set",
+            schema=_make_schema("broken_tool"),
+            handler=_dummy_handler,
+            check_fn=raising_check,
+        )
+        assert reg.is_toolset_available("broken_set") is False
+        # check_toolset_requirements and get_available_toolsets should not raise
+        reqs = reg.check_toolset_requirements()
+        assert reqs["broken_set"] is False
+        available = reg.get_available_toolsets()
+        assert available["broken_set"]["available"] is False
+
     def test_get_all_tool_names(self):
         reg = ToolRegistry()
         reg.register(name="z_tool", toolset="s", schema=_make_schema(), handler=_dummy_handler)

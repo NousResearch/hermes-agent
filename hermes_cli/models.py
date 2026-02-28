@@ -86,3 +86,17 @@ CHUTES_MODELS: list[tuple[str, str]] = [
     ("Qwen/Qwen3Guard-Gen-0.6B", ""),
     ("unsloth/Llama-3.2-3B-Instruct", ""),
 ]
+
+# NVIDIA NIM models (slugs from https://build.nvidia.com)
+NVIDIA_MODELS: list[tuple[str, str]] = [
+    ("meta/llama-3.1-405b-instruct",          "largest Llama"),
+    ("meta/llama-3.3-70b-instruct",            "recommended"),
+    ("meta/llama-3.1-70b-instruct",            ""),
+    ("nvidia/llama-3.1-nemotron-70b-instruct", "NVIDIA-tuned"),
+    ("mistralai/mistral-large-2-instruct",     ""),
+    ("mistralai/mixtral-8x22b-instruct-v0.1",  "MoE"),
+    ("deepseek-ai/deepseek-r1",                "reasoning"),
+    ("qwen/qwen2.5-72b-instruct",              ""),
+    ("microsoft/phi-4",                        "small/fast"),
+    ("google/gemma-3-27b-it",                  ""),
+]

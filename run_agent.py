@@ -311,6 +311,8 @@ class AIAgent:
             _effective_url = client_kwargs.get("base_url", "")
             if "chutes.ai" in _effective_url.lower():
                 client_kwargs["api_key"] = os.getenv("CHUTES_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
+            elif "nvidia" in _effective_url.lower():
+                client_kwargs["api_key"] = os.getenv("NVIDIA_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
             else:
                 client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
         

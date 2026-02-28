@@ -822,15 +822,15 @@ class HermesCLI:
         )
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
-        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
+        # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:
             self.max_turns = max_turns
-        elif os.getenv("HERMES_MAX_ITERATIONS"):
-            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         elif CLI_CONFIG["agent"].get("max_turns"):
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
         elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
             self.max_turns = CLI_CONFIG["max_turns"]
+        elif os.getenv("HERMES_MAX_ITERATIONS"):
+            self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 60
         

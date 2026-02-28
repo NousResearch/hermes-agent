@@ -78,6 +78,16 @@ if _config_path.exists():
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
                     os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
+        _compression_cfg = _cfg.get("compression", {})
+        if _compression_cfg and isinstance(_compression_cfg, dict):
+            _compression_env_map = {
+                "enabled": "CONTEXT_COMPRESSION_ENABLED",
+                "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
+                "summary_model": "CONTEXT_COMPRESSION_MODEL",
+            }
+            for _cfg_key, _env_var in _compression_env_map.items():
+                if _cfg_key in _compression_cfg:
+                    os.environ[_env_var] = str(_compression_cfg[_cfg_key])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

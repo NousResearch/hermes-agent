@@ -1739,8 +1739,18 @@ class GatewayRunner:
                             content = f"[Delivered from {mirror_src}] {content}"
                         agent_history.append({"role": role, "content": content})
             
-            # Track history length to only scan NEW messages for MEDIA tags
-            history_len = len(agent_history)
+            # Collect MEDIA paths already in history so we can exclude them
+            # from the current turn's extraction. This is compression-safe:
+            # even if the message list shrinks, we know which paths are old.
+            _history_media_paths: set = set()
+            for _hm in agent_history:
+                if _hm.get("role") in ("tool", "function"):
+                    _hc = _hm.get("content", "")
+                    if "MEDIA:" in _hc:
+                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
+                            _p = _match.group(1).strip().rstrip('",}')
+                            if _p:
+                                _history_media_paths.add(_p)
             
             result = agent.run_conversation(message, conversation_history=agent_history)
             result_holder[0] = result
@@ -1763,28 +1773,24 @@ class GatewayRunner:
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
             #
-            # IMPORTANT: Only scan messages from the CURRENT turn (after history_len),
-            # not the full history. This prevents TTS voice messages from earlier
-            # turns being re-attached to every subsequent reply. (Fixes #160)
+            # Uses path-based deduplication against _history_media_paths (collected
+            # before run_conversation) instead of index slicing. This is safe even
+            # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
-                all_messages = result.get("messages", [])
-                # Only process new messages from this turn
-                new_messages = all_messages[history_len:] if len(all_messages) > history_len else []
-                for msg in new_messages:
-                    if msg.get("role") == "tool" or msg.get("role") == "function":
+                for msg in result.get("messages", []):
+                    if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')
-                                if path:
+                                if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
                 
                 if media_tags:
-                    # Deduplicate while preserving order
                     seen = set()
                     unique_tags = []
                     for tag in media_tags:

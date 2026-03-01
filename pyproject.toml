@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "ruff"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
@@ -75,3 +75,15 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

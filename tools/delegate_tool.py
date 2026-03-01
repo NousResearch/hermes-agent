@@ -77,6 +77,84 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _build_child_progress_callback(task_index: int, parent_agent) -> Optional[callable]:
+    """Build a callback that relays child agent tool calls to the parent display.
+
+    Two display paths:
+      CLI:     prints tree-view lines above the parent's delegation spinner
+      Gateway: batches tool names and relays to parent's progress callback
+
+    Returns None if no display mechanism is available, in which case the
+    child agent runs with no progress callback (identical to current behavior).
+    """
+    spinner = getattr(parent_agent, '_delegate_spinner', None)
+    parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
+
+    if not spinner and not parent_cb:
+        return None  # No display → no callback → zero behavior change
+
+    prefix = f"[{task_index}] " if task_index > 0 else ""
+
+    # Gateway: batch tool names, flush periodically
+    _BATCH_SIZE = 5
+    _batch: List[str] = []
+
+    def _callback(tool_name: str, preview: str = None):
+        # Special "_thinking" event: model produced text content (reasoning)
+        if tool_name == "_thinking":
+            if spinner:
+                short = (preview[:55] + "...") if preview and len(preview) > 55 else (preview or "")
+                try:
+                    spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
+                except Exception:
+                    pass
+            # Don't relay thinking to gateway (too noisy for chat)
+            return
+
+        # Regular tool call event
+        if spinner:
+            short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
+            tool_emojis = {
+                "terminal": "💻", "web_search": "🔍", "web_extract": "📄",
+                "read_file": "📖", "write_file": "✍️", "patch": "🔧",
+                "search_files": "🔎", "list_directory": "📂",
+                "browser_navigate": "🌐", "browser_click": "👆",
+                "text_to_speech": "🔊", "image_generate": "🎨",
+                "vision_analyze": "👁️", "process": "⚙️",
+            }
+            emoji = tool_emojis.get(tool_name, "⚡")
+            line = f" {prefix}├─ {emoji} {tool_name}"
+            if short:
+                line += f"  \"{short}\""
+            try:
+                spinner.print_above(line)
+            except Exception:
+                pass
+
+        if parent_cb:
+            _batch.append(tool_name)
+            if len(_batch) >= _BATCH_SIZE:
+                summary = ", ".join(_batch)
+                try:
+                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+                except Exception:
+                    pass
+                _batch.clear()
+
+    def _flush():
+        """Flush remaining batched tool names to gateway on completion."""
+        if parent_cb and _batch:
+            summary = ", ".join(_batch)
+            try:
+                parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+            except Exception:
+                pass
+            _batch.clear()
+
+    _callback._flush = _flush
+    return _callback
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -98,32 +176,14 @@ def _run_single_child(
 
     child_prompt = _build_child_system_prompt(goal, context)
 
-    # Build a progress callback that surfaces subagent tool activity.
-    # CLI: updates the parent's delegate spinner text.
-    # Gateway: forwards to the parent's progress callback (feeds message queue).
-    parent_progress_cb = getattr(parent_agent, 'tool_progress_callback', None)
-    def _child_progress(tool_name: str, preview: str = None):
-        tag = f"[subagent-{task_index+1}] {tool_name}"
-        # Update CLI spinner
-        spinner = getattr(parent_agent, '_delegate_spinner', None)
-        if spinner:
-            detail = f'"{preview}"' if preview else ""
-            try:
-                spinner.update_text(f"🔀 {tag} {detail}")
-            except Exception:
-                pass
-        # Forward to gateway progress queue
-        if parent_progress_cb:
-            try:
-                parent_progress_cb(tag, preview)
-            except Exception:
-                pass
-
     try:
         # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
         parent_api_key = getattr(parent_agent, "api_key", None)
         if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
             parent_api_key = parent_agent._client_kwargs.get("api_key")
+
+        # Build progress callback to relay tool calls to parent display
+        child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
         child = AIAgent(
             base_url=parent_agent.base_url,
@@ -145,7 +205,7 @@ def _run_single_child(
             providers_ignored=parent_agent.providers_ignored,
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
-            tool_progress_callback=_child_progress,
+            tool_progress_callback=child_progress_cb,
         )
 
         # Set delegation depth so children can't spawn grandchildren
@@ -159,6 +219,13 @@ def _run_single_child(
         devnull = io.StringIO()
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
             result = child.run_conversation(user_message=goal)
+
+        # Flush any remaining batched progress to gateway
+        if child_progress_cb and hasattr(child_progress_cb, '_flush'):
+            try:
+                child_progress_cb._flush()
+            except Exception:
+                pass
 
         duration = round(time.monotonic() - child_start, 2)
 

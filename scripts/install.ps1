@@ -31,6 +31,22 @@ $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 $NodeVersion = "22"
 
+# Progress/state
+$script:Step = 0
+$script:TotalSteps = 8
+$script:SetupRan = $false
+
+# Dependency summaries
+$script:UvSummary = "not checked"
+$script:PythonSummary = "not checked"
+$script:GitSummary = "not checked"
+$script:NodeSummary = "not checked"
+$script:RipgrepSummary = "not checked"
+$script:FfmpegSummary = "not checked"
+$script:HasNode = $false
+$script:HasRipgrep = $false
+$script:HasFfmpeg = $false
+
 # ============================================================================
 # Helper functions
 # ============================================================================
@@ -65,6 +81,24 @@ function Write-Err {
     Write-Host "✗ $Message" -ForegroundColor Red
 }
 
+function Write-Step {
+    param([string]$Message)
+    $script:Step++
+    Write-Host ""
+    Write-Host "[$($script:Step)/$($script:TotalSteps)] $Message" -ForegroundColor Blue
+}
+
+function Write-DependencySummary {
+    Write-Host ""
+    Write-Host "Dependency summary:" -ForegroundColor Cyan
+    Write-Host ("   {0,-10} {1}" -f "uv:", $script:UvSummary)
+    Write-Host ("   {0,-10} {1}" -f "Python:", $script:PythonSummary)
+    Write-Host ("   {0,-10} {1}" -f "Git:", $script:GitSummary)
+    Write-Host ("   {0,-10} {1}" -f "Node.js:", $script:NodeSummary)
+    Write-Host ("   {0,-10} {1}" -f "ripgrep:", $script:RipgrepSummary)
+    Write-Host ("   {0,-10} {1}" -f "ffmpeg:", $script:FfmpegSummary)
+}
+
 # ============================================================================
 # Dependency checks
 # ============================================================================
@@ -76,6 +110,7 @@ function Install-Uv {
     if (Get-Command uv -ErrorAction SilentlyContinue) {
         $version = uv --version
         $script:UvCmd = "uv"
+        $script:UvSummary = "$version"
         Write-Success "uv found ($version)"
         return $true
     }
@@ -89,6 +124,7 @@ function Install-Uv {
         if (Test-Path $uvPath) {
             $script:UvCmd = $uvPath
             $version = & $uvPath --version
+            $script:UvSummary = "$version"
             Write-Success "uv found at $uvPath ($version)"
             return $true
         }
@@ -115,14 +151,17 @@ function Install-Uv {
         if (Test-Path $uvExe) {
             $script:UvCmd = $uvExe
             $version = & $uvExe --version
+            $script:UvSummary = "$version"
             Write-Success "uv installed ($version)"
             return $true
         }
-        
+
+        $script:UvSummary = "missing"
         Write-Err "uv installed but not found on PATH"
         Write-Info "Try restarting your terminal and re-running"
         return $false
     } catch {
+        $script:UvSummary = "missing"
         Write-Err "Failed to install uv"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
@@ -137,6 +176,7 @@ function Test-Python {
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
             $ver = & $pythonPath --version 2>$null
+            $script:PythonSummary = "$ver"
             Write-Success "Python found: $ver"
             return $true
         }
@@ -149,11 +189,13 @@ function Test-Python {
         $pythonPath = & $UvCmd python find $PythonVersion 2>$null
         if ($pythonPath) {
             $ver = & $pythonPath --version 2>$null
+            $script:PythonSummary = "$ver"
             Write-Success "Python installed: $ver"
             return $true
         }
     } catch { }
-    
+
+    $script:PythonSummary = "missing"
     Write-Err "Failed to install Python $PythonVersion"
     Write-Info "Install Python $PythonVersion manually, then re-run this script"
     return $false
@@ -164,10 +206,12 @@ function Test-Git {
     
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
+        $script:GitSummary = "$version"
         Write-Success "Git found ($version)"
         return $true
     }
-    
+
+    $script:GitSummary = "missing"
     Write-Err "Git not found"
     Write-Info "Please install Git from:"
     Write-Info "  https://git-scm.com/download/win"
@@ -181,6 +225,7 @@ function Test-Node {
         $version = node --version
         Write-Success "Node.js $version found"
         $script:HasNode = $true
+        $script:NodeSummary = "$version"
         return $true
     }
 
@@ -191,6 +236,7 @@ function Test-Node {
         $env:Path = "$HermesHome\node;$env:Path"
         Write-Success "Node.js $version found (Hermes-managed)"
         $script:HasNode = $true
+        $script:NodeSummary = "$version"
         return $true
     }
 
@@ -207,6 +253,7 @@ function Test-Node {
                 $version = node --version
                 Write-Success "Node.js $version installed via winget"
                 $script:HasNode = $true
+                $script:NodeSummary = "$version"
                 return $true
             }
         } catch { }
@@ -238,6 +285,7 @@ function Test-Node {
                 $version = & "$HermesHome\node\node.exe" --version
                 Write-Success "Node.js $version installed to ~/.hermes/node/"
                 $script:HasNode = $true
+                $script:NodeSummary = "$version"
 
                 Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
                 Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
@@ -251,18 +299,22 @@ function Test-Node {
     Write-Warn "Could not auto-install Node.js"
     Write-Info "Install manually: https://nodejs.org/en/download/"
     $script:HasNode = $false
+    $script:NodeSummary = "missing"
     return $true
 }
 
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
+    $script:RipgrepSummary = "missing"
+    $script:FfmpegSummary = "missing"
     $needRipgrep = $false
     $needFfmpeg = $false
 
     Write-Info "Checking ripgrep (fast file search)..."
     if (Get-Command rg -ErrorAction SilentlyContinue) {
         $version = rg --version | Select-Object -First 1
+        $script:RipgrepSummary = "$version"
         Write-Success "$version found"
         $script:HasRipgrep = $true
     } else {
@@ -271,6 +323,8 @@ function Install-SystemPackages {
 
     Write-Info "Checking ffmpeg (TTS voice messages)..."
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+        $version = ffmpeg -version | Select-Object -First 1
+        $script:FfmpegSummary = "$version"
         Write-Success "ffmpeg found"
         $script:HasFfmpeg = $true
     } else {
@@ -316,11 +370,13 @@ function Install-SystemPackages {
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
+            $script:RipgrepSummary = (rg --version | Select-Object -First 1)
             $needRipgrep = $false
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed"
             $script:HasFfmpeg = $true
+            $script:FfmpegSummary = (ffmpeg -version | Select-Object -First 1)
             $needFfmpeg = $false
         }
         if (-not $needRipgrep -and -not $needFfmpeg) { return }
@@ -335,11 +391,13 @@ function Install-SystemPackages {
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via chocolatey"
             $script:HasRipgrep = $true
+            $script:RipgrepSummary = (rg --version | Select-Object -First 1)
             $needRipgrep = $false
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed via chocolatey"
             $script:HasFfmpeg = $true
+            $script:FfmpegSummary = (ffmpeg -version | Select-Object -First 1)
             $needFfmpeg = $false
         }
     }
@@ -353,11 +411,13 @@ function Install-SystemPackages {
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via scoop"
             $script:HasRipgrep = $true
+            $script:RipgrepSummary = (rg --version | Select-Object -First 1)
             $needRipgrep = $false
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed via scoop"
             $script:HasFfmpeg = $true
+            $script:FfmpegSummary = (ffmpeg -version | Select-Object -First 1)
             $needFfmpeg = $false
         }
     }
@@ -371,6 +431,16 @@ function Install-SystemPackages {
         Write-Warn "ffmpeg not installed (TTS voice messages will be limited)"
         Write-Info "  winget install Gyan.FFmpeg"
     }
+}
+
+function Check-Dependencies {
+    if (-not (Install-Uv)) { return $false }
+    if (-not (Test-Python)) { return $false }
+    if (-not (Test-Git)) { return $false }
+    if (-not (Test-Node)) { return $false }
+    Install-SystemPackages
+    Write-DependencySummary
+    return $true
 }
 
 # ============================================================================
@@ -397,22 +467,20 @@ function Install-Repository {
         # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
         # when no key is configured (fails immediately instead of prompting).
-        Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
+        git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir *> $null
         $sshExitCode = $LASTEXITCODE
         $env:GIT_SSH_COMMAND = $null
-        
+
         if ($sshExitCode -eq 0) {
-            Write-Success "Cloned via SSH"
+            Write-Success "Repository cloned"
         } else {
             # Clean up partial SSH clone before retrying
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Info "SSH failed, trying HTTPS..."
-            $httpsResult = git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir 2>&1
-            
+            git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir *> $null
+
             if ($LASTEXITCODE -eq 0) {
-                Write-Success "Cloned via HTTPS"
+                Write-Success "Repository cloned"
             } else {
                 Write-Err "Failed to clone repository"
                 exit 1
@@ -666,6 +734,7 @@ function Invoke-SetupWizard {
     Push-Location $InstallDir
     
     # Run hermes setup using the venv Python directly (no activation needed)
+    $script:SetupRan = $true
     if (-not $NoVenv) {
         & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
@@ -737,6 +806,13 @@ function Start-GatewayIfConfigured {
 }
 
 function Write-Completion {
+    if ($script:SetupRan) {
+        Write-Host ""
+        Write-Success "Installation complete"
+        Write-Host "⚡ Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
+        return
+    }
+
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Green
     Write-Host "│              ✓ Installation Complete!                   │" -ForegroundColor Green
@@ -766,12 +842,12 @@ function Write-Completion {
     Write-Host "Configure API keys & settings"
     Write-Host "   hermes config       " -NoNewline -ForegroundColor Green
     Write-Host "View/edit configuration"
-    Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
-    Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
+    Write-Host "   hermes gateway install  " -NoNewline -ForegroundColor Green
+    Write-Host "Install gateway service"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
+    Write-Host "   hermes doctor       " -NoNewline -ForegroundColor Green
+    Write-Host "Check for issues"
     Write-Host ""
     
     Write-Host "─────────────────────────────────────────────────────────" -ForegroundColor Cyan
@@ -799,22 +875,40 @@ function Write-Completion {
 
 function Main {
     Write-Banner
-    
-    if (-not (Install-Uv)) { exit 1 }
-    if (-not (Test-Python)) { exit 1 }
-    if (-not (Test-Git)) { exit 1 }
-    Test-Node              # Auto-installs if missing
-    Install-SystemPackages  # ripgrep + ffmpeg in one step
-    
+
+    if ($SkipSetup) {
+        $script:TotalSteps = 7
+    } else {
+        $script:TotalSteps = 8
+    }
+
+    Write-Step "Checking dependencies"
+    if (-not (Check-Dependencies)) { exit 1 }
+
+    Write-Step "Cloning repository"
     Install-Repository
+
+    Write-Step "Creating virtual environment"
     Install-Venv
+
+    Write-Step "Installing Python dependencies"
     Install-Dependencies
+
+    Write-Step "Installing Node.js dependencies"
     Install-NodeDeps
+
+    Write-Step "Setting up PATH"
     Set-PathVariable
+
+    Write-Step "Copying configuration templates"
     Copy-ConfigTemplates
+
+    if (-not $SkipSetup) {
+        Write-Step "Running setup wizard"
+    }
     Invoke-SetupWizard
     Start-GatewayIfConfigured
-    
+
     Write-Completion
 }
 

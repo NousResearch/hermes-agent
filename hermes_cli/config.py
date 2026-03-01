@@ -59,7 +59,7 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    "max_turns": 60,
     
     "terminal": {
         "backend": "local",
@@ -719,7 +719,7 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    print(f"  Max turns:    {config.get('max_turns', 60)}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Terminal

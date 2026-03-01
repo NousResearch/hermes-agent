@@ -120,15 +120,17 @@ def _run_single_child(
                 pass
 
     try:
-        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal)
-        parent_api_key = None
-        if hasattr(parent_agent, '_client_kwargs'):
+        # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
+        parent_api_key = getattr(parent_agent, "api_key", None)
+        if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
             parent_api_key = parent_agent._client_kwargs.get("api_key")
 
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
             model=model or parent_agent.model,
+            provider=getattr(parent_agent, "provider", None),
+            api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,
             enabled_toolsets=child_toolsets,
             quiet_mode=True,

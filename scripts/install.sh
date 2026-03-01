@@ -1089,6 +1089,9 @@ print_success() {
     echo ""
     echo -e "   ${GREEN}hermes${NC}              Start chatting"
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
+    echo -e "   ${GREEN}hermes config${NC}       View/edit configuration"
+    echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service"
+    echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
     echo -e "   ${GREEN}hermes doctor${NC}       Check for issues"
     echo ""
 

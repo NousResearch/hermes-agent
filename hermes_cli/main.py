@@ -132,7 +132,7 @@ def cmd_chat(args):
         print()
         print("This takes about a minute. You'll need an API key from one of:")
         print("  - OpenRouter: openrouter.ai/keys")
-        print("  - Nous Portal: portal.nousresearch.com")
+        print("  - Nous Portal Subscription: portal.nousresearch.com")
         print("  - Any OpenAI-compatible endpoint")
         print()
         try:

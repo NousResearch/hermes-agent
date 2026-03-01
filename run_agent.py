@@ -2569,7 +2569,8 @@ class AIAgent:
                                             tool_names.append(fn.get("name", "unknown"))
                                         msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
                                         break
-                                final_response = fallback
+                                # Strip <think> blocks from fallback content for user display
+                                final_response = self._strip_think_blocks(fallback).strip()
                                 break
                             
                             # No fallback -- append the empty message as-is
@@ -2597,6 +2598,9 @@ class AIAgent:
                     # Reset retry counter on successful content
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
+                    
+                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
+                    final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     

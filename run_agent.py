@@ -2233,6 +2233,7 @@ class AIAgent:
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
+                api_msg.pop("finish_reason", None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -2860,6 +2861,9 @@ class AIAgent:
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
                     api_msg.pop("reasoning")
+                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
+                if "finish_reason" in api_msg:
+                    api_msg.pop("finish_reason")
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)

@@ -154,6 +154,12 @@ def build_session_context_prompt(context: SessionContext) -> str:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
         lines.append(f"**Source:** {platform_name} ({context.source.description})")
+
+    # User identity (especially useful for WhatsApp where multiple people DM)
+    if context.source.user_name:
+        lines.append(f"**User:** {context.source.user_name}")
+    elif context.source.user_id:
+        lines.append(f"**User ID:** {context.source.user_id}")
     
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
@@ -277,12 +283,14 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None,
+                 on_auto_reset=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._has_active_processes_fn = has_active_processes_fn
+        self._on_auto_reset = on_auto_reset  # callback(old_entry) before auto-reset
         
         # Initialize SQLite session database
         self._db = None
@@ -323,8 +331,12 @@ class SessionStore:
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         platform = source.platform.value
-        
+
         if source.chat_type == "dm":
+            # WhatsApp DMs come from different people, each needs its own session.
+            # Other platforms (Telegram, Discord) have a single DM with the bot owner.
+            if platform == "whatsapp" and source.chat_id:
+                return f"agent:main:{platform}:dm:{source.chat_id}"
             return f"agent:main:{platform}:dm"
         else:
             return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
@@ -344,6 +356,9 @@ class SessionStore:
             platform=source.platform,
             session_type=source.chat_type
         )
+        
+        if policy.mode == "none":
+            return False
         
         now = datetime.now()
         
@@ -396,8 +411,13 @@ class SessionStore:
                 self._save()
                 return entry
             else:
-                # Session is being reset -- end the old one in SQLite
+                # Session is being auto-reset — flush memories before destroying
                 was_auto_reset = True
+                if self._on_auto_reset:
+                    try:
+                        self._on_auto_reset(entry)
+                    except Exception as e:
+                        logger.debug("Auto-reset callback failed: %s", e)
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")

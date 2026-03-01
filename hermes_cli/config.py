@@ -127,11 +127,16 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
+    # This section is only needed for hermes-specific overrides; everything else
+    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
+    "honcho": {},
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 3,
+    "_config_version": 4,
 }
 
 # =============================================================================
@@ -229,6 +234,16 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
+    # ── Honcho ──
+    "HONCHO_API_KEY": {
+        "description": "Honcho API key for AI-native persistent memory",
+        "prompt": "Honcho API key",
+        "url": "https://app.honcho.dev",
+        "tools": ["query_user_context"],
+        "password": True,
+        "category": "tool",
+    },
+
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {
         "description": "Telegram bot token from @BotFather",
@@ -303,16 +318,19 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
+    # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
+    # Gateway falls back to these env vars for backward compatibility.
     "HERMES_TOOL_PROGRESS": {
-        "description": "Send tool progress messages in messaging channels (true/false)",
-        "prompt": "Enable tool progress messages",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Tool progress (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
     },
     "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
-        "prompt": "Progress mode (all/new)",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Progress mode (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
@@ -426,6 +444,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # Check config version
     current_ver, latest_ver = check_config_version()
+    
+    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
+    if current_ver < 4:
+        config = load_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "tool_progress" not in display:
+            old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
+            old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
+            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+                display["tool_progress"] = "off"
+                results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
+            elif old_mode and old_mode.lower() in ("new", "all"):
+                display["tool_progress"] = old_mode.lower()
+                results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
+            else:
+                display["tool_progress"] = "all"
+                results["config_added"].append("display.tool_progress=all (default)")
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -769,7 +810,7 @@ def set_config_value(key: str, value: str):
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
     if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):
@@ -815,6 +856,19 @@ def set_config_value(key: str, value: str):
     with open(config_path, 'w') as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
+    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
+    # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
+    _config_to_env_sync = {
+        "terminal.backend": "TERMINAL_ENV",
+        "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
+        "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
+        "terminal.cwd": "TERMINAL_CWD",
+        "terminal.timeout": "TERMINAL_TIMEOUT",
+    }
+    if key in _config_to_env_sync:
+        save_env_value(_config_to_env_sync[key], str(value))
+
     print(f"✓ Set {key} = {value} in {config_path}")
 
 

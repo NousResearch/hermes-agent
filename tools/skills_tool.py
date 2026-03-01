@@ -443,7 +443,34 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
+            # Security: Prevent path traversal attacks
+            normalized_path = Path(file_path)
+            if ".." in normalized_path.parts:
+                return json.dumps({
+                    "success": False,
+                    "error": "Path traversal ('..') is not allowed.",
+                    "hint": "Use a relative path within the skill directory"
+                }, ensure_ascii=False)
+            
             target_file = skill_dir / file_path
+            
+            # Security: Verify resolved path is still within skill directory
+            try:
+                resolved = target_file.resolve()
+                skill_dir_resolved = skill_dir.resolve()
+                if not str(resolved).startswith(str(skill_dir_resolved) + "/") and resolved != skill_dir_resolved:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Path escapes skill directory boundary.",
+                        "hint": "Use a relative path within the skill directory"
+                    }, ensure_ascii=False)
+            except (OSError, ValueError):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid file path: '{file_path}'",
+                    "hint": "Use a valid relative path within the skill directory"
+                }, ensure_ascii=False)
+            
             if not target_file.exists():
                 # List available files in the skill directory, organized by type
                 available_files = {

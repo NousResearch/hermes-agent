@@ -125,6 +125,28 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 logger = logging.getLogger(__name__)
 
 
+def _resolve_runtime_agent_kwargs() -> dict:
+    """Resolve provider credentials for gateway-created AIAgent instances."""
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+        )
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+    }
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -958,14 +980,11 @@ class GatewayRunner:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
                     # Resolve credentials so the flush agent can reach the LLM
-                    _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-                    _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
                     def _do_flush():
                         tmp_agent = AIAgent(
                             model=_flush_model,
-                            api_key=_flush_api_key,
-                            base_url=_flush_base_url,
+                            **_resolve_runtime_agent_kwargs(),
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
@@ -1678,7 +1697,7 @@ class GatewayRunner:
             combined_ephemeral = context_prompt or ""
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-            
+
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
             try:
@@ -1688,9 +1707,6 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
             model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
 
             try:
@@ -1704,24 +1720,22 @@ class GatewayRunner:
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
-                        base_url = _model_cfg.get("base_url", base_url)
-                    # Check if provider is nous — resolve OAuth credentials
-                    provider = _model_cfg.get("provider", "") if isinstance(_model_cfg, dict) else ""
-                    if provider == "nous":
-                        try:
-                            from hermes_cli.auth import resolve_nous_runtime_credentials
-                            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-                            api_key = creds.get("api_key", api_key)
-                            base_url = creds.get("base_url", base_url)
-                        except Exception as nous_err:
-                            logger.warning("Nous Portal credential resolution failed: %s", nous_err)
             except Exception:
                 pass
 
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except Exception as exc:
+                return {
+                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+
             agent = AIAgent(
                 model=model,
-                api_key=api_key,
-                base_url=base_url,
+                **runtime_kwargs,
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,

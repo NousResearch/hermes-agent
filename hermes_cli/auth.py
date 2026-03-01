@@ -10,7 +10,7 @@ Architecture:
 - Auth store (auth.json) holds per-provider credential state
 - resolve_provider() picks the active provider via priority chain
 - resolve_*_runtime_credentials() handles token refresh and key minting
-- login_command() / logout_command() are the CLI entry points
+- logout_command() is the CLI entry point for clearing auth
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def format_auth_error(error: Exception) -> str:
         return str(error)
 
     if error.relogin_required:
-        return f"{error} Run `hermes login` to re-authenticate."
+        return f"{error} Run `hermes model` to re-authenticate."
 
     if error.code == "subscription_required":
         return (
@@ -1173,6 +1173,39 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 # =============================================================================
+# External credential detection
+# =============================================================================
+
+def detect_external_credentials() -> List[Dict[str, Any]]:
+    """Scan for credentials from other CLI tools that Hermes can reuse.
+
+    Returns a list of dicts, each with:
+      - provider: str   -- Hermes provider id (e.g. "openai-codex")
+      - path: str       -- filesystem path where creds were found
+      - label: str      -- human-friendly description for the setup UI
+    """
+    found: List[Dict[str, Any]] = []
+
+    # Codex CLI: ~/.codex/auth.json (or $CODEX_HOME/auth.json)
+    try:
+        codex_home = resolve_codex_home_path()
+        codex_auth = codex_home / "auth.json"
+        if codex_auth.is_file():
+            data = json.loads(codex_auth.read_text())
+            tokens = data.get("tokens", {})
+            if isinstance(tokens, dict) and tokens.get("access_token"):
+                found.append({
+                    "provider": "openai-codex",
+                    "path": str(codex_auth),
+                    "label": f"Codex CLI credentials found ({codex_auth})",
+                })
+    except Exception:
+        pass
+
+    return found
+
+
+# =============================================================================
 # CLI Commands — login / logout
 # =============================================================================
 
@@ -1328,56 +1361,43 @@ def _save_model_choice(model_id: str) -> None:
 
 
 def login_command(args) -> None:
-    """Run OAuth device code login for the selected provider."""
-    provider_id = getattr(args, "provider", None) or "nous"
-
-    if provider_id not in PROVIDER_REGISTRY:
-        print(f"Unknown provider: {provider_id}")
-        print(f"Available: {', '.join(PROVIDER_REGISTRY.keys())}")
-        raise SystemExit(1)
-
-    pconfig = PROVIDER_REGISTRY[provider_id]
-
-    if provider_id == "nous":
-        _login_nous(args, pconfig)
-    elif provider_id == "openai-codex":
-        _login_openai_codex(args, pconfig)
-    else:
-        print(f"Login for provider '{provider_id}' is not yet implemented.")
-        raise SystemExit(1)
+    """Deprecated: use 'hermes model' or 'hermes setup' instead."""
+    print("The 'hermes login' command has been removed.")
+    print("Use 'hermes model' to select a provider and model,")
+    print("or 'hermes setup' for full interactive setup.")
+    raise SystemExit(0)
 
 
 def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
-    """OpenAI Codex login flow using Codex CLI auth state."""
-    codex_path = shutil.which("codex")
-    if not codex_path:
-        print("Codex CLI was not found in PATH.")
-        print("Install Codex CLI, then retry `hermes login --provider openai-codex`.")
-        raise SystemExit(1)
+    """OpenAI Codex login via device code flow (no Codex CLI required)."""
+    codex_home = resolve_codex_home_path()
 
-    print(f"Starting Hermes login via {pconfig.name}...")
-    print(f"Using Codex CLI: {codex_path}")
-    print(f"Codex home: {resolve_codex_home_path()}")
-
-    creds: Dict[str, Any]
+    # Check for existing valid credentials first
     try:
-        creds = resolve_codex_runtime_credentials()
+        existing = resolve_codex_runtime_credentials()
+        print(f"Existing Codex credentials found at {codex_home / 'auth.json'}")
+        try:
+            reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reuse = "y"
+        if reuse in ("", "y", "yes"):
+            creds = existing
+            _save_codex_provider_state(creds)
+            return
     except AuthError:
-        print("No usable Codex auth found. Running `codex login`...")
-        try:
-            subprocess.run(["codex", "login"], check=True)
-        except subprocess.CalledProcessError as exc:
-            print(f"Codex login failed with exit code {exc.returncode}.")
-            raise SystemExit(1)
-        except KeyboardInterrupt:
-            print("\nLogin cancelled.")
-            raise SystemExit(130)
-        try:
-            creds = resolve_codex_runtime_credentials()
-        except AuthError as exc:
-            print(format_auth_error(exc))
-            raise SystemExit(1)
+        pass
 
+    # No existing creds (or user declined) -- run device code flow
+    print()
+    print("Signing in to OpenAI Codex...")
+    print()
+
+    creds = _codex_device_code_login()
+    _save_codex_provider_state(creds)
+
+
+def _save_codex_provider_state(creds: Dict[str, Any]) -> None:
+    """Persist Codex provider state to auth store and config."""
     auth_state = {
         "auth_file": creds.get("auth_file"),
         "codex_home": creds.get("codex_home"),
@@ -1391,11 +1411,168 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
         _save_provider_state(auth_store, "openai-codex", auth_state)
         saved_to = _save_auth_store(auth_store)
 
-    config_path = _update_config_for_provider("openai-codex", creds["base_url"])
+    config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
     print(f"  Auth state: {saved_to}")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+
+
+def _codex_device_code_login() -> Dict[str, Any]:
+    """Run the OpenAI device code login flow and return credentials dict."""
+    import time as _time
+
+    issuer = "https://auth.openai.com"
+    client_id = CODEX_OAUTH_CLIENT_ID
+
+    # Step 1: Request device code
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            resp = client.post(
+                f"{issuer}/api/accounts/deviceauth/usercode",
+                json={"client_id": client_id},
+                headers={"Content-Type": "application/json"},
+            )
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to request device code: {exc}",
+            provider="openai-codex", code="device_code_request_failed",
+        )
+
+    if resp.status_code != 200:
+        raise AuthError(
+            f"Device code request returned status {resp.status_code}.",
+            provider="openai-codex", code="device_code_request_error",
+        )
+
+    device_data = resp.json()
+    user_code = device_data.get("user_code", "")
+    device_auth_id = device_data.get("device_auth_id", "")
+    poll_interval = max(3, int(device_data.get("interval", "5")))
+
+    if not user_code or not device_auth_id:
+        raise AuthError(
+            "Device code response missing required fields.",
+            provider="openai-codex", code="device_code_incomplete",
+        )
+
+    # Step 2: Show user the code
+    print("To continue, follow these steps:\n")
+    print(f"  1. Open this URL in your browser:")
+    print(f"     \033[94m{issuer}/codex/device\033[0m\n")
+    print(f"  2. Enter this code:")
+    print(f"     \033[94m{user_code}\033[0m\n")
+    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+
+    # Step 3: Poll for authorization code
+    max_wait = 15 * 60  # 15 minutes
+    start = _time.monotonic()
+    code_resp = None
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            while _time.monotonic() - start < max_wait:
+                _time.sleep(poll_interval)
+                poll_resp = client.post(
+                    f"{issuer}/api/accounts/deviceauth/token",
+                    json={"device_auth_id": device_auth_id, "user_code": user_code},
+                    headers={"Content-Type": "application/json"},
+                )
+
+                if poll_resp.status_code == 200:
+                    code_resp = poll_resp.json()
+                    break
+                elif poll_resp.status_code in (403, 404):
+                    continue  # User hasn't completed login yet
+                else:
+                    raise AuthError(
+                        f"Device auth polling returned status {poll_resp.status_code}.",
+                        provider="openai-codex", code="device_code_poll_error",
+                    )
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+
+    if code_resp is None:
+        raise AuthError(
+            "Login timed out after 15 minutes.",
+            provider="openai-codex", code="device_code_timeout",
+        )
+
+    # Step 4: Exchange authorization code for tokens
+    authorization_code = code_resp.get("authorization_code", "")
+    code_verifier = code_resp.get("code_verifier", "")
+    redirect_uri = f"{issuer}/deviceauth/callback"
+
+    if not authorization_code or not code_verifier:
+        raise AuthError(
+            "Device auth response missing authorization_code or code_verifier.",
+            provider="openai-codex", code="device_code_incomplete_exchange",
+        )
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            token_resp = client.post(
+                CODEX_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:
+        raise AuthError(
+            f"Token exchange failed: {exc}",
+            provider="openai-codex", code="token_exchange_failed",
+        )
+
+    if token_resp.status_code != 200:
+        raise AuthError(
+            f"Token exchange returned status {token_resp.status_code}.",
+            provider="openai-codex", code="token_exchange_error",
+        )
+
+    tokens = token_resp.json()
+    access_token = tokens.get("access_token", "")
+    refresh_token = tokens.get("refresh_token", "")
+
+    if not access_token:
+        raise AuthError(
+            "Token exchange did not return an access_token.",
+            provider="openai-codex", code="token_exchange_no_access_token",
+        )
+
+    # Step 5: Persist tokens to ~/.codex/auth.json
+    codex_home = resolve_codex_home_path()
+    codex_home.mkdir(parents=True, exist_ok=True)
+    auth_path = codex_home / "auth.json"
+
+    payload = {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        },
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    _persist_codex_auth_payload(auth_path, payload, lock_held=False)
+
+    base_url = (
+        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        or DEFAULT_CODEX_BASE_URL
+    )
+
+    return {
+        "api_key": access_token,
+        "base_url": base_url,
+        "auth_file": str(auth_path),
+        "codex_home": str(codex_home),
+        "last_refresh": payload["last_refresh"],
+        "auth_mode": "chatgpt",
+        "source": "device-code",
+    }
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
@@ -1579,6 +1756,6 @@ def logout_command(args) -> None:
         if os.getenv("OPENROUTER_API_KEY"):
             print("Hermes will use OpenRouter for inference.")
         else:
-            print("Run `hermes login` or configure an API key to use Hermes.")
+            print("Run `hermes model` or configure an API key to use Hermes.")
     else:
         print(f"No auth state found for {provider_name}.")

@@ -121,11 +121,14 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 | Provider | Setup |
 |----------|-------|
-| **Nous Portal** | `hermes login` (OAuth, subscription-based) |
+| **Nous Portal** | `hermes model` (OAuth, subscription-based) |
+| **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
-**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+**Codex note:** The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Credentials are stored at `~/.codex/auth.json` and auto-refresh. No Codex CLI installation required.
+
+**Note:** Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 
 ---
 
@@ -368,7 +371,7 @@ hermes --resume <id>      # Resume a specific session (-r)
 
 # Provider & model management
 hermes model              # Switch provider and model interactively
-hermes login              # Authenticate with Nous Portal (OAuth)
+hermes model              # Select provider and model
 hermes logout             # Clear stored OAuth credentials
 
 # Configuration
@@ -1638,7 +1641,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 |------|-------------|
 | `~/.hermes/config.yaml` | Your settings |
 | `~/.hermes/.env` | API keys and secrets |
-| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes login`) |
+| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes model`) |
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
 | `~/.hermes/hermes-agent/` | Installation directory |
@@ -1666,7 +1669,7 @@ hermes config    # View current settings
 Common issues:
 - **"API key not set"**: Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key`
 - **"hermes: command not found"**: Reload your shell (`source ~/.bashrc`) or check PATH
-- **"Run `hermes login` to re-authenticate"**: Your Nous Portal session expired. Run `hermes login` to refresh.
+- **"Run `hermes setup` to re-authenticate"**: Your Nous Portal session expired. Run `hermes setup` or `hermes model` to refresh.
 - **"No active paid subscription"**: Your Nous Portal account needs an active subscription for inference.
 - **Gateway won't start**: Check `hermes gateway status` and logs
 - **Missing config after update**: Run `hermes config check` to see what's new, then `hermes config migrate` to add missing options

@@ -621,10 +621,22 @@ def run_setup_wizard(args):
         format_auth_error, AuthError, fetch_nous_models,
         resolve_nous_runtime_credentials, _update_config_for_provider,
         _login_openai_codex, get_codex_auth_status, DEFAULT_CODEX_BASE_URL,
+        detect_external_credentials,
     )
     existing_custom = get_env_value("OPENAI_BASE_URL")
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
+
+    # Detect credentials from other CLI tools
+    detected_creds = detect_external_credentials()
+    if detected_creds:
+        print_info("Detected existing credentials:")
+        for cred in detected_creds:
+            if cred["provider"] == "openai-codex":
+                print_success(f"  * {cred['label']} -- select \"OpenAI Codex\" to use it")
+            else:
+                print_info(f"  * {cred['label']}")
+        print()
 
     # Detect if any provider is already configured
     has_any_provider = bool(active_oauth or existing_custom or existing_or)
@@ -694,11 +706,11 @@ def run_setup_wizard(args):
 
         except SystemExit:
             print_warning("Nous Portal login was cancelled or failed.")
-            print_info("You can try again later with: hermes login")
+            print_info("You can try again later with: hermes model")
             selected_provider = None
         except Exception as e:
             print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes login")
+            print_info("You can try again later with: hermes model")
             selected_provider = None
 
     elif provider_idx == 1:  # OpenAI Codex
@@ -718,11 +730,11 @@ def run_setup_wizard(args):
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         except SystemExit:
             print_warning("OpenAI Codex login was cancelled or failed.")
-            print_info("You can try again later with: hermes login --provider openai-codex")
+            print_info("You can try again later with: hermes model")
             selected_provider = None
         except Exception as e:
             print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes login --provider openai-codex")
+            print_info("You can try again later with: hermes model")
             selected_provider = None
 
     elif provider_idx == 2:  # OpenRouter
@@ -834,7 +846,15 @@ def run_setup_wizard(args):
             # else: keep current
         elif selected_provider == "openai-codex":
             from hermes_cli.codex_models import get_codex_model_ids
-            codex_models = get_codex_model_ids()
+            # Try to get the access token for live model discovery
+            _codex_token = None
+            try:
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+                _codex_creds = resolve_codex_runtime_credentials()
+                _codex_token = _codex_creds.get("api_key")
+            except Exception:
+                pass
+            codex_models = get_codex_model_ids(access_token=_codex_token)
             model_choices = [f"{m}" for m in codex_models]
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

@@ -211,8 +211,11 @@ class KawaiiSpinner:
         if not self.running:
             self._write(f"  {text}", flush=True)
             return
-        # Clear spinner line, print text above, spinner redraws on next tick
-        self._write(f"\r\033[K  {text}", flush=True)
+        # Clear spinner line with spaces (not \033[K) to avoid garbled escape
+        # codes when prompt_toolkit's patch_stdout is active — same approach
+        # as stop(). Then print text; spinner redraws on next tick.
+        blanks = ' ' * max(self.last_line_len + 5, 40)
+        self._write(f"\r{blanks}\r  {text}", flush=True)
 
     def stop(self, final_message: str = None):
         self.running = False

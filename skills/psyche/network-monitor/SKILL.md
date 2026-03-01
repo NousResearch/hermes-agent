@@ -276,7 +276,7 @@ Setup: https://docs.psyche.network
 - **Mining pool capacity.** The pool is frequently full. If `psyche.network` shows the pool as full, advise the user to check back later.
 - **Public Solana RPC rate limits.** The default `https://api.mainnet-beta.solana.com` has strict rate limits. For repeated queries, recommend a private RPC provider or set `$SOLANA_RPC_URL`.
 - **Checkpoint size.** Large models (40B+) have checkpoint files in the tens of GB. Warn the user about download size before initiating.
-- **CLI cannot discover runs.** There is no `run-manager list` command. All CLI subcommands require a known run-id.
+- **CLI cannot discover runs.** There is no `run-manager list` command. Most CLI query subcommands require a known run-id.
 
 ## Verification
 

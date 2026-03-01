@@ -9,6 +9,7 @@
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="https://deepwiki.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/DeepWiki-Docs-blue?style=for-the-badge&logo=readthedocs&logoColor=white" alt="DeepWiki Docs"></a>
 </p>
 
 **The fully open-source AI agent that grows with you.** Install it on a machine, give it your messaging accounts, and it becomes a persistent personal agent — learning your projects, building its own skills, running tasks on a schedule, and reaching you wherever you are. An autonomous agent that lives on your server, remembers what it learns, and gets more capable the longer it runs.
@@ -23,7 +24,7 @@ Built by [Nous Research](https://nousresearch.com). Under the hood, the same arc
 <tr><td><b>Grows the longer it runs</b></td><td>Persistent memory across sessions — the agent remembers your preferences, your projects, your environment. When it solves a hard problem, it writes a skill document for next time. Skills are searchable, shareable, and compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard. A Skills Hub lets you install community skills or publish your own.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Set up a daily AI funding report delivered to Telegram, a nightly backup verification on Discord, a weekly dependency audit that opens PRs, or a morning news briefing — all in natural language. The gateway runs them unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — each gets its own conversation and terminal. The agent can also write Python scripts that call its own tools via RPC, collapsing multi-step pipelines into a single turn with zero intermediate context cost.</td></tr>
-<tr><td><b>Real sandboxing</b></td><td>Five terminal backends — local, Docker, SSH, Singularity, and Modal — with persistent workspaces, background process management, with the option to make these machines ephemeral. Run it against a remote machine so it can't modify its own code.</td></tr>
+<tr><td><b>Real sandboxing</b></td><td>Five terminal backends — local, Docker, SSH, Singularity, and Modal — with persistent workspaces, background process management, with the option to make these machines ephemeral. Run it against a remote machine so it can't modify its own code or read private API keys for added security.</td></tr>
 <tr><td><b>Research-ready</b></td><td>Batch runner for generating thousands of tool-calling trajectories in parallel. Atropos RL environments for training models with reinforcement learning on agentic tasks. Trajectory compression for fitting training data into token budgets.</td></tr>
 </table>
 
@@ -132,7 +133,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 All your settings are stored in `~/.hermes/` for easy access:
 
-```
+```text
 ~/.hermes/
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
 ├── .env            # API keys and secrets
@@ -160,6 +161,19 @@ hermes config set terminal.backend docker
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
+### Configuration Precedence
+
+Settings are resolved in this order (highest priority first):
+
+1. **CLI arguments** — `hermes chat --max-turns 100` (per-invocation override)
+2. **`~/.hermes/config.yaml`** — the primary config file for all non-secret settings
+3. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
+4. **Built-in defaults** — hardcoded safe defaults when nothing else is set
+
+**Rule of thumb:** Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
+
+The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
+
 ### Optional API Keys
 
 | Feature | Provider | Env Variable |
@@ -170,6 +184,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
+| Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 
 ---
 
@@ -276,6 +291,7 @@ See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 | `/stop` | Stop the running agent |
 | `/sethome` | Set this chat as the home channel |
 | `/help` | Show available commands |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 ### DM Pairing (Alternative to Allowlists)
 
@@ -323,13 +339,21 @@ TERMINAL_CWD=/workspace                # All terminal sessions (local or contain
 
 ### Tool Progress Notifications
 
-Get real-time updates as the agent works:
+Control how much tool activity is displayed. Set in `~/.hermes/config.yaml`:
 
-```bash
-# Enable in ~/.hermes/.env
-HERMES_TOOL_PROGRESS=true
-HERMES_TOOL_PROGRESS_MODE=all    # or "new" for only when tool changes
+```yaml
+display:
+  tool_progress: all    # off | new | all | verbose
 ```
+
+| Mode | What you see |
+|------|-------------|
+| `off` | Silent — just the final response |
+| `new` | Tool indicator only when the tool changes (skip repeats) |
+| `all` | Every tool call with a short preview (default) |
+| `verbose` | Full args, results, and debug logs |
+
+Toggle at runtime in the CLI with `/verbose` (cycles through all four modes).
 
 ---
 
@@ -363,6 +387,7 @@ hermes uninstall          # Uninstall (can keep configs for later reinstall)
 hermes gateway            # Run gateway in foreground
 hermes gateway install    # Install as system service (messaging + cron)
 hermes gateway status     # Check service status
+hermes whatsapp           # Pair WhatsApp via QR code
 
 # Skills, cron, misc
 hermes skills search k8s  # Search skill registries
@@ -397,6 +422,7 @@ Type `/` to see an autocomplete dropdown of all commands.
 | `/skills` | Search, install, inspect, or manage skills from registries |
 | `/platforms` | Show gateway/messaging platform status |
 | `/quit` | Exit (also: `/exit`, `/q`) |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 **Keybindings:**
 - `Enter` — send message
@@ -430,8 +456,8 @@ Tools are organized into logical **toolsets**:
 # Use specific toolsets
 hermes --toolsets "web,terminal"
 
-# List all toolsets
-hermes --list-tools
+# Configure tools per platform (interactive)
+hermes tools
 ```
 
 **Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.
@@ -545,6 +571,45 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+### 🔗 Honcho Integration (Cross-Session User Modeling)
+
+Optional cloud-based user modeling via [Honcho](https://honcho.dev/) by Plastic Labs. While MEMORY.md and USER.md are local file-based memory, Honcho builds a deeper, AI-generated understanding of the user that persists across sessions and works across tools (Claude Code, Cursor, Hermes, etc.).
+
+When enabled, Honcho runs **alongside** existing memory — USER.md stays as-is, and Honcho adds an additional layer of user context:
+
+- **Prefetch**: Each turn, Honcho's user representation is fetched and injected into the system prompt
+- **Sync**: After each conversation, messages are synced to Honcho for ongoing user modeling
+- **Query tool**: The agent can actively query its understanding of the user via `query_user_context`
+
+**Setup:**
+```bash
+# 1. Install the optional dependency
+uv pip install honcho-ai
+
+# 2. Get an API key from https://app.honcho.dev
+
+# 3. Create ~/.honcho/config.json (shared with other Honcho-enabled tools)
+cat > ~/.honcho/config.json << 'EOF'
+{
+  "enabled": true,
+  "apiKey": "your-honcho-api-key",
+  "peerName": "your-name",
+  "hosts": {
+    "hermes": {
+      "workspace": "hermes"
+    }
+  }
+}
+EOF
+```
+
+Or configure via environment variable:
+```bash
+hermes config set HONCHO_API_KEY your-key
+```
+
+Fully opt-in — zero behavior change when disabled or unconfigured. All Honcho calls are non-fatal; if the service is unreachable, the agent continues normally.
+
 ### 📄 Context Files (SOUL.md, AGENTS.md, .cursorrules)
 
 Drop these files in your project directory and the agent automatically picks them up:
@@ -570,6 +635,18 @@ compression:
   enabled: true
   threshold: 0.85    # Compress at 85% of limit
 ```
+
+### 🧠 Reasoning Effort
+
+Control how much "thinking" the model does before responding. This works with models that support extended thinking on OpenRouter and Nous Portal.
+
+```yaml
+# In ~/.hermes/config.yaml under agent:
+agent:
+  reasoning_effort: "xhigh"   # xhigh (max), high, medium, low, minimal, none
+```
+
+Higher reasoning effort gives better results on complex tasks (multi-step planning, debugging, research) at the cost of more tokens and latency. Set to `"none"` to disable extended thinking entirely.
 
 ### 🗄️ Session Store
 
@@ -632,13 +709,45 @@ hermes cron status         # Check if gateway is running
 
 Even if no messaging platforms are configured, the gateway stays running for cron. A file lock prevents duplicate execution if multiple processes overlap.
 
+### 🪝 Event Hooks
+
+Run custom code at key lifecycle points — log activity, send alerts, post to webhooks. Hooks are Python handlers that fire automatically during gateway operation.
+
+```
+~/.hermes/hooks/
+└── my-hook/
+    ├── HOOK.yaml      # name + events to subscribe to
+    └── handler.py     # async def handle(event_type, context)
+```
+
+**Available events:** `gateway:startup`, `session:start`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, `command:*` (wildcard — fires for any slash command).
+
+Hooks are non-blocking — errors are caught and logged, never crashing the agent. See [docs/hooks.md](docs/hooks.md) for the full event reference, context keys, and examples.
+
 ### 🛡️ Exec Approval (Messaging Platforms)
 
-When the agent tries to run a potentially dangerous command (rm -rf, chmod 777, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
+When the agent tries to run a potentially dangerous command (`rm -rf`, `chmod 777`, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
 
 > ⚠️ This command is potentially dangerous (recursive delete). Reply "yes" to approve.
 
 Reply "yes"/"y" to approve or "no"/"n" to deny. In CLI mode, the existing interactive approval prompt (once/session/always/deny) is preserved.
+
+### 🔒 Security Hardening
+
+Hermes includes multiple layers of security beyond sandboxed terminals and exec approval:
+
+| Protection | Description |
+|------------|-------------|
+| **Shell injection prevention** | Sudo password piping uses `shlex.quote()` to prevent metacharacter injection |
+| **Cron prompt injection scanning** | Scheduled task prompts are scanned for instruction-override patterns (multi-word variants, Unicode obfuscation) |
+| **Write deny list with symlink resolution** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`, etc.) are resolved via `os.path.realpath()` before comparison, preventing symlink bypass |
+| **Recursive delete false-positive fix** | Dangerous command detection uses precise flag-matching to avoid blocking safe commands |
+| **Code execution sandbox** | `execute_code` scripts run in a child process with API keys and credentials stripped from the environment |
+| **Container hardening** | Docker containers run with read-only root, all capabilities dropped, no privilege escalation, PID limits |
+| **DM pairing** | Cryptographically random pairing codes with 1-hour expiry and rate limiting |
+| **User allowlists** | Default deny-all for messaging platforms; explicit allowlists or DM pairing required |
+
+For sandboxed terminal options, see [Terminal & Process Management](#-terminal--process-management).
 
 ### 🔊 Text-to-Speech
 
@@ -728,6 +837,22 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 All skills live in **`~/.hermes/skills/`** -- a single directory that is the source of truth. On fresh install, bundled skills are copied there from the repo. Hub-installed skills and agent-created skills also go here. The agent can modify or delete any skill. `hermes update` adds only genuinely new bundled skills (via a manifest) without overwriting your changes or re-adding skills you deleted.
 
 **Using Skills:**
+
+Every installed skill is automatically available as a slash command — type `/<skill-name>` to invoke it directly:
+
+```bash
+# In the CLI or any messaging platform (Telegram, Discord, Slack, WhatsApp):
+/gif-search funny cats
+/axolotl help me fine-tune Llama 3 on my dataset
+/github-pr-workflow create a PR for the auth refactor
+
+# Just the skill name (no prompt) loads the skill and lets the agent ask what you need:
+/excalidraw
+```
+
+The skill's full instructions (SKILL.md) are loaded into the conversation, and any supporting files (references, templates, scripts) are listed for the agent to pull on demand via the `skill_view` tool. Type `/help` to see all available skill commands.
+
+You can also use skills through natural conversation:
 ```bash
 hermes --toolsets skills -q "What skills do you have?"
 hermes --toolsets skills -q "Show me the axolotl skill"
@@ -863,7 +988,7 @@ code_execution:
 The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently -- only its final summary enters the parent's context.
 
 **Single task:**
-```
+```python
 delegate_task(goal="Debug why tests fail", context="Error: assertion in test_foo.py line 42", toolsets=["terminal", "file"])
 ```
 
@@ -942,7 +1067,7 @@ python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
 
 ### 🧪 Atropos RL Environments
 
-Hermes-Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using hermes-agent's tools.
+Hermes Agent integrates with the [Atropos](https://github.com/NousResearch/atropos) RL framework through a layered environment system. This allows training models with reinforcement learning on agentic tasks using Hermes Agent's tools.
 
 #### Architecture
 
@@ -1424,7 +1549,6 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
-| `ANTHROPIC_API_KEY` | Direct Anthropic access |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
 | `LLM_MODEL` | Default model name (fallback when `HERMES_MODEL` is not set) |
@@ -1447,6 +1571,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `BROWSERBASE_API_KEY` | Browser automation |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project |
 | `FAL_KEY` | Image generation (fal.ai) |
+| `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 
 **Terminal Backend:**
 | Variable | Description |
@@ -1475,6 +1600,12 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated user IDs allowed to use bot |
 | `DISCORD_HOME_CHANNEL` | Default channel for cron delivery |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
+| `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
+| `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
+| `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
+| `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |
 
@@ -1491,8 +1622,6 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
-| `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
-| `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
 
 **Context Compression:**
 | Variable | Description |

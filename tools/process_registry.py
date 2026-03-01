@@ -32,6 +32,8 @@ Usage:
 import json
 import logging
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -85,6 +87,14 @@ class ProcessRegistry:
       - Cleanup thread (sandbox reaping coordination)
     """
 
+    # Noise lines emitted by interactive shells when stdin is not a terminal.
+    _SHELL_NOISE = frozenset({
+        "bash: no job control in this shell",
+        "bash: no job control in this shell\n",
+        "no job control in this shell",
+        "no job control in this shell\n",
+    })
+
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
@@ -92,6 +102,14 @@ class ProcessRegistry:
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _clean_shell_noise(text: str) -> str:
+        """Strip shell startup warnings from the beginning of output."""
+        lines = text.split("\n", 2)
+        if lines and lines[0].strip() in ProcessRegistry._SHELL_NOISE:
+            return "\n".join(lines[1:])
+        return text
 
     # ----- Spawn -----
 
@@ -127,8 +145,9 @@ class ProcessRegistry:
             # Try PTY mode for interactive CLI tools
             try:
                 import ptyprocess
+                user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
                 pty_proc = ptyprocess.PtyProcess.spawn(
-                    ["bash", "-c", command],
+                    [user_shell, "-lic", command],
                     cwd=session.cwd,
                     env=os.environ | (env_vars or {}),
                     dimensions=(30, 120),
@@ -160,9 +179,11 @@ class ProcessRegistry:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
+        # Use the user's login shell for consistency with LocalEnvironment --
+        # ensures rc files are sourced and user tools are available.
+        user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
         proc = subprocess.Popen(
-            command,
-            shell=True,
+            [user_shell, "-lic", command],
             text=True,
             cwd=session.cwd,
             env=os.environ | (env_vars or {}),
@@ -227,8 +248,9 @@ class ProcessRegistry:
         # Run the command in the sandbox with output capture
         log_path = f"/tmp/hermes_bg_{session.id}.log"
         pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        quoted_command = shlex.quote(command)
         bg_command = (
-            f"nohup bash -c '{command}' > {log_path} 2>&1 & "
+            f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
             f"echo $! > {pid_path} && cat {pid_path}"
         )
 
@@ -268,11 +290,15 @@ class ProcessRegistry:
 
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
+        first_chunk = True
         try:
             while True:
                 chunk = session.process.stdout.read(4096)
                 if not chunk:
                     break
+                if first_chunk:
+                    chunk = self._clean_shell_noise(chunk)
+                    first_chunk = False
                 with session._lock:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:

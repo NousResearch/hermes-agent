@@ -134,74 +134,171 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                 sys.exit(0)
 
 
+def _toolset_has_keys(ts_key: str) -> bool:
+    """Check if a toolset's required API keys are configured."""
+    requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
+    if not requirements:
+        return True
+    return all(get_env_value(var) for var, _ in requirements)
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
-    print(color(f"Tools for {platform_label}", Colors.YELLOW))
-    print(color("  SPACE to toggle, ENTER to confirm.", Colors.DIM))
-    print()
+    import platform as _platform
 
     labels = []
     for ts_key, ts_label, ts_desc in CONFIGURABLE_TOOLSETS:
-        labels.append(f"{ts_label}  ({ts_desc})")
+        suffix = ""
+        if not _toolset_has_keys(ts_key) and TOOLSET_ENV_REQUIREMENTS.get(ts_key):
+            suffix = "  ⚠ no API key"
+        labels.append(f"{ts_label}  ({ts_desc}){suffix}")
 
     pre_selected_indices = [
         i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)
         if ts_key in enabled
     ]
 
-    try:
-        from simple_term_menu import TerminalMenu
+    # simple_term_menu multi-select has rendering bugs on macOS terminals,
+    # so we use a curses-based fallback there.
+    use_term_menu = _platform.system() != "Darwin"
 
-        menu_items = [f"  {label}" for label in labels]
-        preselected = [menu_items[i] for i in pre_selected_indices if i < len(menu_items)]
+    if use_term_menu:
+        try:
+            from simple_term_menu import TerminalMenu
 
-        menu = TerminalMenu(
-            menu_items,
-            multi_select=True,
-            show_multi_select_hint=False,
-            multi_select_cursor="[✓] ",
-            multi_select_select_on_accept=False,
-            multi_select_empty_ok=True,
-            preselected_entries=preselected if preselected else None,
-            menu_cursor="→ ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-        )
-
-        menu.show()
-
-        if menu.chosen_menu_entries is None:
-            return enabled
-
-        selected_indices = list(menu.chosen_menu_indices or [])
-
-        return {CONFIGURABLE_TOOLSETS[i][0] for i in selected_indices}
-
-    except (ImportError, NotImplementedError):
-        # Fallback: numbered toggle
-        selected = set(pre_selected_indices)
-        while True:
-            for i, label in enumerate(labels):
-                marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
-                print(f"  {marker} {i + 1}. {label}")
+            print(color(f"Tools for {platform_label}", Colors.YELLOW))
+            print(color("  SPACE to toggle, ENTER to confirm.", Colors.DIM))
             print()
-            try:
-                val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
-                if not val:
-                    break
-                idx = int(val) - 1
-                if 0 <= idx < len(labels):
-                    if idx in selected:
-                        selected.discard(idx)
-                    else:
-                        selected.add(idx)
-            except (ValueError, KeyboardInterrupt, EOFError):
+
+            menu_items = [f"  {label}" for label in labels]
+            menu = TerminalMenu(
+                menu_items,
+                multi_select=True,
+                show_multi_select_hint=False,
+                multi_select_cursor="[✓] ",
+                multi_select_select_on_accept=False,
+                multi_select_empty_ok=True,
+                preselected_entries=pre_selected_indices if pre_selected_indices else None,
+                menu_cursor="→ ",
+                menu_cursor_style=("fg_green", "bold"),
+                menu_highlight_style=("fg_green",),
+                cycle_cursor=True,
+                clear_screen=False,
+                clear_menu_on_exit=False,
+            )
+
+            menu.show()
+
+            if menu.chosen_menu_entries is None:
                 return enabled
-            print()
 
-        return {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
+            selected_indices = list(menu.chosen_menu_indices or [])
+            return {CONFIGURABLE_TOOLSETS[i][0] for i in selected_indices}
+
+        except (ImportError, NotImplementedError):
+            pass  # fall through to curses/numbered fallback
+
+    # Curses-based multi-select — arrow keys + space to toggle + enter to confirm.
+    # Used on macOS (where simple_term_menu ghosts) and as a fallback.
+    try:
+        import curses
+        selected = set(pre_selected_indices)
+        result_holder = [None]
+
+        def _curses_checklist(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                curses.init_pair(3, 8, -1)  # dim gray
+            cursor = 0
+            scroll_offset = 0
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                header = f"Tools for {platform_label}  —  ↑↓ navigate, SPACE toggle, ENTER confirm"
+                try:
+                    stdscr.addnstr(0, 0, header, max_x - 1, curses.A_BOLD | curses.color_pair(2) if curses.has_colors() else curses.A_BOLD)
+                except curses.error:
+                    pass
+
+                visible_rows = max_y - 3
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
+                for draw_i, i in enumerate(range(scroll_offset, min(len(labels), scroll_offset + visible_rows))):
+                    y = draw_i + 2
+                    if y >= max_y - 1:
+                        break
+                    check = "✓" if i in selected else " "
+                    arrow = "→" if i == cursor else " "
+                    line = f" {arrow} [{check}] {labels[i]}"
+
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP, ord('k')):
+                    cursor = (cursor - 1) % len(labels)
+                elif key in (curses.KEY_DOWN, ord('j')):
+                    cursor = (cursor + 1) % len(labels)
+                elif key == ord(' '):
+                    if cursor in selected:
+                        selected.discard(cursor)
+                    else:
+                        selected.add(cursor)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
+                    return
+                elif key in (27, ord('q')):  # ESC or q
+                    result_holder[0] = enabled
+                    return
+
+        curses.wrapper(_curses_checklist)
+        return result_holder[0] if result_holder[0] is not None else enabled
+
+    except Exception:
+        pass  # fall through to numbered toggle
+
+    # Final fallback: numbered toggle (Windows without curses, etc.)
+    selected = set(pre_selected_indices)
+    print(color(f"\n  Tools for {platform_label}", Colors.YELLOW))
+    print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
+
+    while True:
+        for i, label in enumerate(labels):
+            marker = color("[✓]", Colors.GREEN) if i in selected else "[ ]"
+            print(f"  {marker} {i + 1:>2}. {label}")
+        print()
+        try:
+            val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
+            if not val:
+                break
+            idx = int(val) - 1
+            if 0 <= idx < len(labels):
+                if idx in selected:
+                    selected.discard(idx)
+                else:
+                    selected.add(idx)
+        except (ValueError, KeyboardInterrupt, EOFError):
+            return enabled
+        print()
+
+    return {CONFIGURABLE_TOOLSETS[i][0] for i in selected}
 
 
 # Map toolset keys to the env vars they require and where to get them

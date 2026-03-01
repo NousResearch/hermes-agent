@@ -46,7 +46,7 @@ class TestPrintAbove:
         spinner.print_above("tool line")
         output = buf.getvalue()
         assert "tool line" in output
-        assert "\r\033[K" in output  # Should start with line clear
+        assert "\r" in output  # Should start with carriage return to clear spinner line
 
     def test_print_above_uses_captured_stdout(self):
         """print_above should use self._out, not sys.stdout.

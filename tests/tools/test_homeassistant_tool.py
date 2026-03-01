@@ -16,6 +16,8 @@ from tools.homeassistant_tool import (
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _BLOCKED_DOMAINS,
+    _ENTITY_ID_RE,
 )
 
 
@@ -209,6 +211,96 @@ class TestHandlerValidation:
     def test_call_service_empty_strings(self):
         result = json.loads(_handle_call_service({"domain": "", "service": ""}))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Security: domain blocklist
+# ---------------------------------------------------------------------------
+
+
+class TestDomainBlocklist:
+    """Verify dangerous HA service domains are blocked."""
+
+    @pytest.mark.parametrize("domain", sorted(_BLOCKED_DOMAINS))
+    def test_blocked_domain_rejected(self, domain):
+        result = json.loads(_handle_call_service({
+            "domain": domain, "service": "any_service"
+        }))
+        assert "error" in result
+        assert "blocked" in result["error"].lower()
+
+    def test_safe_domain_not_blocked(self):
+        """Safe domains like 'light' should not be blocked (will fail on network, not blocklist)."""
+        # This will try to make a real HTTP call and fail, but the important thing
+        # is it does NOT return a "blocked" error
+        result = json.loads(_handle_call_service({
+            "domain": "light", "service": "turn_on", "entity_id": "light.test"
+        }))
+        # Should fail with a network/connection error, not a "blocked" error
+        if "error" in result:
+            assert "blocked" not in result["error"].lower()
+
+    def test_blocked_domains_include_shell_command(self):
+        assert "shell_command" in _BLOCKED_DOMAINS
+
+    def test_blocked_domains_include_hassio(self):
+        assert "hassio" in _BLOCKED_DOMAINS
+
+    def test_blocked_domains_include_rest_command(self):
+        assert "rest_command" in _BLOCKED_DOMAINS
+
+
+# ---------------------------------------------------------------------------
+# Security: entity_id validation
+# ---------------------------------------------------------------------------
+
+
+class TestEntityIdValidation:
+    """Verify entity_id format validation prevents path traversal."""
+
+    def test_valid_entity_id_accepted(self):
+        assert _ENTITY_ID_RE.match("light.bedroom")
+        assert _ENTITY_ID_RE.match("sensor.temperature_1")
+        assert _ENTITY_ID_RE.match("binary_sensor.motion")
+        assert _ENTITY_ID_RE.match("climate.main_thermostat")
+
+    def test_path_traversal_rejected(self):
+        assert _ENTITY_ID_RE.match("../../config") is None
+        assert _ENTITY_ID_RE.match("light/../../../etc/passwd") is None
+        assert _ENTITY_ID_RE.match("../api/config") is None
+
+    def test_special_chars_rejected(self):
+        assert _ENTITY_ID_RE.match("light.bed room") is None  # space
+        assert _ENTITY_ID_RE.match("light.bed;rm -rf") is None  # semicolon
+        assert _ENTITY_ID_RE.match("light.bed/room") is None  # slash
+        assert _ENTITY_ID_RE.match("LIGHT.BEDROOM") is None  # uppercase
+
+    def test_missing_domain_rejected(self):
+        assert _ENTITY_ID_RE.match(".bedroom") is None
+        assert _ENTITY_ID_RE.match("bedroom") is None
+
+    def test_get_state_rejects_invalid_entity_id(self):
+        result = json.loads(_handle_get_state({"entity_id": "../../config"}))
+        assert "error" in result
+        assert "Invalid entity_id" in result["error"]
+
+    def test_call_service_rejects_invalid_entity_id(self):
+        result = json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "../../../etc/passwd",
+        }))
+        assert "error" in result
+        assert "Invalid entity_id" in result["error"]
+
+    def test_call_service_allows_no_entity_id(self):
+        """Some services (like scene.turn_on) don't need entity_id."""
+        # Will fail on network, but should NOT fail on entity_id validation
+        result = json.loads(_handle_call_service({
+            "domain": "scene", "service": "turn_on"
+        }))
+        if "error" in result:
+            assert "Invalid entity_id" not in result["error"]
 
 
 # ---------------------------------------------------------------------------

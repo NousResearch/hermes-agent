@@ -38,6 +38,22 @@ USE_VENV=true
 RUN_SETUP=true
 BRANCH="main"
 
+# Progress/state
+STEP=0
+TOTAL_STEPS=8
+SETUP_RAN=false
+
+# Dependency summaries
+UV_SUMMARY="not checked"
+PYTHON_SUMMARY="not checked"
+GIT_SUMMARY="not checked"
+NODE_SUMMARY="not checked"
+RIPGREP_SUMMARY="not checked"
+FFMPEG_SUMMARY="not checked"
+HAS_NODE=false
+HAS_RIPGREP=false
+HAS_FFMPEG=false
+
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
 # causing set -e to silently abort the entire script.
@@ -117,6 +133,25 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+step() {
+    STEP=$((STEP + 1))
+    echo ""
+    echo -e "${BLUE}${BOLD}[${STEP}/${TOTAL_STEPS}]${NC} $1"
+}
+
+print_dependency_summary() {
+    echo ""
+    echo -e "${CYAN}${BOLD}Dependency summary:${NC}"
+
+    # shellcheck disable=SC2059
+    printf "   %-10s %s\n" "uv:" "$UV_SUMMARY"
+    printf "   %-10s %s\n" "Python:" "$PYTHON_SUMMARY"
+    printf "   %-10s %s\n" "Git:" "$GIT_SUMMARY"
+    printf "   %-10s %s\n" "Node.js:" "$NODE_SUMMARY"
+    printf "   %-10s %s\n" "ripgrep:" "$RIPGREP_SUMMARY"
+    printf "   %-10s %s\n" "ffmpeg:" "$FFMPEG_SUMMARY"
+}
+
 # ============================================================================
 # System detection
 # ============================================================================
@@ -164,6 +199,7 @@ install_uv() {
     if command -v uv &> /dev/null; then
         UV_CMD="uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_SUMMARY="$UV_VERSION"
         log_success "uv found ($UV_VERSION)"
         return 0
     fi
@@ -172,6 +208,7 @@ install_uv() {
     if [ -x "$HOME/.local/bin/uv" ]; then
         UV_CMD="$HOME/.local/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_SUMMARY="$UV_VERSION"
         log_success "uv found at ~/.local/bin ($UV_VERSION)"
         return 0
     fi
@@ -180,6 +217,7 @@ install_uv() {
     if [ -x "$HOME/.cargo/bin/uv" ]; then
         UV_CMD="$HOME/.cargo/bin/uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_SUMMARY="$UV_VERSION"
         log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
         return 0
     fi
@@ -200,8 +238,10 @@ install_uv() {
             exit 1
         fi
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_SUMMARY="$UV_VERSION"
         log_success "uv installed ($UV_VERSION)"
     else
+        UV_SUMMARY="missing"
         log_error "Failed to install uv"
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         exit 1
@@ -216,6 +256,7 @@ check_python() {
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        PYTHON_SUMMARY="$PYTHON_FOUND_VERSION"
         log_success "Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
@@ -225,8 +266,10 @@ check_python() {
     if $UV_CMD python install "$PYTHON_VERSION"; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        PYTHON_SUMMARY="$PYTHON_FOUND_VERSION"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
     else
+        PYTHON_SUMMARY="missing"
         log_error "Failed to install Python $PYTHON_VERSION"
         log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
         exit 1
@@ -238,10 +281,12 @@ check_git() {
 
     if command -v git &> /dev/null; then
         GIT_VERSION=$(git --version | awk '{print $3}')
+        GIT_SUMMARY="git $GIT_VERSION"
         log_success "Git $GIT_VERSION found"
         return 0
     fi
 
+    GIT_SUMMARY="missing"
     log_error "Git not found"
     log_info "Please install Git:"
 
@@ -278,6 +323,7 @@ check_node() {
         local found_ver=$(node --version)
         log_success "Node.js $found_ver found"
         HAS_NODE=true
+        NODE_SUMMARY="$found_ver"
         return 0
     fi
 
@@ -287,6 +333,7 @@ check_node() {
         local found_ver=$("$HERMES_HOME/node/bin/node" --version)
         log_success "Node.js $found_ver found (Hermes-managed)"
         HAS_NODE=true
+        NODE_SUMMARY="$found_ver"
         return 0
     fi
 
@@ -305,6 +352,7 @@ install_node() {
             log_warn "Unsupported architecture ($arch) for Node.js auto-install"
             log_info "Install manually: https://nodejs.org/en/download/"
             HAS_NODE=false
+            NODE_SUMMARY="missing"
             return 0
             ;;
     esac
@@ -316,6 +364,7 @@ install_node() {
         *)
             log_warn "Unsupported OS for Node.js auto-install"
             HAS_NODE=false
+            NODE_SUMMARY="missing"
             return 0
             ;;
     esac
@@ -338,6 +387,7 @@ install_node() {
         log_warn "Could not find Node.js $NODE_VERSION binary for $node_os-$node_arch"
         log_info "Install manually: https://nodejs.org/en/download/"
         HAS_NODE=false
+        NODE_SUMMARY="missing"
         return 0
     fi
 
@@ -350,6 +400,7 @@ install_node() {
         log_warn "Download failed"
         rm -rf "$tmp_dir"
         HAS_NODE=false
+        NODE_SUMMARY="missing"
         return 0
     fi
 
@@ -367,6 +418,7 @@ install_node() {
         log_warn "Extraction failed"
         rm -rf "$tmp_dir"
         HAS_NODE=false
+        NODE_SUMMARY="missing"
         return 0
     fi
 
@@ -387,18 +439,22 @@ install_node() {
     installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null)
     log_success "Node.js $installed_ver installed to ~/.hermes/node/"
     HAS_NODE=true
+    NODE_SUMMARY="$installed_ver"
 }
 
 install_system_packages() {
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
+    RIPGREP_SUMMARY="missing"
+    FFMPEG_SUMMARY="missing"
     local need_ripgrep=false
     local need_ffmpeg=false
 
     log_info "Checking ripgrep (fast file search)..."
     if command -v rg &> /dev/null; then
-        log_success "$(rg --version | head -1) found"
+        RIPGREP_SUMMARY="$(rg --version | head -1)"
+        log_success "$RIPGREP_SUMMARY found"
         HAS_RIPGREP=true
     else
         need_ripgrep=true
@@ -408,6 +464,7 @@ install_system_packages() {
     if command -v ffmpeg &> /dev/null; then
         local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
         log_success "ffmpeg $ffmpeg_ver found"
+        FFMPEG_SUMMARY="ffmpeg $ffmpeg_ver"
         HAS_FFMPEG=true
     else
         need_ffmpeg=true
@@ -437,8 +494,18 @@ install_system_packages() {
         if command -v brew &> /dev/null; then
             log_info "Installing ${pkgs[*]} via Homebrew..."
             if brew install "${pkgs[@]}"; then
-                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                if [ "$need_ripgrep" = true ]; then
+                    HAS_RIPGREP=true
+                    RIPGREP_SUMMARY="$(rg --version 2>/dev/null | head -1)"
+                    log_success "ripgrep installed"
+                fi
+                if [ "$need_ffmpeg" = true ]; then
+                    HAS_FFMPEG=true
+                    local ffmpeg_ver
+                    ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+                    FFMPEG_SUMMARY="ffmpeg $ffmpeg_ver"
+                    log_success "ffmpeg installed"
+                fi
                 return 0
             fi
         fi
@@ -462,16 +529,36 @@ install_system_packages() {
         if [ "$(id -u)" -eq 0 ]; then
             log_info "Installing ${pkgs[*]}..."
             if $install_cmd; then
-                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                if [ "$need_ripgrep" = true ]; then
+                    HAS_RIPGREP=true
+                    RIPGREP_SUMMARY="$(rg --version 2>/dev/null | head -1)"
+                    log_success "ripgrep installed"
+                fi
+                if [ "$need_ffmpeg" = true ]; then
+                    HAS_FFMPEG=true
+                    local ffmpeg_ver
+                    ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+                    FFMPEG_SUMMARY="ffmpeg $ffmpeg_ver"
+                    log_success "ffmpeg installed"
+                fi
                 return 0
             fi
         # Passwordless sudo — just install
         elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
             log_info "Installing ${pkgs[*]}..."
             if sudo $install_cmd; then
-                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                if [ "$need_ripgrep" = true ]; then
+                    HAS_RIPGREP=true
+                    RIPGREP_SUMMARY="$(rg --version 2>/dev/null | head -1)"
+                    log_success "ripgrep installed"
+                fi
+                if [ "$need_ffmpeg" = true ]; then
+                    HAS_FFMPEG=true
+                    local ffmpeg_ver
+                    ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+                    FFMPEG_SUMMARY="ffmpeg $ffmpeg_ver"
+                    log_success "ffmpeg installed"
+                fi
                 return 0
             fi
         # sudo needs password — ask once for everything
@@ -482,8 +569,18 @@ install_system_packages() {
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
                     if sudo $install_cmd; then
-                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        if [ "$need_ripgrep" = true ]; then
+                            HAS_RIPGREP=true
+                            RIPGREP_SUMMARY="$(rg --version 2>/dev/null | head -1)"
+                            log_success "ripgrep installed"
+                        fi
+                        if [ "$need_ffmpeg" = true ]; then
+                            HAS_FFMPEG=true
+                            local ffmpeg_ver
+                            ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+                            FFMPEG_SUMMARY="ffmpeg $ffmpeg_ver"
+                            log_success "ffmpeg installed"
+                        fi
                         return 0
                     fi
                 fi
@@ -501,6 +598,7 @@ install_system_packages() {
             if cargo install ripgrep; then
                 log_success "ripgrep installed via cargo"
                 HAS_RIPGREP=true
+                RIPGREP_SUMMARY="$(rg --version 2>/dev/null | head -1)"
             fi
         fi
     fi
@@ -514,6 +612,15 @@ install_system_packages() {
         log_warn "ffmpeg not installed (TTS voice messages will be limited)"
         show_manual_install_hint "ffmpeg"
     fi
+}
+
+check_dependencies() {
+    install_uv
+    check_python
+    check_git
+    check_node
+    install_system_packages
+    print_dependency_summary
 }
 
 show_manual_install_hint() {
@@ -556,20 +663,22 @@ clone_repo() {
         # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
+        local clone_log
+        clone_log="$(mktemp)"
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+           git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" >"$clone_log" 2>&1; then
+            log_success "Repository cloned"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR" >"$clone_log" 2>&1; then
+                log_success "Repository cloned"
             else
                 log_error "Failed to clone repository"
+                rm -f "$clone_log"
                 exit 1
             fi
         fi
+        rm -f "$clone_log"
     fi
 
     cd "$INSTALL_DIR"
@@ -856,6 +965,7 @@ run_setup_wizard() {
 
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
+    SETUP_RAN=true
     if [ "$USE_VENV" = true ]; then
         "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
@@ -949,6 +1059,13 @@ maybe_start_gateway() {
 }
 
 print_success() {
+    if [ "$SETUP_RAN" = true ]; then
+        echo ""
+        log_success "Installation complete"
+        echo -e "${YELLOW}Reload your shell to use 'hermes' command:${NC} source ~/.bashrc (or ~/.zshrc)"
+        return 0
+    fi
+
     echo ""
     echo -e "${GREEN}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
@@ -972,10 +1089,7 @@ print_success() {
     echo ""
     echo -e "   ${GREEN}hermes${NC}              Start chatting"
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
-    echo -e "   ${GREEN}hermes config${NC}       View/edit configuration"
-    echo -e "   ${GREEN}hermes config edit${NC}  Open config in editor"
-    echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
-    echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
+    echo -e "   ${GREEN}hermes doctor${NC}       Check for issues"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
@@ -1012,19 +1126,38 @@ main() {
     print_banner
 
     detect_os
-    install_uv
-    check_python
-    check_git
-    check_node
-    install_system_packages
+    if [ "$RUN_SETUP" = true ] && [ "$IS_INTERACTIVE" = true ]; then
+        TOTAL_STEPS=8
+    else
+        TOTAL_STEPS=7
+    fi
 
+    step "Checking dependencies"
+    check_dependencies
+
+    step "Cloning repository"
     clone_repo
+
+    step "Creating virtual environment"
     setup_venv
+
+    step "Installing Python dependencies"
     install_deps
+
+    step "Installing Node.js dependencies"
     install_node_deps
+
+    step "Setting up PATH"
     setup_path
+
+    step "Copying configuration templates"
     copy_config_templates
+
+    if [ "$RUN_SETUP" = true ] && [ "$IS_INTERACTIVE" = true ]; then
+        step "Running setup wizard"
+    fi
     run_setup_wizard
+
     maybe_start_gateway
 
     print_success

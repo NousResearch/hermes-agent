@@ -261,374 +261,543 @@ def _prompt_api_key(var: dict):
         print_warning(f"  Skipped (configure later with 'hermes setup')")
 
 
-def _print_setup_summary(config: dict, hermes_home):
-    """Print the setup completion summary."""
-    # Tool availability summary
-    print()
-    print_header("Tool Availability Summary")
-    
-    tool_status = []
-    
-    # OpenRouter (required for vision, moa)
-    if get_env_value('OPENROUTER_API_KEY'):
-        tool_status.append(("Vision (image analysis)", True, None))
-        tool_status.append(("Mixture of Agents", True, None))
-    else:
-        tool_status.append(("Vision (image analysis)", False, "OPENROUTER_API_KEY"))
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
-    
-    # Firecrawl (web tools)
-    if get_env_value('FIRECRAWL_API_KEY'):
-        tool_status.append(("Web Search & Extract", True, None))
-    else:
-        tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
-    
-    # Browserbase (browser tools)
-    if get_env_value('BROWSERBASE_API_KEY'):
-        tool_status.append(("Browser Automation", True, None))
-    else:
-        tool_status.append(("Browser Automation", False, "BROWSERBASE_API_KEY"))
-    
-    # FAL (image generation)
-    if get_env_value('FAL_KEY'):
-        tool_status.append(("Image Generation", True, None))
-    else:
-        tool_status.append(("Image Generation", False, "FAL_KEY"))
-    
-    # TTS (always available via Edge TTS; ElevenLabs/OpenAI are optional)
-    tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
-    if get_env_value('ELEVENLABS_API_KEY'):
-        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
-    
-    # Tinker + WandB (RL training)
-    if get_env_value('TINKER_API_KEY') and get_env_value('WANDB_API_KEY'):
-        tool_status.append(("RL Training (Tinker)", True, None))
-    elif get_env_value('TINKER_API_KEY'):
-        tool_status.append(("RL Training (Tinker)", False, "WANDB_API_KEY"))
-    else:
-        tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
-    
-    # Skills Hub
-    if get_env_value('GITHUB_TOKEN'):
-        tool_status.append(("Skills Hub (GitHub)", True, None))
-    else:
-        tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
-    
-    # Terminal (always available if system deps met)
-    tool_status.append(("Terminal/Commands", True, None))
-    
-    # Task planning (always available, in-memory)
-    tool_status.append(("Task Planning (todo)", True, None))
-    
-    # Skills (always available -- bundled skills + user-created skills)
-    tool_status.append(("Skills (view, create, edit)", True, None))
-    
-    # Print status
-    available_count = sum(1 for _, avail, _ in tool_status if avail)
-    total_count = len(tool_status)
-    
-    print_info(f"{available_count}/{total_count} tool categories available:")
-    print()
-    
-    for name, available, missing_var in tool_status:
-        if available:
-            print(f"   {color('✓', Colors.GREEN)} {name}")
-        else:
-            print(f"   {color('✗', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}")
-    
-    print()
-    
-    disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
-    if disabled_tools:
-        print_warning("Some tools are disabled. Run 'hermes setup' again to configure them,")
-        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
-        print()
-    
-    # Done banner
+def _print_setup_summary(
+    config: dict,
+    hermes_home,
+    selected_summary: dict = None,
+    api_key_alerts: list = None,
+):
+    """Print a concise setup completion summary."""
+    optional_tools = [
+        ("Vision/MoA (OpenRouter)", bool(get_env_value("OPENROUTER_API_KEY"))),
+        ("Web Search (Firecrawl)", bool(get_env_value("FIRECRAWL_API_KEY"))),
+        ("Browser Automation (Browserbase)", bool(get_env_value("BROWSERBASE_API_KEY"))),
+        ("Image Generation (FAL)", bool(get_env_value("FAL_KEY"))),
+        ("Voice Tools (OpenAI)", bool(get_env_value("VOICE_TOOLS_OPENAI_KEY"))),
+        ("Premium TTS (ElevenLabs)", bool(get_env_value("ELEVENLABS_API_KEY"))),
+        ("RL Training (Tinker+WandB)", bool(get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"))),
+        ("Skills Hub (GitHub)", bool(get_env_value("GITHUB_TOKEN"))),
+    ]
+    enabled_count = sum(1 for _, enabled in optional_tools if enabled)
+    missing_tool_names = [name for name, enabled in optional_tools if not enabled]
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN))
-    print(color("│              ✓ Setup Complete!                          │", Colors.GREEN))
+    print(color("│                 ✓ Setup Complete!                       │", Colors.GREEN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN))
     print()
-    
-    # Show file locations prominently
-    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
+
+    print(color("📁 Configuration", Colors.CYAN, Colors.BOLD))
+    print(f"   {color('Settings:', Colors.YELLOW)} {get_config_path()}")
+    print(f"   {color('API Keys:', Colors.YELLOW)} {get_env_path()}")
+    print(f"   {color('Data:', Colors.YELLOW)}     {hermes_home}/cron/, sessions/, logs/")
     print()
-    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
-    print(f"   {color('Data:', Colors.YELLOW)}      {hermes_home}/cron/, sessions/, logs/")
-    print()
-    
-    print(color("─" * 60, Colors.DIM))
-    print()
-    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
-    print()
-    print(f"   {color('hermes config', Colors.GREEN)}        View current settings")
-    print(f"   {color('hermes config edit', Colors.GREEN)}   Open config in your editor")
-    print(f"   {color('hermes config set KEY VALUE', Colors.GREEN)}")
-    print(f"                         Set a specific value")
-    print()
-    print(f"   Or edit the files directly:")
-    print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
-    print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
-    print()
-    
-    print(color("─" * 60, Colors.DIM))
-    print()
-    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
-    print()
+
+    if selected_summary:
+        print(color("🧭 You chose", Colors.CYAN, Colors.BOLD))
+        for label, value in selected_summary.items():
+            print(f"   {color(label + ':', Colors.YELLOW)} {value}")
+        print()
+
+    print(color("🚀 Get started", Colors.CYAN, Colors.BOLD))
     print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
+    print(f"   {color('hermes setup', Colors.GREEN)}        Re-run setup")
     print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
     print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
     print()
+
+    print(color("🔧 Optional tools", Colors.CYAN, Colors.BOLD))
+    print_info(f"Enabled: {enabled_count}/{len(optional_tools)}")
+    if missing_tool_names:
+        print_info(f"Not enabled: {', '.join(missing_tool_names)}")
+        print_info("Run 'hermes setup' again anytime to add them.")
+
+    if api_key_alerts:
+        print()
+        print(color("🔑 API key checks", Colors.CYAN, Colors.BOLD))
+        for integration, missing_keys in api_key_alerts:
+            print_warning(f"{integration}: missing/empty {', '.join(missing_keys)}")
 
 
 def run_setup_wizard(args):
     """Run the interactive setup wizard."""
     ensure_hermes_home()
-    
     config = load_config()
     hermes_home = get_hermes_home()
-    
-    # Check if this is an existing installation with config (any provider or config file)
+
+    from hermes_cli.config import (
+        get_missing_env_vars,
+        get_missing_config_fields,
+        check_config_version,
+        migrate_config,
+    )
+
+    missing_required = [v for v in get_missing_env_vars(required_only=False) if v.get("is_required")]
+    missing_optional = [v for v in get_missing_env_vars(required_only=False) if not v.get("is_required")]
+    missing_config = get_missing_config_fields()
+    current_ver, latest_ver = check_config_version()
+
     is_existing = (
         get_env_value("OPENROUTER_API_KEY") is not None
         or get_env_value("OPENAI_BASE_URL") is not None
         or get_config_path().exists()
     )
-    
-    # Import migration helpers
-    from hermes_cli.config import (
-        get_missing_env_vars, get_missing_config_fields,
-        check_config_version, migrate_config,
-        REQUIRED_ENV_VARS, OPTIONAL_ENV_VARS
-    )
-    
-    # Check what's missing
-    missing_required = [v for v in get_missing_env_vars(required_only=False) if v.get("is_required")]
-    missing_optional = [v for v in get_missing_env_vars(required_only=False) if not v.get("is_required")]
-    missing_config = get_missing_config_fields()
-    current_ver, latest_ver = check_config_version()
-    
-    has_missing = missing_required or missing_optional or missing_config or current_ver < latest_ver
-    
+    has_missing = bool(missing_required or missing_optional or missing_config or current_ver < latest_ver)
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
     print(color("│             ⚕ Hermes Agent Setup Wizard                │", Colors.MAGENTA))
     print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
-    print(color("│  Let's configure your Hermes Agent installation.       │", Colors.MAGENTA))
+    print(color("│  Configure Hermes in a few guided steps.               │", Colors.MAGENTA))
     print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
-    
-    # If existing installation, show what's missing and offer quick mode
+
+    selected_summary = {}
+    selected_tool_keys_all = set()
+    selected_platforms_all = []
+    selected_provider_name = None
+
+    def set_summary(label: str, value):
+        if value is None:
+            return
+        value_str = str(value).strip()
+        if not value_str:
+            return
+        selected_summary[label] = value_str
+
+    def key_present(env_key: str) -> bool:
+        value = get_env_value(env_key)
+        return bool(value and str(value).strip())
+
+    def build_api_key_alerts():
+        alerts = []
+
+        def add_alert_if_missing(integration: str, required_keys: list, active: bool):
+            if not active:
+                return
+            missing = [k for k in required_keys if not key_present(k)]
+            if missing:
+                alerts.append((integration, missing))
+
+        add_alert_if_missing(
+            "OpenRouter (provider/tools)",
+            ["OPENROUTER_API_KEY"],
+            selected_provider_name in ("openrouter", "nous"),
+        )
+        add_alert_if_missing(
+            "Firecrawl",
+            ["FIRECRAWL_API_KEY"],
+            "firecrawl" in selected_tool_keys_all or key_present("FIRECRAWL_API_KEY"),
+        )
+        add_alert_if_missing(
+            "Browserbase",
+            ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+            "browserbase" in selected_tool_keys_all
+            or key_present("BROWSERBASE_API_KEY")
+            or key_present("BROWSERBASE_PROJECT_ID"),
+        )
+        add_alert_if_missing(
+            "FAL",
+            ["FAL_KEY"],
+            "fal" in selected_tool_keys_all or key_present("FAL_KEY"),
+        )
+        add_alert_if_missing(
+            "OpenAI Voice Tools",
+            ["VOICE_TOOLS_OPENAI_KEY"],
+            "openai_voice" in selected_tool_keys_all or key_present("VOICE_TOOLS_OPENAI_KEY"),
+        )
+        add_alert_if_missing(
+            "ElevenLabs",
+            ["ELEVENLABS_API_KEY"],
+            "elevenlabs" in selected_tool_keys_all or key_present("ELEVENLABS_API_KEY"),
+        )
+        add_alert_if_missing(
+            "RL Training (Tinker+WandB)",
+            ["TINKER_API_KEY", "WANDB_API_KEY"],
+            "rl_training" in selected_tool_keys_all
+            or key_present("TINKER_API_KEY")
+            or key_present("WANDB_API_KEY"),
+        )
+        add_alert_if_missing(
+            "Skills Hub",
+            ["GITHUB_TOKEN"],
+            "github" in selected_tool_keys_all or key_present("GITHUB_TOKEN"),
+        )
+        add_alert_if_missing(
+            "Telegram",
+            ["TELEGRAM_BOT_TOKEN"],
+            "Telegram" in selected_platforms_all or key_present("TELEGRAM_BOT_TOKEN"),
+        )
+        add_alert_if_missing(
+            "Discord",
+            ["DISCORD_BOT_TOKEN"],
+            "Discord" in selected_platforms_all or key_present("DISCORD_BOT_TOKEN"),
+        )
+        add_alert_if_missing(
+            "Slack",
+            ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+            "Slack" in selected_platforms_all
+            or key_present("SLACK_BOT_TOKEN")
+            or key_present("SLACK_APP_TOKEN"),
+        )
+
+        return alerts
+
+    def save_checkpoint():
+        save_config(config)
+
+    def print_step(step_num: int, total_steps: int, title: str):
+        print()
+        print(color(f"[{step_num}/{total_steps}] {title}", Colors.CYAN, Colors.BOLD))
+
+    def normalize_path(path_value: str) -> str:
+        if path_value.startswith("~"):
+            return str(Path.home()) + path_value[1:]
+        return path_value
+
+    def format_minutes(minutes: int) -> str:
+        total = max(0, int(minutes))
+        hours, mins = divmod(total, 60)
+        if hours and mins:
+            return f"{hours}h{mins}m"
+        if hours:
+            return f"{hours}h"
+        return f"{mins}m"
+
+    def parse_duration_minutes(raw: str, default: int) -> int:
+        value = (raw or "").strip().lower()
+        if not value:
+            return default
+        if value.isdigit():
+            parsed = int(value)
+            if parsed <= 0:
+                raise ValueError
+            return parsed
+
+        import re
+
+        compact = value.replace(" ", "")
+        matches = list(re.finditer(r"(\d+)([hm])", compact))
+        if not matches or "".join(m.group(0) for m in matches) != compact:
+            raise ValueError
+
+        total = 0
+        for match in matches:
+            amount = int(match.group(1))
+            unit = match.group(2)
+            total += amount * 60 if unit == "h" else amount
+        if total <= 0:
+            raise ValueError
+        return total
+
+    def compression_label(threshold: float) -> str:
+        if threshold <= 0.79:
+            return "low"
+        if threshold >= 0.90:
+            return "high"
+        return "balanced"
+
+    def reset_label(reset_cfg: dict) -> str:
+        mode = reset_cfg.get("mode", "both")
+        idle = reset_cfg.get("idle_minutes", 1440)
+        hour = reset_cfg.get("at_hour", 4)
+        if mode == "both":
+            return f"inactivity + daily ({format_minutes(idle)}, {hour}:00)"
+        if mode == "idle":
+            return f"inactivity only ({format_minutes(idle)})"
+        if mode == "daily":
+            return f"daily only ({hour}:00)"
+        return "off"
+
+    def validate_openrouter_key(api_key: str):
+        if not api_key:
+            return
+        try:
+            import httpx
+            response = httpx.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10.0,
+            )
+            if response.status_code == 401:
+                print_warning("OpenRouter key looks invalid (401 Unauthorized).")
+            elif response.status_code >= 400:
+                print_warning(f"OpenRouter key check returned HTTP {response.status_code}. Saved anyway.")
+            else:
+                print_success("OpenRouter API key verified")
+        except Exception:
+            print_warning("Could not verify OpenRouter key (network/API issue). Saved anyway.")
+
+    def validate_docker_backend() -> bool:
+        import shutil
+        import subprocess
+
+        if not shutil.which("docker"):
+            print_warning("Docker is not installed.")
+            print_info("Install Docker: https://docs.docker.com/get-docker/")
+            return False
+        try:
+            result = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=8)
+            if result.returncode != 0:
+                print_warning("Docker is installed but the daemon is not running.")
+                return False
+        except Exception:
+            print_warning("Could not validate Docker daemon status.")
+            return False
+        return True
+
+    def validate_singularity_backend() -> bool:
+        import shutil
+        import subprocess
+
+        executable = shutil.which("apptainer") or shutil.which("singularity")
+        if not executable:
+            print_warning("Neither apptainer nor singularity was found.")
+            return False
+        try:
+            result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=8)
+            if result.returncode != 0:
+                print_warning(f"{executable} is installed but failed to respond.")
+                return False
+        except Exception:
+            print_warning("Could not validate Singularity/Apptainer installation.")
+            return False
+        return True
+
+    def validate_ssh_connection(host: str, user: str, port: str, key_path: str):
+        import subprocess
+
+        if not host:
+            return
+        target = f"{user}@{host}" if user else host
+        cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+        if port and port != "22":
+            cmd.extend(["-p", port])
+        if key_path:
+            cmd.extend(["-i", normalize_path(key_path)])
+        cmd.extend([target, "echo ok"])
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print_success(f"SSH connectivity check passed ({target})")
+            else:
+                print_warning(f"Could not connect to {target}. Check SSH settings.")
+        except Exception:
+            print_warning(f"Could not test SSH connectivity for {target}.")
+
+    def setup_telegram():
+        print()
+        print_header("Telegram")
+        existing = get_env_value("TELEGRAM_BOT_TOKEN")
+        if existing and not prompt_yes_no("Telegram is already configured. Update it?", False):
+            return
+        token = prompt("Telegram bot token", password=True)
+        if token:
+            save_env_value("TELEGRAM_BOT_TOKEN", token)
+            print_success("Telegram token saved")
+        allowed_default = get_env_value("TELEGRAM_ALLOWED_USERS") or ""
+        allowed = prompt("Allowed Telegram user IDs (comma-separated, optional)", allowed_default)
+        if allowed:
+            save_env_value("TELEGRAM_ALLOWED_USERS", allowed.replace(" ", ""))
+        home_default = get_env_value("TELEGRAM_HOME_CHANNEL") or ""
+        home = prompt("Telegram home channel/user ID (optional)", home_default)
+        if home:
+            save_env_value("TELEGRAM_HOME_CHANNEL", home)
+
+    def setup_discord():
+        print()
+        print_header("Discord")
+        existing = get_env_value("DISCORD_BOT_TOKEN")
+        if existing and not prompt_yes_no("Discord is already configured. Update it?", False):
+            return
+        token = prompt("Discord bot token", password=True)
+        if token:
+            save_env_value("DISCORD_BOT_TOKEN", token)
+            print_success("Discord token saved")
+        allowed_default = get_env_value("DISCORD_ALLOWED_USERS") or ""
+        allowed = prompt("Allowed Discord IDs/usernames (comma-separated, optional)", allowed_default)
+        if allowed:
+            save_env_value("DISCORD_ALLOWED_USERS", allowed.replace(" ", ""))
+        home_default = get_env_value("DISCORD_HOME_CHANNEL") or ""
+        home = prompt("Discord home channel ID (optional)", home_default)
+        if home:
+            save_env_value("DISCORD_HOME_CHANNEL", home)
+
+    def setup_slack():
+        print()
+        print_header("Slack")
+        existing = get_env_value("SLACK_BOT_TOKEN")
+        if existing and not prompt_yes_no("Slack is already configured. Update it?", False):
+            return
+        bot_token = prompt("Slack bot token (xoxb-...)", password=True)
+        if bot_token:
+            save_env_value("SLACK_BOT_TOKEN", bot_token)
+        app_token = prompt("Slack app token (xapp-...)", password=True)
+        if app_token:
+            save_env_value("SLACK_APP_TOKEN", app_token)
+        if bot_token or app_token:
+            print_success("Slack tokens saved")
+        allowed_default = get_env_value("SLACK_ALLOWED_USERS") or ""
+        allowed = prompt("Allowed Slack user IDs (comma-separated, optional)", allowed_default)
+        if allowed:
+            save_env_value("SLACK_ALLOWED_USERS", allowed.replace(" ", ""))
+        home_default = get_env_value("SLACK_HOME_CHANNEL") or ""
+        home = prompt("Slack home channel ID (optional)", home_default)
+        if home:
+            save_env_value("SLACK_HOME_CHANNEL", home)
+
+    def setup_whatsapp():
+        print()
+        print_header("WhatsApp")
+        enabled_default = (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+        enabled = prompt_yes_no("Enable WhatsApp bridge?", enabled_default or True)
+        save_env_value("WHATSAPP_ENABLED", "true" if enabled else "false")
+        if not enabled:
+            return
+        allowed_default = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
+        allowed = prompt("Allowed phone numbers (comma-separated, optional)", allowed_default)
+        if allowed:
+            save_env_value("WHATSAPP_ALLOWED_USERS", allowed.replace(" ", ""))
+
+    def configure_selected_messaging(platforms):
+        for platform_name in platforms:
+            if platform_name == "Telegram":
+                setup_telegram()
+            elif platform_name == "Discord":
+                setup_discord()
+            elif platform_name == "Slack":
+                setup_slack()
+            elif platform_name == "WhatsApp":
+                setup_whatsapp()
+
     quick_mode = False
     if is_existing and has_missing:
         print()
         print_header("Existing Installation Detected")
-        print_success("You already have Hermes configured!")
-        print()
-        
-        if missing_required:
-            print_warning(f"  {len(missing_required)} required setting(s) missing:")
-            for var in missing_required:
-                print(f"     • {var['name']}")
-        
-        if missing_optional:
-            print_info(f"  {len(missing_optional)} optional tool(s) not configured:")
-            for var in missing_optional[:3]:  # Show first 3
-                tools = var.get("tools", [])
-                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
-                print(f"     • {var['name']}{tools_str}")
-            if len(missing_optional) > 3:
-                print(f"     • ...and {len(missing_optional) - 3} more")
-        
-        if missing_config:
-            print_info(f"  {len(missing_config)} new config option(s) available")
-        
-        print()
-        
+        print_info("Choose quick setup to configure only missing items.")
         setup_choices = [
-            "Quick setup - just configure missing items",
+            "Quick setup - configure missing items",
             "Full setup - reconfigure everything",
-            "Skip - exit setup"
+            "Skip - exit setup",
         ]
-        
         choice = prompt_choice("What would you like to do?", setup_choices, 0)
-        
         if choice == 0:
             quick_mode = True
         elif choice == 2:
             print()
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        # choice == 1 continues with full setup
-        
     elif is_existing and not has_missing:
         print()
         print_header("Configuration Status")
-        print_success("Your configuration is complete!")
-        print()
-        
-        if not prompt_yes_no("Would you like to reconfigure anyway?", False):
-            print()
-            print_info("Exiting. Your configuration is already set up.")
+        print_success("Your configuration is complete.")
+        if not prompt_yes_no("Reconfigure anyway?", False):
             print_info(f"Config: {get_config_path()}")
             print_info(f"Secrets: {get_env_path()}")
             return
-    
-    # Quick mode: only configure missing items
+
     if quick_mode:
+        set_summary("Setup mode", "Quick (missing items)")
         print()
-        print_header("Quick Setup - Missing Items Only")
-        
-        # Handle missing required env vars
-        if missing_required:
-            for var in missing_required:
-                print()
-                print(color(f"  {var['name']}", Colors.CYAN))
-                print_info(f"  {var.get('description', '')}")
-                if var.get("url"):
-                    print_info(f"  Get key at: {var['url']}")
-                
-                if var.get("password"):
-                    value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-                else:
-                    value = prompt(f"  {var.get('prompt', var['name'])}")
-                
-                if value:
-                    save_env_value(var["name"], value)
-                    print_success(f"  Saved {var['name']}")
-                else:
-                    print_warning(f"  Skipped {var['name']}")
-        
-        # Split missing optional vars by category
+        print_header("Quick Setup")
+        for var in missing_required:
+            _prompt_api_key(var)
+
         missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
-        missing_messaging = [v for v in missing_optional if v.get("category") == "messaging" and not v.get("advanced")]
-        # Settings are silently applied with defaults in quick mode
-
-        # ── Tool API keys (checklist) ──
         if missing_tools:
-            print()
-            print_header("Tool API Keys")
-
-            checklist_labels = []
-            for var in missing_tools:
-                tools = var.get("tools", [])
-                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
-                checklist_labels.append(f"{var.get('description', var['name'])}{tools_str}")
-
-            selected_indices = prompt_checklist(
-                "Which tools would you like to configure?",
-                checklist_labels,
+            tool_labels = [v.get("description", v["name"]) for v in missing_tools]
+            selected = prompt_checklist("Which optional tool keys would you like to set up?", tool_labels)
+            selected_tool_labels = [tool_labels[i] for i in selected]
+            quick_tool_key_map = {
+                "FIRECRAWL_API_KEY": "firecrawl",
+                "BROWSERBASE_API_KEY": "browserbase",
+                "BROWSERBASE_PROJECT_ID": "browserbase",
+                "FAL_KEY": "fal",
+                "VOICE_TOOLS_OPENAI_KEY": "openai_voice",
+                "ELEVENLABS_API_KEY": "elevenlabs",
+                "TINKER_API_KEY": "rl_training",
+                "WANDB_API_KEY": "rl_training",
+                "GITHUB_TOKEN": "github",
+            }
+            for idx in selected:
+                _prompt_api_key(missing_tools[idx])
+            if selected_tool_labels:
+                set_summary("Optional tools", ", ".join(selected_tool_labels))
+            selected_tool_keys_all.update(
+                quick_tool_key_map.get(missing_tools[idx].get("name", ""), "") for idx in selected
             )
+            selected_tool_keys_all.discard("")
 
-            for idx in selected_indices:
-                var = missing_tools[idx]
-                _prompt_api_key(var)
+        missing_messaging = [v for v in missing_optional if v.get("category") == "messaging" and not v.get("advanced")]
+        platforms = []
+        for var in missing_messaging:
+            name = var["name"]
+            if "TELEGRAM" in name:
+                platforms.append("Telegram")
+            elif "DISCORD" in name:
+                platforms.append("Discord")
+            elif "SLACK" in name:
+                platforms.append("Slack")
+            elif "WHATSAPP" in name:
+                platforms.append("WhatsApp")
+        platforms = list(dict.fromkeys(platforms))
+        if platforms:
+            selected = prompt_checklist("Which messaging platforms would you like to configure?", platforms)
+            selected_platforms = [platforms[i] for i in selected]
+            configure_selected_messaging(selected_platforms)
+            if selected_platforms:
+                set_summary("Messaging", ", ".join(selected_platforms))
+                selected_platforms_all.extend(selected_platforms)
+            if selected_platforms:
+                current_cwd = get_env_value("MESSAGING_CWD") or str(Path.home())
+                cwd_input = prompt("Messaging working directory", current_cwd)
+                save_env_value("MESSAGING_CWD", normalize_path(cwd_input))
+                set_summary("Messaging CWD", normalize_path(cwd_input))
 
-        # ── Messaging platforms (checklist then prompt for selected) ──
-        if missing_messaging:
-            print()
-            print_header("Messaging Platforms")
-            print_info("Connect Hermes to messaging apps to chat from anywhere.")
-            print_info("You can configure these later with 'hermes setup'.")
-
-            # Group by platform (preserving order)
-            platform_order = []
-            platforms = {}
-            for var in missing_messaging:
-                name = var["name"]
-                if "TELEGRAM" in name:
-                    plat = "Telegram"
-                elif "DISCORD" in name:
-                    plat = "Discord"
-                elif "SLACK" in name:
-                    plat = "Slack"
-                else:
-                    continue
-                if plat not in platforms:
-                    platform_order.append(plat)
-                platforms.setdefault(plat, []).append(var)
-
-            platform_labels = [
-                {"Telegram": "📱 Telegram", "Discord": "💬 Discord", "Slack": "💼 Slack"}.get(p, p)
-                for p in platform_order
-            ]
-
-            selected_indices = prompt_checklist(
-                "Which platforms would you like to set up?",
-                platform_labels,
-            )
-
-            for idx in selected_indices:
-                plat = platform_order[idx]
-                vars_list = platforms[plat]
-                emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
-                print()
-                print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
-                print()
-                for var in vars_list:
-                    print_info(f"  {var.get('description', '')}")
-                    if var.get("url"):
-                        print_info(f"  {var['url']}")
-                    if var.get("password"):
-                        value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
-                    else:
-                        value = prompt(f"  {var.get('prompt', var['name'])}")
-                    if value:
-                        save_env_value(var["name"], value)
-                        print_success(f"  ✓ Saved")
-                    else:
-                        print_warning(f"  Skipped")
-                    print()
-        
-        # Handle missing config fields
-        if missing_config:
-            print()
-            print_info(f"Adding {len(missing_config)} new config option(s) with defaults...")
-            for field in missing_config:
-                print_success(f"  Added {field['key']} = {field['default']}")
-            
-            # Update config version
-            config["_config_version"] = latest_ver
-            save_config(config)
-        
-        # Jump to summary
-        _print_setup_summary(config, hermes_home)
+        config["_config_version"] = latest_ver
+        save_checkpoint()
+        migrate_config(interactive=False, quiet=True)
+        _print_setup_summary(
+            load_config(),
+            hermes_home,
+            selected_summary,
+            build_api_key_alerts(),
+        )
         return
-    
-    # =========================================================================
-    # Step 0: Show paths (full setup)
-    # =========================================================================
-    print_header("Configuration Location")
-    print_info(f"Config file:  {get_config_path()}")
-    print_info(f"Secrets file: {get_env_path()}")
-    print_info(f"Data folder:  {hermes_home}")
-    print_info(f"Install dir:  {PROJECT_ROOT}")
-    print()
-    print_info("You can edit these files directly or use 'hermes config edit'")
-    
-    # =========================================================================
-    # Step 1: Inference Provider Selection
-    # =========================================================================
-    print_header("Inference Provider")
-    print_info("Choose how to connect to your main chat model.")
-    print()
 
-    # Detect current provider state
+    express_mode = False
+    if not is_existing:
+        print()
+        setup_mode = prompt_choice(
+            "How would you like to set up Hermes?",
+            [
+                "Express setup (API key + model, ~1 minute)",
+                "Full setup (all options, ~5 minutes)",
+            ],
+            0,
+        )
+        express_mode = setup_mode == 0
+    set_summary("Setup mode", "Express" if express_mode else "Full")
+
+    total_steps = 2 if express_mode else 5
+    step_num = 1
+
+    # Step 1: Provider
+    print_step(step_num, total_steps, "Inference Provider")
+    print_info("Choose your primary model provider.")
+
     from hermes_cli.auth import (
-        get_active_provider, get_provider_auth_state, PROVIDER_REGISTRY,
-        format_auth_error, AuthError, fetch_nous_models,
-        resolve_nous_runtime_credentials, _update_config_for_provider,
+        get_active_provider,
+        PROVIDER_REGISTRY,
+        fetch_nous_models,
+        resolve_nous_runtime_credentials,
     )
+
     existing_custom = get_env_value("OPENAI_BASE_URL")
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
-
-    # Detect if any provider is already configured
     has_any_provider = bool(active_oauth or existing_custom or existing_or)
-    
-    # Build "keep current" label
+
     if active_oauth and active_oauth in PROVIDER_REGISTRY:
         keep_label = f"Keep current ({PROVIDER_REGISTRY[active_oauth].name})"
     elif existing_custom:
@@ -636,1011 +805,525 @@ def run_setup_wizard(args):
     elif existing_or:
         keep_label = "Keep current (OpenRouter)"
     else:
-        keep_label = None  # No provider configured — don't show "Keep current"
+        keep_label = None
 
     provider_choices = [
-        "Login with Nous Portal (Nous Research subscription)",
-        "OpenRouter API key (100+ models, pay-per-use)",
-        "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
+        "Nous Portal login",
+        "OpenRouter API key",
+        "Custom OpenAI-compatible endpoint",
     ]
     if keep_label:
         provider_choices.append(keep_label)
-    
-    # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
+
     default_provider = len(provider_choices) - 1 if has_any_provider else 1
-    
-    if not has_any_provider:
-        print_warning("An inference provider is required for Hermes to work.")
-        print()
-    
-    provider_idx = prompt_choice("Select your inference provider:", provider_choices, default_provider)
+    provider_idx = prompt_choice("Select provider:", provider_choices, default_provider)
+    provider_summary = {
+        0: "Nous Portal",
+        1: "OpenRouter",
+        2: "Custom endpoint",
+    }.get(provider_idx, "Keep current")
+    set_summary("Provider", provider_summary)
 
-    # Track which provider was selected for model step
-    selected_provider = None  # "nous", "openrouter", "custom", or None (keep)
-    nous_models = []  # populated if Nous login succeeds
+    selected_provider = None
+    nous_models = []
+    custom_model_set = False
 
-    if provider_idx == 0:  # Nous Portal
+    if provider_idx == 0:
         selected_provider = "nous"
-        print()
-        print_header("Nous Portal Login")
-        print_info("This will open your browser to authenticate with Nous Portal.")
-        print_info("You'll need a Nous Research account with an active subscription.")
-        print()
-
+        selected_provider_name = "nous"
+        print_info("Opening browser for Nous Portal login.")
         try:
-            from hermes_cli.auth import _login_nous, ProviderConfig
             import argparse
-            mock_args = argparse.Namespace(
-                portal_url=None, inference_url=None, client_id=None,
-                scope=None, no_browser=False, timeout=15.0,
-                ca_bundle=None, insecure=False,
-            )
-            pconfig = PROVIDER_REGISTRY["nous"]
-            _login_nous(mock_args, pconfig)
+            from hermes_cli.auth import _login_nous
 
-            # Fetch models for the selection step
+            mock_args = argparse.Namespace(
+                portal_url=None,
+                inference_url=None,
+                client_id=None,
+                scope=None,
+                no_browser=False,
+                timeout=15.0,
+                ca_bundle=None,
+                insecure=False,
+            )
+            _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
             try:
                 creds = resolve_nous_runtime_credentials(
-                    min_key_ttl_seconds=5 * 60, timeout_seconds=15.0,
+                    min_key_ttl_seconds=5 * 60,
+                    timeout_seconds=15.0,
                 )
                 nous_models = fetch_nous_models(
                     inference_base_url=creds.get("base_url", ""),
                     api_key=creds.get("api_key", ""),
                 )
-            except Exception as e:
-                logger.debug("Could not fetch Nous models after login: %s", e)
-
+            except Exception as exc:
+                logger.debug("Could not fetch Nous models after login: %s", exc)
         except SystemExit:
-            print_warning("Nous Portal login was cancelled or failed.")
-            print_info("You can try again later with: hermes login")
+            print_warning("Nous login cancelled.")
             selected_provider = None
-        except Exception as e:
-            print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes login")
+        except Exception as exc:
+            print_error(f"Nous login failed: {exc}")
             selected_provider = None
-
-    elif provider_idx == 1:  # OpenRouter
+    elif provider_idx == 1:
         selected_provider = "openrouter"
-        print()
-        print_header("OpenRouter API Key")
-        print_info("OpenRouter provides access to 100+ models from multiple providers.")
-        print_info("Get your API key at: https://openrouter.ai/keys")
-
+        selected_provider_name = "openrouter"
         if existing_or:
-            print_info(f"Current: {existing_or[:8]}... (configured)")
+            print_info("OpenRouter key is already configured.")
             if prompt_yes_no("Update OpenRouter API key?", False):
-                api_key = prompt("  OpenRouter API key", password=True)
+                api_key = prompt("OpenRouter API key", password=True)
                 if api_key:
                     save_env_value("OPENROUTER_API_KEY", api_key)
-                    print_success("OpenRouter API key updated")
+                    validate_openrouter_key(api_key)
         else:
-            api_key = prompt("  OpenRouter API key", password=True)
+            api_key = prompt("OpenRouter API key", password=True)
             if api_key:
                 save_env_value("OPENROUTER_API_KEY", api_key)
-                print_success("OpenRouter API key saved")
+                validate_openrouter_key(api_key)
             else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear any custom endpoint if switching to OpenRouter
+                print_warning("No key entered. Hermes needs a provider key to chat.")
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-
-    elif provider_idx == 2:  # Custom endpoint
+    elif provider_idx == 2:
         selected_provider = "custom"
-        print()
-        print_header("Custom OpenAI-Compatible Endpoint")
-        print_info("Works with any API that follows OpenAI's chat completions spec")
-
+        selected_provider_name = "custom"
         current_url = get_env_value("OPENAI_BASE_URL") or ""
-        current_key = get_env_value("OPENAI_API_KEY")
-        current_model = config.get('model', '')
-
-        if current_url:
-            print_info(f"  Current URL: {current_url}")
-        if current_key:
-            print_info(f"  Current key: {current_key[:8]}... (configured)")
-
-        base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
-        api_key = prompt("  API key", password=True)
-        model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
-
+        current_model = config.get("model", "")
+        base_url = prompt("API base URL", current_url)
+        api_key = prompt("API key", password=True)
+        model_name = prompt("Model name", current_model)
         if base_url:
             save_env_value("OPENAI_BASE_URL", base_url)
         if api_key:
             save_env_value("OPENAI_API_KEY", api_key)
         if model_name:
-            config['model'] = model_name
+            config["model"] = model_name
             save_env_value("LLM_MODEL", model_name)
-        print_success("Custom endpoint configured")
-    # else: provider_idx == 3 (Keep current) — only shown when a provider already exists
+            custom_model_set = True
 
-    # =========================================================================
-    # Step 1b: OpenRouter API Key for tools (if not already set)
-    # =========================================================================
-    # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
-    # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
     if selected_provider in ("nous", "custom") and not get_env_value("OPENROUTER_API_KEY"):
-        print()
-        print_header("OpenRouter API Key (for tools)")
-        print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
-        print_info("independently of your main inference provider.")
-        print_info("Get your API key at: https://openrouter.ai/keys")
+        print_info("Optional: add OpenRouter key for vision/web/MoA tools.")
+        tools_key = prompt("OpenRouter API key for tools (optional)", password=True)
+        if tools_key:
+            save_env_value("OPENROUTER_API_KEY", tools_key)
+            validate_openrouter_key(tools_key)
 
-        api_key = prompt("  OpenRouter API key (optional, press Enter to skip)", password=True)
-        if api_key:
-            save_env_value("OPENROUTER_API_KEY", api_key)
-            print_success("OpenRouter API key saved (for tools)")
-        else:
-            print_info("Skipped - some tools (vision, web scraping) won't work without this")
+    save_checkpoint()
 
-    # =========================================================================
-    # Step 2: Model Selection (adapts based on provider)
-    # =========================================================================
-    if selected_provider != "custom":  # Custom already prompted for model name
-        print_header("Default Model")
+    # Step 2: Model
+    step_num += 1
+    print_step(step_num, total_steps, "Default Model")
+    current_model = config.get("model", "anthropic/claude-opus-4.6")
+    print_info(f"Current model: {current_model}")
 
-        current_model = config.get('model', 'anthropic/claude-opus-4.6')
-        print_info(f"Current: {current_model}")
-
+    if not custom_model_set:
         if selected_provider == "nous" and nous_models:
-            # Dynamic model list from Nous Portal
-            model_choices = [f"{m}" for m in nous_models]
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            # Post-login validation: warn if current model might not be available
-            if current_model and current_model not in nous_models:
-                print_warning(f"Your current model ({current_model}) may not be available via Nous Portal.")
-                print_info("Select a model from the list, or keep current to use it anyway.")
-                print()
-
+            model_choices = [f"{m}" for m in nous_models] + ["Custom model", f"Keep current ({current_model})"]
             model_idx = prompt_choice("Select default model:", model_choices, len(model_choices) - 1)
-
             if model_idx < len(nous_models):
-                config['model'] = nous_models[model_idx]
+                config["model"] = nous_models[model_idx]
                 save_env_value("LLM_MODEL", nous_models[model_idx])
-            elif model_idx == len(nous_models):  # Custom
-                custom = prompt("Enter model name")
+            elif model_idx == len(nous_models):
+                custom = prompt("Custom model name")
                 if custom:
-                    config['model'] = custom
+                    config["model"] = custom
                     save_env_value("LLM_MODEL", custom)
-            # else: keep current
         else:
-            # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels
 
             ids = model_ids()
-            model_choices = menu_labels() + [
-                "Custom model",
-                f"Keep current ({current_model})",
-            ]
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
+            model_choices = menu_labels() + ["Custom model", f"Keep current ({current_model})"]
+            model_idx = prompt_choice("Select default model:", model_choices, len(model_choices) - 1)
             if model_idx < len(ids):
-                config['model'] = ids[model_idx]
+                config["model"] = ids[model_idx]
                 save_env_value("LLM_MODEL", ids[model_idx])
-            elif model_idx == len(ids):  # Custom
-                custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
+            elif model_idx == len(ids):
+                custom = prompt("Custom model name")
                 if custom:
-                    config['model'] = custom
+                    config["model"] = custom
                     save_env_value("LLM_MODEL", custom)
-            # else: Keep current
-    
-    # =========================================================================
-    # Step 4: Terminal Backend
-    # =========================================================================
-    print_header("Terminal Backend")
-    print_info("The terminal tool allows the agent to run commands.")
-    
-    current_backend = config.get('terminal', {}).get('backend', 'local')
-    print_info(f"Current: {current_backend}")
-    
-    # Detect platform for backend availability
+
+    save_checkpoint()
+    set_summary("Model", config.get("model", "not set"))
+
+    if express_mode:
+        config.setdefault("terminal", {})
+        if not config["terminal"].get("backend"):
+            config["terminal"]["backend"] = "local"
+            save_env_value("TERMINAL_ENV", "local")
+        set_summary("Terminal backend", config["terminal"].get("backend", "local"))
+        config.setdefault("display", {})
+        config["display"].setdefault("tool_progress", "all")
+        set_summary("Tool progress", config["display"].get("tool_progress", "all"))
+        config.setdefault("compression", {})
+        config["compression"]["enabled"] = True
+        config["compression"].setdefault("threshold", 0.85)
+        set_summary(
+            "Compression",
+            f"{compression_label(float(config['compression'].get('threshold', 0.85)))} "
+            f"({float(config['compression'].get('threshold', 0.85)):.2f})",
+        )
+        config.setdefault("session_reset", {})
+        config["session_reset"].setdefault("mode", "both")
+        config["session_reset"].setdefault("idle_minutes", 1440)
+        config["session_reset"].setdefault("at_hour", 4)
+        set_summary("Session reset", reset_label(config["session_reset"]))
+        if not get_env_value("HERMES_MAX_ITERATIONS"):
+            max_turns = str(config.get("max_turns", 60))
+            save_env_value("HERMES_MAX_ITERATIONS", max_turns)
+        set_summary("Max iterations", get_env_value("HERMES_MAX_ITERATIONS") or str(config.get("max_turns", 60)))
+        config["_config_version"] = latest_ver
+        save_checkpoint()
+        migrate_config(interactive=False, quiet=True)
+        _print_setup_summary(
+            load_config(),
+            hermes_home,
+            selected_summary,
+            build_api_key_alerts(),
+        )
+        return
+
+    # Step 3: Terminal backend
+    step_num += 1
+    print_step(step_num, total_steps, "Terminal Backend")
+    print_info("Select where terminal commands run.")
+
     import platform
+
     is_linux = platform.system() == "Linux"
-    is_macos = platform.system() == "Darwin"
-    is_windows = platform.system() == "Windows"
-    
-    # Build choices based on platform
+    current_backend = config.get("terminal", {}).get("backend", "local")
     terminal_choices = [
-        "Local (run commands on this machine - no isolation)",
-        "Docker (isolated containers - recommended for security)",
+        "Local (runs on this machine)",
+        "Docker (isolated container)",
     ]
-    
-    # Singularity/Apptainer is Linux-only (HPC)
     if is_linux:
-        terminal_choices.append("Singularity/Apptainer (HPC clusters, shared compute)")
-    
+        terminal_choices.append("Singularity/Apptainer (HPC)")
     terminal_choices.extend([
-        "Modal (cloud execution, GPU access, serverless)",
-        "SSH (run commands on a remote server)",
-        f"Keep current ({current_backend})"
+        "Modal (cloud execution)",
+        "SSH (remote server)",
+        f"Keep current ({current_backend})",
     ])
-    
-    # Build index map based on available choices
+
     if is_linux:
-        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'ssh'}
-        keep_current_idx = 5
+        idx_to_backend = {0: "local", 1: "docker", 2: "singularity", 3: "modal", 4: "ssh"}
+        keep_idx = 5
     else:
-        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'ssh': 3}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'ssh'}
-        keep_current_idx = 4
-        if current_backend == 'singularity':
-            print_warning("Singularity is only available on Linux - please select a different backend")
-    
-    # Default based on current
-    default_terminal = backend_to_idx.get(current_backend, 0)
-    
-    terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, keep_current_idx)
-    
-    # Map index to backend name (handles platform differences)
-    selected_backend = idx_to_backend.get(terminal_idx)
-    
-    if selected_backend == 'local':
-        config.setdefault('terminal', {})['backend'] = 'local'
-        print_info("Local Execution Configuration:")
-        print_info("Commands run directly on this machine (no isolation)")
-        
-        if is_windows:
-            print_info("Note: On Windows, commands run via cmd.exe or PowerShell")
-        
-        # Messaging working directory configuration
-        print_info("")
-        print_info("Working Directory for Messaging (Telegram/Discord/etc):")
-        print_info("  The CLI always uses the directory you run 'hermes' from")
-        print_info("  But messaging bots need a static starting directory")
-        
-        current_cwd = get_env_value('MESSAGING_CWD') or str(Path.home())
-        print_info(f"  Current: {current_cwd}")
-        
-        cwd_input = prompt("  Messaging working directory", current_cwd)
-        # Expand ~ to full path
-        if cwd_input.startswith('~'):
-            cwd_expanded = str(Path.home()) + cwd_input[1:]
-        else:
-            cwd_expanded = cwd_input
-        save_env_value("MESSAGING_CWD", cwd_expanded)
-        
-        if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
-            print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
-            sudo_pass = prompt("  Sudo password (leave empty to skip)", password=True)
+        idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh"}
+        keep_idx = 4
+
+    selected_backend = None
+    while True:
+        terminal_idx = prompt_choice("Select terminal backend:", terminal_choices, keep_idx)
+        selected_backend = idx_to_backend.get(terminal_idx)
+        if selected_backend is None:
+            break
+        if selected_backend == "docker" and not validate_docker_backend():
+            if not prompt_yes_no("Continue with Docker backend anyway?", False):
+                continue
+        if selected_backend == "singularity" and not validate_singularity_backend():
+            if not prompt_yes_no("Continue with Singularity backend anyway?", False):
+                continue
+        break
+
+    effective_backend = selected_backend or current_backend
+
+    if effective_backend == "local":
+        if selected_backend == "local":
+            config.setdefault("terminal", {})["backend"] = "local"
+
+        has_existing_sudo = bool(get_env_value("SUDO_PASSWORD"))
+        if prompt_yes_no("Enable sudo support?", has_existing_sudo):
+            print_warning("Sudo password is stored in plaintext in ~/.hermes/.env")
+            sudo_pass = prompt("Sudo password (leave empty to keep current)", password=True)
             if sudo_pass:
                 save_env_value("SUDO_PASSWORD", sudo_pass)
-                print_success("  Sudo password saved")
-        
-        print_success("Terminal set to local")
-    
-    elif selected_backend == 'docker':
-        config.setdefault('terminal', {})['backend'] = 'docker'
-        default_docker = config.get('terminal', {}).get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
-        print_info("Docker Configuration:")
-        if is_macos:
-            print_info("Requires Docker Desktop for Mac")
-        elif is_windows:
-            print_info("Requires Docker Desktop for Windows")
-        docker_image = prompt("  Docker image", default_docker)
-        config['terminal']['docker_image'] = docker_image
-        print_success("Terminal set to Docker")
-    
-    elif selected_backend == 'singularity':
-        config.setdefault('terminal', {})['backend'] = 'singularity'
-        default_singularity = config.get('terminal', {}).get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')
-        print_info("Singularity/Apptainer Configuration:")
-        print_info("Requires apptainer or singularity to be installed")
-        singularity_image = prompt("  Image (docker:// prefix for Docker Hub)", default_singularity)
-        config['terminal']['singularity_image'] = singularity_image
-        print_success("Terminal set to Singularity/Apptainer")
-    
-    elif selected_backend == 'modal':
-        config.setdefault('terminal', {})['backend'] = 'modal'
-        default_modal = config.get('terminal', {}).get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
-        print_info("Modal Cloud Configuration:")
-        print_info("Get credentials at: https://modal.com/settings")
-        
-        # Check if swe-rex[modal] is installed, install if missing
-        try:
-            from swerex.deployment.modal import ModalDeployment
-            print_info("swe-rex[modal] package: installed ✓")
-        except ImportError:
-            print_info("Installing required package: swe-rex[modal]...")
-            import subprocess
-            import shutil
-            # Prefer uv for speed, fall back to pip
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "swe-rex[modal]>=1.4.0"],
-                    capture_output=True, text=True
-                )
-            else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "swe-rex[modal]>=1.4.0"],
-                    capture_output=True, text=True
-                )
-            if result.returncode == 0:
-                print_success("swe-rex[modal] installed (includes modal + boto3)")
-            else:
-                print_warning("Failed to install swe-rex[modal] — install manually:")
-                print_info('  uv pip install "swe-rex[modal]>=1.4.0"')
-        
-        # Always show current status and allow reconfiguration
-        current_token = get_env_value('MODAL_TOKEN_ID')
-        if current_token:
-            print_info(f"  Token ID: {current_token[:8]}... (configured)")
-        
-        modal_image = prompt("  Container image", default_modal)
-        config['terminal']['modal_image'] = modal_image
-        
-        token_id = prompt("  Modal token ID", current_token or "")
-        token_secret = prompt("  Modal token secret", password=True)
-        
+        elif has_existing_sudo and prompt_yes_no("Disable stored sudo password?", False):
+            save_env_value("SUDO_PASSWORD", "")
+            print_info("Sudo password cleared.")
+    elif selected_backend == "docker":
+        config.setdefault("terminal", {})["backend"] = "docker"
+        default_docker = config.get("terminal", {}).get("docker_image", "nikolaik/python-nodejs:python3.11-nodejs20")
+        config["terminal"]["docker_image"] = prompt("Docker image", default_docker)
+    elif selected_backend == "singularity":
+        config.setdefault("terminal", {})["backend"] = "singularity"
+        default_img = config.get("terminal", {}).get("singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20")
+        config["terminal"]["singularity_image"] = prompt("Singularity image", default_img)
+    elif selected_backend == "modal":
+        config.setdefault("terminal", {})["backend"] = "modal"
+        default_modal = config.get("terminal", {}).get("modal_image", "nikolaik/python-nodejs:python3.11-nodejs20")
+        config["terminal"]["modal_image"] = prompt("Modal image", default_modal)
+        token_id = prompt("Modal token ID", get_env_value("MODAL_TOKEN_ID") or "")
+        token_secret = prompt("Modal token secret", password=True)
         if token_id:
             save_env_value("MODAL_TOKEN_ID", token_id)
         if token_secret:
             save_env_value("MODAL_TOKEN_SECRET", token_secret)
-        
-        print_success("Terminal set to Modal")
-    
-    elif selected_backend == 'ssh':
-        config.setdefault('terminal', {})['backend'] = 'ssh'
-        print_info("SSH Remote Execution Configuration:")
-        print_info("Commands will run on a remote server over SSH")
-        
-        current_host = get_env_value('TERMINAL_SSH_HOST') or ''
-        current_user = get_env_value('TERMINAL_SSH_USER') or os.getenv("USER", "")
-        current_port = get_env_value('TERMINAL_SSH_PORT') or '22'
-        current_key = get_env_value('TERMINAL_SSH_KEY') or '~/.ssh/id_rsa'
-        
-        if current_host:
-            print_info(f"  Current host: {current_user}@{current_host}:{current_port}")
-        
-        ssh_host = prompt("  SSH host", current_host)
-        ssh_user = prompt("  SSH user", current_user)
-        ssh_port = prompt("  SSH port", current_port)
-        ssh_key = prompt("  SSH key path (or leave empty for ssh-agent)", current_key)
-        
+    elif selected_backend == "ssh":
+        config.setdefault("terminal", {})["backend"] = "ssh"
+        ssh_host = prompt("SSH host", get_env_value("TERMINAL_SSH_HOST") or "")
+        ssh_user = prompt("SSH user", get_env_value("TERMINAL_SSH_USER") or os.getenv("USER", ""))
+        ssh_port = prompt("SSH port", get_env_value("TERMINAL_SSH_PORT") or "22")
+        ssh_key = prompt("SSH key path (optional)", get_env_value("TERMINAL_SSH_KEY") or "~/.ssh/id_rsa")
         if ssh_host:
             save_env_value("TERMINAL_SSH_HOST", ssh_host)
         if ssh_user:
             save_env_value("TERMINAL_SSH_USER", ssh_user)
-        if ssh_port and ssh_port != '22':
+        if ssh_port:
             save_env_value("TERMINAL_SSH_PORT", ssh_port)
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
-        
-        print_success("Terminal set to SSH")
-    # else: Keep current (selected_backend is None)
-    
-    # Sync terminal backend to .env so terminal_tool picks it up directly.
-    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
+        validate_ssh_connection(ssh_host, ssh_user, ssh_port, ssh_key)
+
     if selected_backend:
         save_env_value("TERMINAL_ENV", selected_backend)
-        docker_image = config.get('terminal', {}).get('docker_image')
+        docker_image = config.get("terminal", {}).get("docker_image")
         if docker_image:
             save_env_value("TERMINAL_DOCKER_IMAGE", docker_image)
-    
-    # =========================================================================
-    # Step 5: Agent Settings
-    # =========================================================================
-    print_header("Agent Settings")
-    
-    # Max iterations
-    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '60'
-    print_info("Maximum tool-calling iterations per conversation.")
-    print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
-    
-    max_iter_str = prompt("Max iterations", current_max)
-    try:
-        max_iter = int(max_iter_str)
-        if max_iter > 0:
-            save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
-            config['max_turns'] = max_iter
-            print_success(f"Max iterations set to {max_iter}")
-    except ValueError:
-        print_warning("Invalid number, keeping current value")
-    
-    # Tool progress notifications
-    print_info("")
-    print_info("Tool Progress Display")
-    print_info("Controls how much tool activity is shown (CLI and messaging).")
-    print_info("  off     — Silent, just the final response")
-    print_info("  new     — Show tool name only when it changes (less noise)")
-    print_info("  all     — Show every tool call with a short preview")
-    print_info("  verbose — Full args, results, and debug logs")
-    
-    current_mode = config.get("display", {}).get("tool_progress", "all")
-    mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in ("off", "new", "all", "verbose"):
-        if "display" not in config:
-            config["display"] = {}
-        config["display"]["tool_progress"] = mode.lower()
-        save_config(config)
-        print_success(f"Tool progress set to: {mode.lower()}")
-    else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
-    
-    # =========================================================================
-    # Step 6: Context Compression
-    # =========================================================================
-    print_header("Context Compression")
-    print_info("Automatically summarizes old messages when context gets too long.")
-    print_info("Higher threshold = compress later (use more context). Lower = compress sooner.")
-    
-    config.setdefault('compression', {})['enabled'] = True
-    
-    current_threshold = config.get('compression', {}).get('threshold', 0.85)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
-    try:
-        threshold = float(threshold_str)
-        if 0.5 <= threshold <= 0.95:
-            config['compression']['threshold'] = threshold
-    except ValueError:
-        pass
-    
-    print_success(f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}")
-    
-    # =========================================================================
-    # Step 6b: Session Reset Policy (Messaging)
-    # =========================================================================
-    print_header("Session Reset Policy")
-    print_info("Messaging sessions (Telegram, Discord, etc.) accumulate context over time.")
-    print_info("Each message adds to the conversation history, which means growing API costs.")
-    print_info("")
-    print_info("To manage this, sessions can automatically reset after a period of inactivity")
-    print_info("or at a fixed time each day. When a reset happens, the agent saves important")
-    print_info("things to its persistent memory first — but the conversation context is cleared.")
-    print_info("")
-    print_info("You can also manually reset anytime by typing /reset in chat.")
-    print_info("")
-    
-    reset_choices = [
-        "Inactivity + daily reset (recommended — reset whichever comes first)",
-        "Inactivity only (reset after N minutes of no messages)",
-        "Daily only (reset at a fixed hour each day)",
-        "Never auto-reset (context lives until /reset or context compression)",
-        "Keep current settings",
-    ]
-    
-    current_policy = config.get('session_reset', {})
-    current_mode = current_policy.get('mode', 'both')
-    current_idle = current_policy.get('idle_minutes', 1440)
-    current_hour = current_policy.get('at_hour', 4)
-    
-    default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_mode, 0)
-    
-    reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
-    
-    config.setdefault('session_reset', {})
-    
-    if reset_idx == 0:  # Both
-        config['session_reset']['mode'] = 'both'
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
-        try:
-            idle_val = int(idle_str)
-            if idle_val > 0:
-                config['session_reset']['idle_minutes'] = idle_val
-        except ValueError:
-            pass
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
-        try:
-            hour_val = int(hour_str)
-            if 0 <= hour_val <= 23:
-                config['session_reset']['at_hour'] = hour_val
-        except ValueError:
-            pass
-        print_success(f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00")
-    elif reset_idx == 1:  # Idle only
-        config['session_reset']['mode'] = 'idle'
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
-        try:
-            idle_val = int(idle_str)
-            if idle_val > 0:
-                config['session_reset']['idle_minutes'] = idle_val
-        except ValueError:
-            pass
-        print_success(f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity")
-    elif reset_idx == 2:  # Daily only
-        config['session_reset']['mode'] = 'daily'
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
-        try:
-            hour_val = int(hour_str)
-            if 0 <= hour_val <= 23:
-                config['session_reset']['at_hour'] = hour_val
-        except ValueError:
-            pass
-        print_success(f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00")
-    elif reset_idx == 3:  # None
-        config['session_reset']['mode'] = 'none'
-        print_info("Sessions will never auto-reset. Context is managed only by compression.")
-        print_warning("Long conversations will grow in cost. Use /reset manually when needed.")
-    # else: keep current (idx == 4)
-    
-    # =========================================================================
-    # Step 7: Messaging Platforms (Optional)
-    # =========================================================================
-    print_header("Messaging Platforms (Optional)")
-    print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
-    
-    # Telegram
-    existing_telegram = get_env_value('TELEGRAM_BOT_TOKEN')
-    if existing_telegram:
-        print_info("Telegram: already configured")
-        if prompt_yes_no("Reconfigure Telegram?", False):
-            existing_telegram = None
-    
-    if not existing_telegram and prompt_yes_no("Set up Telegram bot?", False):
-        print_info("Create a bot via @BotFather on Telegram")
-        token = prompt("Telegram bot token", password=True)
-        if token:
-            save_env_value("TELEGRAM_BOT_TOKEN", token)
-            print_success("Telegram token saved")
-            
-            # Allowed users (security)
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   To find your Telegram user ID:")
-            print_info("   1. Message @userinfobot on Telegram")
-            print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
-            print()
-            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
-            if allowed_users:
-                save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Telegram allowlist configured - only listed users can use the bot")
-            else:
-                print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
-            
-            # Home channel setup with better guidance
-            print()
-            print_info("📬 Home Channel: where Hermes delivers cron job results,")
-            print_info("   cross-platform messages, and notifications.")
-            print_info("   For Telegram DMs, this is your user ID (same as above).")
-            
-            first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
-            if first_user_id:
-                if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
-                    save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-                    print_success(f"Telegram home channel set to {first_user_id}")
-                else:
-                    home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
-                    if home_channel:
-                        save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-            else:
-                print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-                home_channel = prompt("Home channel ID (leave empty to set later)")
-                if home_channel:
-                    save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-    
-    # Check/update existing Telegram allowlist
-    elif existing_telegram:
-        existing_allowlist = get_env_value('TELEGRAM_ALLOWED_USERS')
-        if not existing_allowlist:
-            print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info("   To find your Telegram user ID: message @userinfobot")
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                    print_success("Telegram allowlist configured")
-    
-    # Discord
-    existing_discord = get_env_value('DISCORD_BOT_TOKEN')
-    if existing_discord:
-        print_info("Discord: already configured")
-        if prompt_yes_no("Reconfigure Discord?", False):
-            existing_discord = None
-    
-    if not existing_discord and prompt_yes_no("Set up Discord bot?", False):
-        print_info("Create a bot at https://discord.com/developers/applications")
-        token = prompt("Discord bot token", password=True)
-        if token:
-            save_env_value("DISCORD_BOT_TOKEN", token)
-            print_success("Discord token saved")
-            
-            # Allowed users (security)
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   To find your Discord user ID:")
-            print_info("   1. Enable Developer Mode in Discord settings")
-            print_info("   2. Right-click your name → Copy ID")
-            print()
-            print_info("   You can also use Discord usernames (resolved on gateway start).")
-            print()
-            allowed_users = prompt("Allowed user IDs or usernames (comma-separated, leave empty for open access)")
-            if allowed_users:
-                save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Discord allowlist configured")
-            else:
-                print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
-            
-            # Home channel setup with better guidance
-            print()
-            print_info("📬 Home Channel: where Hermes delivers cron job results,")
-            print_info("   cross-platform messages, and notifications.")
-            print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
-            print_info("   (requires Developer Mode in Discord settings)")
-            print_info("   You can also set this later by typing /set-home in a Discord channel.")
-            home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
-            if home_channel:
-                save_env_value("DISCORD_HOME_CHANNEL", home_channel)
-    
-    # Check/update existing Discord allowlist
-    elif existing_discord:
-        existing_allowlist = get_env_value('DISCORD_ALLOWED_USERS')
-        if not existing_allowlist:
-            print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    save_env_value("DISCORD_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                    print_success("Discord allowlist configured")
-    
-    # Slack
-    existing_slack = get_env_value('SLACK_BOT_TOKEN')
-    if existing_slack:
-        print_info("Slack: already configured")
-        if prompt_yes_no("Reconfigure Slack?", False):
-            existing_slack = None
-    
-    if not existing_slack and prompt_yes_no("Set up Slack bot?", False):
-        print_info("Steps to create a Slack app:")
-        print_info("   1. Go to https://api.slack.com/apps → Create New App")
-        print_info("   2. Enable Socket Mode: App Settings → Socket Mode → Enable")
-        print_info("   3. Bot Token: OAuth & Permissions → Install to Workspace")
-        print_info("   4. App Token: Basic Information → App-Level Tokens → Generate")
-        print()
-        bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
-        if bot_token:
-            save_env_value("SLACK_BOT_TOKEN", bot_token)
-            app_token = prompt("Slack App Token (xapp-...)", password=True)
-            if app_token:
-                save_env_value("SLACK_APP_TOKEN", app_token)
-            print_success("Slack tokens saved")
-            
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   Find Slack user IDs in your profile or via the Slack API")
-            print()
-            allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
-            if allowed_users:
-                save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Slack allowlist configured")
-            else:
-                print_info("⚠️  No allowlist set - anyone in your workspace can use the bot!")
-    
-    # WhatsApp
-    existing_whatsapp = get_env_value('WHATSAPP_ENABLED')
-    if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
-        print_info("WhatsApp connects via a built-in bridge (Baileys).")
-        print_info("Requires Node.js (already installed if you have browser tools).")
-        print_info("On first gateway start, you'll scan a QR code with your phone.")
-        print()
-        if prompt_yes_no("Enable WhatsApp?", True):
-            save_env_value("WHATSAPP_ENABLED", "true")
-            print_success("WhatsApp enabled")
-            
-            allowed_users = prompt("  Your phone number (e.g. 15551234567, comma-separated for multiple)")
-            if allowed_users:
-                save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("WhatsApp allowlist configured")
-            else:
-                print_info("⚠️  No allowlist set — anyone who messages your WhatsApp will get a response!")
-            
-            print_info("Start the gateway with 'hermes gateway' and scan the QR code.")
-    
-    # Gateway reminder
-    any_messaging = (
-        get_env_value('TELEGRAM_BOT_TOKEN')
-        or get_env_value('DISCORD_BOT_TOKEN')
-        or get_env_value('SLACK_BOT_TOKEN')
-        or get_env_value('WHATSAPP_ENABLED')
-    )
-    if any_messaging:
-        print()
-        print_info("━" * 50)
-        print_success("Messaging platforms configured!")
-        print_info("Start the gateway after setup to bring your bots online:")
-        print_info("   hermes gateway              # Run in foreground")
-        print_info("   hermes gateway install      # Install as background service (Linux)")
-        
-        # Check if any home channels are missing
-        missing_home = []
-        if get_env_value('TELEGRAM_BOT_TOKEN') and not get_env_value('TELEGRAM_HOME_CHANNEL'):
-            missing_home.append("Telegram")
-        if get_env_value('DISCORD_BOT_TOKEN') and not get_env_value('DISCORD_HOME_CHANNEL'):
-            missing_home.append("Discord")
-        if get_env_value('SLACK_BOT_TOKEN') and not get_env_value('SLACK_HOME_CHANNEL'):
-            missing_home.append("Slack")
-        
-        if missing_home:
-            print()
-            print_info(f"⚠️  No home channel set for: {', '.join(missing_home)}")
-            print_info("   Without a home channel, cron jobs and cross-platform")
-            print_info("   messages can't be delivered to those platforms.")
-            print_info("   Set one later with /set-home in your chat, or:")
-            for plat in missing_home:
-                print_info(f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>")
-        
-        print_info("━" * 50)
-    
-    # =========================================================================
-    # Step 8: Additional Tools (Checkbox Selection)
-    # =========================================================================
-    print_header("Additional Tools")
-    print_info("Select which tools you'd like to configure.")
-    print_info("You can always add more later with 'hermes setup'.")
-    print()
-    
-    # Define tool categories for the checklist.
-    # Each entry: (display_label, setup_function_key, check_keys)
-    # check_keys = env vars that indicate this tool is already configured
-    TOOL_CATEGORIES = [
-        {
-            "label": "🔍 Web Search & Scraping (Firecrawl)",
-            "key": "firecrawl",
-            "check": ["FIRECRAWL_API_KEY"],
-        },
-        {
-            "label": "🌐 Browser Automation (Browserbase)",
-            "key": "browserbase",
-            "check": ["BROWSERBASE_API_KEY"],
-        },
-        {
-            "label": "🎨 Image Generation (FAL / FLUX)",
-            "key": "fal",
-            "check": ["FAL_KEY"],
-        },
-        {
-            "label": "🎤 Voice Transcription & TTS (OpenAI Whisper + TTS)",
-            "key": "openai_voice",
-            "check": ["VOICE_TOOLS_OPENAI_KEY"],
-        },
-        {
-            "label": "🗣️ Premium Text-to-Speech (ElevenLabs)",
-            "key": "elevenlabs",
-            "check": ["ELEVENLABS_API_KEY"],
-        },
-        {
-            "label": "🧪 RL Training (Tinker + WandB)",
-            "key": "rl_training",
-            "check": ["TINKER_API_KEY", "WANDB_API_KEY"],
-        },
-        {
-            "label": "🔧 Skills Hub (GitHub token for higher rate limits)",
-            "key": "github",
-            "check": ["GITHUB_TOKEN"],
-        },
-    ]
-    
-    # Pre-select tools that are already configured
-    pre_selected = []
-    for i, cat in enumerate(TOOL_CATEGORIES):
-        if all(get_env_value(k) for k in cat["check"]):
-            pre_selected.append(i)
-    
-    checklist_labels = [cat["label"] for cat in TOOL_CATEGORIES]
-    selected_indices = prompt_checklist(
-        "Which tools would you like to enable?",
-        checklist_labels,
-        pre_selected=pre_selected,
-    )
-    
-    selected_keys = {TOOL_CATEGORIES[i]["key"] for i in selected_indices}
-    
-    # Now prompt for API keys only for the tools the user selected
-    
-    if "firecrawl" in selected_keys:
-        print()
-        print(color("  ─── Web Search & Scraping (Firecrawl) ───", Colors.CYAN))
-        print_info("  Get your API key at: https://firecrawl.dev/")
-        existing = get_env_value('FIRECRAWL_API_KEY')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    Firecrawl API key", password=True)
-                if api_key:
-                    save_env_value("FIRECRAWL_API_KEY", api_key)
-                    print_success("    Updated")
-        else:
-            api_key = prompt("    Firecrawl API key", password=True)
-            if api_key:
-                save_env_value("FIRECRAWL_API_KEY", api_key)
-                print_success("    Configured ✓")
-    
-    if "browserbase" in selected_keys:
-        print()
-        print(color("  ─── Browser Automation (Browserbase) ───", Colors.CYAN))
-        print_info("  Get credentials at: https://browserbase.com/")
-        existing = get_env_value('BROWSERBASE_API_KEY')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update credentials?", False):
-                api_key = prompt("    API key", password=True)
-                project_id = prompt("    Project ID")
-                if api_key:
-                    save_env_value("BROWSERBASE_API_KEY", api_key)
-                if project_id:
-                    save_env_value("BROWSERBASE_PROJECT_ID", project_id)
-                print_success("    Updated")
-        else:
-            api_key = prompt("    Browserbase API key", password=True)
-            project_id = prompt("    Browserbase Project ID")
-            if api_key:
-                save_env_value("BROWSERBASE_API_KEY", api_key)
-            if project_id:
-                save_env_value("BROWSERBASE_PROJECT_ID", project_id)
-            
-            # Auto-install Node.js deps if possible
-            import shutil
-            node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-            if not node_modules.exists() and shutil.which("npm"):
-                print_info("    Installing Node.js dependencies for browser tools...")
-                import subprocess
-                result = subprocess.run(
-                    ["npm", "install", "--silent"],
-                    capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-                )
-                if result.returncode == 0:
-                    print_success("    Node.js dependencies installed")
-                else:
-                    print_warning("    npm install failed — run manually: cd ~/.hermes/hermes-agent && npm install")
-            elif not node_modules.exists():
-                print_warning("    Node.js not found — browser tools require: npm install (in the hermes-agent directory)")
-            
-            if api_key:
-                print_success("    Configured ✓")
-    
-    if "fal" in selected_keys:
-        print()
-        print(color("  ─── Image Generation (FAL) ───", Colors.CYAN))
-        print_info("  Get your API key at: https://fal.ai/")
-        existing = get_env_value('FAL_KEY')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    FAL API key", password=True)
-                if api_key:
-                    save_env_value("FAL_KEY", api_key)
-                    print_success("    Updated")
-        else:
-            api_key = prompt("    FAL API key", password=True)
-            if api_key:
-                save_env_value("FAL_KEY", api_key)
-                print_success("    Configured ✓")
-    
-    if "openai_voice" in selected_keys:
-        print()
-        print(color("  ─── Voice Transcription & TTS (OpenAI) ───", Colors.CYAN))
-        print_info("  Used for Whisper speech-to-text and OpenAI TTS voices.")
-        print_info("  Get your API key at: https://platform.openai.com/api-keys")
-        existing = get_env_value('VOICE_TOOLS_OPENAI_KEY')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    OpenAI API key", password=True)
-                if api_key:
-                    save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
-                    print_success("    Updated")
-        else:
-            api_key = prompt("    OpenAI API key", password=True)
-            if api_key:
-                save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
-                print_success("    Configured ✓")
-    
-    if "elevenlabs" in selected_keys:
-        print()
-        print(color("  ─── Premium TTS (ElevenLabs) ───", Colors.CYAN))
-        print_info("  High-quality voice synthesis. Free Edge TTS works without a key.")
-        print_info("  Get your API key at: https://elevenlabs.io/")
-        existing = get_env_value('ELEVENLABS_API_KEY')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    ElevenLabs API key", password=True)
-                if api_key:
-                    save_env_value("ELEVENLABS_API_KEY", api_key)
-                    print_success("    Updated")
-        else:
-            api_key = prompt("    ElevenLabs API key", password=True)
-            if api_key:
-                save_env_value("ELEVENLABS_API_KEY", api_key)
-                print_success("    Configured ✓")
-    
-    if "rl_training" in selected_keys:
-        print()
-        print(color("  ─── RL Training (Tinker + WandB) ───", Colors.CYAN))
-        
-        rl_python_ok = sys.version_info >= (3, 11)
-        if not rl_python_ok:
-            print_error(f"  Requires Python 3.11+ (current: {sys.version_info.major}.{sys.version_info.minor})")
-            print_info("  Upgrade Python and reinstall to enable RL training tools")
-        else:
-            print_info("  Get Tinker key at: https://tinker-console.thinkingmachines.ai/keys")
-            print_info("  Get WandB key at: https://wandb.ai/authorize")
-            
-            tinker_existing = get_env_value('TINKER_API_KEY')
-            wandb_existing = get_env_value('WANDB_API_KEY')
-            
-            if tinker_existing and wandb_existing:
-                print_success("  Already configured ✓")
-                if prompt_yes_no("  Update credentials?", False):
-                    api_key = prompt("    Tinker API key", password=True)
-                    if api_key:
-                        save_env_value("TINKER_API_KEY", api_key)
-                    wandb_key = prompt("    WandB API key", password=True)
-                    if wandb_key:
-                        save_env_value("WANDB_API_KEY", wandb_key)
-                    print_success("    Updated")
-            else:
-                api_key = prompt("    Tinker API key", password=True)
-                if api_key:
-                    save_env_value("TINKER_API_KEY", api_key)
-                wandb_key = prompt("    WandB API key", password=True)
-                if wandb_key:
-                    save_env_value("WANDB_API_KEY", wandb_key)
-                
-                # Auto-install tinker-atropos submodule if missing
-                try:
-                    __import__("tinker_atropos")
-                except ImportError:
-                    tinker_dir = PROJECT_ROOT / "tinker-atropos"
-                    if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
-                        print_info("    Installing tinker-atropos submodule...")
-                        import subprocess
-                        import shutil
-                        uv_bin = shutil.which("uv")
-                        if uv_bin:
-                            result = subprocess.run(
-                                [uv_bin, "pip", "install", "-e", str(tinker_dir)],
-                                capture_output=True, text=True
-                            )
-                        else:
-                            result = subprocess.run(
-                                [sys.executable, "-m", "pip", "install", "-e", str(tinker_dir)],
-                                capture_output=True, text=True
-                            )
-                        if result.returncode == 0:
-                            print_success("    tinker-atropos installed")
-                        else:
-                            print_warning("    tinker-atropos install failed — run manually:")
-                            print_info('      uv pip install -e "./tinker-atropos"')
-                    else:
-                        print_warning("    tinker-atropos submodule not found — run:")
-                        print_info("      git submodule update --init --recursive")
-                        print_info('      uv pip install -e "./tinker-atropos"')
-                
-                if api_key and wandb_key:
-                    print_success("    Configured ✓")
-                else:
-                    print_warning("    Partially configured (both keys required)")
-    
-    if "github" in selected_keys:
-        print()
-        print(color("  ─── Skills Hub (GitHub) ───", Colors.CYAN))
-        print_info("  Enables higher API rate limits for skill search/install")
-        print_info("  and publishing skills via GitHub PRs.")
-        print_info("  Get a token at: https://github.com/settings/tokens")
-        existing = get_env_value('GITHUB_TOKEN')
-        if existing:
-            print_success("  Already configured ✓")
-            if prompt_yes_no("  Update token?", False):
-                token = prompt("    GitHub Token (ghp_...)", password=True)
-                if token:
-                    save_env_value("GITHUB_TOKEN", token)
-                    print_success("    Updated")
-        else:
-            token = prompt("    GitHub Token", password=True)
-            if token:
-                save_env_value("GITHUB_TOKEN", token)
-                print_success("    Configured ✓")
+    set_summary("Terminal backend", effective_backend)
 
-    # =========================================================================
-    # Save config and show summary
-    # =========================================================================
-    save_config(config)
-    _print_setup_summary(config, hermes_home)
+    save_checkpoint()
+
+    # Step 4: Agent settings
+    step_num += 1
+    print_step(step_num, total_steps, "Agent Settings")
+    config.setdefault("display", {})
+    config.setdefault("compression", {})
+    config.setdefault("session_reset", {})
+    current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(config.get("max_turns", 60))
+    current_progress = config["display"].get("tool_progress", "all")
+    current_threshold = config["compression"].get("threshold", 0.85)
+    current_reset = config["session_reset"].get("mode", "both")
+    try:
+        current_threshold_float = float(current_threshold)
+    except (TypeError, ValueError):
+        current_threshold_float = 0.85
+    print_info(f"Max iterations: {current_max} (recommended: 30-60)")
+    print_info(f"Tool progress: {current_progress}")
+    print_info(
+        f"Context compression: {compression_label(current_threshold_float)} "
+        f"({current_threshold_float:.2f})"
+    )
+    print_info(f"Session reset: {reset_label(config['session_reset'])}")
+
+    if prompt_yes_no("Customize advanced settings?", False):
+        max_iter_str = prompt("Max iterations", current_max)
+        try:
+            max_iter = int(max_iter_str)
+            if max_iter > 0:
+                save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
+                config["max_turns"] = max_iter
+        except ValueError:
+            print_warning("Invalid max iterations, keeping current value.")
+
+        progress_labels = [
+            "off (silent)",
+            "new (show when tool changes)",
+            "all (show every tool call)",
+            "verbose (full debug output)",
+        ]
+        progress_map = ["off", "new", "all", "verbose"]
+        default_progress = progress_map.index(current_progress) if current_progress in progress_map else 2
+        progress_idx = prompt_choice("Tool progress display:", progress_labels, default_progress)
+        config["display"]["tool_progress"] = progress_map[progress_idx]
+
+        compression_choices = [
+            "Low (0.75) - compress sooner",
+            "Balanced (0.85) - recommended",
+            "High (0.92) - compress later",
+            "Custom value (0.50-0.95)",
+            f"Keep current ({current_threshold_float:.2f})",
+        ]
+        default_compression_idx = 1
+        if current_threshold_float <= 0.79:
+            default_compression_idx = 0
+        elif current_threshold_float >= 0.90:
+            default_compression_idx = 2
+        compression_idx = prompt_choice("Context compression:", compression_choices, default_compression_idx)
+        config["compression"]["enabled"] = True
+        if compression_idx == 0:
+            config["compression"]["threshold"] = 0.75
+        elif compression_idx == 1:
+            config["compression"]["threshold"] = 0.85
+        elif compression_idx == 2:
+            config["compression"]["threshold"] = 0.92
+        elif compression_idx == 3:
+            custom_threshold = prompt("Custom compression threshold (0.50-0.95)", f"{current_threshold_float:.2f}")
+            try:
+                custom_value = float(custom_threshold)
+                if 0.50 <= custom_value <= 0.95:
+                    config["compression"]["threshold"] = round(custom_value, 2)
+                else:
+                    print_warning("Custom threshold out of range, keeping current value.")
+            except ValueError:
+                print_warning("Invalid custom threshold, keeping current value.")
+
+        reset_choices = [
+            "Inactivity + daily reset (recommended)",
+            "Inactivity only",
+            "Daily only",
+            "Never auto-reset",
+            "Keep current",
+        ]
+        default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_reset, 0)
+        reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
+        if reset_idx == 0:
+            config["session_reset"]["mode"] = "both"
+            current_idle_default = int(config["session_reset"].get("idle_minutes", 1440))
+            idle = prompt(
+                "Inactivity timeout (e.g. 90m, 1h30m, 2h)",
+                format_minutes(current_idle_default),
+            )
+            hour = prompt("Daily reset hour (0-23)", str(config["session_reset"].get("at_hour", 4)))
+            try:
+                idle_val = parse_duration_minutes(idle, current_idle_default)
+                config["session_reset"]["idle_minutes"] = idle_val
+            except ValueError:
+                print_warning("Invalid inactivity duration, keeping current value.")
+            try:
+                hour_val = int(hour)
+                if 0 <= hour_val <= 23:
+                    config["session_reset"]["at_hour"] = hour_val
+            except ValueError:
+                pass
+        elif reset_idx == 1:
+            config["session_reset"]["mode"] = "idle"
+            current_idle_default = int(config["session_reset"].get("idle_minutes", 1440))
+            idle = prompt(
+                "Inactivity timeout (e.g. 90m, 1h30m, 2h)",
+                format_minutes(current_idle_default),
+            )
+            try:
+                idle_val = parse_duration_minutes(idle, current_idle_default)
+                config["session_reset"]["idle_minutes"] = idle_val
+            except ValueError:
+                print_warning("Invalid inactivity duration, keeping current value.")
+        elif reset_idx == 2:
+            config["session_reset"]["mode"] = "daily"
+            hour = prompt("Daily reset hour (0-23)", str(config["session_reset"].get("at_hour", 4)))
+            try:
+                hour_val = int(hour)
+                if 0 <= hour_val <= 23:
+                    config["session_reset"]["at_hour"] = hour_val
+            except ValueError:
+                pass
+        elif reset_idx == 3:
+            config["session_reset"]["mode"] = "none"
+    else:
+        config["display"].setdefault("tool_progress", "all")
+        config["compression"]["enabled"] = True
+        config["compression"].setdefault("threshold", 0.85)
+        config["session_reset"].setdefault("mode", "both")
+        config["session_reset"].setdefault("idle_minutes", 1440)
+        config["session_reset"].setdefault("at_hour", 4)
+        if not get_env_value("HERMES_MAX_ITERATIONS"):
+            save_env_value("HERMES_MAX_ITERATIONS", current_max)
+
+    save_checkpoint()
+    set_summary("Max iterations", get_env_value("HERMES_MAX_ITERATIONS") or str(config.get("max_turns", 60)))
+    set_summary("Tool progress", config["display"].get("tool_progress", "all"))
+    threshold_value = float(config["compression"].get("threshold", 0.85))
+    set_summary("Compression", f"{compression_label(threshold_value)} ({threshold_value:.2f})")
+    set_summary("Session reset", reset_label(config["session_reset"]))
+
+    # Step 5: Tools & integrations
+    step_num += 1
+    print_step(step_num, total_steps, "Tools & Integrations")
+    print_info("Select messaging platforms and optional tool keys.")
+
+    messaging_platforms = [
+        ("Telegram", "TELEGRAM_BOT_TOKEN"),
+        ("Discord", "DISCORD_BOT_TOKEN"),
+        ("Slack", "SLACK_BOT_TOKEN"),
+        ("WhatsApp", "WHATSAPP_ENABLED"),
+    ]
+    pre_selected_messaging = []
+    for idx, (_, env_var) in enumerate(messaging_platforms):
+        val = get_env_value(env_var)
+        if env_var == "WHATSAPP_ENABLED":
+            if (val or "").lower() == "true":
+                pre_selected_messaging.append(idx)
+        elif val:
+            pre_selected_messaging.append(idx)
+
+    selected_msg_idx = prompt_checklist(
+        "Which messaging platforms would you like to configure?",
+        [name for name, _ in messaging_platforms],
+        pre_selected=pre_selected_messaging,
+    )
+    selected_platforms = [messaging_platforms[i][0] for i in selected_msg_idx]
+    selected_platforms_all = list(selected_platforms)
+    configure_selected_messaging(selected_platforms)
+    if selected_platforms:
+        set_summary("Messaging", ", ".join(selected_platforms))
+
+    if selected_platforms:
+        current_cwd = get_env_value("MESSAGING_CWD") or str(Path.home())
+        cwd_input = prompt("Messaging working directory", current_cwd)
+        save_env_value("MESSAGING_CWD", normalize_path(cwd_input))
+        set_summary("Messaging CWD", normalize_path(cwd_input))
+
+    tool_categories = [
+        {"label": "Web Search/Scraping (Firecrawl)", "key": "firecrawl", "check": ["FIRECRAWL_API_KEY"]},
+        {"label": "Browser Automation (Browserbase)", "key": "browserbase", "check": ["BROWSERBASE_API_KEY"]},
+        {"label": "Image Generation (FAL)", "key": "fal", "check": ["FAL_KEY"]},
+        {"label": "Voice Tools (OpenAI)", "key": "openai_voice", "check": ["VOICE_TOOLS_OPENAI_KEY"]},
+        {"label": "Premium TTS (ElevenLabs)", "key": "elevenlabs", "check": ["ELEVENLABS_API_KEY"]},
+        {"label": "RL Training (Tinker + WandB)", "key": "rl_training", "check": ["TINKER_API_KEY", "WANDB_API_KEY"]},
+        {"label": "Skills Hub (GitHub token)", "key": "github", "check": ["GITHUB_TOKEN"]},
+    ]
+    pre_selected_tools = [i for i, cat in enumerate(tool_categories) if all(get_env_value(k) for k in cat["check"])]
+    selected_tools_idx = prompt_checklist(
+        "Which optional tools would you like to configure?",
+        [cat["label"] for cat in tool_categories],
+        pre_selected=pre_selected_tools,
+    )
+    selected_tool_keys = {tool_categories[i]["key"] for i in selected_tools_idx}
+    selected_tool_keys_all = set(selected_tool_keys)
+    if selected_tool_keys:
+        selected_tool_labels = [cat["label"] for cat in tool_categories if cat["key"] in selected_tool_keys]
+        set_summary("Optional tools", ", ".join(selected_tool_labels))
+
+    if "firecrawl" in selected_tool_keys:
+        key = prompt("Firecrawl API key", password=True)
+        if key:
+            save_env_value("FIRECRAWL_API_KEY", key)
+    if "browserbase" in selected_tool_keys:
+        key = prompt("Browserbase API key", password=True)
+        project_id = prompt("Browserbase project ID", get_env_value("BROWSERBASE_PROJECT_ID") or "")
+        if key:
+            save_env_value("BROWSERBASE_API_KEY", key)
+        if project_id:
+            save_env_value("BROWSERBASE_PROJECT_ID", project_id)
+    if "fal" in selected_tool_keys:
+        key = prompt("FAL API key", password=True)
+        if key:
+            save_env_value("FAL_KEY", key)
+    if "openai_voice" in selected_tool_keys:
+        key = prompt("OpenAI API key (voice tools)", password=True)
+        if key:
+            save_env_value("VOICE_TOOLS_OPENAI_KEY", key)
+    if "elevenlabs" in selected_tool_keys:
+        key = prompt("ElevenLabs API key", password=True)
+        if key:
+            save_env_value("ELEVENLABS_API_KEY", key)
+    if "rl_training" in selected_tool_keys:
+        tinker = prompt("Tinker API key", password=True)
+        wandb = prompt("WandB API key", password=True)
+        if tinker:
+            save_env_value("TINKER_API_KEY", tinker)
+        if wandb:
+            save_env_value("WANDB_API_KEY", wandb)
+    if "github" in selected_tool_keys:
+        token = prompt("GitHub token", password=True)
+        if token:
+            save_env_value("GITHUB_TOKEN", token)
+
+    config["_config_version"] = latest_ver
+    save_checkpoint()
+    migrate_config(interactive=False, quiet=True)
+    _print_setup_summary(
+        load_config(),
+        hermes_home,
+        selected_summary,
+        build_api_key_alerts(),
+    )

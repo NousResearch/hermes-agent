@@ -128,9 +128,12 @@ def cmd_chat(args):
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
-        print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
+        print("Welcome to Hermes Agent! Let's get you set up.")
         print()
-        print("  Run:  hermes setup")
+        print("This takes about a minute. You'll need an API key from one of:")
+        print("  - OpenRouter: openrouter.ai/keys")
+        print("  - Nous Portal: portal.nousresearch.com")
+        print("  - Any OpenAI-compatible endpoint")
         print()
         try:
             reply = input("Run setup now? [Y/n] ").strip().lower()
@@ -140,7 +143,7 @@ def cmd_chat(args):
             cmd_setup(args)
             return
         print()
-        print("You can run 'hermes setup' at any time to configure.")
+        print("Run 'hermes setup' when you're ready.")
         sys.exit(1)
 
     # Import and run the CLI

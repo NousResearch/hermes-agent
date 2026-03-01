@@ -530,10 +530,25 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
 def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
-    kwargs["temperature"] = 0
+    kwargs["some_unknown_field"] = "value"
 
     with pytest.raises(ValueError, match="unsupported field"):
         agent._preflight_codex_api_kwargs(kwargs)
+
+
+def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
+    kwargs["include"] = ["reasoning.encrypted_content"]
+    kwargs["temperature"] = 0.7
+    kwargs["max_output_tokens"] = 4096
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+    assert result["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert result["include"] == ["reasoning.encrypted_content"]
+    assert result["temperature"] == 0.7
+    assert result["max_output_tokens"] == 4096
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

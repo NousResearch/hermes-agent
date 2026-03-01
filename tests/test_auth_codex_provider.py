@@ -185,8 +185,8 @@ def test_login_openai_codex_persists_provider_state(tmp_path, monkeypatch):
     _write_codex_auth(codex_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda _: "/usr/local/bin/codex")
-    monkeypatch.setattr("hermes_cli.auth.subprocess.run", lambda *a, **k: None)
+    # Mock input() to accept existing credentials
+    monkeypatch.setattr("builtins.input", lambda _: "y")
 
     _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"])
 
@@ -201,19 +201,10 @@ def test_login_openai_codex_persists_provider_state(tmp_path, monkeypatch):
     assert config["model"]["base_url"] == DEFAULT_CODEX_BASE_URL
 
 
-def test_login_command_defaults_to_nous(monkeypatch):
-    calls = {"nous": 0, "codex": 0}
-
-    def _fake_nous(args, pconfig):
-        calls["nous"] += 1
-
-    def _fake_codex(args, pconfig):
-        calls["codex"] += 1
-
-    monkeypatch.setattr("hermes_cli.auth._login_nous", _fake_nous)
-    monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_codex)
-
-    login_command(SimpleNamespace())
-
-    assert calls["nous"] == 1
-    assert calls["codex"] == 0
+def test_login_command_shows_deprecation(monkeypatch, capsys):
+    """login_command is deprecated and directs users to hermes model."""
+    with pytest.raises(SystemExit) as exc_info:
+        login_command(SimpleNamespace())
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "hermes model" in captured.out

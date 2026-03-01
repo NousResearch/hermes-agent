@@ -214,17 +214,12 @@ class GatewayRunner:
                 return
 
             from run_agent import AIAgent
-            _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-            _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
-
-            if not _flush_api_key:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if not runtime_kwargs.get("api_key"):
                 return
 
             tmp_agent = AIAgent(
-                model=_flush_model,
-                api_key=_flush_api_key,
-                base_url=_flush_base_url,
+                **runtime_kwargs,
                 max_iterations=8,
                 quiet_mode=True,
                 enabled_toolsets=["memory", "skills"],
@@ -979,12 +974,10 @@ class GatewayRunner:
                 if old_history:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
-                    # Resolve credentials so the flush agent can reach the LLM
-                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+                    _flush_kwargs = _resolve_runtime_agent_kwargs()
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=_flush_model,
-                            **_resolve_runtime_agent_kwargs(),
+                            **_flush_kwargs,
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],

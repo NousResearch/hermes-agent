@@ -12,7 +12,6 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
-    hermes login               # Authenticate with Nous Portal (or other providers)
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
@@ -547,7 +546,14 @@ def _model_flow_openai_codex(config, current_model=""):
             print(f"Login failed: {exc}")
             return
 
-    codex_models = get_codex_model_ids()
+    _codex_token = None
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        _codex_creds = resolve_codex_runtime_credentials()
+        _codex_token = _codex_creds.get("api_key")
+    except Exception:
+        pass
+    codex_models = get_codex_model_ids(access_token=_codex_token)
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:
@@ -827,8 +833,8 @@ def cmd_update(args):
             pass  # No systemd (macOS, WSL1, etc.) — skip silently
         
         print()
-        print("Tip: You can now log in with Nous Portal for inference:")
-        print("  hermes login              # Authenticate with Nous Portal")
+        print("Tip: You can now select a provider and model:")
+        print("  hermes model              # Select provider and model")
         
     except subprocess.CalledProcessError as e:
         print(f"✗ Update failed: {e}")
@@ -848,7 +854,6 @@ Examples:
     hermes --continue             Resume the most recent session
     hermes --resume <session_id>  Resume a specific session
     hermes setup                  Run setup wizard
-    hermes login                  Authenticate with an inference provider
     hermes logout                 Clear stored authentication
     hermes model                  Select default model
     hermes config                 View configuration

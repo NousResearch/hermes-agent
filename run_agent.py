@@ -1432,6 +1432,14 @@ class AIAgent:
                 content_text = str(content) if content is not None else ""
 
                 if role == "assistant":
+                    # Replay encrypted reasoning items from previous turns
+                    # so the API can maintain coherent reasoning chains.
+                    codex_reasoning = msg.get("codex_reasoning_items")
+                    if isinstance(codex_reasoning, list):
+                        for ri in codex_reasoning:
+                            if isinstance(ri, dict) and ri.get("encrypted_content"):
+                                items.append(ri)
+
                     if content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
 
@@ -1638,7 +1646,10 @@ class AIAgent:
         if store is not False:
             raise ValueError("Codex Responses contract requires 'store' to be false.")
 
-        allowed_keys = {"model", "instructions", "input", "tools", "store"}
+        allowed_keys = {
+            "model", "instructions", "input", "tools", "store",
+            "reasoning", "include", "max_output_tokens", "temperature",
+        }
         normalized: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
@@ -1646,6 +1657,22 @@ class AIAgent:
             "tools": normalized_tools,
             "store": False,
         }
+
+        # Pass through reasoning config
+        reasoning = api_kwargs.get("reasoning")
+        if isinstance(reasoning, dict):
+            normalized["reasoning"] = reasoning
+        include = api_kwargs.get("include")
+        if isinstance(include, list):
+            normalized["include"] = include
+
+        # Pass through max_output_tokens and temperature
+        max_output_tokens = api_kwargs.get("max_output_tokens")
+        if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
+            normalized["max_output_tokens"] = int(max_output_tokens)
+        temperature = api_kwargs.get("temperature")
+        if isinstance(temperature, (int, float)):
+            normalized["temperature"] = float(temperature)
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -1719,6 +1746,7 @@ class AIAgent:
 
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
+        reasoning_items_raw: List[Dict[str, Any]] = []
         tool_calls: List[Any] = []
         has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
         saw_commentary_phase = False
@@ -1750,6 +1778,16 @@ class AIAgent:
                 reasoning_text = self._extract_responses_reasoning_text(item)
                 if reasoning_text:
                     reasoning_parts.append(reasoning_text)
+                # Capture the full reasoning item for multi-turn continuity.
+                # encrypted_content is an opaque blob the API needs back on
+                # subsequent turns to maintain coherent reasoning chains.
+                encrypted = getattr(item, "encrypted_content", None)
+                if isinstance(encrypted, str) and encrypted:
+                    raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    item_id = getattr(item, "id", None)
+                    if isinstance(item_id, str) and item_id:
+                        raw_item["id"] = item_id
+                    reasoning_items_raw.append(raw_item)
             elif item_type == "function_call":
                 if item_status in {"queued", "in_progress", "incomplete"}:
                     continue
@@ -1807,6 +1845,7 @@ class AIAgent:
             reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,
             reasoning_content=None,
             reasoning_details=None,
+            codex_reasoning_items=reasoning_items_raw or None,
         )
 
         if tool_calls:
@@ -1819,7 +1858,6 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict):
         """Execute one streaming Responses API request and return the final response."""
-        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
             try:
@@ -1971,13 +2009,28 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
-            return {
+            kwargs = {
                 "model": self.model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),
                 "store": False,
+                "reasoning": {"effort": "medium", "summary": "auto"},
+                "include": ["reasoning.encrypted_content"],
             }
+
+            # Apply reasoning effort from config if set
+            if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                if self.reasoning_config.get("enabled") is False:
+                    kwargs.pop("reasoning", None)
+                    kwargs["include"] = []
+                elif self.reasoning_config.get("effort"):
+                    kwargs["reasoning"]["effort"] = self.reasoning_config["effort"]
+
+            if self.max_tokens is not None:
+                kwargs["max_output_tokens"] = self.max_tokens
+
+            return kwargs
 
         provider_preferences = {}
         if self.providers_allowed:
@@ -2045,11 +2098,27 @@ class AIAgent:
         }
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
-            msg["reasoning_details"] = [
-                {"type": d.get("type"), "text": d.get("text"), "signature": d.get("signature")}
-                for d in assistant_message.reasoning_details
-                if isinstance(d, dict)
-            ]
+            # Pass reasoning_details back unmodified so providers (OpenRouter,
+            # Anthropic, OpenAI) can maintain reasoning continuity across turns.
+            # Each provider may include opaque fields (signature, encrypted_content)
+            # that must be preserved exactly.
+            raw_details = assistant_message.reasoning_details
+            preserved = []
+            for d in raw_details:
+                if isinstance(d, dict):
+                    preserved.append(d)
+                elif hasattr(d, "__dict__"):
+                    preserved.append(d.__dict__)
+                elif hasattr(d, "model_dump"):
+                    preserved.append(d.model_dump())
+            if preserved:
+                msg["reasoning_details"] = preserved
+
+        # Codex Responses API: preserve encrypted reasoning items for
+        # multi-turn continuity. These get replayed as input on the next turn.
+        codex_items = getattr(assistant_message, "codex_reasoning_items", None)
+        if codex_items:
+            msg["codex_reasoning_items"] = codex_items
 
         if assistant_message.tool_calls:
             tool_calls = []
@@ -2152,40 +2221,68 @@ class AIAgent:
                 messages.pop()  # remove flush msg
                 return
 
-            api_kwargs = {
-                "model": self.model,
-                "messages": api_messages,
-                "tools": [memory_tool_def],
-                "temperature": 0.3,
-                **self._max_tokens_param(1024),
-            }
+            # Use auxiliary client for the flush call when available --
+            # it's cheaper and avoids Codex Responses API incompatibility.
+            from agent.auxiliary_client import get_text_auxiliary_client
+            aux_client, aux_model = get_text_auxiliary_client()
 
-            response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
+            if aux_client:
+                api_kwargs = {
+                    "model": aux_model,
+                    "messages": api_messages,
+                    "tools": [memory_tool_def],
+                    "temperature": 0.3,
+                    "max_tokens": 5120,
+                }
+                response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
+            elif self.api_mode == "codex_responses":
+                # No auxiliary client -- use the Codex Responses path directly
+                codex_kwargs = self._build_api_kwargs(api_messages)
+                codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
+                codex_kwargs["temperature"] = 0.3
+                if "max_output_tokens" in codex_kwargs:
+                    codex_kwargs["max_output_tokens"] = 5120
+                response = self._run_codex_stream(codex_kwargs)
+            else:
+                api_kwargs = {
+                    "model": self.model,
+                    "messages": api_messages,
+                    "tools": [memory_tool_def],
+                    "temperature": 0.3,
+                    **self._max_tokens_param(5120),
+                }
+                response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
 
-            if response.choices:
+            # Extract tool calls from the response, handling both API formats
+            tool_calls = []
+            if self.api_mode == "codex_responses" and not aux_client:
+                assistant_msg, _ = self._normalize_codex_response(response)
+                if assistant_msg and assistant_msg.tool_calls:
+                    tool_calls = assistant_msg.tool_calls
+            elif hasattr(response, "choices") and response.choices:
                 assistant_message = response.choices[0].message
                 if assistant_message.tool_calls:
-                    # Execute only memory tool calls
-                    for tc in assistant_message.tool_calls:
-                        if tc.function.name == "memory":
-                            try:
-                                args = json.loads(tc.function.arguments)
-                                flush_target = args.get("target", "memory")
-                                from tools.memory_tool import memory_tool as _memory_tool
-                                result = _memory_tool(
-                                    action=args.get("action"),
-                                    target=flush_target,
-                                    content=args.get("content"),
-                                    old_text=args.get("old_text"),
-                                    store=self._memory_store,
-                                )
-                                # Also send user observations to Honcho when active
-                                if self._honcho and flush_target == "user" and args.get("action") == "add":
-                                    self._honcho_save_user_observation(args.get("content", ""))
-                                if not self.quiet_mode:
-                                    print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
-                            except Exception as e:
-                                logger.debug("Memory flush tool call failed: %s", e)
+                    tool_calls = assistant_message.tool_calls
+
+            for tc in tool_calls:
+                if tc.function.name == "memory":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        flush_target = args.get("target", "memory")
+                        from tools.memory_tool import memory_tool as _memory_tool
+                        result = _memory_tool(
+                            action=args.get("action"),
+                            target=flush_target,
+                            content=args.get("content"),
+                            old_text=args.get("old_text"),
+                            store=self._memory_store,
+                        )
+                        if self._honcho and flush_target == "user" and args.get("action") == "add":
+                            self._honcho_save_user_observation(args.get("content", ""))
+                        if not self.quiet_mode:
+                            print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
+                    except Exception as e:
+                        logger.debug("Memory flush tool call failed: %s", e)
         except Exception as e:
             logger.debug("Memory flush API call failed: %s", e)
         finally:
@@ -2493,32 +2590,19 @@ class AIAgent:
             if _is_nous:
                 summary_extra_body["tags"] = ["product=hermes-agent"]
 
-            summary_kwargs = {
-                "model": self.model,
-                "messages": api_messages,
-            }
-            if self.max_tokens is not None:
-                summary_kwargs.update(self._max_tokens_param(self.max_tokens))
-            if summary_extra_body:
-                summary_kwargs["extra_body"] = summary_extra_body
-
-            summary_response = self.client.chat.completions.create(**summary_kwargs)
-
-            if summary_response.choices and summary_response.choices[0].message.content:
-                final_response = summary_response.choices[0].message.content
-                if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-                if final_response:
-                    messages.append({"role": "assistant", "content": final_response})
-                else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+            if self.api_mode == "codex_responses":
+                codex_kwargs = self._build_api_kwargs(api_messages)
+                codex_kwargs["tools"] = None
+                summary_response = self._run_codex_stream(codex_kwargs)
+                assistant_message, _ = self._normalize_codex_response(summary_response)
+                final_response = (assistant_message.content or "").strip() if assistant_message else ""
             else:
                 summary_kwargs = {
                     "model": self.model,
                     "messages": api_messages,
                 }
                 if self.max_tokens is not None:
-                    summary_kwargs["max_tokens"] = self.max_tokens
+                    summary_kwargs.update(self._max_tokens_param(self.max_tokens))
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
@@ -2526,6 +2610,42 @@ class AIAgent:
 
                 if summary_response.choices and summary_response.choices[0].message.content:
                     final_response = summary_response.choices[0].message.content
+                else:
+                    final_response = ""
+
+            if final_response:
+                if "<think>" in final_response:
+                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                if final_response:
+                    messages.append({"role": "assistant", "content": final_response})
+                else:
+                    final_response = "I reached the iteration limit and couldn't generate a summary."
+            else:
+                # Retry summary generation
+                if self.api_mode == "codex_responses":
+                    codex_kwargs = self._build_api_kwargs(api_messages)
+                    codex_kwargs["tools"] = None
+                    retry_response = self._run_codex_stream(codex_kwargs)
+                    retry_msg, _ = self._normalize_codex_response(retry_response)
+                    final_response = (retry_msg.content or "").strip() if retry_msg else ""
+                else:
+                    summary_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                    }
+                    if self.max_tokens is not None:
+                        summary_kwargs["max_tokens"] = self.max_tokens
+                    if summary_extra_body:
+                        summary_kwargs["extra_body"] = summary_extra_body
+
+                    summary_response = self.client.chat.completions.create(**summary_kwargs)
+
+                    if summary_response.choices and summary_response.choices[0].message.content:
+                        final_response = summary_response.choices[0].message.content
+                    else:
+                        final_response = ""
+
+                if final_response:
                     if "<think>" in final_response:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                     messages.append({"role": "assistant", "content": final_response})

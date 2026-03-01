@@ -111,7 +111,7 @@ def show_status(args):
     nous_logged_in = bool(nous_status.get("logged_in"))
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes login)'}"
+        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
     )
     if nous_logged_in:
         portal_url = nous_status.get("portal_base_url") or "(unknown)"
@@ -126,7 +126,7 @@ def show_status(args):
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
-        f"{'logged in' if codex_logged_in else 'not logged in (run: hermes login --provider openai-codex)'}"
+        f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
     )
     codex_auth_file = codex_status.get("auth_file")
     if codex_auth_file:

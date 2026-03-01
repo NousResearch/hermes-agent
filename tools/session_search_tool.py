@@ -24,26 +24,13 @@ from typing import Dict, Any, List, Optional
 
 from openai import AsyncOpenAI, OpenAI
 
-from agent.auxiliary_client import get_text_auxiliary_client
+from agent.auxiliary_client import get_async_text_auxiliary_client
 
-# Resolve the auxiliary client at import time so we have the model slug.
-# We build an AsyncOpenAI from the same credentials for async summarization.
-_aux_client, _SUMMARIZER_MODEL = get_text_auxiliary_client()
-_async_aux_client: AsyncOpenAI | None = None
-if _aux_client is not None:
-    _async_kwargs = {
-        "api_key": _aux_client.api_key,
-        "base_url": str(_aux_client.base_url),
-    }
-    if "openrouter" in str(_aux_client.base_url).lower():
-        _async_kwargs["default_headers"] = {
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-            "X-OpenRouter-Title": "Hermes Agent",
-            "X-OpenRouter-Categories": "cli-agent",
-        }
-    _async_aux_client = AsyncOpenAI(**_async_kwargs)
+# Resolve the async auxiliary client at import time so we have the model slug.
+# Handles Codex Responses API adapter transparently.
+_async_aux_client, _SUMMARIZER_MODEL = get_async_text_auxiliary_client()
 MAX_SESSION_CHARS = 100_000
-MAX_SUMMARY_TOKENS = 2000
+MAX_SUMMARY_TOKENS = 10000
 
 
 def _format_timestamp(ts) -> str:

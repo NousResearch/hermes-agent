@@ -1037,8 +1037,12 @@ def terminal_tool(
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
+            # Redact secrets from command output (catches env/printenv leaking keys)
+            from agent.redact import redact_sensitive_text
+            output = redact_sensitive_text(output.strip()) if output else ""
+
             return json.dumps({
-                "output": output.strip() if output else "",
+                "output": output,
                 "exit_code": returncode,
                 "error": None
             }, ensure_ascii=False)

@@ -121,11 +121,14 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 
 | Provider | Setup |
 |----------|-------|
-| **Nous Portal** | `hermes login` (OAuth, subscription-based) |
+| **Nous Portal** | `hermes model` (OAuth, subscription-based) |
+| **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
-**Note:** Even when using Nous Portal or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+**Codex note:** The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Credentials are stored at `~/.codex/auth.json` and auto-refresh. No Codex CLI installation required.
+
+**Note:** Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 
 ---
 
@@ -143,7 +146,7 @@ All your settings are stored in `~/.hermes/` for easy access:
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
 ├── cron/           # Scheduled jobs
 ├── sessions/       # Gateway sessions
-└── logs/           # Logs
+└── logs/           # Logs (errors.log, gateway.log — secrets auto-redacted)
 ```
 
 ### Managing Configuration
@@ -160,6 +163,19 @@ hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
+
+### Configuration Precedence
+
+Settings are resolved in this order (highest priority first):
+
+1. **CLI arguments** — `hermes chat --max-turns 100` (per-invocation override)
+2. **`~/.hermes/config.yaml`** — the primary config file for all non-secret settings
+3. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
+4. **Built-in defaults** — hardcoded safe defaults when nothing else is set
+
+**Rule of thumb:** Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
+
+The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 
 ### Optional API Keys
 
@@ -277,7 +293,10 @@ See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 | `/status` | Show session info |
 | `/stop` | Stop the running agent |
 | `/sethome` | Set this chat as the home channel |
+| `/compress` | Manually compress conversation context |
+| `/usage` | Show token usage for this session |
 | `/help` | Show available commands |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 ### DM Pairing (Alternative to Allowlists)
 
@@ -354,7 +373,7 @@ hermes --resume <id>      # Resume a specific session (-r)
 
 # Provider & model management
 hermes model              # Switch provider and model interactively
-hermes login              # Authenticate with Nous Portal (OAuth)
+hermes model              # Select provider and model
 hermes logout             # Clear stored OAuth credentials
 
 # Configuration
@@ -407,7 +426,11 @@ Type `/` to see an autocomplete dropdown of all commands.
 | `/cron` | Manage scheduled tasks |
 | `/skills` | Search, install, inspect, or manage skills from registries |
 | `/platforms` | Show gateway/messaging platform status |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/compress` | Manually compress conversation context |
+| `/usage` | Show token usage for this session |
 | `/quit` | Exit (also: `/exit`, `/q`) |
+| `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
 **Keybindings:**
 - `Enter` — send message
@@ -694,6 +717,21 @@ hermes cron status         # Check if gateway is running
 
 Even if no messaging platforms are configured, the gateway stays running for cron. A file lock prevents duplicate execution if multiple processes overlap.
 
+### 🪝 Event Hooks
+
+Run custom code at key lifecycle points — log activity, send alerts, post to webhooks. Hooks are Python handlers that fire automatically during gateway operation.
+
+```
+~/.hermes/hooks/
+└── my-hook/
+    ├── HOOK.yaml      # name + events to subscribe to
+    └── handler.py     # async def handle(event_type, context)
+```
+
+**Available events:** `gateway:startup`, `session:start`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, `command:*` (wildcard — fires for any slash command).
+
+Hooks are non-blocking — errors are caught and logged, never crashing the agent. See [docs/hooks.md](docs/hooks.md) for the full event reference, context keys, and examples.
+
 ### 🛡️ Exec Approval (Messaging Platforms)
 
 When the agent tries to run a potentially dangerous command (`rm -rf`, `chmod 777`, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:
@@ -807,6 +845,22 @@ Skills are on-demand knowledge documents the agent can load when needed. They fo
 All skills live in **`~/.hermes/skills/`** -- a single directory that is the source of truth. On fresh install, bundled skills are copied there from the repo. Hub-installed skills and agent-created skills also go here. The agent can modify or delete any skill. `hermes update` adds only genuinely new bundled skills (via a manifest) without overwriting your changes or re-adding skills you deleted.
 
 **Using Skills:**
+
+Every installed skill is automatically available as a slash command — type `/<skill-name>` to invoke it directly:
+
+```bash
+# In the CLI or any messaging platform (Telegram, Discord, Slack, WhatsApp):
+/gif-search funny cats
+/axolotl help me fine-tune Llama 3 on my dataset
+/github-pr-workflow create a PR for the auth refactor
+
+# Just the skill name (no prompt) loads the skill and lets the agent ask what you need:
+/excalidraw
+```
+
+The skill's full instructions (SKILL.md) are loaded into the conversation, and any supporting files (references, templates, scripts) are listed for the agent to pull on demand via the `skill_view` tool. Type `/help` to see all available skill commands.
+
+You can also use skills through natural conversation:
 ```bash
 hermes --toolsets skills -q "What skills do you have?"
 hermes --toolsets skills -q "Show me the axolotl skill"
@@ -1266,8 +1320,12 @@ Your `~/.hermes/` directory should now look like:
 ├── skills/         # Agent-created skills (auto-created on first use)
 ├── cron/           # Scheduled job data
 ├── sessions/       # Messaging gateway sessions
-└── logs/           # Conversation logs
+└── logs/           # Logs
+    ├── gateway.log     # Gateway activity log
+    └── errors.log      # Errors from tool calls, API failures, etc.
 ```
+
+All log output is automatically redacted -- API keys, tokens, and credentials are masked before they reach disk.
 
 ---
 
@@ -1592,7 +1650,9 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 |------|-------------|
 | `~/.hermes/config.yaml` | Your settings |
 | `~/.hermes/.env` | API keys and secrets |
-| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes login`) |
+| `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes model`) |
+| `~/.hermes/logs/errors.log` | Tool errors, API failures (secrets auto-redacted) |
+| `~/.hermes/logs/gateway.log` | Gateway activity log (secrets auto-redacted) |
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
 | `~/.hermes/hermes-agent/` | Installation directory |
@@ -1620,7 +1680,7 @@ hermes config    # View current settings
 Common issues:
 - **"API key not set"**: Run `hermes setup` or `hermes config set OPENROUTER_API_KEY your_key`
 - **"hermes: command not found"**: Reload your shell (`source ~/.bashrc`) or check PATH
-- **"Run `hermes login` to re-authenticate"**: Your Nous Portal session expired. Run `hermes login` to refresh.
+- **"Run `hermes setup` to re-authenticate"**: Your Nous Portal session expired. Run `hermes setup` or `hermes model` to refresh.
 - **"No active paid subscription"**: Your Nous Portal account needs an active subscription for inference.
 - **Gateway won't start**: Check `hermes gateway status` and logs
 - **Missing config after update**: Run `hermes config check` to see what's new, then `hermes config migrate` to add missing options

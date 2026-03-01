@@ -179,6 +179,7 @@ The interactive CLI uses:
 Key components:
 - `HermesCLI` class - Main CLI controller with commands and conversation loop
 - `SlashCommandCompleter` - Autocomplete dropdown for `/commands` (type `/` to see all)
+- `agent/skill_commands.py` - Scans skills and builds invocation messages (shared with gateway)
 - `load_cli_config()` - Loads config, sets environment variables for terminal
 - `build_welcome_banner()` - Displays ASCII art logo, tools, and skills summary
 
@@ -191,8 +192,21 @@ CLI UX notes:
 - Pasting 5+ lines auto-saves to `~/.hermes/pastes/` and collapses to a reference
 - Multi-line input via Alt+Enter or Ctrl+J
 - `/commands` - Process user commands like `/help`, `/clear`, `/personality`, etc.
+- `/skill-name` - Invoke installed skills directly (e.g., `/axolotl`, `/gif-search`)
 
 CLI uses `quiet_mode=True` when creating AIAgent to suppress verbose logging.
+
+### Skill Slash Commands
+
+Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command.
+The skill name (from frontmatter or folder name) becomes the command: `axolotl` → `/axolotl`.
+
+Implementation (`agent/skill_commands.py`, shared between CLI and gateway):
+1. `scan_skill_commands()` scans all SKILL.md files at startup
+2. `build_skill_invocation_message()` loads the SKILL.md content and builds a user-turn message
+3. The message includes the full skill content, a list of supporting files (not loaded), and the user's instruction
+4. Supporting files can be loaded on demand via the `skill_view` tool
+5. Injected as a **user message** (not system prompt) to preserve prompt caching
 
 ### Adding CLI Commands
 

@@ -12,7 +12,7 @@ hermes
 hermes --model "anthropic/claude-sonnet-4"
 
 # With specific provider
-hermes --provider nous        # Use Nous Portal (requires: hermes login)
+hermes --provider nous        # Use Nous Portal (requires: hermes model)
 hermes --provider openrouter  # Force OpenRouter
 
 # With specific toolsets
@@ -73,6 +73,9 @@ The CLI is implemented in `cli.py` and uses:
 | `/history` | Show conversation history |
 | `/save` | Save current conversation to file |
 | `/config` | Show current configuration |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/compress` | Manually compress conversation context (flush memories + summarize) |
+| `/usage` | Show token usage for the current session |
 | `/quit` | Exit the CLI (also: `/exit`, `/q`) |
 
 ## Configuration
@@ -93,7 +96,7 @@ model:
 ```
 
 **Provider selection** (`provider` field):
-- `auto` (default): Uses Nous Portal if logged in (`hermes login`), otherwise falls back to OpenRouter/env vars.
+- `auto` (default): Uses Nous Portal if logged in (`hermes model`), otherwise falls back to OpenRouter/env vars.
 - `openrouter`: Always uses `OPENROUTER_API_KEY` from `.env`.
 - `nous`: Always uses Nous Portal OAuth credentials from `auth.json`.
 

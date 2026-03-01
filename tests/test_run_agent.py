@@ -758,3 +758,34 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+
+    def test_conversation_history_not_mutated(self, agent):
+        """run_conversation() should not mutate the caller's conversation_history list.
+        
+        Regression test for issue #228.
+        """
+        self._setup_agent(agent)
+        resp = _mock_response(content="Hello!", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        
+        # Create a conversation history with one existing message
+        original_history = [{"role": "user", "content": "previous message"}]
+        history_before = original_history.copy()
+        
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "new message",
+                conversation_history=original_history,
+            )
+        
+        # The caller's list should be unchanged
+        assert original_history == history_before, (
+            f"conversation_history was mutated: expected {history_before}, got {original_history}"
+        )
+        
+        # The result should include both messages
+        assert result["final_response"] == "Hello!"

@@ -609,6 +609,18 @@ class GatewayRunner:
         
         # Check for commands
         command = event.get_command()
+        
+        # Emit command:* hook for any recognized slash command
+        _known_commands = {"new", "reset", "help", "status", "stop", "model",
+                          "personality", "retry", "undo", "sethome", "set-home"}
+        if command and command in _known_commands:
+            await self.hooks.emit(f"command:{command}", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
+        
         if command in ["new", "reset"]:
             return await self._handle_reset_command(event)
         
@@ -678,6 +690,19 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        
+        # Emit session:start for new or auto-reset sessions
+        _is_new_session = (
+            session_entry.created_at == session_entry.updated_at
+            or getattr(session_entry, "was_auto_reset", False)
+        )
+        if _is_new_session:
+            await self.hooks.emit("session:start", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "session_key": session_key,
+            })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -1618,6 +1643,25 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         
+        # Bridge sync step_callback → async hooks.emit for agent:step events
+        _loop_for_step = asyncio.get_event_loop()
+        _hooks_ref = self.hooks
+
+        def _step_callback_sync(iteration: int, tool_names: list) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _hooks_ref.emit("agent:step", {
+                        "platform": source.platform.value if source.platform else "",
+                        "user_id": source.user_id,
+                        "session_id": session_id,
+                        "iteration": iteration,
+                        "tool_names": tool_names,
+                    }),
+                    _loop_for_step,
+                )
+            except Exception as _e:
+                logger.debug("agent:step hook error: %s", _e)
+
         def run_sync():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -1687,6 +1731,7 @@ class GatewayRunner:
                 reasoning_config=self._reasoning_config,
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,

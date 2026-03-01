@@ -27,6 +27,7 @@ COMMANDS = {
     "/platforms": "Show gateway/messaging platform status",
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
+    "/usage": "Show token usage for the current session",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

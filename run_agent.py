@@ -535,6 +535,12 @@ class AIAgent:
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
+
+        # Cumulative token usage for the session
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.session_api_calls = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -3105,6 +3111,11 @@ class AIAgent:
                             "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+
+                        self.session_prompt_tokens += prompt_tokens
+                        self.session_completion_tokens += completion_tokens
+                        self.session_total_tokens += total_tokens
+                        self.session_api_calls += 1
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

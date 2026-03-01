@@ -109,7 +109,7 @@ class TestDiscoverAndLoad:
 
 
 class TestEmit:
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_emit_calls_sync_handler(self, tmp_path):
         results = []
 
@@ -129,7 +129,7 @@ class TestEmit:
         await reg.emit("agent:start", {"test": True})
         assert "agent:start" in results
 
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_emit_calls_async_handler(self, tmp_path):
         results = []
 
@@ -155,7 +155,7 @@ class TestEmit:
         await reg.emit("agent:end", {})
         assert "agent:end" in results
 
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_wildcard_matching(self, tmp_path):
         results = []
 
@@ -174,13 +174,13 @@ class TestEmit:
         await reg.emit("command:reset", {})
         assert "command:reset" in results
 
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_no_handlers_for_event(self, tmp_path):
         reg = HookRegistry()
         # Should not raise
         await reg.emit("unknown:event", {})
 
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_handler_error_does_not_propagate(self, tmp_path):
         _create_hook(tmp_path, "bad-hook", '["agent:start"]',
                       "def handle(event_type, context):\n"
@@ -193,7 +193,7 @@ class TestEmit:
         # Should not raise even though handler throws
         await reg.emit("agent:start", {})
 
-    @pytest.mark.asyncio(loop_scope="function")
+    @pytest.mark.asyncio
     async def test_emit_default_context(self, tmp_path):
         captured = []
 

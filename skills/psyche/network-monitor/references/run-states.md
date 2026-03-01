@@ -28,7 +28,7 @@ Full lifecycle: Uninitialized → WaitingForMembers → Warmup → (RoundTrain �
 | **RoundWitness** | Validation phase. Witness nodes send proofs to the coordinator to verify training integrity. | "The network is verifying training results. Witness nodes are submitting proofs." |
 | **Cooldown** | Final phase of an epoch. The coordinator waits for the cooldown period to elapse before starting the next epoch. | "This epoch is complete. The network is in cooldown before the next epoch begins." |
 | **Paused** | Run has been paused by the coordinator via `run-manager set-paused`. Can be resumed. | "This run is currently paused by the coordinator. It may resume later." |
-| **Finished** | Training run has completed all planned epochs. No further training will occur. | "This training run is complete. Check HuggingFace for the final model checkpoint." |
+| **Finished** | Training run has completed all planned epochs. No further training will occur. | "This training run is complete. Checkpoint source varies by run (HuggingFace, GCS, P2P, or ephemeral). Not all runs publish checkpoints to HuggingFace." |
 
 ## Transitions
 
@@ -52,5 +52,5 @@ When interpreting run state for the user:
 3. If the run is in **Warmup** for a long time → Large model download in progress (40B+ models can take significant time on slower connections).
 4. If the run alternates rapidly between **RoundTrain** and **RoundWitness** → Normal operation. Training is progressing healthily.
 5. If the run is **Paused** → Check the Psyche dashboard or Discord for announcements about why.
-6. If the run is **Finished** → Training is complete. Direct the user to HuggingFace for the final model.
+6. If the run is **Finished** → Training is complete. Checkpoint source varies by run — use the checkpoint lookup procedure (SKILL.md Step 4) to search HuggingFace (best-effort) or CLI for the checkpoint backend type. Not all runs publish to HuggingFace.
 7. If you cannot determine the state → Use `run-manager json-dump-run` for the full on-chain state dump.

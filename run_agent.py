@@ -3312,6 +3312,24 @@ class AIAgent:
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+
+                # Notify progress callback of model's thinking (used by subagent
+                # delegation to relay the child's reasoning to the parent display).
+                # Guard: only fire for subagents (_delegate_depth >= 1) to avoid
+                # spamming gateway platforms with the main agent's every thought.
+                if (assistant_message.content and self.tool_progress_callback
+                        and getattr(self, '_delegate_depth', 0) > 0):
+                    _think_text = assistant_message.content.strip()
+                    # Strip reasoning XML tags that shouldn't leak to parent display
+                    _think_text = re.sub(
+                        r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                    ).strip()
+                    first_line = _think_text.split('\n')[0][:80] if _think_text else ""
+                    if first_line:
+                        try:
+                            self.tool_progress_callback("_thinking", first_line)
+                        except Exception:
+                            pass
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times

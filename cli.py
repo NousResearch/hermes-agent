@@ -1135,10 +1135,10 @@ class HermesCLI:
             print("(;_;) No tools available")
             return
         
-        # Header
+        # Header (78 chars inner width + 2 borders = 80 total)
         print()
         print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
+        print("|" + " " * 28 + "(^_^)/ Available Tools" + " " * 28 + "|")
         print("+" + "-" * 78 + "+")
         print()
         
@@ -1154,6 +1154,10 @@ class HermesCLI:
             desc = desc.split("\n")[0]
             if ". " in desc:
                 desc = desc[:desc.index(". ") + 1]
+            # Truncate description to fit in terminal (leave room for name column)
+            max_desc_len = 50
+            if len(desc) > max_desc_len:
+                desc = desc[:max_desc_len - 3] + "..."
             toolsets[toolset].append((name, desc))
         
         # Display by toolset

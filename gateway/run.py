@@ -375,7 +375,7 @@ class GatewayRunner:
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "GATEWAY_ALLOWED_USERS")
+                       "GATEWAY_ALLOWED_USERS", "SIGNAL_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
         if not _any_allowlist and not _allow_all:
@@ -516,6 +516,16 @@ class GatewayRunner:
                 return None
             return SlackAdapter(config)
         
+        elif platform == Platform.SIGNAL:
+            from gateway.platforms.signal import SignalAdapter
+
+            http_url = config.extra.get("http_url")
+            account = config.extra.get("account")
+            if not http_url or not account:
+                logger.warning("Signal: HTTP URL or account not configured")
+                return None
+            return SignalAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -525,9 +535,10 @@ class GatewayRunner:
         Checks in order:
         1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
-        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
-        5. Default: deny
+        3. Platform group allowlists (SIGNAL_GROUP_ALLOWED_USERS for Signal groups)
+        4. DM pairing approved list
+        5. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
+        6. Default: deny
         """
         user_id = source.user_id
         if not user_id:
@@ -538,12 +549,17 @@ class GatewayRunner:
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+        }
+        platform_group_allowlist_map = {
+            Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -560,7 +576,14 @@ class GatewayRunner:
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
-        if not platform_allowlist and not global_allowlist:
+        # Check platform-specific group allowlist (e.g., SIGNAL_GROUP_ALLOWED_USERS)
+        group_allowlist = ""
+        if source.chat_type == "group":
+            group_env_var = platform_group_allowlist_map.get(source.platform, "")
+            if group_env_var:
+                group_allowlist = os.getenv(group_env_var, "").strip()
+
+        if not platform_allowlist and not global_allowlist and not group_allowlist:
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
@@ -570,6 +593,8 @@ class GatewayRunner:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+        if group_allowlist:
+            allowed_ids.update(uid.strip() for uid in group_allowlist.split(",") if uid.strip())
 
         # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
         check_ids = {user_id}
@@ -2149,7 +2174,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     from agent.redact import RedactingFormatter
     file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(file_handler)
-    logging.getLogger().setLevel(logging.INFO)
+
+    # Add console handler so logs appear in terminal
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logging.getLogger().addHandler(console_handler)
+
+    # Check for debug mode - SIGNAL_DEBUG enables verbose logging
+    if os.getenv("SIGNAL_DEBUG", "").lower() in ("true", "1", "yes"):
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.info("[Gateway] Debug logging enabled via SIGNAL_DEBUG")
+    else:
+        logging.getLogger().setLevel(logging.INFO)
 
     # Separate errors-only log for easy debugging
     error_handler = RotatingFileHandler(

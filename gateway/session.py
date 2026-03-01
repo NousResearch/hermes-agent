@@ -45,6 +45,8 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
+    user_id_alt: Optional[str] = None  # For Signal: UUID when user_id is E164
+    chat_id_alt: Optional[str] = None  # For Signal groups: raw group ID without "group:" prefix
     
     @property
     def description(self) -> str:
@@ -54,9 +56,19 @@ class SessionSource:
         
         parts = []
         if self.chat_type == "dm":
-            parts.append(f"DM with {self.user_name or self.user_id or 'user'}")
+            dm_label = self.user_name or self.user_id or "user"
+            if self.user_id_alt and self.user_id:
+                # Strip "uuid:" prefix if present to avoid duplication
+                uuid_alt = self.user_id_alt.replace("uuid:", "") if self.user_id_alt.startswith("uuid:") else self.user_id_alt
+                dm_label = f"{self.user_name or self.user_id} ({self.user_id}/uuid:{uuid_alt})"
+            elif self.user_name and self.user_id:
+                dm_label = f"{self.user_name} ({self.user_id})"
+            parts.append(f"DM with {dm_label}")
         elif self.chat_type == "group":
-            parts.append(f"group: {self.chat_name or self.chat_id}")
+            group_label = self.chat_name or self.chat_id
+            if self.chat_id_alt:
+                group_label = f"{self.chat_name or self.chat_id} (ID: {self.chat_id_alt})"
+            parts.append(f"group: {group_label}")
         elif self.chat_type == "channel":
             parts.append(f"channel: {self.chat_name or self.chat_id}")
         else:
@@ -77,6 +89,8 @@ class SessionSource:
             "user_name": self.user_name,
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
+            "user_id_alt": self.user_id_alt,
+            "chat_id_alt": self.chat_id_alt,
         }
     
     @classmethod
@@ -90,6 +104,8 @@ class SessionSource:
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
+            user_id_alt=data.get("user_id_alt"),
+            chat_id_alt=data.get("chat_id_alt"),
         )
     
     @classmethod

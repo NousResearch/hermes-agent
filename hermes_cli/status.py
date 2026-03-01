@@ -177,6 +177,7 @@ def show_status(args):
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
+        "Signal": ("SIGNAL_HTTP_URL", None),
     }
     
     for name, (token_var, home_var) in platforms.items():

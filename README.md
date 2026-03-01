@@ -709,6 +709,21 @@ hermes cron status         # Check if gateway is running
 
 Even if no messaging platforms are configured, the gateway stays running for cron. A file lock prevents duplicate execution if multiple processes overlap.
 
+### 🪝 Event Hooks
+
+Run custom code at key lifecycle points — log activity, send alerts, post to webhooks. Hooks are Python handlers that fire automatically during gateway operation.
+
+```
+~/.hermes/hooks/
+└── my-hook/
+    ├── HOOK.yaml      # name + events to subscribe to
+    └── handler.py     # async def handle(event_type, context)
+```
+
+**Available events:** `gateway:startup`, `session:start`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, `command:*` (wildcard — fires for any slash command).
+
+Hooks are non-blocking — errors are caught and logged, never crashing the agent. See [docs/hooks.md](docs/hooks.md) for the full event reference, context keys, and examples.
+
 ### 🛡️ Exec Approval (Messaging Platforms)
 
 When the agent tries to run a potentially dangerous command (`rm -rf`, `chmod 777`, etc.) on Telegram/Discord/WhatsApp, instead of blocking it silently, it asks the user for approval:

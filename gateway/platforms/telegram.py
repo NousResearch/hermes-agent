@@ -272,6 +272,30 @@ class TelegramAdapter(BasePlatformAdapter):
             # Fallback: send as text link
             return await super().send_image(chat_id, image_url, caption, reply_to)
     
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        
+        try:
+            msg = await self._bot.send_animation(
+                chat_id=int(chat_id),
+                animation=animation_url,
+                caption=caption[:1024] if caption else None,
+                reply_to_message_id=int(reply_to) if reply_to else None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send animation, falling back to photo: {e}")
+            # Fallback: try as a regular photo
+            return await self.send_image(chat_id, animation_url, caption, reply_to)
+
     async def send_typing(self, chat_id: str) -> None:
         """Send typing indicator."""
         if self._bot:

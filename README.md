@@ -20,7 +20,7 @@ Built by [Nous Research](https://nousresearch.com). Under the hood, the same arc
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Not a web UI — a full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output. Built for people who live in the terminal and want an agent that keeps up.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, and CLI — all from a single gateway process. Send it a voice memo from your phone, get a researched answer with citations. Cross-platform message mirroring means a conversation started on Telegram can continue on Discord.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Send it a voice memo from your phone, get a researched answer with citations. Cross-platform message mirroring means a conversation started on Telegram can continue on Discord.</td></tr>
 <tr><td><b>Grows the longer it runs</b></td><td>Persistent memory across sessions — the agent remembers your preferences, your projects, your environment. When it solves a hard problem, it writes a skill document for next time. Skills are searchable, shareable, and compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard. A Skills Hub lets you install community skills or publish your own.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Set up a daily AI funding report delivered to Telegram, a nightly backup verification on Discord, a weekly dependency audit that opens PRs, or a morning news briefing — all in natural language. The gateway runs them unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — each gets its own conversation and terminal. The agent can also write Python scripts that call its own tools via RPC, collapsing multi-step pipelines into a single turn with zero intermediate context cost.</td></tr>
@@ -298,6 +298,59 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 > **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" so you can distinguish them from your own messages in self-chat.
 
 See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
+
+### Signal Setup
+
+Signal connects via the `signal-cli` daemon running in HTTP mode. The gateway streams messages in real-time with automatic reconnection and supports typing indicators, attachments, and group messaging.
+
+1. **Install signal-cli:**
+
+   - **Linux:** `sudo apt install signal-cli` or download from [GitHub](https://github.com/AsamK/signal-cli)
+   - **macOS:** `brew install signal-cli`
+   - **Windows:** Download from [GitHub](https://github.com/AsamK/signal-cli)
+
+2. **Link your Signal account:**
+
+   ```bash
+   # Link via QR code (scan with your phone)
+   signal-cli link -n "HermesGateway"
+   ```
+
+3. **Start the signal-cli daemon:**
+
+   ```bash
+   signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
+   ```
+
+   Replace `+1234567890` with your Signal number in E.164 format.
+
+4. **Configure Hermes:**
+
+   ```bash
+   hermes setup
+   ```
+
+   Select Signal in the messaging section and enter:
+   - **HTTP URL:** `http://127.0.0.1:8080`
+   - **Account:** `+1234567890` (your Signal number)
+   - **Allowed users:** Your personal number(s) for allowlist
+   - **DM policy:** `pairing` (default) or `allowlist` or `open`
+   - **Group policy:** `disabled` (default), `allowlist`, or `open`
+
+5. **Start the gateway:**
+
+   ```bash
+   hermes gateway              # Foreground
+   hermes gateway install      # Or install as system service (Linux)
+   ```
+
+**Security Features:**
+- Default: DM pairing required (8-char code, 1-hour expiry, rate-limited)
+- Groups disabled by default (must explicitly enable)
+- Allowlist supports E.164 numbers (`+1234567890`) and UUIDs
+- Attachment size validation (100MB max)
+
+> **Note:** The signal-cli daemon must be running before starting the gateway. The daemon handles all Signal protocol encryption and message sync.
 
 ### Gateway Commands (inside chat)
 

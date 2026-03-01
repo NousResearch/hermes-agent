@@ -117,6 +117,34 @@ class TestTelegramTokens:
         assert "ABCDEfghij" not in result
 
 
+class TestSignalPhoneNumbers:
+    def test_signal_e164_us(self):
+        text = "Checking authorization for +15551234567 (group=True)"
+        result = redact_sensitive_text(text)
+        assert "+15551234567" not in result
+        assert "+155****4567" in result
+
+    def test_signal_e164_uk(self):
+        text = "User +442071838750 allowed"
+        result = redact_sensitive_text(text)
+        assert "+442071838750" not in result
+        assert "+442****8750" in result
+
+    def test_signal_short_number(self):
+        text = "User +12345678 in allowlist"
+        result = redact_sensitive_text(text)
+        assert "+12345678" not in result
+        assert "+123****5678" in result
+
+    def test_signal_in_log_message(self):
+        text = "[Signal] Allowed users: ['+15551234567', '+15551112222']"
+        result = redact_sensitive_text(text)
+        assert "+15551234567" not in result
+        assert "+15551112222" not in result
+        assert "+155****4567" in result
+        assert "+155****2222" in result
+
+
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""

@@ -1,7 +1,7 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
+(Telegram, Discord, Slack, Signal). Supports listing available targets and resolving
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
@@ -32,11 +32,16 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:recipient', or 'platform:group:group_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'signal:group:um3ccg123'. For Signal: use phone number (e.g., '+15551234567') for DMs or 'group:GROUP_ID' for groups (NO trailing colon)."
             },
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "attachments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of file paths or URLs to send as attachments (images, files). For Signal: supported file types include images (png, jpg, gif) and documents (pdf, txt, etc.)"
             }
         },
         "required": []
@@ -67,6 +72,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    attachments = args.get("attachments")  # List of file paths/URLs
     if not target or not message:
         return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
 
@@ -75,7 +81,8 @@ def _handle_send(args):
     chat_id = parts[1].strip() if len(parts) > 1 else None
 
     # Resolve human-friendly channel names to numeric IDs
-    if chat_id and not chat_id.lstrip("-").isdigit():
+    # Skip for Signal groups which are already in correct format (group:ID)
+    if chat_id and not chat_id.startswith("group:") and not chat_id.lstrip("-").isdigit():
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_name, chat_id)
@@ -107,6 +114,7 @@ def _handle_send(args):
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
+        "signal": Platform.SIGNAL,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -132,7 +140,7 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))
+        result = _run_async(_send_to_platform(platform, pconfig, chat_id, message, attachments))
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
@@ -151,7 +159,7 @@ def _handle_send(args):
         return json.dumps({"error": f"Send failed: {e}"})
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message):
+async def _send_to_platform(platform, pconfig, chat_id, message, attachments=None):
     """Route a message to the appropriate platform sender."""
     from gateway.config import Platform
     if platform == Platform.TELEGRAM:
@@ -160,6 +168,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message):
         return await _send_discord(pconfig.token, chat_id, message)
     elif platform == Platform.SLACK:
         return await _send_slack(pconfig.token, chat_id, message)
+    elif platform == Platform.SIGNAL:
+        return await _send_signal(pconfig, chat_id, message, attachments)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -217,6 +227,73 @@ async def _send_slack(token, chat_id, message):
                 return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
+
+
+async def _send_signal(pconfig, chat_id, message, attachments=None):
+    """Send via Signal CLI REST API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    http_url = pconfig.extra.get("http_url") if pconfig.extra else None
+    account = pconfig.extra.get("account") if pconfig.extra else None
+
+    if not http_url or not account:
+        return {"error": "Signal not configured. Set SIGNAL_HTTP_URL and SIGNAL_ACCOUNT in gateway config."}
+
+    try:
+        # Prepare JSON-RPC params based on recipient type
+        params = {
+            "account": account,
+            "message": message,
+        }
+
+        # Handle group vs DM recipients
+        if chat_id.startswith("group:"):
+            group_id = chat_id[6:].rstrip(": ").strip()  # Remove "group:" prefix, strip trailing colons/spaces
+            params["groupId"] = group_id
+        else:
+            params["recipient"] = chat_id.rstrip(": ").strip()  # Strip trailing colons/spaces for DMs too
+
+        # Add attachments if provided (array of file paths or URLs)
+        if attachments:
+            processed = []
+            for att in attachments:
+                if att.startswith("file://"):
+                    processed.append(att[7:])  # Remove "file://" prefix
+                else:
+                    processed.append(att)
+            params["attachments"] = processed
+
+        # Send via JSON-RPC
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "send",
+            "params": params,
+            "id": f"send_{int(__import__('time').time() * 1000)}",
+        }
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(f"{http_url}/api/v1/rpc", json=payload) as resp:
+                try:
+                    result = await resp.json()
+                except Exception as e:
+                    return {"error": f"Invalid JSON response from Signal: {e}"}
+                
+                # Check for JSON-RPC error
+                if isinstance(result, dict):
+                    if "error" in result:
+                        return {"error": f"Signal API error: {result['error']}"}
+                    # Check for success result
+                    if "result" in result:
+                        return {"success": True, "platform": "signal", "chat_id": chat_id}
+                
+                return {"error": f"Unexpected Signal response: {result}"}
+    except aiohttp.ClientError as e:
+        return {"error": f"Signal connection failed: {e}"}
+    except Exception as e:
+        return {"error": f"Signal send failed: {e}"}
 
 
 def _check_send_message():

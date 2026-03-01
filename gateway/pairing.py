@@ -129,10 +129,9 @@ class PairingStore:
         """
         Generate a pairing code for a new user.
 
-        Returns the code string, or None if:
-          - User is rate-limited (too recent request)
-          - Max pending codes reached for this platform
-          - User/platform is in lockout due to failed attempts
+        Returns the code string, or special values:
+        - "__RATE_LIMITED__": User is rate-limited (too recent request)
+        - None: Max pending codes reached for this platform, or user/platform is in lockout
         """
         self._cleanup_expired(platform)
 
@@ -140,12 +139,18 @@ class PairingStore:
         if self._is_locked_out(platform):
             return None
 
+        # Check if user already has a pending code
+        pending = self._load_json(self._pending_path(platform))
+        for code, info in pending.items():
+            if info.get("user_id") == user_id:
+                # User already has pending code, return existing
+                return code
+
         # Check rate limit for this specific user
         if self._is_rate_limited(platform, user_id):
-            return None
+            return "__RATE_LIMITED__"
 
         # Check max pending
-        pending = self._load_json(self._pending_path(platform))
         if len(pending) >= MAX_PENDING_PER_PLATFORM:
             return None
 

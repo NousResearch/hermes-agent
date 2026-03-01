@@ -1003,6 +1003,7 @@ class HermesCLI:
                 pass
         
         try:
+            openrouter_providers = self.config.get("openrouter", {}).get("provider", {})
             self.agent = AIAgent(
                 model=self.model,
                 api_key=self.api_key,
@@ -1021,6 +1022,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
+                openrouter_providers=openrouter_providers,
             )
             return True
         except Exception as e:

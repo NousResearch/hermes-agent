@@ -126,6 +126,7 @@ class AIAgent:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        openrouter_providers: Dict[str, Any] = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
@@ -162,6 +163,7 @@ class AIAgent:
             providers_ignored (List[str]): OpenRouter providers to ignore (optional)
             providers_order (List[str]): OpenRouter providers to try in order (optional)
             provider_sort (str): Sort providers by price/throughput/latency (optional)
+            openrouter_providers (Dict): Full dict of OpenRouter provider routing options (optional, from config)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
@@ -230,6 +232,7 @@ class AIAgent:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.openrouter_providers = openrouter_providers or {}
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -2053,7 +2056,7 @@ class AIAgent:
 
             return kwargs
 
-        provider_preferences = {}
+        provider_preferences = self.openrouter_providers.copy() if self.openrouter_providers else {}
         if self.providers_allowed:
             provider_preferences["only"] = self.providers_allowed
         if self.providers_ignored:

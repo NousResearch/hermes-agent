@@ -135,8 +135,13 @@ DEFAULT_CONFIG = {
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
+    # OpenRouter provider routing options
+    "openrouter": {
+        "provider": {}
+    },
+    
     # Config schema version - bump this when adding new required fields
-    "_config_version": 4,
+    "_config_version": 5,
 }
 
 # =============================================================================

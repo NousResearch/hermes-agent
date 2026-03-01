@@ -21,6 +21,22 @@ model:
   base_url: "https://openrouter.ai/api/v1"
 
 # =============================================================================
+# OpenRouter Provider Routing Options
+# =============================================================================
+# Advanced routing controls for OpenRouter endpoints. 
+# See https://openrouter.ai/docs/provider-routing for details.
+openrouter:
+  provider:
+    # order: ["Anthropic", "OpenAI"]      # Try these providers first in this order
+    # ignore: ["Google"]                  # Never use these providers
+    # allow_fallbacks: true               # Allow falling back to other providers (default: true)
+    # require_parameters: false           # Require providers that support all parameters (default: false)
+    # data_collection: "deny"             # "deny" or "allow"
+    # quantized: false                    # Allow/deny quantized models
+    # sort: "price"                       # "price", "throughput", or "latency"
+
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

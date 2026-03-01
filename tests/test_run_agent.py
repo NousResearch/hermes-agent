@@ -493,6 +493,21 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
+    def test_openrouter_providers_injected(self, agent):
+        agent.openrouter_providers = {"allow_fallbacks": False, "data_collection": "deny"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+        assert kwargs["extra_body"]["provider"]["data_collection"] == "deny"
+
+    def test_legacy_providers_override_openrouter_providers(self, agent):
+        agent.openrouter_providers = {"order": ["Google"], "allow_fallbacks": False}
+        agent.providers_order = ["Anthropic"]
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"]["provider"]["order"] == ["Anthropic"]
+        assert kwargs["extra_body"]["provider"]["allow_fallbacks"] is False
+
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be xhigh."""
         messages = [{"role": "user", "content": "hi"}]

@@ -146,7 +146,7 @@ All your settings are stored in `~/.hermes/` for easy access:
 ├── skills/         # Agent-created skills (managed via skill_manage tool)
 ├── cron/           # Scheduled jobs
 ├── sessions/       # Gateway sessions
-└── logs/           # Logs
+└── logs/           # Logs (errors.log, gateway.log — secrets auto-redacted)
 ```
 
 ### Managing Configuration
@@ -293,6 +293,8 @@ See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 | `/status` | Show session info |
 | `/stop` | Stop the running agent |
 | `/sethome` | Set this chat as the home channel |
+| `/compress` | Manually compress conversation context |
+| `/usage` | Show token usage for this session |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
@@ -424,6 +426,9 @@ Type `/` to see an autocomplete dropdown of all commands.
 | `/cron` | Manage scheduled tasks |
 | `/skills` | Search, install, inspect, or manage skills from registries |
 | `/platforms` | Show gateway/messaging platform status |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/compress` | Manually compress conversation context |
+| `/usage` | Show token usage for this session |
 | `/quit` | Exit (also: `/exit`, `/q`) |
 | `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 
@@ -1315,8 +1320,12 @@ Your `~/.hermes/` directory should now look like:
 ├── skills/         # Agent-created skills (auto-created on first use)
 ├── cron/           # Scheduled job data
 ├── sessions/       # Messaging gateway sessions
-└── logs/           # Conversation logs
+└── logs/           # Logs
+    ├── gateway.log     # Gateway activity log
+    └── errors.log      # Errors from tool calls, API failures, etc.
 ```
+
+All log output is automatically redacted -- API keys, tokens, and credentials are masked before they reach disk.
 
 ---
 
@@ -1642,6 +1651,8 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `~/.hermes/config.yaml` | Your settings |
 | `~/.hermes/.env` | API keys and secrets |
 | `~/.hermes/auth.json` | OAuth provider credentials (managed by `hermes model`) |
+| `~/.hermes/logs/errors.log` | Tool errors, API failures (secrets auto-redacted) |
+| `~/.hermes/logs/gateway.log` | Gateway activity log (secrets auto-redacted) |
 | `~/.hermes/cron/` | Scheduled jobs data |
 | `~/.hermes/sessions/` | Gateway session data |
 | `~/.hermes/hermes-agent/` | Installation directory |

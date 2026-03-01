@@ -73,6 +73,9 @@ The CLI is implemented in `cli.py` and uses:
 | `/history` | Show conversation history |
 | `/save` | Save current conversation to file |
 | `/config` | Show current configuration |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/compress` | Manually compress conversation context (flush memories + summarize) |
+| `/usage` | Show token usage for the current session |
 | `/quit` | Exit the CLI (also: `/exit`, `/q`) |
 
 ## Configuration

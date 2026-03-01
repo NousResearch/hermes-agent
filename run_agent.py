@@ -522,7 +522,9 @@ class AIAgent:
         # Configuration via config.yaml (compression section) or environment variables
         compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.85"))
         compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
-        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
+        # If no compression model is explicitly set, fall back to the main model
+        # so that context compression uses the most capable available model.
+        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or self.model
         
         self.context_compressor = ContextCompressor(
             model=self.model,

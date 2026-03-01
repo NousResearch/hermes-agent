@@ -2027,7 +2027,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
     )
-    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    from agent.redact import RedactingFormatter
+    file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.INFO)
 

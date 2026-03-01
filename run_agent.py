@@ -247,13 +247,19 @@ class AIAgent:
         self._use_prompt_caching = is_openrouter and is_claude
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
-        # Configure logging
+        # Configure logging with secret redaction
+        from agent.redact import RedactingFormatter
         if self.verbose_logging:
             logging.basicConfig(
                 level=logging.DEBUG,
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
+            for handler in logging.getLogger().handlers:
+                handler.setFormatter(RedactingFormatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    datefmt='%H:%M:%S',
+                ))
             # Keep third-party libraries at WARNING level to reduce noise
             # We have our own retry and error logging that's more informative
             logging.getLogger('openai').setLevel(logging.WARNING)

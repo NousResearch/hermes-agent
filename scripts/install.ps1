@@ -840,6 +840,12 @@ function Write-Completion {
     Write-Host "Start chatting"
     Write-Host "   hermes setup        " -NoNewline -ForegroundColor Green
     Write-Host "Configure API keys & settings"
+    Write-Host "   hermes config       " -NoNewline -ForegroundColor Green
+    Write-Host "View/edit configuration"
+    Write-Host "   hermes gateway install  " -NoNewline -ForegroundColor Green
+    Write-Host "Install gateway service"
+    Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
+    Write-Host "Update to latest version"
     Write-Host "   hermes doctor       " -NoNewline -ForegroundColor Green
     Write-Host "Check for issues"
     Write-Host ""

@@ -124,6 +124,7 @@ class AIAgent:
         session_id: str = None,
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
+        step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -195,6 +196,7 @@ class AIAgent:
             )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
+        self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -1935,6 +1937,22 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # Fire step_callback for gateway hooks (agent:step event)
+            if self.step_callback is not None:
+                try:
+                    prev_tools = []
+                    for _m in reversed(messages):
+                        if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                            prev_tools = [
+                                tc["function"]["name"]
+                                for tc in _m["tool_calls"]
+                                if isinstance(tc, dict)
+                            ]
+                            break
+                    self.step_callback(api_call_count, prev_tools)
+                except Exception as _step_err:
+                    logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
             # Track tool-calling iterations for skill nudge.
             # Counter resets whenever skill_manage is actually used.

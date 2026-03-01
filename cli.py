@@ -1,3 +1,4 @@
+from hermes_cli.styles import AGENT_MOODS
 #!/usr/bin/env python3
 """
 Hermes Agent CLI - Interactive Terminal Interface

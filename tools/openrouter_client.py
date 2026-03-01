@@ -31,7 +31,7 @@ def get_async_client() -> AsyncOpenAI:
             default_headers={
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
                 "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "cli-agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
             },
         )
     return _client

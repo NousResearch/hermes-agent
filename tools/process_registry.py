@@ -87,13 +87,13 @@ class ProcessRegistry:
       - Cleanup thread (sandbox reaping coordination)
     """
 
-    # Noise lines emitted by interactive shells when stdin is not a terminal.
-    _SHELL_NOISE = frozenset({
+    _SHELL_NOISE_SUBSTRINGS = (
+        "bash: cannot set terminal process group",
         "bash: no job control in this shell",
-        "bash: no job control in this shell\n",
         "no job control in this shell",
-        "no job control in this shell\n",
-    })
+        "cannot set terminal process group",
+        "tcsetattr: Inappropriate ioctl for device",
+    )
 
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
@@ -106,10 +106,10 @@ class ProcessRegistry:
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
         """Strip shell startup warnings from the beginning of output."""
-        lines = text.split("\n", 2)
-        if lines and lines[0].strip() in ProcessRegistry._SHELL_NOISE:
-            return "\n".join(lines[1:])
-        return text
+        lines = text.split("\n")
+        while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
+            lines.pop(0)
+        return "\n".join(lines)
 
     # ----- Spawn -----
 

@@ -1,167 +1,168 @@
-"""Tests for agent/auxiliary_client.py — API client resolution chain."""
+"""Tests for agent.auxiliary_client resolution chain, especially the Codex fallback."""
 
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+import pytest
 
 from agent.auxiliary_client import (
-    _read_nous_auth,
-    _nous_api_key,
-    _nous_base_url,
+    get_text_auxiliary_client,
+    get_vision_auxiliary_client,
     auxiliary_max_tokens_param,
-    get_auxiliary_extra_body,
-    _AUTH_JSON_PATH,
-    _NOUS_DEFAULT_BASE_URL,
-    NOUS_EXTRA_BODY,
+    _read_codex_access_token,
 )
 
 
-# ---------------------------------------------------------------------------
-# _read_nous_auth
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Strip provider env vars so each test starts clean."""
+    for key in (
+        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+        "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
-class TestReadNousAuth:
-    def test_missing_file(self, tmp_path):
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", tmp_path / "nope.json"):
-            assert _read_nous_auth() is None
+@pytest.fixture
+def codex_auth_dir(tmp_path, monkeypatch):
+    """Provide a writable ~/.codex/ directory with a valid auth.json."""
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    auth_file = codex_dir / "auth.json"
+    auth_file.write_text(json.dumps({
+        "tokens": {
+            "access_token": "codex-test-token-abc123",
+            "refresh_token": "codex-refresh-xyz",
+        }
+    }))
+    monkeypatch.setattr(
+        "agent.auxiliary_client._read_codex_access_token",
+        lambda: "codex-test-token-abc123",
+    )
+    return codex_dir
 
-    def test_wrong_active_provider(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "active_provider": "openrouter",
-            "providers": {"nous": {"access_token": "tok"}}
+
+class TestReadCodexAccessToken:
+    def test_valid_auth_file(self, tmp_path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        auth = codex_dir / "auth.json"
+        auth.write_text(json.dumps({
+            "tokens": {"access_token": "tok-123", "refresh_token": "r-456"}
         }))
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            assert _read_nous_auth() is None
+        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+            result = _read_codex_access_token()
+        assert result == "tok-123"
 
-    def test_missing_tokens(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "active_provider": "nous",
-            "providers": {"nous": {}}
-        }))
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            assert _read_nous_auth() is None
+    def test_missing_file_returns_none(self, tmp_path):
+        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+            result = _read_codex_access_token()
+        assert result is None
 
-    def test_valid_access_token(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "active_provider": "nous",
-            "providers": {"nous": {"access_token": "my-token"}}
-        }))
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            result = _read_nous_auth()
-        assert result is not None
-        assert result["access_token"] == "my-token"
+    def test_empty_token_returns_none(self, tmp_path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        auth = codex_dir / "auth.json"
+        auth.write_text(json.dumps({"tokens": {"access_token": "  "}}))
+        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+            result = _read_codex_access_token()
+        assert result is None
 
-    def test_valid_agent_key(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "active_provider": "nous",
-            "providers": {"nous": {"agent_key": "agent-key-123"}}
-        }))
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            result = _read_nous_auth()
-        assert result is not None
+    def test_malformed_json_returns_none(self, tmp_path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text("{bad json")
+        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+            result = _read_codex_access_token()
+        assert result is None
 
-    def test_corrupt_json(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text("not json{{{")
-        with patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            assert _read_nous_auth() is None
+    def test_missing_tokens_key_returns_none(self, tmp_path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
+        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
+            result = _read_codex_access_token()
+        assert result is None
 
 
-# ---------------------------------------------------------------------------
-# _nous_api_key
-# ---------------------------------------------------------------------------
+class TestGetTextAuxiliaryClient:
+    """Test the full resolution chain for get_text_auxiliary_client."""
+
+    def test_openrouter_takes_priority(self, monkeypatch, codex_auth_dir):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+        mock_openai.assert_called_once()
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["api_key"] == "or-key"
+
+    def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = get_text_auxiliary_client()
+        assert model == "gemini-3-flash"
+
+    def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        # Override the autouse monkeypatch for codex
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token",
+            lambda: "codex-test-token-abc123",
+        )
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "gpt-4o-mini"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
+    def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "gpt-5.3-codex"
+        # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+
+    def test_returns_none_when_nothing_available(self):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = get_text_auxiliary_client()
+        assert client is None
+        assert model is None
 
 
-class TestNousApiKey:
-    def test_prefers_agent_key(self):
-        provider = {"agent_key": "agent-key", "access_token": "access-tok"}
-        assert _nous_api_key(provider) == "agent-key"
+class TestCodexNotInVisionClient:
+    """Codex fallback should NOT apply to vision tasks."""
 
-    def test_falls_back_to_access_token(self):
-        provider = {"access_token": "access-tok"}
-        assert _nous_api_key(provider) == "access-tok"
-
-    def test_empty_provider(self):
-        assert _nous_api_key({}) == ""
-
-
-# ---------------------------------------------------------------------------
-# _nous_base_url
-# ---------------------------------------------------------------------------
-
-
-class TestNousBaseUrl:
-    def test_default(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("NOUS_INFERENCE_BASE_URL", None)
-            assert _nous_base_url() == _NOUS_DEFAULT_BASE_URL
-
-    def test_env_override(self):
-        with patch.dict(os.environ, {"NOUS_INFERENCE_BASE_URL": "https://custom.api/v1"}):
-            assert _nous_base_url() == "https://custom.api/v1"
-
-
-# ---------------------------------------------------------------------------
-# auxiliary_max_tokens_param
-# ---------------------------------------------------------------------------
+    def test_vision_returns_none_without_openrouter_nous(self):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = get_vision_auxiliary_client()
+        assert client is None
+        assert model is None
 
 
 class TestAuxiliaryMaxTokensParam:
-    def test_openrouter_uses_max_tokens(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "key"}):
-            result = auxiliary_max_tokens_param(1000)
-        assert result == {"max_tokens": 1000}
+    def test_codex_fallback_uses_max_tokens(self, monkeypatch):
+        """Codex adapter translates max_tokens internally, so we return max_tokens."""
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value="tok"):
+            result = auxiliary_max_tokens_param(1024)
+        assert result == {"max_tokens": 1024}
 
-    def test_direct_openai_uses_max_completion_tokens(self, tmp_path):
-        """Direct api.openai.com endpoint uses max_completion_tokens."""
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({"active_provider": "other"}))
+    def test_openrouter_uses_max_tokens(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        result = auxiliary_max_tokens_param(1024)
+        assert result == {"max_tokens": 1024}
 
-        env = {
-            "OPENAI_BASE_URL": "https://api.openai.com/v1",
-            "OPENAI_API_KEY": "sk-test",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            os.environ.pop("OPENROUTER_API_KEY", None)
-            result = auxiliary_max_tokens_param(500)
-        assert result == {"max_completion_tokens": 500}
-
-    def test_custom_non_openai_uses_max_tokens(self, tmp_path):
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({"active_provider": "other"}))
-
-        env = {
-            "OPENAI_BASE_URL": "https://my-custom-api.com/v1",
-            "OPENAI_API_KEY": "key",
-        }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("agent.auxiliary_client._AUTH_JSON_PATH", auth_file):
-            os.environ.pop("OPENROUTER_API_KEY", None)
-            result = auxiliary_max_tokens_param(500)
-        assert result == {"max_tokens": 500}
-
-
-# ---------------------------------------------------------------------------
-# get_auxiliary_extra_body
-# ---------------------------------------------------------------------------
-
-
-class TestGetAuxiliaryExtraBody:
-    def test_returns_nous_tags_when_nous(self):
-        with patch("agent.auxiliary_client.auxiliary_is_nous", True):
-            result = get_auxiliary_extra_body()
-        assert result == NOUS_EXTRA_BODY
-        # Should be a copy, not the original
-        assert result is not NOUS_EXTRA_BODY
-
-    def test_returns_empty_when_not_nous(self):
-        with patch("agent.auxiliary_client.auxiliary_is_nous", False):
-            result = get_auxiliary_extra_body()
-        assert result == {}
+    def test_no_provider_uses_max_tokens(self):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            result = auxiliary_max_tokens_param(1024)
+        assert result == {"max_tokens": 1024}

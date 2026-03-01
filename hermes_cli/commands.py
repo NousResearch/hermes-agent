@@ -26,6 +26,8 @@ COMMANDS = {
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
+    "/compress": "Manually compress conversation context (flush memories + summarize)",
+    "/usage": "Show token usage for the current session",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

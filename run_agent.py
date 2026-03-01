@@ -2136,6 +2136,7 @@ class AIAgent:
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
+                api_msg.pop("_flush_sentinel", None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:

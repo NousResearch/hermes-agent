@@ -14,6 +14,12 @@ from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
 
+# Safe fallback context length for unknown models.
+# Using a conservative value ensures we don't exceed the actual limit;
+# the worst case is earlier compression, not API failures.
+# Most models support at least 8k-16k context.
+DEFAULT_FALLBACK_CONTEXT_LENGTH = 16384
+
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
@@ -52,7 +58,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         for model in data.get("data", []):
             model_id = model.get("id", "")
             cache[model_id] = {
-                "context_length": model.get("context_length", 128000),
+                "context_length": model.get("context_length", DEFAULT_FALLBACK_CONTEXT_LENGTH),
                 "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
@@ -72,16 +78,26 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
 
 def get_model_context_length(model: str) -> int:
-    """Get the context length for a model (API first, then fallback defaults)."""
+    """Get the context length for a model (API first, then fallback defaults).
+    
+    Falls back to a conservative default (16k) for unknown models to avoid
+    exceeding the model's actual limit. Earlier compression is better than
+    API failures.
+    """
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT_LENGTH)
 
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
         if default_model in model or model in default_model:
             return length
 
-    return 128000
+    logger.warning(
+        f"Unknown model '{model}' - using conservative context length "
+        f"({DEFAULT_FALLBACK_CONTEXT_LENGTH} tokens). "
+        "Set explicit context_length in config if needed."
+    )
+    return DEFAULT_FALLBACK_CONTEXT_LENGTH
 
 
 def estimate_tokens_rough(text: str) -> int:

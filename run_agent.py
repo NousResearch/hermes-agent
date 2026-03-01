@@ -89,6 +89,7 @@ from agent.prompt_builder import build_skills_system_prompt, build_context_files
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
+    _detect_tool_failure,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
@@ -247,8 +248,22 @@ class AIAgent:
         self._use_prompt_caching = is_openrouter and is_claude
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
-        # Configure logging with secret redaction
+        # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
+        # so tool failures, API errors, etc. are inspectable after the fact.
         from agent.redact import RedactingFormatter
+        _error_log_dir = Path.home() / ".hermes" / "logs"
+        _error_log_dir.mkdir(parents=True, exist_ok=True)
+        _error_log_path = _error_log_dir / "errors.log"
+        from logging.handlers import RotatingFileHandler
+        _error_file_handler = RotatingFileHandler(
+            _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+        )
+        _error_file_handler.setLevel(logging.WARNING)
+        _error_file_handler.setFormatter(RedactingFormatter(
+            '%(asctime)s %(levelname)s %(name)s: %(message)s',
+        ))
+        logging.getLogger().addHandler(_error_file_handler)
+
         if self.verbose_logging:
             logging.basicConfig(
                 level=logging.DEBUG,
@@ -2499,7 +2514,7 @@ class AIAgent:
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
@@ -2509,10 +2524,16 @@ class AIAgent:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result[:200] if len(function_result) > 200 else function_result
+
+            # Log tool errors to the persistent error log so [error] tags
+            # in the UI always have a corresponding detailed entry on disk.
+            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            if _is_error_result:
+                logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

@@ -170,8 +170,8 @@ class TestBuildChildProgressCallback:
         
         parent_cb.assert_not_called()
 
-    def test_task_index_prefix_in_output(self):
-        """Multi-task mode should show task index prefix."""
+    def test_task_index_prefix_in_batch_mode(self):
+        """Batch mode (task_count > 1) should show 1-indexed prefix for all tasks."""
         buf = io.StringIO()
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
@@ -181,15 +181,22 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
         
-        # task_index > 0 should add prefix
-        cb = _build_child_progress_callback(2, parent)
-        cb("web_search", "test")
-        
+        # task_index=0 in a batch of 3 → prefix "[1]"
+        cb0 = _build_child_progress_callback(0, parent, task_count=3)
+        cb0("web_search", "test")
         output = buf.getvalue()
-        assert "[2]" in output
+        assert "[1]" in output
 
-    def test_task_index_zero_no_prefix(self):
-        """Single task (index 0) should not show index prefix."""
+        # task_index=2 in a batch of 3 → prefix "[3]"
+        buf.truncate(0)
+        buf.seek(0)
+        cb2 = _build_child_progress_callback(2, parent, task_count=3)
+        cb2("web_search", "test")
+        output = buf.getvalue()
+        assert "[3]" in output
+
+    def test_single_task_no_prefix(self):
+        """Single task (task_count=1) should not show index prefix."""
         buf = io.StringIO()
         spinner = KawaiiSpinner("delegating")
         spinner._out = buf
@@ -199,11 +206,11 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
         
-        cb = _build_child_progress_callback(0, parent)
+        cb = _build_child_progress_callback(0, parent, task_count=1)
         cb("web_search", "test")
         
         output = buf.getvalue()
-        assert "[0]" not in output
+        assert "[" not in output
 
 
 # =========================================================================

@@ -77,7 +77,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -93,7 +93,8 @@ def _build_child_progress_callback(task_index: int, parent_agent) -> Optional[ca
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
 
-    prefix = f"[{task_index}] " if task_index > 0 else ""
+    # Show 1-indexed prefix only in batch mode (multiple tasks)
+    prefix = f"[{task_index + 1}] " if task_count > 1 else ""
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
@@ -163,6 +164,7 @@ def _run_single_child(
     model: Optional[str],
     max_iterations: int,
     parent_agent,
+    task_count: int = 1,
 ) -> Dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -183,7 +185,7 @@ def _run_single_child(
             parent_api_key = parent_agent._client_kwargs.get("api_key")
 
         # Build progress callback to relay tool calls to parent display
-        child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
+        child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
         child = AIAgent(
             base_url=parent_agent.base_url,
@@ -344,6 +346,7 @@ def delegate_task(
             model=model,
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
+            task_count=1,
         )
         results.append(result)
     else:
@@ -368,6 +371,7 @@ def delegate_task(
                     model=model,
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
+                    task_count=n_tasks,
                 )
                 futures[future] = i
 
@@ -387,14 +391,21 @@ def delegate_task(
                 results.append(entry)
                 completed_count += 1
 
-                # Print per-task completion line (visible in CLI via patch_stdout)
+                # Print per-task completion line above the spinner
                 idx = entry["task_index"]
                 label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
                 dur = entry.get("duration_seconds", 0)
                 status = entry.get("status", "?")
                 icon = "✓" if status == "completed" else "✗"
                 remaining = n_tasks - completed_count
-                print(f"  {icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)")
+                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                if spinner_ref:
+                    try:
+                        spinner_ref.print_above(completion_line)
+                    except Exception:
+                        print(f"  {completion_line}")
+                else:
+                    print(f"  {completion_line}")
 
                 # Update spinner text to show remaining count
                 if spinner_ref and remaining > 0:

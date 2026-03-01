@@ -2569,7 +2569,7 @@ class AIAgent:
         self._iters_since_skill = 0
         
         # Initialize conversation
-        messages = conversation_history or []
+        messages = list(conversation_history) if conversation_history else []
         
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to

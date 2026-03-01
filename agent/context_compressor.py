@@ -31,8 +31,9 @@ class ContextCompressor:
         threshold_percent: float = 0.85,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
-        summary_target_tokens: int = 500,
+        summary_target_tokens: int = 2500,
         quiet_mode: bool = False,
+        summary_model_override: str = None,
     ):
         self.model = model
         self.threshold_percent = threshold_percent
@@ -49,7 +50,8 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, self.summary_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client()
+        self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""

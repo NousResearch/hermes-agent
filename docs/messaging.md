@@ -74,6 +74,13 @@ Sessions reset based on configurable policies:
 
 Send `/new` or `/reset` as a message to start fresh.
 
+### Context Management
+
+| Command | Description |
+|---------|-------------|
+| `/compress` | Manually compress conversation context (saves memories, then summarizes) |
+| `/usage` | Show token usage and context window status for the current session |
+
 ### Per-Platform Overrides
 
 Configure different reset policies per platform:

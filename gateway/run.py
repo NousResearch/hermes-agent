@@ -2032,6 +2032,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.INFO)
 
+    # Separate errors-only log for easy debugging
+    error_handler = RotatingFileHandler(
+        log_dir / 'errors.log',
+        maxBytes=2 * 1024 * 1024,
+        backupCount=2,
+    )
+    error_handler.setLevel(logging.WARNING)
+    error_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    logging.getLogger().addHandler(error_handler)
+
     runner = GatewayRunner(config)
     
     # Set up signal handlers

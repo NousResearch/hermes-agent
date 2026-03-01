@@ -629,7 +629,8 @@ class GatewayRunner:
         
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
-                          "personality", "retry", "undo", "sethome", "set-home"}
+                          "personality", "retry", "undo", "sethome", "set-home",
+                          "compress", "usage"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -664,6 +665,12 @@ class GatewayRunner:
         
         if command in ["sethome", "set-home"]:
             return await self._handle_set_home_command(event)
+
+        if command == "compress":
+            return await self._handle_compress_command(event)
+
+        if command == "usage":
+            return await self._handle_usage_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1063,6 +1070,8 @@ class GatewayRunner:
             "`/retry` — Retry your last message",
             "`/undo` — Remove the last exchange",
             "`/sethome` — Set this chat as the home channel",
+            "`/compress` — Compress conversation context",
+            "`/usage` — Show token usage for this session",
             "`/help` — Show this message",
         ]
         try:
@@ -1267,6 +1276,95 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    async def _handle_compress_command(self, event: MessageEvent) -> str:
+        """Handle /compress command -- manually compress conversation context."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        if not history or len(history) < 4:
+            return "Not enough conversation to compress (need at least 4 messages)."
+
+        try:
+            from run_agent import AIAgent
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if not runtime_kwargs.get("api_key"):
+                return "No provider configured -- cannot compress."
+
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            original_count = len(msgs)
+            approx_tokens = estimate_messages_tokens_rough(msgs)
+
+            tmp_agent = AIAgent(
+                **runtime_kwargs,
+                max_iterations=4,
+                quiet_mode=True,
+                enabled_toolsets=["memory"],
+                session_id=session_entry.session_id,
+            )
+
+            loop = asyncio.get_event_loop()
+            compressed, _ = await loop.run_in_executor(
+                None,
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+            )
+
+            session_entry.conversation_history = compressed
+            new_count = len(compressed)
+            new_tokens = estimate_messages_tokens_rough(compressed)
+
+            return (
+                f"🗜️ Compressed: {original_count} → {new_count} messages\n"
+                f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
+            )
+        except Exception as e:
+            logger.warning("Manual compress failed: %s", e)
+            return f"Compression failed: {e}"
+
+    async def _handle_usage_command(self, event: MessageEvent) -> str:
+        """Handle /usage command -- show token usage for the session's last agent run."""
+        source = event.source
+        session_key = f"agent:main:{source.platform.value}:" + \
+                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+
+        agent = self._running_agents.get(session_key)
+        if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
+            lines = [
+                "📊 **Session Token Usage**",
+                f"Prompt (input): {agent.session_prompt_tokens:,}",
+                f"Completion (output): {agent.session_completion_tokens:,}",
+                f"Total: {agent.session_total_tokens:,}",
+                f"API calls: {agent.session_api_calls}",
+            ]
+            ctx = agent.context_compressor
+            if ctx.last_prompt_tokens:
+                pct = ctx.last_prompt_tokens / ctx.context_length * 100 if ctx.context_length else 0
+                lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
+            if ctx.compression_count:
+                lines.append(f"Compressions: {ctx.compression_count}")
+            return "\n".join(lines)
+
+        # No running agent -- check session history for a rough count
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        if history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
+            approx = estimate_messages_tokens_rough(msgs)
+            return (
+                f"📊 **Session Info**\n"
+                f"Messages: {len(msgs)}\n"
+                f"Estimated context: ~{approx:,} tokens\n"
+                f"_(Detailed usage available during active conversations)_"
+            )
+        return "No usage data available for this session."
+
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value

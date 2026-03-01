@@ -2271,9 +2271,9 @@ class AIAgent:
                     reasoning = msg.get("reasoning")
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
-                api_msg.pop("reasoning", None)
-                api_msg.pop("finish_reason", None)
-                api_msg.pop("_flush_sentinel", None)
+                # Remove internal-only fields (not part of API schema)
+                for internal_field in ("reasoning", "finish_reason", "_flush_sentinel"):
+                    api_msg.pop(internal_field, None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -2640,7 +2640,14 @@ class AIAgent:
         messages.append({"role": "user", "content": summary_request})
 
         try:
-            api_messages = messages.copy()
+            # Build API messages, stripping internal-only fields
+            api_messages = []
+            for msg in messages:
+                api_msg = msg.copy()
+                for internal_field in ("reasoning", "finish_reason"):
+                    api_msg.pop(internal_field, None)
+                api_messages.append(api_msg)
+            
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
@@ -2911,13 +2918,12 @@ class AIAgent:
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
                 
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
+                # Remove internal-only fields that aren't part of the API schema.
+                # - 'reasoning': trajectory storage only (copied to reasoning_content above)
+                # - 'finish_reason': response metadata, not a valid request field
+                # Some providers (e.g., Mistral) reject extra fields with 422 errors.
+                for internal_field in ("reasoning", "finish_reason"):
+                    api_msg.pop(internal_field, None)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)

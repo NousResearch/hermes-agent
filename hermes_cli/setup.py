@@ -100,28 +100,32 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         return idx
         
     except (ImportError, NotImplementedError):
-        # Fallback to number-based selection (simple_term_menu doesn't support Windows)
-        for i, choice in enumerate(choices):
-            marker = "●" if i == default else "○"
-            if i == default:
-                print(color(f"  {marker} {choice}", Colors.GREEN))
-            else:
-                print(f"  {marker} {choice}")
-        
-        while True:
-            try:
-                value = input(color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM))
-                if not value:
-                    return default
-                idx = int(value) - 1
-                if 0 <= idx < len(choices):
-                    return idx
-                print_error(f"Please enter a number between 1 and {len(choices)}")
-            except ValueError:
-                print_error("Please enter a number")
-            except (KeyboardInterrupt, EOFError):
-                print()
-                sys.exit(1)
+        pass
+    except Exception as e:
+        print(f"  (Interactive menu unavailable: {e})")
+
+    # Fallback to number-based selection (simple_term_menu doesn't support Windows)
+    for i, choice in enumerate(choices):
+        marker = "●" if i == default else "○"
+        if i == default:
+            print(color(f"  {marker} {choice}", Colors.GREEN))
+        else:
+            print(f"  {marker} {choice}")
+
+    while True:
+        try:
+            value = input(color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM))
+            if not value:
+                return default
+            idx = int(value) - 1
+            if 0 <= idx < len(choices):
+                return idx
+            print_error(f"Please enter a number between 1 and {len(choices)}")
+        except ValueError:
+            print_error("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
     """Prompt for yes/no."""

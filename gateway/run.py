@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -1835,6 +1836,54 @@ class GatewayRunner:
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
+        progress_state = {
+            "started_at": time.monotonic(),
+            "phase": "thinking",
+            "last_detail": "Queued request...",
+            "tool_calls": 0,
+            "updates": 0,
+        }
+        heartbeat_faces = ["(·_·)", "(•‿•)", "(⌐■_■)", "(^_^)/"]
+        phase_labels = {
+            "starting": "starting",
+            "thinking": "thinking",
+            "tool": "using tools",
+            "finalizing": "finalizing",
+        }
+        phase_emojis = {
+            "starting": "🚀",
+            "thinking": "💡",
+            "tool": "🛠️",
+            "finalizing": "🧾",
+        }
+
+        def _set_progress_state(*, phase: str | None = None, detail: str | None = None, tool_call: bool = False):
+            if phase:
+                progress_state["phase"] = phase
+            if detail:
+                progress_state["last_detail"] = detail
+            if tool_call:
+                progress_state["tool_calls"] += 1
+            progress_state["updates"] += 1
+            if progress_queue:
+                # A tiny queue signal wakes the async updater. Actual text is built
+                # centrally so tool updates + heartbeat share one edited message.
+                progress_queue.put("__tick__")
+
+        def _build_progress_message() -> str:
+            elapsed = int(max(0, time.monotonic() - progress_state["started_at"]))
+            face = heartbeat_faces[elapsed % len(heartbeat_faces)]
+            phase = progress_state.get("phase", "thinking")
+            phase_text = phase_labels.get(phase, "working")
+            phase_emoji = phase_emojis.get(phase, "⚙️")
+            detail = (progress_state.get("last_detail") or "Working...").strip()
+            if len(detail) > 180:
+                detail = detail[:177] + "..."
+            return (
+                f"{phase_emoji} {face} Hermes is {phase_text}... ({elapsed}s)\n"
+                f"{detail}\n"
+                f"Tools: {progress_state['tool_calls']} | Updates: {progress_state['updates']}"
+            )
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
@@ -1896,7 +1945,7 @@ class GatewayRunner:
                 if len(args_str) > 200:
                     args_str = args_str[:197] + "..."
                 msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                progress_queue.put(msg)
+                _set_progress_state(phase="tool", detail=msg, tool_call=tool_name != "_thinking")
                 return
             
             if preview:
@@ -1906,8 +1955,11 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
-            progress_queue.put(msg)
+
+            if tool_name == "_thinking":
+                _set_progress_state(phase="thinking", detail=f"💡 thinking: {preview or 'working...'}")
+            else:
+                _set_progress_state(phase="tool", detail=msg, tool_call=True)
         
         # Background task to send progress messages
         async def send_progress_messages():
@@ -1921,22 +1973,39 @@ class GatewayRunner:
             # Keep track of a single in-flight progress message so we can edit
             # it in place instead of spamming the channel with many updates.
             progress_message_id: str | None = None
+            last_heartbeat_at = 0.0
+            last_rendered = ""
 
             while True:
+                # Drain queue signals so bursts collapse into one edit.
+                got_signal = False
+                while True:
+                    try:
+                        progress_queue.get_nowait()
+                        got_signal = True
+                    except queue.Empty:
+                        break
+
                 try:
-                    # Non-blocking check with small timeout
-                    msg = progress_queue.get_nowait()
+                    now = time.monotonic()
+                    heartbeat_due = (now - last_heartbeat_at) >= 1.0
+                    if not got_signal and not heartbeat_due:
+                        await asyncio.sleep(0.2)
+                        continue
+
+                    msg = _build_progress_message()
+                    if not got_signal and not heartbeat_due and msg == last_rendered:
+                        await asyncio.sleep(0.2)
+                        continue
+
                     # For platforms that support edits (Discord/Telegram/etc.),
                     # send the first progress message and then edit it in place
-                    # for subsequent updates. Fallback platforms will simply
-                    # get multiple messages.
+                    # for subsequent updates.
                     if progress_message_id is None:
-                        # First progress message: send normally
                         result = await adapter.send(chat_id=source.chat_id, content=msg)
                         if result and result.success and result.message_id:
                             progress_message_id = result.message_id
                     else:
-                        # Subsequent updates: try to edit the existing message
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
@@ -1944,24 +2013,14 @@ class GatewayRunner:
                                 content=msg,
                             )
                         except Exception:
-                            # If edit fails (platform limitation or message gone),
-                            # fall back to a fresh message and track its ID.
                             result = await adapter.send(chat_id=source.chat_id, content=msg)
                             if result and result.success and result.message_id:
                                 progress_message_id = result.message_id
-                    # Restore typing indicator after sending progress message
-                    await asyncio.sleep(0.3)
+
+                    last_rendered = msg
+                    last_heartbeat_at = now
                     await adapter.send_typing(source.chat_id)
-                except queue.Empty:
-                    await asyncio.sleep(0.3)  # Check again soon
                 except asyncio.CancelledError:
-                    # Drain remaining messages
-                    while not progress_queue.empty():
-                        try:
-                            msg = progress_queue.get_nowait()
-                            await adapter.send(chat_id=source.chat_id, content=msg)
-                        except Exception:
-                            break
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -1992,6 +2051,9 @@ class GatewayRunner:
                 logger.debug("agent:step hook error: %s", _e)
 
         def run_sync():
+            if tool_progress_enabled:
+                _set_progress_state(phase="starting", detail="Preparing gateway session...")
+
             # Do NOT overwrite mode from config on every turn.
             # /terminal updates os.environ immediately; config is only persistence for restarts.
             if os.name == "nt":
@@ -2157,8 +2219,12 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
+            if tool_progress_enabled:
+                _set_progress_state(phase="thinking", detail="Calling model...")
             result = agent.run_conversation(message, conversation_history=agent_history)
             result_holder[0] = result
+            if tool_progress_enabled:
+                _set_progress_state(phase="finalizing", detail="Preparing final response...")
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -2254,6 +2320,7 @@ class GatewayRunner:
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
+            _set_progress_state(phase="thinking", detail="Hermes is thinking...")
             progress_task = asyncio.create_task(send_progress_messages())
         
         # Track this agent as running for this session (for interrupt support)

@@ -706,9 +706,9 @@ class DiscordAdapter(BasePlatformAdapter):
             event = self._build_slash_event(interaction, text)
             await self.handle_message(event)
             try:
-                await interaction.followup.send("Terminal mode updated (or shown)~", ephemeral=True)
+                await interaction.delete_original_response()
             except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
+                logger.debug("Discord delete_original_response failed: %s", e)
 
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")

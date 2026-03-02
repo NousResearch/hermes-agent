@@ -1585,6 +1585,16 @@ class AIAgent:
                 )
                 continue
 
+            if item_type == "reasoning":
+                encrypted = item.get("encrypted_content")
+                if isinstance(encrypted, str) and encrypted:
+                    reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    item_id = item.get("id")
+                    if isinstance(item_id, str) and item_id:
+                        reasoning_item["id"] = item_id
+                    normalized.append(reasoning_item)
+                continue
+
             role = item.get("role")
             if role in {"user", "assistant"}:
                 content = item.get("content", "")
@@ -2036,23 +2046,28 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
+            # Resolve reasoning effort: config > default (xhigh)
+            reasoning_effort = "xhigh"
+            reasoning_enabled = True
+            if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                if self.reasoning_config.get("enabled") is False:
+                    reasoning_enabled = False
+                elif self.reasoning_config.get("effort"):
+                    reasoning_effort = self.reasoning_config["effort"]
+
             kwargs = {
                 "model": self.model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),
                 "store": False,
-                "reasoning": {"effort": "medium", "summary": "auto"},
-                "include": ["reasoning.encrypted_content"],
             }
 
-            # Apply reasoning effort from config if set
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    kwargs.pop("reasoning", None)
-                    kwargs["include"] = []
-                elif self.reasoning_config.get("effort"):
-                    kwargs["reasoning"]["effort"] = self.reasoning_config["effort"]
+            if reasoning_enabled:
+                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            else:
+                kwargs["include"] = []
 
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
@@ -3159,7 +3174,7 @@ class AIAgent:
                         if self._try_refresh_codex_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
                             continue
-                    
+
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     

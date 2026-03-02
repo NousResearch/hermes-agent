@@ -1151,7 +1151,13 @@ class GatewayRunner:
         # Also set env var so code reading it before the next agent init sees the update.
         os.environ["HERMES_MODEL"] = args
 
-        return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
+        import subprocess
+        subprocess.Popen(
+            "sleep 2 && pkill -f 'hermes gateway' && nohup hermes gateway > /dev/null 2>&1 &",
+            shell=True,
+            start_new_session=True
+        )
+        return f"🤖 Model changed to `{args}`\n_(Restarting gateway to apply...)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""

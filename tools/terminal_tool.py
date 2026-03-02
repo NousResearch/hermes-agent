@@ -638,19 +638,18 @@ def get_active_environments_info() -> Dict[str, Any]:
         "workdirs": {},
     }
     
-    # Calculate total disk usage
+    # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
     for task_id in _active_environments.keys():
-        # Check sandbox and workdir sizes
         scratch_dir = _get_scratch_dir()
-        for pattern in [f"hermes-*{task_id[:8]}*"]:
-            import glob
-            for path in glob.glob(str(scratch_dir / pattern)):
-                try:
-                    size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
-                    total_size += size
-                except OSError:
-                    pass
+        pattern = f"hermes-*{task_id[:8]}*"
+        import glob
+        for path in glob.glob(str(scratch_dir / pattern)):
+            try:
+                size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
+                total_size += size
+            except OSError:
+                pass
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info

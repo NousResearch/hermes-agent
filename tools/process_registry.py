@@ -146,10 +146,12 @@ class ProcessRegistry:
             try:
                 import ptyprocess
                 user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+                pty_env = os.environ | (env_vars or {})
+                pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = ptyprocess.PtyProcess.spawn(
                     [user_shell, "-lic", command],
                     cwd=session.cwd,
-                    env=os.environ | (env_vars or {}),
+                    env=pty_env,
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
@@ -182,11 +184,16 @@ class ProcessRegistry:
         # Use the user's login shell for consistency with LocalEnvironment --
         # ensures rc files are sourced and user tools are available.
         user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+        # Force unbuffered output for Python scripts so progress is visible
+        # during background execution (libraries like tqdm/datasets buffer when
+        # stdout is a pipe, hiding output from process(action="poll")).
+        bg_env = os.environ | (env_vars or {})
+        bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [user_shell, "-lic", command],
             text=True,
             cwd=session.cwd,
-            env=os.environ | (env_vars or {}),
+            env=bg_env,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,

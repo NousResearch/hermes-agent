@@ -93,3 +93,20 @@ def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})
     assert rp.resolve_requested_provider("openrouter") == "openrouter"
+
+
+def test_resolve_runtime_provider_uses_novita_env_aliases(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("NOVITA_BASE_URL", "https://api.novita.ai/openai/")
+    monkeypatch.setenv("NOVITA_API_KEY", "novita-test-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["base_url"] == "https://api.novita.ai/openai"
+    assert resolved["api_key"] == "novita-test-key"

@@ -164,6 +164,7 @@ class GatewayRunner:
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
+        self._provider_routing = self._load_provider_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -345,6 +346,20 @@ class GatewayRunner:
             return {"enabled": True, "effort": effort}
         logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
         return None
+
+    @staticmethod
+    def _load_provider_routing() -> dict:
+        """Load OpenRouter provider routing preferences from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("provider_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
 
     async def start(self) -> bool:
         """
@@ -1824,6 +1839,7 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            pr = self._provider_routing
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -1834,6 +1850,12 @@ class GatewayRunner:
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
                 reasoning_config=self._reasoning_config,
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,

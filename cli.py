@@ -880,6 +880,15 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         
+        # OpenRouter provider routing preferences
+        pr = CLI_CONFIG.get("provider_routing", {}) or {}
+        self._provider_sort = pr.get("sort")
+        self._providers_only = pr.get("only")
+        self._providers_ignore = pr.get("ignore")
+        self._providers_order = pr.get("order")
+        self._provider_require_params = pr.get("require_parameters", False)
+        self._provider_data_collection = pr.get("data_collection")
+        
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -1016,6 +1025,12 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                providers_allowed=self._providers_only,
+                providers_ignored=self._providers_ignore,
+                providers_order=self._providers_order,
+                provider_sort=self._provider_sort,
+                provider_require_parameters=self._provider_require_params,
+                provider_data_collection=self._provider_data_collection,
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,

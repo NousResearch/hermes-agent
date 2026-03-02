@@ -3067,7 +3067,7 @@ class AIAgent:
                         print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
-                        if retry_count > max_retries:
+                        if retry_count >= max_retries:
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3339,7 +3339,7 @@ class AIAgent:
                                 "partial": True
                             }
                     
-                    if retry_count > max_retries:
+                    if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")

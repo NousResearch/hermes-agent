@@ -99,6 +99,17 @@ def resolve_runtime_provider(
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
 
+    if requested_provider == "codex-app-server":
+        return {
+            "provider": "codex-app-server",
+            "api_mode": "codex_app_server",
+            "base_url": "stdio://codex-app-server",
+            "api_key": "",
+            "source": "local-codex-app-server",
+            "app_server_bin": os.getenv("HERMES_CODEX_APP_SERVER_BIN", "codex").strip() or "codex",
+            "requested_provider": requested_provider,
+        }
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,

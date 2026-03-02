@@ -103,6 +103,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
+                         provider_label: str = None,
                          get_toolset_for_tool=None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -113,6 +114,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         tools: List of tool definitions.
         enabled_toolsets: List of enabled toolset names.
         session_id: Session identifier.
+        provider_label: Optional provider label to display next to the model.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
@@ -135,7 +137,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
-    left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
+    provider_text = provider_label or "Nous Research"
+    left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]{provider_text}[/]")
     left_lines.append(f"[dim #B8860B]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")

@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
     # Check env vars (may be set by .env or shell).
@@ -67,6 +67,16 @@ def _has_any_provider_configured() -> bool:
     provider_env_vars = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL")
     if any(os.getenv(v) for v in provider_env_vars):
         return True
+
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            provider = str(model_cfg.get("provider", "")).strip().lower()
+            if provider == "codex-app-server":
+                return True
+    except Exception:
+        pass
 
     # Check .env file for keys
     env_file = get_env_path()
@@ -126,7 +136,8 @@ def cmd_chat(args):
             sys.exit(1)
 
     # First-run guard: check if any provider is configured before launching
-    if not _has_any_provider_configured():
+    requested_provider = str(getattr(args, "provider", "") or "").strip().lower()
+    if requested_provider != "codex-app-server" and not _has_any_provider_configured():
         print()
         print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
         print()
@@ -313,7 +324,10 @@ def cmd_model(args):
         or "auto"
     )
     try:
-        active = resolve_provider(effective_provider)
+        if str(effective_provider).strip().lower() == "codex-app-server":
+            active = "codex-app-server"
+        else:
+            active = resolve_provider(effective_provider)
     except AuthError as exc:
         warning = format_auth_error(exc)
         print(f"Warning: {warning} Falling back to auto provider detection.")
@@ -327,6 +341,7 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "codex-app-server": "Codex App Server",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -341,11 +356,12 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("codex-app-server", "Codex App Server (ChatGPT OAuth via codex app-server)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous", "openai-codex") else "custom"
+    active_key = active if active in ("openrouter", "nous", "openai-codex", "codex-app-server") else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -368,6 +384,8 @@ def cmd_model(args):
         _model_flow_nous(config, current_model)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "codex-app-server":
+        _model_flow_codex_app_server(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
 
@@ -566,6 +584,36 @@ def _model_flow_openai_codex(config, current_model=""):
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
+
+
+def _model_flow_codex_app_server(config, current_model=""):
+    """Codex app-server provider: pick model and save provider settings."""
+    from hermes_cli.auth import _prompt_model_selection, _save_model_choice
+    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    codex_models = get_codex_model_ids(access_token=None)
+    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        model["provider"] = "codex-app-server"
+        model["base_url"] = "stdio://codex-app-server"
+    save_config(cfg)
+
+    # Clear custom endpoint env vars that would override provider auto-resolution.
+    if get_env_value("OPENAI_BASE_URL"):
+        save_env_value("OPENAI_BASE_URL", "")
+        save_env_value("OPENAI_API_KEY", "")
+
+    print(f"Default model set to: {selected} (via Codex App Server)")
+    print("On next chat, Hermes will launch `codex app-server` and run ChatGPT OAuth login if needed.")
 
 
 def _model_flow_custom(config):
@@ -912,7 +960,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "codex-app-server"],
         default=None,
         help="Inference provider (default: auto)"
     )

@@ -67,16 +67,18 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Hermes Agent Installer"
             echo ""
-            echo "Usage: install.sh [OPTIONS]"
+            echo "$(echo -e ${BOLD}Hermes Agent Installer$(echo -e ${NC}))"
             echo ""
-            echo "Options:"
-            echo "  --no-venv      Don't create virtual environment"
+            echo "$(echo -e ${CYAN}Usage:$(echo -e ${NC})) install.sh [OPTIONS]"
+            echo ""
+            echo "$(echo -e ${CYAN}Options:$(echo -e ${NC}))"
+            echo "  --no-venv      Skip creating a virtual environment (advanced)"
             echo "  --skip-setup   Skip interactive setup wizard"
-            echo "  --branch NAME  Git branch to install (default: main)"
-            echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
-            echo "  -h, --help     Show this help"
+            echo "  --branch NAME  Install from specific branch (default: main)"
+            echo "  --dir PATH     Custom installation directory (default: ~/.hermes/hermes-agent)"
+            echo "  -h, --help     Display this help message"
+            echo ""
             exit 0
             ;;
         *)
@@ -94,11 +96,12 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                   │"
+    echo "│        🤖 Hermes Agent Installer                        │"
     echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  An open source AI agent by Nous Research.              │"
+    echo "│  Open source AI agent by Nous Research.                 │"
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
+    echo ""
 }
 
 log_info() {
@@ -1015,6 +1018,15 @@ print_success() {
 
 main() {
     print_banner
+
+    # Display install configuration
+    log_info "Install Configuration:"
+    log_info "  Directory: $INSTALL_DIR"
+    log_info "  Branch: $BRANCH"
+    log_info "  Python: $PYTHON_VERSION"
+    [ "$USE_VENV" = true ] && log_info "  Virtual environment: enabled" || log_info "  Virtual environment: disabled"
+    [ "$RUN_SETUP" = true ] && log_info "  Setup wizard: enabled" || log_info "  Setup wizard: disabled"
+    echo ""
 
     detect_os
     install_uv

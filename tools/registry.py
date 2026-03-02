@@ -125,7 +125,7 @@ class ToolRegistry:
                 return _run_async(entry.handler(args, **kwargs))
             return entry.handler(args, **kwargs)
         except Exception as e:
-            logger.error("Tool %s dispatch error: %s", name, e)
+            logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 
     # ------------------------------------------------------------------

@@ -361,12 +361,24 @@ def discover_mcp_tools() -> List[str]:
     Called from ``model_tools._discover_tools()``. Safe to call even when
     the ``mcp`` package is not installed (returns empty list).
 
+    Idempotent: if servers are already connected, returns the existing
+    tool names without creating duplicate connections.
+
     Returns:
         List of all registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
         logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
+
+    # Already connected -- return existing tool names (idempotent)
+    if _servers:
+        existing: List[str] = []
+        for name, server in _servers.items():
+            for mcp_tool in server._tools:
+                schema = _convert_mcp_schema(name, mcp_tool)
+                existing.append(schema["name"])
+        return existing
 
     servers = _load_mcp_config()
     if not servers:

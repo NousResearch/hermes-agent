@@ -25,8 +25,13 @@ Example config::
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
-    All MCP connections live on this loop. Tool handlers schedule coroutines
-    onto it via run_coroutine_threadsafe(), so they work from any thread.
+    Each MCP server runs as a long-lived asyncio Task on this loop, keeping
+    its ``async with stdio_client(...)`` context alive. Tool call coroutines
+    are scheduled onto the loop via ``run_coroutine_threadsafe()``.
+
+    On shutdown, each server Task is signalled to exit its ``async with``
+    block, ensuring the anyio cancel-scope cleanup happens in the *same*
+    Task that opened the connection (required by anyio).
 """
 
 import asyncio
@@ -45,31 +50,114 @@ _MCP_AVAILABLE = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
-    from contextlib import AsyncExitStack
     _MCP_AVAILABLE = True
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
 
 # ---------------------------------------------------------------------------
-# Connection tracking
+# Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
-class MCPConnection:
-    """Holds a live MCP server connection and its async resource stack."""
+class MCPServerTask:
+    """Manages a single MCP server connection in a dedicated asyncio Task.
 
-    __slots__ = ("server_name", "session", "stack")
+    The entire connection lifecycle (connect, discover, serve, disconnect)
+    runs inside one asyncio Task so that anyio cancel-scopes created by
+    ``stdio_client`` are entered and exited in the same Task context.
+    """
 
-    def __init__(self, server_name: str, session: Any, stack: Any):
-        self.server_name = server_name
-        self.session: Optional[Any] = session
-        self.stack: Optional[Any] = stack
+    __slots__ = (
+        "name", "session",
+        "_task", "_ready", "_shutdown_event", "_tools", "_error",
+    )
+
+    def __init__(self, name: str):
+        self.name = name
+        self.session: Optional[Any] = None
+        self._task: Optional[asyncio.Task] = None
+        self._ready = asyncio.Event()
+        self._shutdown_event = asyncio.Event()
+        self._tools: list = []
+        self._error: Optional[Exception] = None
+
+    async def run(self, config: dict):
+        """Long-lived coroutine: connect, discover tools, wait, disconnect."""
+        command = config.get("command")
+        args = config.get("args", [])
+        env = config.get("env")
+
+        if not command:
+            self._error = ValueError(
+                f"MCP server '{self.name}' has no 'command' in config"
+            )
+            self._ready.set()
+            return
+
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=env if env else None,
+        )
+
+        try:
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    self.session = session
+
+                    tools_result = await session.list_tools()
+                    self._tools = (
+                        tools_result.tools
+                        if hasattr(tools_result, "tools")
+                        else []
+                    )
+
+                    # Signal that connection is ready
+                    self._ready.set()
+
+                    # Block until shutdown is requested -- this keeps the
+                    # async-with contexts alive on THIS Task.
+                    await self._shutdown_event.wait()
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            self.session = None
+
+    async def start(self, config: dict):
+        """Create the background Task and wait until ready (or failed)."""
+        self._task = asyncio.ensure_future(self.run(config))
+        await self._ready.wait()
+        if self._error:
+            raise self._error
+
+    async def shutdown(self):
+        """Signal the Task to exit and wait for clean resource teardown."""
+        self._shutdown_event.set()
+        if self._task and not self._task.done():
+            try:
+                await asyncio.wait_for(self._task, timeout=10)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "MCP server '%s' shutdown timed out, cancelling task",
+                    self.name,
+                )
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+        self.session = None
 
 
-_connections: Dict[str, MCPConnection] = {}
+# ---------------------------------------------------------------------------
+# Module-level state
+# ---------------------------------------------------------------------------
+
+_servers: Dict[str, MCPServerTask] = {}
 
 # Dedicated event loop running in a background daemon thread.
-# All MCP async operations (connect, call_tool, shutdown) run here.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
@@ -118,42 +206,22 @@ def _load_mcp_config() -> Dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
-# Server connection
+# Server connection helper
 # ---------------------------------------------------------------------------
 
-async def _connect_server(name: str, config: dict) -> MCPConnection:
-    """Start an MCP server subprocess and initialize a ClientSession.
+async def _connect_server(name: str, config: dict) -> MCPServerTask:
+    """Create an MCPServerTask, start it, and return when ready.
 
-    Args:
-        name:   Logical server name (e.g. "filesystem").
-        config: Dict with ``command``, ``args``, and optional ``env``.
-
-    Returns:
-        An ``MCPConnection`` with a live session.
+    The server Task keeps the subprocess alive in the background.
+    Call ``server.shutdown()`` (on the same event loop) to tear it down.
 
     Raises:
-        Exception on connection or initialization failure.
+        ValueError: if ``command`` is missing from *config*.
+        Exception: on connection or initialization failure.
     """
-    command = config.get("command")
-    args = config.get("args", [])
-    env = config.get("env")
-
-    if not command:
-        raise ValueError(f"MCP server '{name}' has no 'command' in config")
-
-    server_params = StdioServerParameters(
-        command=command,
-        args=args,
-        env=env if env else None,
-    )
-
-    stack = AsyncExitStack()
-    stdio_transport = await stack.enter_async_context(stdio_client(server_params))
-    read_stream, write_stream = stdio_transport
-    session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-    await session.initialize()
-
-    return MCPConnection(server_name=name, session=session, stack=stack)
+    server = MCPServerTask(name)
+    await server.start(config)
+    return server
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +236,14 @@ def _make_tool_handler(server_name: str, tool_name: str):
     """
 
     def _handler(args: dict, **kwargs) -> str:
-        conn = _connections.get(server_name)
-        if not conn or not conn.session:
+        server = _servers.get(server_name)
+        if not server or not server.session:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             })
 
         async def _call():
-            result = await conn.session.call_tool(tool_name, arguments=args)
+            result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -204,8 +272,8 @@ def _make_check_fn(server_name: str):
     """Return a check function that verifies the MCP connection is alive."""
 
     def _check() -> bool:
-        conn = _connections.get(server_name)
-        return conn is not None and conn.session is not None
+        server = _servers.get(server_name)
+        return server is not None and server.session is not None
 
     return _check
 
@@ -247,17 +315,13 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     from tools.registry import registry
     from toolsets import create_custom_toolset
 
-    conn = await _connect_server(name, config)
-    _connections[name] = conn
-
-    # Discover tools
-    tools_result = await conn.session.list_tools()
-    tools = tools_result.tools if hasattr(tools_result, "tools") else []
+    server = await _connect_server(name, config)
+    _servers[name] = server
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
 
-    for mcp_tool in tools:
+    for mcp_tool in server._tools:
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
 
@@ -339,29 +403,29 @@ def discover_mcp_tools() -> List[str]:
 
 
 def shutdown_mcp_servers():
-    """Close all MCP server connections and stop the background loop."""
+    """Close all MCP server connections and stop the background loop.
+
+    Each server Task is signalled to exit its ``async with`` block so that
+    the anyio cancel-scope cleanup happens in the same Task that opened it.
+    """
     global _mcp_loop, _mcp_thread
 
-    if not _connections:
+    if not _servers:
         _stop_mcp_loop()
         return
 
     async def _shutdown():
-        for name, conn in list(_connections.items()):
+        for name, server in list(_servers.items()):
             try:
-                if conn.stack:
-                    await conn.stack.aclose()
+                await server.shutdown()
             except Exception as exc:
                 logger.debug("Error closing MCP server '%s': %s", name, exc)
-            finally:
-                conn.session = None
-                conn.stack = None
-        _connections.clear()
+        _servers.clear()
 
     if _mcp_loop is not None and _mcp_loop.is_running():
         try:
             future = asyncio.run_coroutine_threadsafe(_shutdown(), _mcp_loop)
-            future.result(timeout=10)
+            future.result(timeout=15)
         except Exception as exc:
             logger.debug("Error during MCP shutdown: %s", exc)
 

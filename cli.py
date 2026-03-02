@@ -719,7 +719,7 @@ class SlashCommandCompleter(Completer):
                     cmd_name,
                     start_position=-len(word),
                     display=cmd,
-                    display_meta=f"⚡ {info['description'][:50]}",
+                    display_meta=f"⚡ {info['description'][:50]}{'...' if len(info['description']) > 50 else ''}",
                 )
 
 
@@ -880,6 +880,15 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         
+        # OpenRouter provider routing preferences
+        pr = CLI_CONFIG.get("provider_routing", {}) or {}
+        self._provider_sort = pr.get("sort")
+        self._providers_only = pr.get("only")
+        self._providers_ignore = pr.get("ignore")
+        self._providers_order = pr.get("order")
+        self._provider_require_params = pr.get("require_parameters", False)
+        self._provider_data_collection = pr.get("data_collection")
+        
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -1017,6 +1026,12 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                providers_allowed=self._providers_only,
+                providers_ignored=self._providers_ignore,
+                providers_order=self._providers_order,
+                provider_sort=self._provider_sort,
+                provider_require_parameters=self._provider_require_params,
+                provider_data_collection=self._provider_data_collection,
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,
@@ -1139,9 +1154,12 @@ class HermesCLI:
         
         # Header
         print()
-        print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
-        print("+" + "-" * 78 + "+")
+        title = "(^_^)/ Available Tools"
+        width = 78
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         
         # Group tools by toolset
@@ -1174,16 +1192,19 @@ class HermesCLI:
         
         # Header
         print()
-        print("+" + "-" * 58 + "+")
-        print("|" + " " * 15 + "(^_^)b Available Toolsets" + " " * 17 + "|")
-        print("+" + "-" * 58 + "+")
+        title = "(^_^)b Available Toolsets"
+        width = 58
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
-                desc = info["description"][:45]
+                desc = info["description"]
                 
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
@@ -1214,9 +1235,12 @@ class HermesCLI:
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
         print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 15 + "(^_^) Configuration" + " " * 15 + "|")
-        print("+" + "-" * 50 + "+")
+        title = "(^_^) Configuration"
+        width = 50
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         print("  -- Model --")
         print(f"  Model:     {self.model}")
@@ -1440,8 +1464,7 @@ class HermesCLI:
             print("+" + "-" * 50 + "+")
             print()
             for name, prompt in self.personalities.items():
-                truncated = prompt[:40] + "..." if len(prompt) > 40 else prompt
-                print(f"  {name:<12} - \"{truncated}\"")
+                print(f"  {name:<12} - \"{prompt}\"")
             print()
             print("  Usage: /personality <name>")
             print()

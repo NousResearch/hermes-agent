@@ -189,6 +189,24 @@ The `hermes config set` command automatically routes values to the right file â€
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 
+### OpenRouter Provider Routing
+
+When using OpenRouter, you can control how requests are routed across providers. Add a `provider_routing` section to `~/.hermes/config.yaml`:
+
+```yaml
+provider_routing:
+  sort: "throughput"          # "price" (default), "throughput", or "latency"
+  # only: ["anthropic"]      # Only use these providers
+  # ignore: ["deepinfra"]    # Skip these providers
+  # order: ["anthropic", "google"]  # Try providers in this order
+  # require_parameters: true  # Only use providers that support all request params
+  # data_collection: "deny"   # Exclude providers that may store/train on data
+```
+
+**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
+
+See [OpenRouter provider routing docs](https://openrouter.ai/docs/guides/routing/provider-selection) for all available options including quantization filtering, performance thresholds, and zero data retention.
+
 ---
 
 ## Messaging Gateway
@@ -1634,6 +1652,18 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
+| `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
+| `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
+
+**Provider Routing (config.yaml only â€” `provider_routing` section):**
+| Key | Description |
+|-----|-------------|
+| `sort` | Sort providers: `"price"` (default), `"throughput"`, or `"latency"` |
+| `only` | List of provider slugs to allow (e.g., `["anthropic", "google"]`) |
+| `ignore` | List of provider slugs to skip (e.g., `["deepinfra"]`) |
+| `order` | List of provider slugs to try in order |
+| `require_parameters` | Only use providers supporting all request params (`true`/`false`) |
+| `data_collection` | `"allow"` (default) or `"deny"` to exclude data-storing providers |
 
 **Context Compression:**
 | Variable | Description |

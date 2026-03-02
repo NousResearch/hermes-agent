@@ -21,20 +21,30 @@ model:
   base_url: "https://openrouter.ai/api/v1"
 
 # =============================================================================
-# OpenRouter Provider Routing Options
+# OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
-# Advanced routing controls for OpenRouter endpoints. 
-# See https://openrouter.ai/docs/provider-routing for details.
-openrouter:
-  provider:
-    # order: ["Anthropic", "OpenAI"]      # Try these providers first in this order
-    # ignore: ["Google"]                  # Never use these providers
-    # allow_fallbacks: true               # Allow falling back to other providers (default: true)
-    # require_parameters: false           # Require providers that support all parameters (default: false)
-    # data_collection: "deny"             # "deny" or "allow"
-    # quantized: false                    # Allow/deny quantized models
-    # sort: "price"                       # "price", "throughput", or "latency"
-
+# Control how requests are routed across providers on OpenRouter.
+# See: https://openrouter.ai/docs/guides/routing/provider-selection
+#
+# provider_routing:
+#   # Sort strategy: "price" (default), "throughput", or "latency"
+#   # Append :nitro to model name for a shortcut to throughput sorting.
+#   sort: "throughput"
+#
+#   # Only allow these providers (provider slugs from OpenRouter)
+#   # only: ["anthropic", "google"]
+#
+#   # Skip these providers entirely
+#   # ignore: ["deepinfra", "fireworks"]
+#
+#   # Try providers in this order (overrides default load balancing)
+#   # order: ["anthropic", "google", "together"]
+#
+#   # Require providers to support all parameters in your request
+#   # require_parameters: true
+#
+#   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
+#   # data_collection: "deny"
 
 # =============================================================================
 # Terminal Tool Configuration

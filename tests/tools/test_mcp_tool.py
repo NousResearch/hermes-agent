@@ -461,10 +461,13 @@ class TestMCPServerTask:
 class TestToolsetInjection:
     def test_mcp_tools_added_to_platform_toolsets(self):
         """Discovered MCP tools are injected into hermes-cli and platform toolsets."""
-        from tools.mcp_tool import _servers, MCPServerTask
+        from tools.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("list_files", "List files")]
         mock_session = MagicMock()
+
+        # Fresh _servers dict to bypass idempotency guard
+        fresh_servers = {}
 
         async def fake_connect(name, config):
             server = MCPServerTask(name)
@@ -481,6 +484,7 @@ class TestToolsetInjection:
         }
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
@@ -493,15 +497,15 @@ class TestToolsetInjection:
         # Original tools preserved
         assert "terminal" in fake_toolsets["hermes-cli"]["tools"]
 
-        _servers.pop("fs", None)
-
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
-        from tools.mcp_tool import _servers, MCPServerTask
+        from tools.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("ping", "Ping")]
         mock_session = MagicMock()
 
+        # Fresh _servers dict to bypass idempotency guard
+        fresh_servers = {}
         call_count = 0
 
         async def flaky_connect(name, config):
@@ -523,6 +527,7 @@ class TestToolsetInjection:
         }
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
@@ -533,8 +538,6 @@ class TestToolsetInjection:
         assert "mcp_good_ping" in result
         assert "mcp_broken_ping" not in result
         assert call_count == 2  # Both were attempted
-
-        _servers.pop("good", None)
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +555,7 @@ class TestGracefulFallback:
     def test_no_servers_returns_empty(self):
         """No MCP servers configured -> empty list."""
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
              patch("tools.mcp_tool._load_mcp_config", return_value={}):
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()

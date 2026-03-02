@@ -850,7 +850,7 @@ class HermesCLI:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
-        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
+        # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
         elif CLI_CONFIG["agent"].get("max_turns"):

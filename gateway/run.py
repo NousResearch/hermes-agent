@@ -984,8 +984,7 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        session_key = self.session_store._generate_session_key(source)
         
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.

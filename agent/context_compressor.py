@@ -87,7 +87,7 @@ class ContextCompressor:
         parts = []
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             if len(content) > 2000:
                 content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
             tool_calls = msg.get("tool_calls", [])
@@ -193,7 +193,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
             compressed.append(msg)
 
         compressed.append({"role": "user", "content": summary})

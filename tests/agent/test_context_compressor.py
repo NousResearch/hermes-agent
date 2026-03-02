@@ -115,6 +115,48 @@ class TestCompress:
         assert result[-2]["content"] == msgs[-2]["content"]
 
 
+class TestGenerateSummaryNoneContent:
+    """Regression: content=None (from tool-call-only assistant messages) must not crash."""
+
+    def test_none_content_does_not_crash(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: tool calls happened"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"function": {"name": "search"}}
+            ]},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": None},
+            {"role": "user", "content": "thanks"},
+        ]
+
+        summary = c._generate_summary(messages)
+        assert isinstance(summary, str)
+        assert "CONTEXT SUMMARY" in summary
+
+    def test_none_content_in_system_message_compress(self):
+        """System message with content=None should not crash during compress."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(None, None)):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [{"role": "system", "content": None}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+        result = c.compress(msgs)
+        assert len(result) < len(msgs)
+
+
 class TestCompressWithClient:
     def test_summarization_path(self):
         mock_client = MagicMock()

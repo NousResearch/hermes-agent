@@ -179,3 +179,13 @@ class TestMultilineBypass:
         is_dangerous, _, desc = detect_dangerous_command(cmd)
         assert is_dangerous is True, f"multiline chmod bypass not caught: {cmd!r}"
 
+    def test_find_exec_rm_with_newline(self):
+        cmd = "find /tmp \\\n-exec rm {} \\;"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline find -exec rm bypass not caught: {cmd!r}"
+
+    def test_find_delete_with_newline(self):
+        cmd = "find . -name '*.tmp' \\\n-delete"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline find -delete bypass not caught: {cmd!r}"
+

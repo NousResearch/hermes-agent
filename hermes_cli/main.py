@@ -951,7 +951,7 @@ For more help on a command:
         help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
-        "-m", "--model",
+        "--model",
         help="Model to use (e.g., anthropic/claude-sonnet-4)"
     )
     chat_parser.add_argument(

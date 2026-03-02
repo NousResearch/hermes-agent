@@ -498,7 +498,21 @@ def _model_flow_nous(config, current_model=""):
             api_key=creds.get("api_key", ""),
         )
     except Exception as exc:
+        relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        if relogin:
+            print(f"Session expired: {msg}")
+            print("Re-authenticating with Nous Portal...\n")
+            try:
+                mock_args = argparse.Namespace(
+                    portal_url=None, inference_url=None, client_id=None,
+                    scope=None, no_browser=False, timeout=15.0,
+                    ca_bundle=None, insecure=False,
+                )
+                _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+            except Exception as login_exc:
+                print(f"Re-login failed: {login_exc}")
+            return
         print(f"Could not fetch models: {msg}")
         return
 

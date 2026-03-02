@@ -97,15 +97,27 @@ class HonchoClientConfig:
         )
         linked_hosts = host_block.get("linkedHosts", [])
 
+        api_key = raw.get("apiKey") or os.environ.get("HONCHO_API_KEY")
+
+        # Auto-enable when API key is present (unless explicitly disabled)
+        # This matches user expectations: setting an API key should activate the feature.
+        explicit_enabled = raw.get("enabled")
+        if explicit_enabled is None:
+            # Not explicitly set in config -> auto-enable if API key exists
+            enabled = bool(api_key)
+        else:
+            # Respect explicit setting
+            enabled = explicit_enabled
+
         return cls(
             host=host,
             workspace_id=workspace,
-            api_key=raw.get("apiKey") or os.environ.get("HONCHO_API_KEY"),
+            api_key=api_key,
             environment=raw.get("environment", "production"),
             peer_name=raw.get("peerName"),
             ai_peer=ai_peer,
             linked_hosts=linked_hosts,
-            enabled=raw.get("enabled", False),
+            enabled=enabled,
             save_messages=raw.get("saveMessages", True),
             context_tokens=raw.get("contextTokens") or host_block.get("contextTokens"),
             session_strategy=raw.get("sessionStrategy", "per-directory"),

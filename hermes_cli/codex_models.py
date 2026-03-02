@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from hermes_cli.auth import resolve_codex_home_path
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,8 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     Resolution order: API (live, if token provided) > config.toml default >
     local cache > hardcoded defaults.
     """
-    codex_home = resolve_codex_home_path()
+    codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
+    codex_home = Path(codex_home_str).expanduser()
     ordered: List[str] = []
 
     # Try live API if we have a token

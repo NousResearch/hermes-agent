@@ -127,9 +127,7 @@ def resolve_runtime_provider(
             "api_mode": "codex_responses",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),
-            "source": creds.get("source", "codex-auth-json"),
-            "auth_file": creds.get("auth_file"),
-            "codex_home": creds.get("codex_home"),
+            "source": creds.get("source", "hermes-auth-store"),
             "last_refresh": creds.get("last_refresh"),
             "requested_provider": requested_provider,
         }

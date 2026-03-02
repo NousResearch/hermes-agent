@@ -148,6 +148,7 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
+    runner._provider_routing = {}
     runner._running_agents = {}
     from unittest.mock import MagicMock, AsyncMock
     runner.hooks = MagicMock()

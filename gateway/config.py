@@ -26,6 +26,7 @@ class Platform(Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
+    SIGNAL = "signal"
 
 
 @dataclass
@@ -154,7 +155,20 @@ class GatewayConfig:
         """Return list of platforms that are enabled and configured."""
         connected = []
         for platform, config in self.platforms.items():
-            if config.enabled and (config.token or config.api_key):
+            # Check if platform has required credentials
+            # Most platforms use token or api_key
+            # Signal uses extra dict with http_url and account
+            has_credentials = (
+                config.token
+                or config.api_key
+                or (
+                    platform == Platform.SIGNAL
+                    and config.extra.get("http_url")
+                    and config.extra.get("account")
+                )
+                or (platform == Platform.WHATSAPP and config.enabled)
+            )
+            if config.enabled and has_credentials:
                 connected.append(platform)
         return connected
     
@@ -377,7 +391,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=slack_home,
                 name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             )
-    
+
+    # Signal
+    signal_url = os.getenv("SIGNAL_HTTP_URL")
+    signal_account = os.getenv("SIGNAL_ACCOUNT")
+
+    if signal_url and signal_account:
+        if Platform.SIGNAL not in config.platforms:
+            config.platforms[Platform.SIGNAL] = PlatformConfig()
+            config.platforms[Platform.SIGNAL].enabled = True
+
+        # Support both old (SIGNAL_GROUP_ALLOW_FROM) and new (SIGNAL_GROUP_ALLOWED_USERS) names
+        # New name takes precedence
+        group_allowed_users = os.getenv("SIGNAL_GROUP_ALLOWED_USERS") or os.getenv("SIGNAL_GROUP_ALLOW_FROM", "")
+
+        config.platforms[Platform.SIGNAL].extra.update(
+                    {
+                        "http_url": signal_url,
+                        "account": signal_account,
+                        "allowed_users": os.getenv("SIGNAL_ALLOWED_USERS", ""),
+                        "group_allow_from": group_allowed_users,
+                        "dm_policy": os.getenv("SIGNAL_DM_POLICY", "pairing"),
+                        "group_policy": os.getenv("SIGNAL_GROUP_POLICY", "disabled"),
+                        "ignore_attachments": os.getenv(
+                            "SIGNAL_IGNORE_ATTACHMENTS", "false"
+                        ).lower()
+                        == "true",
+                        "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower()
+                        == "true",
+                    }
+                )
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:

@@ -467,17 +467,30 @@ class BasePlatformAdapter(ABC):
         cleaned = content
         
         # Match markdown images: ![alt](url)
-        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+        # Support both http/https and file:// URLs
+        md_pattern = r"!\[([^\]]*)\]\((https?://|file://)([^\s\)]+)\)"
         for match in re.finditer(md_pattern, content):
             alt_text = match.group(1)
-            url = match.group(2)
+            url = match.group(2) + match.group(3)
             # Only extract URLs that look like actual images
-            if any(url.lower().endswith(ext) or ext in url.lower() for ext in
-                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
+            if any(
+                url.lower().endswith(ext) or ext in url.lower()
+                for ext in [
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    "fal.media",
+                    "fal-cdn",
+                    "replicate.delivery",
+                ]
+            ):
                 images.append((url, alt_text))
-        
+
         # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
+        # Support both http/https and file:// URLs
+        html_pattern = r'<img\s+src=["\']((?:https?://|file://)[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
         for match in re.finditer(html_pattern, content):
             url = match.group(1)
             images.append((url, ""))
@@ -738,6 +751,8 @@ class BasePlatformAdapter(ABC):
         user_name: Optional[str] = None,
         thread_id: Optional[str] = None,
         chat_topic: Optional[str] = None,
+        user_id_alt: Optional[str] = None,
+        chat_id_alt: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -752,6 +767,8 @@ class BasePlatformAdapter(ABC):
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
             chat_topic=chat_topic.strip() if chat_topic else None,
+            user_id_alt=user_id_alt,
+            chat_id_alt=chat_id_alt,
         )
     
     @abstractmethod

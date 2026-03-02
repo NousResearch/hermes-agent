@@ -99,6 +99,12 @@ PLATFORM_HINTS = {
     "discord": (
         "You are in a Discord server or group chat communicating with your user."
     ),
+    "signal": (
+        "You are on Signal messaging. "
+        "You can send and receive images, audio, and files. "
+        "When generating images, output them as markdown ![description](URL) "
+        "and they will be delivered as Signal attachments."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."

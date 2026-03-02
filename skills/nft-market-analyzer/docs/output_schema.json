@@ -1,0 +1,271 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hermes.skills/nft-market-analyzer/output_schema.json",
+  "title": "NFT Market Analyzer — Output Schema",
+  "description": "Structured output produced by scripts/analyze.sh. All numeric metrics are deterministically computed in shell. The LLM interprets this object; it never modifies it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "skill_version",
+    "status",
+    "analysis_timestamp",
+    "collection",
+    "market_metrics",
+    "risk_metrics",
+    "risk_components",
+    "holder_concentration",
+    "wash_trading_detail",
+    "data_sources"
+  ],
+  "properties": {
+    "skill_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the skill that produced this output (e.g. '1.0.0')."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "error"],
+      "description": "Execution status. 'error' is accompanied by a top-level 'error' object."
+    },
+    "error": {
+      "type": "object",
+      "description": "Present only when status == 'error'. Absent on success.",
+      "additionalProperties": false,
+      "required": ["message", "code"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "MISSING_ENV_VAR",
+            "MISSING_DEPENDENCY",
+            "DEPENDENCY_VERSION",
+            "MISSING_INPUT",
+            "INVALID_INPUT",
+            "HTTP_FAILURE",
+            "COLLECTION_NOT_FOUND",
+            "INVALID_RESPONSE",
+            "SCHEMA_VALIDATION",
+            "DEPENDENCY_ERROR",
+            "INTERNAL_ERROR"
+          ],
+          "description": "Machine-readable error code for downstream handling."
+        }
+      }
+    },
+    "analysis_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the analysis was run."
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "total_supply", "unique_holders"],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[a-z0-9_\\-]{1,64}$",
+          "description": "Magic Eden collection slug (sanitized input)."
+        },
+        "total_supply": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total number of NFTs in the collection."
+        },
+        "unique_holders": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Count of distinct wallet addresses owning at least one NFT."
+        }
+      }
+    },
+    "market_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "floor_price_sol",
+        "volume_7d_sol",
+        "volume_30d_sol",
+        "total_sales_analyzed"
+      ],
+      "properties": {
+        "floor_price_sol": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Current floor price in SOL (lamports ÷ 1e9, 8 decimal places)."
+        },
+        "volume_7d_sol": {
+          "type": "number",
+          "minimum": 0,
+          "description": "7-day trading volume in SOL from Magic Eden stats endpoint."
+        },
+        "volume_30d_sol": {
+          "type": "number",
+          "minimum": 0,
+          "description": "30-day trading volume in SOL. Uses explicit volume30d field if available; falls back to volumeAll (lifetime proxy). Noted in data_sources when fallback is used."
+        },
+        "total_sales_analyzed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sales records fetched for wash-trade analysis (up to 500)."
+        }
+      }
+    },
+    "risk_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "top10_holder_percentage",
+        "wash_trading_ratio",
+        "volume_volatility_ratio",
+        "final_risk_score"
+      ],
+      "properties": {
+        "top10_holder_percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "(sum of top-10 holder NFT counts / total_supply) × 100. Rounds to 2 decimal places."
+        },
+        "wash_trading_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "max(repeated_pairs_pct, short_loop_pct). Rounds to 2 decimal places."
+        },
+        "volume_volatility_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "abs(volume_7d - volume_30d/4) / (volume_30d/4). 0 when volume_30d == 0. 4 decimal places."
+        },
+        "final_risk_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "(top10_pct × 0.3) + (wash_ratio × 0.4) + (vol_volatility × 100 × 0.3). Clamped to [0, 100]. 2 decimal places."
+        }
+      }
+    },
+    "risk_components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "top10_contribution",
+        "wash_contribution",
+        "volatility_contribution"
+      ],
+      "properties": {
+        "top10_contribution": {
+          "type": "number",
+          "description": "top10_holder_percentage × 0.3 (before clamping). 2 decimal places."
+        },
+        "wash_contribution": {
+          "type": "number",
+          "description": "wash_trading_ratio × 0.4 (before clamping). 2 decimal places."
+        },
+        "volatility_contribution": {
+          "type": "number",
+          "description": "volume_volatility_ratio × 100 × 0.3 (before clamping). 2 decimal places."
+        }
+      }
+    },
+    "holder_concentration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_10_wallets", "methodology"],
+      "properties": {
+        "top_10_wallets": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["wallet", "nft_count"],
+            "properties": {
+              "wallet": {
+                "type": "string",
+                "description": "Base58 wallet address."
+              },
+              "nft_count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Number of collection NFTs owned by this wallet."
+              }
+            }
+          },
+          "description": "Up to 20 top holders sorted descending by nft_count."
+        },
+        "methodology": {
+          "type": "string",
+          "description": "Human-readable description of how holder data was gathered."
+        }
+      }
+    },
+    "wash_trading_detail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suspicious_wallet_pairs", "methodology"],
+      "properties": {
+        "suspicious_wallet_pairs": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seller", "buyer", "occurrences", "flag"],
+            "properties": {
+              "seller": {
+                "type": "string",
+                "description": "Seller wallet address (Base58)."
+              },
+              "buyer": {
+                "type": "string",
+                "description": "Buyer wallet address (Base58)."
+              },
+              "occurrences": {
+                "type": "integer",
+                "minimum": 2,
+                "description": "Number of times this (seller, buyer) pair appeared in analyzed sales."
+              },
+              "flag": {
+                "type": "string",
+                "enum": ["repeated_pair", "short_loop"],
+                "description": "Which heuristic flagged this pair."
+              }
+            }
+          },
+          "description": "Top suspicious (seller, buyer) pairs sorted by occurrences descending."
+        },
+        "methodology": {
+          "type": "string",
+          "description": "Description of wash-trade detection heuristics used."
+        }
+      }
+    },
+    "data_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["market_data", "onchain_data", "lookback_days"],
+      "properties": {
+        "market_data": {
+          "type": "string",
+          "description": "Source of marketplace data (e.g. 'Magic Eden v2 API')."
+        },
+        "onchain_data": {
+          "type": "string",
+          "description": "Source of on-chain data (e.g. 'Helius DAS API + Enriched Transactions API')."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Days of transfer history inspected for wash-trade detection."
+        }
+      }
+    }
+  }
+}

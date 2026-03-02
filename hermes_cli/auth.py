@@ -1355,6 +1355,16 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     print(f"  Auth state: ~/.hermes/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
+    # Check that the Codex CLI binary is available; warn the user if not.
+    import shutil
+    if shutil.which("codex") is None:
+        print()
+        print("  [93mWarning: Codex CLI not found in PATH.[0m")
+        print("  Hermes uses the Codex CLI to run openai-codex requests.")
+        print("  Install it with:")
+        print("    npm install -g @openai/codex")
+        print("  Then re-run Hermes.")
+
 
 def _codex_device_code_login() -> Dict[str, Any]:
     """Run the OpenAI device code login flow and return credentials dict."""

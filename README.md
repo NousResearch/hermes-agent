@@ -1036,7 +1036,7 @@ delegate_task(tasks=[
 Configure via `~/.hermes/config.yaml`:
 ```yaml
 delegation:
-  max_iterations: 25                        # Max turns per child (default: 25)
+  max_iterations: 50                        # Max turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets
 ```
 

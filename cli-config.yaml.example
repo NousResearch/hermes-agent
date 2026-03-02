@@ -490,7 +490,7 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (up to 3 parallel).
 delegation:
-  max_iterations: 50                          # Max tool-calling turns per child (default: 25)
+  max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
 
 # =============================================================================

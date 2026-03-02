@@ -1210,6 +1210,8 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
+                "system_prompt": self._cached_system_prompt or "",
+                "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
@@ -2242,7 +2244,8 @@ class AIAgent:
         _is_openrouter = "openrouter" in self.base_url.lower()
         _is_nous = "nousresearch" in self.base_url.lower()
 
-        if _is_openrouter or _is_nous:
+        _is_mistral = "api.mistral.ai" in self.base_url.lower()
+        if (_is_openrouter or _is_nous) and not _is_mistral:
             if self.reasoning_config is not None:
                 extra_body["reasoning"] = self.reasoning_config
             else:
@@ -2387,6 +2390,8 @@ class AIAgent:
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
+                api_msg.pop("finish_reason", None)
+                api_msg.pop("_flush_sentinel", None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -2552,7 +2557,7 @@ class AIAgent:
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
-                    self.tool_progress_callback(function_name, preview)
+                    self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -3061,8 +3066,8 @@ class AIAgent:
         repeated_tool_signature_count = 0
         tool_signature_repeat_limit = 3
         
-        # Initialize conversation
-        messages = conversation_history or []
+        # Initialize conversation (copy to avoid mutating the caller's list)
+        messages = list(conversation_history) if conversation_history else []
         
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -3207,6 +3212,9 @@ class AIAgent:
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
                     api_msg.pop("reasoning")
+                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
+                if "finish_reason" in api_msg:
+                    api_msg.pop("finish_reason")
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
@@ -3363,7 +3371,7 @@ class AIAgent:
                         print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
-                        if retry_count > max_retries:
+                        if retry_count >= max_retries:
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3635,7 +3643,7 @@ class AIAgent:
                                 "partial": True
                             }
                     
-                    if retry_count > max_retries:
+                    if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
@@ -3737,7 +3745,7 @@ class AIAgent:
                     self._codex_incomplete_retries += 1
 
                     interim_msg = self._build_assistant_message(assistant_message, finish_reason)
-                    interim_has_content = bool(interim_msg.get("content", "").strip())
+                    interim_has_content = bool((interim_msg.get("content") or "").strip())
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
 
                     if interim_has_content or interim_has_reasoning:

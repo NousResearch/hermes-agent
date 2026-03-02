@@ -1053,13 +1053,12 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        session_key = self.session_store._generate_session_key(source)
         
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.
         try:
-            old_entry = self.session_store._sessions.get(session_key)
+            old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
@@ -1386,9 +1385,9 @@ class GatewayRunner:
         if not last_user_msg:
             return "No previous message to retry."
         
-        # Truncate history to before the last user message
+        # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        session_entry.conversation_history = truncated
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -1420,7 +1419,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        session_entry.conversation_history = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
@@ -1494,7 +1493,7 @@ class GatewayRunner:
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
             )
 
-            session_entry.conversation_history = compressed
+            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
 
@@ -1837,7 +1836,7 @@ class GatewayRunner:
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         
-        def progress_callback(tool_name: str, preview: str = None):
+        def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
                 return
@@ -1857,6 +1856,7 @@ class GatewayRunner:
                 "write_file": "✍️",
                 "patch": "🔧",
                 "search": "🔎",
+                "search_files": "🔎",
                 "list_directory": "📂",
                 "image_generate": "🎨",
                 "text_to_speech": "🔊",
@@ -1882,14 +1882,28 @@ class GatewayRunner:
                 "schedule_cronjob": "⏰",
                 "list_cronjobs": "⏰",
                 "remove_cronjob": "⏰",
+                "execute_code": "🐍",
+                "delegate_task": "🔀",
+                "clarify": "❓",
+                "skill_manage": "📝",
             }
             emoji = tool_emojis.get(tool_name, "⚙️")
             
+            # Verbose mode: show detailed arguments
+            if progress_mode == "verbose" and args:
+                import json as _json
+                args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                if len(args_str) > 200:
+                    args_str = args_str[:197] + "..."
+                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                progress_queue.put(msg)
+                return
+            
             if preview:
                 # Truncate preview to keep messages clean
-                if len(preview) > 40:
-                    preview = preview[:37] + "..."
-                msg = f"{emoji} {tool_name}... \"{preview}\""
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
             

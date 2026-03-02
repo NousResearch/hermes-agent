@@ -26,9 +26,11 @@ class TestDebugSessionDisabled:
 
     def test_save_noop(self, tmp_path):
         ds = DebugSession("test_tool", env_var="FAKE_DEBUG_VAR_XYZ")
-        ds.log_dir = tmp_path
+        log_dir = tmp_path / "debug_logs"
+        log_dir.mkdir()
+        ds.log_dir = log_dir
         ds.save()
-        assert list(tmp_path.iterdir()) == []
+        assert list(log_dir.iterdir()) == []
 
     def test_get_session_info_disabled(self):
         ds = DebugSession("test_tool", env_var="FAKE_DEBUG_VAR_XYZ")

@@ -780,6 +780,9 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name = interaction.channel.name
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+        
+        # Get channel topic (if available)
+        chat_topic = getattr(interaction.channel, "topic", None)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -787,6 +790,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
+            chat_topic=chat_topic,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -906,6 +910,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(message.channel, discord.Thread):
             thread_id = str(message.channel.id)
         
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
+        chat_topic = getattr(message.channel, "topic", None)
+        
         # Build source
         source = self.build_source(
             chat_id=str(message.channel.id),
@@ -914,6 +921,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(message.author.id),
             user_name=message.author.display_name,
             thread_id=thread_id,
+            chat_topic=chat_topic,
         )
         
         # Build media URLs -- download image attachments to local cache so the

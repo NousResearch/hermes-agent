@@ -411,7 +411,7 @@ Hermes has terminal access. Security matters.
 | **Write deny list** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`) resolved via `os.path.realpath()` to prevent symlink bypass |
 | **Skills guard** | Security scanner for hub-installed skills (`tools/skills_guard.py`) |
 | **Code execution sandbox** | `execute_code` child process runs with API keys stripped from environment |
-| **Container hardening** | Docker: read-only root, all capabilities dropped, no privilege escalation, PID limits |
+| **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
 
 ### When contributing security-sensitive code
 

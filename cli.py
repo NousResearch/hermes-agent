@@ -230,7 +230,8 @@ def load_cli_config() -> Dict[str, Any]:
                     # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
             
-            # Deep merge other keys with defaults
+            # Deep merge file_config into defaults.
+            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
             for key in defaults:
                 if key == "model":
                     continue  # Already handled above
@@ -239,6 +240,12 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
+            
+            # Second: carry over keys from file_config that aren't in defaults
+            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
+            for key in file_config:
+                if key not in defaults and key != "model":
+                    defaults[key] = file_config[key]
             
             # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
             if "max_turns" in file_config and "agent" not in file_config:
@@ -880,7 +887,7 @@ class HermesCLI:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
-        # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
+        # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
         elif CLI_CONFIG["agent"].get("max_turns"):
@@ -1339,7 +1346,7 @@ class HermesCLI:
         
         for i, msg in enumerate(self.conversation_history, 1):
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             
             if role == "user":
                 print(f"\n  [You #{i}]")

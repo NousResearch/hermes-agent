@@ -442,7 +442,7 @@ class HonchoSessionManager:
         for msg in messages:
             ts = msg.get("timestamp", "?")
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             lines.append(f"[{ts}] {role}: {content}")
 
         lines.append("")

@@ -685,6 +685,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/stats":     "Show session statistics (sessions, tools, activity)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1748,6 +1749,9 @@ class HermesCLI:
             self._handle_cron_command(cmd_original)
         elif cmd_lower.startswith("/skills"):
             self._handle_skills_command(cmd_original)
+        elif cmd_lower == "/stats":
+            from hermes_cli.stats import print_stats
+            print_stats()
         elif cmd_lower == "/platforms" or cmd_lower == "/gateway":
             self._show_gateway_status()
         elif cmd_lower == "/verbose":

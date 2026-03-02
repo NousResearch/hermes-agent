@@ -93,6 +93,8 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.notification_tool",
+        "tools.pomodoro_tool",
         "tools.honcho_tools",
     ]
     import importlib

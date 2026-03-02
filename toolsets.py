@@ -60,6 +60,10 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Desktop notifications
+    "notify", "notify_sound",
+    # Pomodoro timer
+    "pomodoro_start", "pomodoro_status", "pomodoro_stop", "pomodoro_history",
     # Honcho user context (gated on honcho being active via check_fn)
     "query_user_context",
 ]
@@ -176,6 +180,16 @@ TOOLSETS = {
         "includes": []
     },
     
+    "notification": {
+        "description": "Desktop/system notifications — alert the user when tasks complete",
+        "tools": ["notify", "notify_sound"],
+        "includes": []
+    },
+    "pomodoro": {
+        "description": "Pomodoro focus timer — work/break sessions with desktop notifications",
+        "tools": ["pomodoro_start", "pomodoro_status", "pomodoro_stop", "pomodoro_history"],
+        "includes": []
+    },
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],

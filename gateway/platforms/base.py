@@ -482,10 +482,14 @@ class BasePlatformAdapter(ABC):
             url = match.group(1)
             images.append((url, ""))
         
-        # Remove matched image tags from content if we found images
+        # Remove only the matched image tags from content (not all markdown images)
         if images:
-            cleaned = re.sub(md_pattern, '', cleaned)
-            cleaned = re.sub(html_pattern, '', cleaned)
+            extracted_urls = {url for url, _ in images}
+            def _remove_if_extracted(match):
+                url = match.group(2) if match.lastindex >= 2 else match.group(1)
+                return '' if url in extracted_urls else match.group(0)
+            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
+            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -828,11 +832,11 @@ class BasePlatformAdapter(ABC):
 
             full_chunk = prefix + chunk_body
 
-            # Walk the chunk line-by-line to determine whether we end
-            # inside an open code block.
+            # Walk only the chunk_body (not the prefix we prepended) to
+            # determine whether we end inside an open code block.
             in_code = carry_lang is not None
             lang = carry_lang or ""
-            for line in full_chunk.split("\n"):
+            for line in chunk_body.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:

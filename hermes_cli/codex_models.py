@@ -62,16 +62,22 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
     if not config_path.exists():
         return None
     try:
-        import tomllib
+        text = config_path.read_text(encoding="utf-8")
     except Exception:
         return None
+    # tomllib is stdlib in 3.11+; fall back to regex for 3.10 compat.
     try:
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        import tomllib
+        payload = tomllib.loads(text)
+        model = payload.get("model") if isinstance(payload, dict) else None
+        if isinstance(model, str) and model.strip():
+            return model.strip()
     except Exception:
-        return None
-    model = payload.get("model") if isinstance(payload, dict) else None
-    if isinstance(model, str) and model.strip():
-        return model.strip()
+        pass
+    import re
+    m = re.search(r'^model\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
     return None
 
 

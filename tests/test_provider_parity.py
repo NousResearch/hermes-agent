@@ -145,7 +145,7 @@ class TestBuildApiKwargsCodex:
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning" in kwargs
-        assert kwargs["reasoning"]["effort"] == "medium"
+        assert kwargs["reasoning"]["effort"] == "xhigh"
 
     def test_includes_encrypted_content_in_include(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
@@ -458,3 +458,172 @@ class TestAuxiliaryClientProviderPriority:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.3-codex"
         assert isinstance(client, CodexAuxiliaryClient)
+
+
+# ── Provider routing tests ───────────────────────────────────────────────────
+
+class TestProviderRouting:
+    """Verify provider_routing config flows into extra_body.provider."""
+
+    def test_sort_throughput(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.provider_sort = "throughput"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["sort"] == "throughput"
+
+    def test_only_providers(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.providers_allowed = ["anthropic", "google"]
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["only"] == ["anthropic", "google"]
+
+    def test_ignore_providers(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.providers_ignored = ["deepinfra"]
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["ignore"] == ["deepinfra"]
+
+    def test_order_providers(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.providers_order = ["anthropic", "together"]
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["order"] == ["anthropic", "together"]
+
+    def test_require_parameters(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.provider_require_parameters = True
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["require_parameters"] is True
+
+    def test_data_collection_deny(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.provider_data_collection = "deny"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["provider"]["data_collection"] == "deny"
+
+    def test_no_routing_when_unset(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "provider" not in kwargs.get("extra_body", {}).get("provider", {}) or \
+               kwargs.get("extra_body", {}).get("provider") is None or \
+               "only" not in kwargs.get("extra_body", {}).get("provider", {})
+
+    def test_combined_routing(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.provider_sort = "latency"
+        agent.providers_ignored = ["deepinfra"]
+        agent.provider_data_collection = "deny"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        prov = kwargs["extra_body"]["provider"]
+        assert prov["sort"] == "latency"
+        assert prov["ignore"] == ["deepinfra"]
+        assert prov["data_collection"] == "deny"
+
+    def test_routing_not_injected_for_codex(self, monkeypatch):
+        """Codex Responses API doesn't use extra_body.provider."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.provider_sort = "throughput"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "extra_body" not in kwargs
+        assert "provider" not in kwargs or kwargs.get("provider") is None
+
+
+# ── Codex reasoning items preflight tests ────────────────────────────────────
+
+class TestCodexReasoningPreflight:
+    """Verify reasoning items pass through preflight normalization."""
+
+    def test_reasoning_item_passes_through(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {"role": "user", "content": "hello"},
+            {"type": "reasoning", "encrypted_content": "abc123encrypted", "id": "r_001"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        normalized = agent._preflight_codex_input_items(raw_input)
+        reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
+        assert reasoning_items[0]["id"] == "r_001"
+
+    def test_reasoning_item_without_id(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {"type": "reasoning", "encrypted_content": "abc123"},
+        ]
+        normalized = agent._preflight_codex_input_items(raw_input)
+        assert len(normalized) == 1
+        assert "id" not in normalized[0]
+
+    def test_reasoning_item_empty_encrypted_skipped(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {"type": "reasoning", "encrypted_content": ""},
+            {"role": "user", "content": "hello"},
+        ]
+        normalized = agent._preflight_codex_input_items(raw_input)
+        reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
+        assert len(reasoning_items) == 0
+
+    def test_reasoning_items_replayed_from_history(self, monkeypatch):
+        """Reasoning items stored in codex_reasoning_items get replayed."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "hi",
+                "codex_reasoning_items": [
+                    {"type": "reasoning", "encrypted_content": "enc123", "id": "r_1"},
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        items = agent._chat_messages_to_responses_input(messages)
+        reasoning_items = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["encrypted_content"] == "enc123"
+
+
+# ── Reasoning effort consistency tests ───────────────────────────────────────
+
+class TestReasoningEffortDefaults:
+    """Verify reasoning effort defaults to xhigh across all provider paths."""
+
+    def test_openrouter_default_xhigh(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        reasoning = kwargs["extra_body"]["reasoning"]
+        assert reasoning["effort"] == "xhigh"
+
+    def test_codex_default_xhigh(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning"]["effort"] == "xhigh"
+
+    def test_codex_reasoning_disabled(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.reasoning_config = {"enabled": False}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "reasoning" not in kwargs
+        assert kwargs["include"] == []
+
+    def test_codex_reasoning_low(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning"]["effort"] == "low"
+
+    def test_openrouter_reasoning_config_override(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"

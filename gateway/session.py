@@ -44,6 +44,7 @@ class SessionSource:
     user_id: Optional[str] = None
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
+    chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     
     @property
     def description(self) -> str:
@@ -75,6 +76,7 @@ class SessionSource:
             "user_id": self.user_id,
             "user_name": self.user_name,
             "thread_id": self.thread_id,
+            "chat_topic": self.chat_topic,
         }
     
     @classmethod
@@ -87,6 +89,7 @@ class SessionSource:
             user_id=data.get("user_id"),
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
+            chat_topic=data.get("chat_topic"),
         )
     
     @classmethod
@@ -154,6 +157,10 @@ def build_session_context_prompt(context: SessionContext) -> str:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
         lines.append(f"**Source:** {platform_name} ({context.source.description})")
+    
+    # Channel topic (if available - provides context about the channel's purpose)
+    if context.source.chat_topic:
+        lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
     # User identity (especially useful for WhatsApp where multiple people DM)
     if context.source.user_name:

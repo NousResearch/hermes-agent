@@ -736,9 +736,13 @@ class BasePlatformAdapter(ABC):
         chat_type: str = "dm",
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        chat_topic: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
+        # Normalize empty topic to None
+        if chat_topic is not None and not chat_topic.strip():
+            chat_topic = None
         return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
@@ -747,6 +751,7 @@ class BasePlatformAdapter(ABC):
             user_id=str(user_id) if user_id else None,
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
+            chat_topic=chat_topic.strip() if chat_topic else None,
         )
     
     @abstractmethod

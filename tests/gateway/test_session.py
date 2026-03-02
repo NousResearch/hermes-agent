@@ -35,6 +35,24 @@ class TestSessionSourceRoundtrip:
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
 
+    def test_full_roundtrip_with_chat_topic(self):
+        """chat_topic should survive to_dict/from_dict roundtrip."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="789",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_id="42",
+            user_name="bob",
+            chat_topic="Planning and coordination for Project X",
+        )
+        d = source.to_dict()
+        assert d["chat_topic"] == "Planning and coordination for Project X"
+
+        restored = SessionSource.from_dict(d)
+        assert restored.chat_topic == "Planning and coordination for Project X"
+        assert restored.chat_name == "Server / #project-planning"
+
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
         d = source.to_dict()
@@ -61,6 +79,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id is None
         assert restored.user_name is None
         assert restored.thread_id is None
+        assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
     def test_invalid_platform_raises(self):
@@ -177,6 +196,52 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Discord" in prompt
+
+    def test_discord_prompt_with_channel_topic(self):
+        """Channel topic should appear in the session context prompt."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_name="alice",
+            chat_topic="Planning and coordination for Project X",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Discord" in prompt
+        assert "**Channel Topic:** Planning and coordination for Project X" in prompt
+
+    def test_prompt_omits_channel_topic_when_none(self):
+        """Channel Topic line should NOT appear when chat_topic is None."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #general",
+            chat_type="group",
+            user_name="alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Channel Topic" not in prompt
 
     def test_local_prompt_mentions_machine(self):
         config = GatewayConfig()

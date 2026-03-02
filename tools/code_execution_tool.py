@@ -20,6 +20,7 @@ Platform: Linux / macOS only (Unix domain sockets). Disabled on Windows.
 import json
 import logging
 import os
+import platform
 import signal
 import socket
 import subprocess
@@ -28,6 +29,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+_IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
 # Availability gate: UDS requires a POSIX OS
@@ -405,7 +408,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=os.setsid,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
@@ -514,7 +517,10 @@ def execute_code(
 def _kill_process_group(proc, escalate: bool = False):
     """Kill the child and its entire process group."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        if _IS_WINDOWS:
+            proc.terminate()
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         try:
             proc.kill()
@@ -527,7 +533,10 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                if _IS_WINDOWS:
+                    proc.kill()
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 try:
                     proc.kill()

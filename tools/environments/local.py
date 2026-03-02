@@ -1,11 +1,14 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
 import os
+import platform
 import shutil
 import signal
 import subprocess
 import threading
 import time
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
 
@@ -74,7 +77,7 @@ class LocalEnvironment(BaseEnvironment):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-                preexec_fn=os.setsid,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
             )
 
             if stdin_data is not None:
@@ -107,12 +110,15 @@ class LocalEnvironment(BaseEnvironment):
             while proc.poll() is None:
                 if _interrupt_event.is_set():
                     try:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pgid, signal.SIGKILL)
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            pgid = os.getpgid(proc.pid)
+                            os.killpg(pgid, signal.SIGTERM)
+                            try:
+                                proc.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(pgid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
                     reader.join(timeout=2)
@@ -122,7 +128,10 @@ class LocalEnvironment(BaseEnvironment):
                     }
                 if time.monotonic() > deadline:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
                     reader.join(timeout=2)

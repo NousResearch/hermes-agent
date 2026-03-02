@@ -990,7 +990,7 @@ class GatewayRunner:
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.
         try:
-            old_entry = self.session_store._sessions.get(session_key)
+            old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
@@ -1222,9 +1222,9 @@ class GatewayRunner:
         if not last_user_msg:
             return "No previous message to retry."
         
-        # Truncate history to before the last user message
+        # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        session_entry.conversation_history = truncated
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -1256,7 +1256,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        session_entry.conversation_history = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
@@ -1330,7 +1330,7 @@ class GatewayRunner:
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
             )
 
-            session_entry.conversation_history = compressed
+            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
 

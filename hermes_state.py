@@ -476,6 +476,17 @@ class SessionDB:
             results.append({**session, "messages": messages})
         return results
 
+    def clear_messages(self, session_id: str) -> None:
+        """Delete all messages for a session and reset its counters."""
+        self._conn.execute(
+            "DELETE FROM messages WHERE session_id = ?", (session_id,)
+        )
+        self._conn.execute(
+            "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+            (session_id,),
+        )
+        self._conn.commit()
+
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages. Returns True if found."""
         cursor = self._conn.execute(

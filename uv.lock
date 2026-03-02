@@ -1034,6 +1034,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
+homeassistant = [
+    { name = "aiohttp" },
+]
 honcho = [
     { name = "honcho-ai" },
 ]
@@ -1060,6 +1063,7 @@ tts-premium = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = ">=3.9.0" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = ">=3.9.0" },
     { name = "croniter", marker = "extra == 'cron'" },
     { name = "discord-py", marker = "extra == 'messaging'", specifier = ">=2.0" },
@@ -1071,6 +1075,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["dev"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["messaging"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["modal"], marker = "extra == 'all'" },
@@ -1103,7 +1108,7 @@ requires-dist = [
     { name = "tenacity" },
     { name = "typer" },
 ]
-provides-extras = ["modal", "dev", "messaging", "cron", "slack", "cli", "tts-premium", "pty", "honcho", "all"]
+provides-extras = ["modal", "dev", "messaging", "cron", "slack", "cli", "tts-premium", "pty", "honcho", "homeassistant", "all"]
 
 [[package]]
 name = "hf-xet"

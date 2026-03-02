@@ -1,0 +1,147 @@
+---
+# =============================================================================
+# Hermes Skill Manifest — nft-market-analyzer
+# =============================================================================
+
+name: nft-market-analyzer
+version: 1.0.0
+description: >
+  Analyzes Solana NFT collections using Magic Eden (marketplace) and Helius
+  (on-chain) APIs. Fetches floor price, 7d/30d volume, holder distribution, and
+  recent sales, then deterministically computes seven risk metrics entirely in
+  shell (jq + bc) before passing structured JSON to Hermes for narrative
+  interpretation. Triggers on any user request to evaluate, score, audit, or
+  analyze an NFT collection; inspect wash trading or holder concentration;
+  assess NFT investment risk; or review on-chain activity for a Solana NFT
+  project. Use this skill even when the user only mentions a collection name
+  alongside words like risk, safe, rug, wash, holders, volume, or floor.
+
+author: hermes-skills
+license: MIT
+
+tags:
+  - solana
+  - nft
+  - defi
+  - risk-analysis
+  - magic-eden
+  - helius
+  - blockchain
+  - on-chain
+  - read-only
+
+related_skills:
+  - wallet-analyzer
+  - defi-pool-monitor
+  - token-risk-scorer
+
+# ---------------------------------------------------------------------------
+# Runtime constraints (enforced by Hermes runtime)
+# ---------------------------------------------------------------------------
+constraints:
+  read_only: true
+  no_transaction_signing: true
+  no_wallet_manipulation: true
+  no_automated_offers: true
+  no_private_keys: true
+  no_trading_automation: true
+
+# ---------------------------------------------------------------------------
+# Required shell dependencies
+# ---------------------------------------------------------------------------
+dependencies:
+  - name: curl
+    min_version: "7.58"
+  - name: jq
+    min_version: "1.6"
+  - name: bc
+  - name: awk
+  - name: date
+
+# ---------------------------------------------------------------------------
+# Environment variables
+# ---------------------------------------------------------------------------
+environment:
+  required:
+    - name: MAGICEDEN_API_KEY
+      description: Magic Eden v2 REST API key (read-only marketplace data)
+      secret: true
+    - name: HELIUS_API_KEY
+      description: Helius API key (DAS + Enriched Transactions, read-only)
+      secret: true
+
+  optional:
+    - name: NFT_REQUEST_TIMEOUT
+      description: Per-request HTTP timeout in seconds
+      default: "15"
+    - name: NFT_MAX_RETRIES
+      description: Maximum retries on 429/5xx responses
+      default: "3"
+    - name: NFT_HOLDER_SAMPLE_SIZE
+      description: Maximum holder records fetched for concentration analysis
+      default: "500"
+    - name: NFT_TRANSFER_LOOKBACK_DAYS
+      description: Days of transfer history inspected for wash-trade detection
+      default: "30"
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+inputs:
+  - name: collection_symbol
+    type: string
+    description: >
+      Magic Eden collection slug (e.g. "degods", "okay_bears", "claynosaurz").
+      Must match pattern [a-z0-9_-]{1,64}.
+    required: true
+    pattern: "^[a-z0-9_\\-]{1,64}$"
+
+  - name: collection_mint_list
+    type: string
+    description: >
+      Optional comma-separated mint addresses or path to newline-delimited file
+      of mints. When omitted, skill resolves mints via Helius DAS API.
+    required: false
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+outputs:
+  - name: analysis_json
+    type: object
+    description: >
+      Structured risk analysis object. Full JSON Schema in docs/output_schema.json.
+    schema_ref: docs/output_schema.json
+
+  - name: llm_interpretation
+    type: string
+    description: >
+      Human-readable risk narrative produced by Hermes from analysis_json.
+      Prompt template: prompts/interpret_analysis.md.
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+entrypoint: scripts/analyze.sh
+
+# ---------------------------------------------------------------------------
+# Hermes skill discovery metadata
+# ---------------------------------------------------------------------------
+discovery:
+  example_queries:
+    - "Analyze the DeGods NFT collection for wash trading"
+    - "What is the risk score for okay_bears?"
+    - "Check holder concentration for claynosaurz"
+    - "Is there wash trading in the SMB Gen2 collection?"
+    - "Give me a risk report for tensorians"
+    - "How risky is the okay_bears collection right now?"
+  trigger_phrases:
+    - nft risk
+    - nft analysis
+    - wash trading
+    - holder concentration
+    - floor price risk
+    - solana nft
+    - magic eden collection
+    - nft audit
+    - collection risk score

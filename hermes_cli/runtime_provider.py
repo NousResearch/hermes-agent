@@ -56,6 +56,7 @@ def _resolve_openrouter_runtime(
     cfg_provider = cfg_provider.strip().lower()
 
     env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    env_novita_base_url = os.getenv("NOVITA_BASE_URL", "").strip()
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
     use_config_base_url = False
@@ -67,6 +68,7 @@ def _resolve_openrouter_runtime(
     base_url = (
         (explicit_base_url or "").strip()
         or env_openai_base_url
+        or env_novita_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
@@ -75,6 +77,7 @@ def _resolve_openrouter_runtime(
     api_key = (
         explicit_api_key
         or os.getenv("OPENAI_API_KEY")
+        or os.getenv("NOVITA_API_KEY")
         or os.getenv("OPENROUTER_API_KEY")
         or ""
     )

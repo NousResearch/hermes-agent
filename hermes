@@ -3,9 +3,10 @@
 Hermes Agent CLI Launcher
 
 This is a convenience wrapper to launch the Hermes CLI.
-Usage: hermes [options]
+Usage: ./hermes [options]
 """
 
 if __name__ == "__main__":
-    from hermes_cli.main import main
-    main()
+    from cli import main
+    import fire
+    fire.Fire(main)

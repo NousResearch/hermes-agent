@@ -1153,6 +1153,7 @@ class AIAgent:
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
                 "system_prompt": self._cached_system_prompt or "",
+                "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }

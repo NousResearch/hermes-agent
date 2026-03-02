@@ -3577,8 +3577,7 @@ class AIAgent:
                         if self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                preview = clean[:120] + "..." if len(clean) > 120 else clean
-                                print(f"  ┊ 💬 {preview}")
+                                print(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)

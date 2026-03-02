@@ -70,9 +70,11 @@ WRITE_DENIED_PREFIXES = [
         os.path.join(_HOME, ".gnupg"),
         os.path.join(_HOME, ".kube"),
         "/etc/sudoers.d",
-        "/etc/systemd",
+    "/etc/systemd",
     ]
 ]
+
+READ_DENIED_BASENAMES = {".env"}
 
 
 def _is_write_denied(path: str) -> bool:
@@ -84,6 +86,14 @@ def _is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
     return False
+
+
+def _is_env_file_path(path: str) -> bool:
+    """Return True if path resolves to a file named '.env' (any directory)."""
+    try:
+        return os.path.basename(os.path.realpath(os.path.expanduser(path))).lower() == ".env"
+    except Exception:
+        return os.path.basename(path).lower() == ".env"
 
 
 # =============================================================================
@@ -539,6 +549,10 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
     
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+        # Block `.env` reads by basename from both POSIX and Windows backends.
+        if _is_env_file_path(path):
+            return ReadResult(error="Access to files named '.env' is disabled for security")
+
         # Windows backend: use native Python/os calls instead of POSIX shell
         # tools like stat/head/sed, which aren't available in PowerShell.
         if os.name == "nt":
@@ -631,6 +645,9 @@ class ShellFileOperations(FileOperations):
         # Resolve to absolute path relative to the current working directory
         # of the terminal backend.
         path = self._resolve_windows_path(path)
+
+        if _is_env_file_path(path):
+            return ReadResult(error="Access to files named '.env' is disabled for security")
         
         if not os.path.exists(path):
             return self._suggest_similar_files(path)
@@ -1132,16 +1149,27 @@ class ShellFileOperations(FileOperations):
         if not os.path.exists(base_path):
             return SearchResult(error=f"Path not found: {base_path}")
 
+        if _is_env_file_path(base_path):
+            return SearchResult(error="Searching '.env' files is disabled for security")
+
         if target == "files":
             search_pattern = pattern
             if not any(ch in search_pattern for ch in ["*", "?", "[", "]"]):
                 search_pattern = f"*{search_pattern}*"
             matches = []
             if os.path.isfile(base_path):
-                matches = [base_path] if fnmatch.fnmatch(os.path.basename(base_path), search_pattern) else []
+                matches = [
+                    base_path
+                ] if (
+                    fnmatch.fnmatch(os.path.basename(base_path), search_pattern)
+                    and not _is_env_file_path(base_path)
+                ) else []
             else:
                 for root, _, files in os.walk(base_path):
                     for name in files:
+                        full = os.path.join(root, name)
+                        if _is_env_file_path(full):
+                            continue
                         if fnmatch.fnmatch(name, search_pattern):
                             full = os.path.join(root, name)
                             matches.append((full, os.path.getmtime(full)))
@@ -1163,6 +1191,8 @@ class ShellFileOperations(FileOperations):
             for root, _, files in os.walk(base_path):
                 for name in files:
                     if file_glob and not fnmatch.fnmatch(name, file_glob):
+                        continue
+                    if _is_env_file_path(os.path.join(root, name)):
                         continue
                     files_to_scan.append(os.path.join(root, name))
 
@@ -1224,15 +1254,22 @@ class ShellFileOperations(FileOperations):
         # Use find with modification time sorting
         # -printf '%T@ %p\n' outputs: timestamp path
         # sort -rn sorts by timestamp descending (newest first)
-        cmd = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | tail -n +{offset + 1} | head -n {limit}"
+        cmd = (
+            f"find {self._escape_shell_arg(path)} -type f -name "
+            f"{self._escape_shell_arg(search_pattern)} ! -name '.env' "
+            f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn | "
+            f"tail -n +{offset + 1} | head -n {limit}"
+        )
         
         result = self._exec(cmd, timeout=60)
         
         if result.exit_code != 0 and not result.stdout.strip():
             # Try without -printf (BSD find compatibility)
-            cmd_simple = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
-                        f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
+            cmd_simple = (
+                f"find {self._escape_shell_arg(path)} -type f -name "
+                f"{self._escape_shell_arg(search_pattern)} ! -name '.env' "
+                f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
+            )
             result = self._exec(cmd_simple, timeout=60)
         
         files = []
@@ -1242,9 +1279,11 @@ class ShellFileOperations(FileOperations):
             # Parse "timestamp path" format
             parts = line.split(' ', 1)
             if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
+                if not _is_env_file_path(parts[1]):
+                    files.append(parts[1])
             else:
-                files.append(line)
+                if not _is_env_file_path(line):
+                    files.append(line)
         
         return SearchResult(
             files=files,
@@ -1254,6 +1293,9 @@ class ShellFileOperations(FileOperations):
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
+        if _is_env_file_path(path):
+            return SearchResult(error="Searching '.env' files is disabled for security")
+
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
@@ -1280,6 +1322,7 @@ class ShellFileOperations(FileOperations):
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+        cmd_parts.extend(["--glob", self._escape_shell_arg("!.env")])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -1302,7 +1345,10 @@ class ShellFileOperations(FileOperations):
         
         # Parse results based on output mode
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [
+                f for f in result.stdout.strip().split('\n')
+                if f and not _is_env_file_path(f)
+            ]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
@@ -1313,6 +1359,8 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
+                        if _is_env_file_path(parts[0]):
+                            continue
                         try:
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
@@ -1333,6 +1381,8 @@ class ShellFileOperations(FileOperations):
                 parts = line.split(':', 2)
                 if len(parts) >= 3:
                     try:
+                        if _is_env_file_path(parts[0]):
+                            continue
                         matches.append(SearchMatch(
                             path=parts[0],
                             line_number=int(parts[1]),
@@ -1348,6 +1398,8 @@ class ShellFileOperations(FileOperations):
                     parts = line.split('-', 2)
                     if len(parts) >= 3:
                         try:
+                            if _is_env_file_path(parts[0]):
+                                continue
                             matches.append(SearchMatch(
                                 path=parts[0],
                                 line_number=int(parts[1]),
@@ -1376,6 +1428,7 @@ class ShellFileOperations(FileOperations):
         # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
+        cmd_parts.extend(["--exclude", self._escape_shell_arg(".env")])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -1395,7 +1448,10 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
         
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [
+                f for f in result.stdout.strip().split('\n')
+                if f and not _is_env_file_path(f)
+            ]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
@@ -1406,6 +1462,8 @@ class ShellFileOperations(FileOperations):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
+                        if _is_env_file_path(parts[0]):
+                            continue
                         try:
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
@@ -1424,6 +1482,8 @@ class ShellFileOperations(FileOperations):
                 parts = line.split(':', 2)
                 if len(parts) >= 3:
                     try:
+                        if _is_env_file_path(parts[0]):
+                            continue
                         matches.append(SearchMatch(
                             path=parts[0],
                             line_number=int(parts[1]),
@@ -1437,6 +1497,8 @@ class ShellFileOperations(FileOperations):
                     parts = line.split('-', 2)
                     if len(parts) >= 3:
                         try:
+                            if _is_env_file_path(parts[0]):
+                                continue
                             matches.append(SearchMatch(
                                 path=parts[0],
                                 line_number=int(parts[1]),

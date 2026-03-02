@@ -107,7 +107,7 @@ class ReadResult:
     similar_files: List[str] = field(default_factory=list)
     
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v is not None and v != [] and v != ""}
+        return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
 
 
 @dataclass

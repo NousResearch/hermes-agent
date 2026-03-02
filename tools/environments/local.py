@@ -9,28 +9,84 @@ import time
 
 from tools.environments.base import BaseEnvironment
 
+# Unique marker to isolate real command output from shell init/exit noise.
+# printf (no trailing newline) keeps the boundaries clean for splitting.
+_OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
+
 # Noise lines emitted by interactive shells when stdin is not a terminal.
-# Filtered from output to keep tool results clean.
+# Used as a fallback when output fence markers are missing.
 _SHELL_NOISE_SUBSTRINGS = (
+    # bash
     "bash: cannot set terminal process group",
     "bash: no job control in this shell",
     "no job control in this shell",
     "cannot set terminal process group",
     "tcsetattr: Inappropriate ioctl for device",
+    # zsh / oh-my-zsh / macOS terminal session
+    "Restored session:",
+    "Saving session...",
+    "Last login:",
+    "command not found:",
+    "Oh My Zsh",
+    "compinit:",
 )
 
 
 def _clean_shell_noise(output: str) -> str:
-    """Strip shell startup warnings that leak when using -i without a TTY.
+    """Strip shell startup/exit warnings that leak when using -i without a TTY.
 
-    Removes all leading lines that match known noise patterns, not just the first.
-    Some environments emit multiple noise lines (e.g. Docker, non-TTY sessions).
+    Removes lines matching known noise patterns from both the beginning
+    and end of the output.  Lines in the middle are left untouched.
     """
+
+    def _is_noise(line: str) -> bool:
+        return any(noise in line for noise in _SHELL_NOISE_SUBSTRINGS)
+
     lines = output.split("\n")
-    # Strip all leading noise lines
-    while lines and any(noise in lines[0] for noise in _SHELL_NOISE_SUBSTRINGS):
+
+    # Strip leading noise
+    while lines and _is_noise(lines[0]):
         lines.pop(0)
-    return "\n".join(lines)
+
+    # Strip trailing noise (walk backwards, skip empty lines from split)
+    end = len(lines) - 1
+    while end >= 0 and (not lines[end] or _is_noise(lines[end])):
+        end -= 1
+
+    if end < 0:
+        return ""
+
+    cleaned = lines[: end + 1]
+    result = "\n".join(cleaned)
+
+    # Preserve trailing newline if original had one
+    if output.endswith("\n") and result and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _extract_fenced_output(raw: str) -> str:
+    """Extract real command output from between fence markers.
+
+    The execute() method wraps each command with printf(FENCE) markers.
+    This function finds the first and last fence and returns only the
+    content between them, which is the actual command output free of
+    any shell init/exit noise.
+
+    Falls back to pattern-based _clean_shell_noise if fences are missing.
+    """
+    first = raw.find(_OUTPUT_FENCE)
+    if first == -1:
+        return _clean_shell_noise(raw)
+
+    start = first + len(_OUTPUT_FENCE)
+    last = raw.rfind(_OUTPUT_FENCE)
+
+    if last <= first:
+        # Only start fence found (e.g. user command called `exit`)
+        return _clean_shell_noise(raw[start:])
+
+    return raw[start:last]
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -64,8 +120,17 @@ class LocalEnvironment(BaseEnvironment):
             # -l alone isn't enough: .profile sources .bashrc, but the guard
             # returns early because the shell isn't interactive.
             user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+            # Wrap with output fences so we can later extract the real
+            # command output and discard shell init/exit noise.
+            fenced_cmd = (
+                f"printf '{_OUTPUT_FENCE}';"
+                f" {exec_command};"
+                f" __hermes_rc=$?;"
+                f" printf '{_OUTPUT_FENCE}';"
+                f" exit $__hermes_rc"
+            )
             proc = subprocess.Popen(
-                [user_shell, "-lic", exec_command],
+                [user_shell, "-lic", fenced_cmd],
                 text=True,
                 cwd=work_dir,
                 env=os.environ | self.env,
@@ -130,7 +195,7 @@ class LocalEnvironment(BaseEnvironment):
                 time.sleep(0.2)
 
             reader.join(timeout=5)
-            output = _clean_shell_noise("".join(_output_chunks))
+            output = _extract_fenced_output("".join(_output_chunks))
             return {"output": output, "returncode": proc.returncode}
 
         except Exception as e:

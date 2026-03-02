@@ -5,6 +5,7 @@ Hermes CLI - Main entry point.
 Usage:
     hermes                     # Interactive chat (default)
     hermes chat                # Interactive chat
+    hermes bridge              # JSONL stdio bridge mode for embedding
     hermes gateway             # Run gateway in foreground
     hermes gateway start       # Start gateway as service
     hermes gateway stop        # Stop gateway service
@@ -159,6 +160,12 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     
     cli_main(**kwargs)
+
+
+def cmd_bridge(args):
+    """Run Hermes in JSONL stdio bridge mode."""
+    from hermes_cli.bridge import bridge_command
+    return bridge_command(args)
 
 
 def cmd_gateway(args):
@@ -363,7 +370,7 @@ def cmd_model(args):
         _model_flow_custom(config)
 
 
-def _prompt_provider_choice(choices):
+def _prompt_provider_choice(choices: list[str]) -> Optional[int]:
     """Show provider selection menu. Returns index or None."""
     try:
         from simple_term_menu import TerminalMenu
@@ -375,7 +382,12 @@ def _prompt_provider_choice(choices):
             cycle_cursor=True, clear_screen=False,
             title="Select provider:",
         )
-        idx = menu.show()
+        idx_raw = menu.show()
+        idx: Optional[int]
+        if isinstance(idx_raw, tuple):
+            idx = idx_raw[0] if idx_raw else None
+        else:
+            idx = idx_raw
         print()
         return idx
     except (ImportError, NotImplementedError):
@@ -795,6 +807,7 @@ def main():
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
+    hermes bridge                 Run JSONL stdio bridge
     hermes --continue             Resume the most recent session
     hermes --resume <session_id>  Resume a specific session
     hermes setup                  Run setup wizard
@@ -879,6 +892,94 @@ For more help on a command:
         help="Resume the most recent CLI session"
     )
     chat_parser.set_defaults(func=cmd_chat)
+
+    # =========================================================================
+    # bridge command
+    # =========================================================================
+    bridge_parser = subparsers.add_parser(
+        "bridge",
+        help="Run JSONL stdio bridge for embedding Hermes",
+        description="Read JSON requests from stdin and emit JSON events to stdout"
+    )
+    bridge_parser.add_argument(
+        "--model",
+        help="Default model to use when request does not override"
+    )
+    bridge_parser.add_argument(
+        "--base-url",
+        dest="base_url",
+        help="Default OpenAI-compatible base URL"
+    )
+    bridge_parser.add_argument(
+        "--api-key",
+        dest="api_key",
+        help="Default API key (otherwise loaded from environment/config)"
+    )
+    bridge_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Default max tool-calling iterations"
+    )
+    bridge_parser.add_argument(
+        "--toolsets",
+        help="Default comma-separated toolsets"
+    )
+    bridge_parser.add_argument(
+        "--disabled-toolsets",
+        dest="disabled_toolsets",
+        help="Default comma-separated disabled toolsets"
+    )
+    bridge_parser.add_argument(
+        "--cwd",
+        help="Default working directory for requests that omit cwd"
+    )
+    bridge_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process a single request and exit"
+    )
+    bridge_parser.add_argument(
+        "--assistant-delta",
+        action="store_true",
+        help="Enable assistant_delta streaming events (native when available, synthetic fallback otherwise)"
+    )
+    bridge_parser.add_argument(
+        "--assistant-delta-chunk-size",
+        type=int,
+        default=120,
+        help="Chunk size for synthetic assistant_delta fallback conversion"
+    )
+    bridge_parser.add_argument(
+        "--native-assistant-delta",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pass through native assistant_delta events from agent (default: on)"
+    )
+    bridge_parser.add_argument(
+        "--native-stream",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable model-native stream=True generation in the underlying agent"
+    )
+    bridge_parser.add_argument(
+        "--stream-first-chunk-timeout-ms",
+        type=int,
+        default=None,
+        help="Timeout waiting for first native stream chunk (milliseconds)"
+    )
+    bridge_parser.add_argument(
+        "--stream-idle-timeout-ms",
+        type=int,
+        default=None,
+        help="Max idle time between native stream chunks (milliseconds)"
+    )
+    bridge_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging in the underlying agent"
+    )
+    bridge_parser.set_defaults(func=cmd_bridge)
 
     # =========================================================================
     # model command

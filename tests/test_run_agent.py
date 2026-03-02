@@ -758,3 +758,136 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+
+
+def _stream_tool_fragment(index=0, call_id=None, name=None, arguments=None, call_type="function"):
+    fn = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(index=index, id=call_id, type=call_type, function=fn)
+
+
+def _stream_chunk(*, content=None, tool_calls=None, finish_reason=None, usage=None, reasoning=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning=reasoning)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice], usage=usage)
+
+
+class TestRunConversationNativeStreaming:
+    def _setup_streaming_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.enable_native_streaming = True
+        agent.emit_assistant_delta_events = True
+
+    def test_stream_text_only_final_turn(self, agent):
+        self._setup_streaming_agent(agent)
+        events = []
+        agent.event_callback = lambda evt: events.append(evt)
+
+        def stream_call(_kwargs, on_chunk):
+            on_chunk(_stream_chunk(content="Hello "))
+            on_chunk(_stream_chunk(content="world", finish_reason="stop", usage={"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}))
+
+        with (
+            patch.object(agent, "_interruptible_stream_call", side_effect=stream_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Hello world"
+        delta_types = [evt["type"] for evt in events if evt.get("type") in {"assistant_delta", "assistant_message_end", "assistant_message"}]
+        assert "assistant_delta" in delta_types
+        assert "assistant_message_end" in delta_types
+        assert "assistant_message" in delta_types
+
+    def test_stream_tool_call_with_fragmented_args(self, agent):
+        self._setup_streaming_agent(agent)
+
+        def stream_call(_kwargs, on_chunk):
+            # Turn 1: tool call assembly
+            if not hasattr(stream_call, "count"):
+                stream_call.count = 0
+            stream_call.count += 1
+            if stream_call.count == 1:
+                on_chunk(
+                    _stream_chunk(
+                        tool_calls=[_stream_tool_fragment(index=0, call_id="c1", name="web_search", arguments='{"q":"he')]
+                    )
+                )
+                on_chunk(
+                    _stream_chunk(
+                        tool_calls=[_stream_tool_fragment(index=0, arguments='rmes"}')],
+                        finish_reason="tool_calls",
+                    )
+                )
+                return
+
+            # Turn 2: final response
+            on_chunk(_stream_chunk(content="Done", finish_reason="stop"))
+
+        with (
+            patch.object(agent, "_interruptible_stream_call", side_effect=stream_call),
+            patch("run_agent.handle_function_call", return_value="search result") as mock_tool,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search")
+
+        assert result["final_response"] == "Done"
+        mock_tool.assert_called_once()
+        assert mock_tool.call_args[0][0] == "web_search"
+        assert mock_tool.call_args[0][1] == {"q": "hermes"}
+
+    def test_stream_interrupted_mid_generation(self, agent):
+        self._setup_streaming_agent(agent)
+
+        with (
+            patch.object(agent, "_interruptible_stream_call", side_effect=InterruptedError("stop")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["interrupted"] is True
+
+    def test_stream_finish_reason_length_returns_partial(self, agent):
+        self._setup_streaming_agent(agent)
+
+        def stream_call(_kwargs, on_chunk):
+            on_chunk(_stream_chunk(content="truncated", finish_reason="length"))
+
+        with (
+            patch.object(agent, "_interruptible_stream_call", side_effect=stream_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result.get("failed") is True
+        assert "truncated" in (result.get("error") or "")
+
+    def test_stream_usage_capture_updates_context_compressor(self, agent):
+        self._setup_streaming_agent(agent)
+
+        def stream_call(_kwargs, on_chunk):
+            on_chunk(_stream_chunk(content="ok", finish_reason="stop", usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}))
+
+        with (
+            patch.object(agent, "_interruptible_stream_call", side_effect=stream_call),
+            patch.object(agent.context_compressor, "update_from_response") as mock_update,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        mock_update.assert_called_once()

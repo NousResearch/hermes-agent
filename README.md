@@ -349,6 +349,7 @@ Toggle at runtime in the CLI with `/verbose` (cycles through all four modes).
 # Chat
 hermes                    # Interactive chat (default)
 hermes chat -q "Hello"    # Single query mode
+hermes bridge             # JSONL stdio bridge for host integrations
 hermes --continue         # Resume the most recent session (-c)
 hermes --resume <id>      # Resume a specific session (-r)
 
@@ -384,6 +385,37 @@ hermes cron status        # Check if cron scheduler is running
 hermes pairing list       # View/manage DM pairing codes
 hermes version            # Show version info
 ```
+
+### `hermes bridge` JSONL protocol (quick reference)
+
+`hermes bridge` reads one JSON request per stdin line and emits one JSON event per stdout line.
+
+**Sample requests**
+```jsonl
+{"type":"run","request_id":"req-1","session_id":"sess-1","message":"Summarize README.md","cwd":"D:/hermes-agent","assistant_delta":true,"assistant_delta_chunk_size":80,"native_stream":true,"native_assistant_delta":true}
+{"type":"interrupt","request_id":"req-2","session_id":"sess-1","message":"stop now"}
+{"type":"shutdown","request_id":"req-3"}
+```
+
+**Sample events**
+```jsonl
+{"type":"session","request_id":"req-1","session_id":"sess-1"}
+{"type":"assistant_delta","request_id":"req-1","session_id":"sess-1","delta":"First chunk...","delta_index":1,"native":true}
+{"type":"assistant_message_end","request_id":"req-1","session_id":"sess-1","delta_chunks":3,"native":true}
+{"type":"assistant_message","request_id":"req-1","session_id":"sess-1","content":"Full normalized assistant turn","has_tool_calls":false}
+{"type":"final","request_id":"req-1","session_id":"sess-1","text":"Done","api_calls":2,"completed":true}
+{"type":"interrupt_ack","request_id":"req-2","session_id":"sess-1","accepted":true}
+```
+
+`assistant_delta` delivery modes:
+- **Non-streaming** (`assistant_delta=false`, default): emits full-turn `assistant_message` events (no deltas).
+- **Native streaming** (`assistant_delta=true`, `native_stream=true`, `native_assistant_delta=true`): emits model-native `assistant_delta` (`native=true`) followed by `assistant_message_end`, then normalized `assistant_message`.
+- **Synthetic fallback** (`assistant_delta=true` but no native deltas available): bridge chunks a completed `assistant_message` into synthetic `assistant_delta` (`native=false`) + `assistant_message_end`. To avoid duplicate text, `assistant_message` is suppressed for that turn.
+
+Per-turn ordering is deterministic within each mode:
+- Native streaming: `assistant_delta*` → `assistant_message_end` → `assistant_message` → tool events (if any) → `final`.
+- Non-streaming: `assistant_message` → tool events (if any) → `final`.
+- Synthetic fallback: `assistant_delta*` → `assistant_message_end` → tool events (if any) → `final`.
 
 ### CLI Commands (inside chat)
 

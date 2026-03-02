@@ -30,8 +30,10 @@ import re
 import sys
 import time
 import threading
+import queue
 import uuid
-from typing import List, Dict, Any, Optional
+from types import SimpleNamespace
+from typing import List, Dict, Any, Optional, Callable, cast
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -104,34 +106,39 @@ class AIAgent:
     
     def __init__(
         self,
-        base_url: str = None,
-        api_key: str = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
-        ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt: Optional[str] = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
-        provider_sort: str = None,
-        session_id: str = None,
-        tool_progress_callback: callable = None,
-        clarify_callback: callable = None,
-        max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
-        platform: str = None,
+        providers_allowed: Optional[List[str]] = None,
+        providers_ignored: Optional[List[str]] = None,
+        providers_order: Optional[List[str]] = None,
+        provider_sort: Optional[str] = None,
+        session_id: Optional[str] = None,
+        tool_progress_callback: Optional[Callable[[str, str], None]] = None,
+        clarify_callback: Optional[Callable[..., str]] = None,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_config: Optional[Dict[str, Any]] = None,
+        prefill_messages: Optional[List[Dict[str, Any]]] = None,
+        platform: Optional[str] = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
-        honcho_session_key: str = None,
+        honcho_session_key: Optional[str] = None,
+        enable_native_streaming: bool = False,
+        emit_assistant_delta_events: bool = True,
+        stream_first_chunk_timeout: Optional[float] = 30.0,
+        stream_idle_timeout: Optional[float] = 120.0,
     ):
         """
         Initialize the AI Agent.
@@ -158,6 +165,9 @@ class AIAgent:
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
+            event_callback (callable): Optional callback(event_dict) invoked with structured
+                lifecycle events (conversation start/end, assistant messages, tool events, errors).
+                Useful for embedding Hermes in external hosts without parsing terminal output.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "xhigh"} for OpenRouter. Set to disable/customize reasoning.
@@ -171,6 +181,11 @@ class AIAgent:
                 polluting trajectories with user-specific persona or project instructions.
             honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
+            enable_native_streaming (bool): Enable model-native stream=True chat completions.
+                Default False for conservative rollout.
+            emit_assistant_delta_events (bool): Emit assistant_delta events while streaming.
+            stream_first_chunk_timeout (float): Seconds to wait for first stream chunk before timing out.
+            stream_idle_timeout (float): Max idle seconds between stream chunks before timing out.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -195,6 +210,8 @@ class AIAgent:
             )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
+        self.event_callback = event_callback
+        self._active_request_id = None
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -219,6 +236,10 @@ class AIAgent:
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (xhigh for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+        self.enable_native_streaming = bool(enable_native_streaming)
+        self.emit_assistant_delta_events = bool(emit_assistant_delta_events)
+        self.stream_first_chunk_timeout = stream_first_chunk_timeout
+        self.stream_idle_timeout = stream_idle_timeout
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
@@ -318,8 +339,8 @@ class AIAgent:
         
         # Get available tools with filtering
         self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
+            enabled_toolsets=cast(List[str], enabled_toolsets),
+            disabled_toolsets=cast(List[str], disabled_toolsets),
             quiet_mode=self.quiet_mode,
         )
         
@@ -515,6 +536,36 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    def _make_json_safe(self, value: Any):
+        """Best-effort conversion to JSON-serializable primitives."""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): self._make_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._make_json_safe(v) for v in value]
+        return str(value)
+
+    def _emit_event(self, event_type: str, **payload) -> None:
+        """Emit a structured lifecycle event to the optional callback."""
+        if not self.event_callback:
+            return
+
+        request_id = payload.get("request_id", self._active_request_id)
+        event: Dict[str, Any] = {
+            "type": event_type,
+            "session_id": self.session_id,
+            "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+        }
+        if request_id is not None:
+            event["request_id"] = self._make_json_safe(request_id)
+        if payload:
+            event.update({k: self._make_json_safe(v) for k, v in payload.items()})
+        try:
+            self.event_callback(event)
+        except Exception as cb_err:
+            logger.debug("Event callback error for %s: %s", event_type, cb_err)
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any <think></think> blocks.
@@ -600,7 +651,7 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _persist_session(self, messages: List[Dict[str, Any]], conversation_history: Optional[List[Dict[str, Any]]] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
@@ -609,21 +660,14 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
-    def _log_msg_to_db(self, msg: Dict):
+    def _log_msg_to_db(self, msg: Dict[str, Any]):
         """Log a single message to SQLite immediately. Called after each messages.append()."""
         if not self._session_db:
             return
         try:
             role = msg.get("role", "unknown")
             content = msg.get("content")
-            tool_calls_data = None
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                tool_calls_data = [
-                    {"name": tc.function.name, "arguments": tc.function.arguments}
-                    for tc in msg.tool_calls
-                ]
-            elif isinstance(msg.get("tool_calls"), list):
-                tool_calls_data = msg["tool_calls"]
+            tool_calls_data = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else None
             self._session_db.append_message(
                 session_id=self.session_id,
                 role=role,
@@ -636,7 +680,11 @@ class AIAgent:
         except Exception as e:
             logger.debug("Session DB log_msg failed: %s", e)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(
+        self,
+        messages: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Persist any un-logged messages to the SQLite session store.
 
         Called both at the normal end of run_conversation and from every early-
@@ -650,14 +698,7 @@ class AIAgent:
             for msg in messages[start_idx:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
-                tool_calls_data = None
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
+                tool_calls_data = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else None
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -670,7 +711,7 @@ class AIAgent:
         except Exception as e:
             logger.debug("Session DB append_message failed: %s", e)
 
-    def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
+    def _get_messages_up_to_last_assistant(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Get messages up to (but not including) the last assistant turn.
         
@@ -997,7 +1038,7 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: Optional[List[Dict[str, Any]]] = None):
         """
         Save the full raw session to a JSON file.
 
@@ -1040,7 +1081,7 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
     
-    def interrupt(self, message: str = None) -> None:
+    def interrupt(self, message: Optional[str] = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -1155,6 +1196,8 @@ class AIAgent:
         """
         if not content or not content.strip():
             return json.dumps({"success": False, "error": "Content cannot be empty."})
+        if not self._honcho or not self._honcho_session_key:
+            return json.dumps({"success": False, "error": "Honcho is not configured for this session."})
         try:
             session = self._honcho.get_or_create(self._honcho_session_key)
             session.add_message("user", f"[observation] {content.strip()}")
@@ -1180,7 +1223,7 @@ class AIAgent:
         except Exception as e:
             logger.debug("Honcho sync failed (non-fatal): %s", e)
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt(self, system_message: Optional[str] = None) -> str:
         """
         Assemble the full system prompt from all layers.
         
@@ -1257,16 +1300,17 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
-    def _interruptible_api_call(self, api_kwargs: dict):
-        """
-        Run the API call in a background thread so the main conversation loop
-        can detect interrupts without waiting for the full HTTP round-trip.
-        
-        On interrupt, closes the HTTP client to cancel the in-flight request
-        (stops token generation and avoids wasting money), then rebuilds the
-        client for future calls.
-        """
-        result = {"response": None, "error": None}
+    def _obj_get(self, obj: Any, key: str, default: Any = None) -> Any:
+        """Read a field from either a dict-like or attribute object."""
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    def _interruptible_non_stream_call(self, api_kwargs: dict):
+        """Run the (legacy) non-streaming API call in a background thread with interrupt support."""
+        result: Dict[str, Any] = {"response": None, "error": None}
 
         def _call():
             try:
@@ -1294,7 +1338,220 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _interruptible_stream_call(self, api_kwargs: dict, on_chunk: Callable[[Any], None]) -> None:
+        """Run a streaming API call with interrupt and timeout handling."""
+        q: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+
+        def _stream_worker() -> None:
+            stream_obj = None
+            try:
+                stream_obj = self.client.chat.completions.create(**api_kwargs)
+                for chunk in stream_obj:
+                    q.put(("chunk", chunk))
+                q.put(("done", None))
+            except Exception as e:
+                q.put(("error", e))
+            finally:
+                if stream_obj is not None:
+                    try:
+                        close_fn = getattr(stream_obj, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                    except Exception:
+                        pass
+
+        t = threading.Thread(target=_stream_worker, daemon=True)
+        t.start()
+
+        start_ts = time.time()
+        last_chunk_ts = start_ts
+        first_chunk_seen = False
+
+        while True:
+            if self._interrupt_requested:
+                # Close connection
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+                # Rebuild the client for future calls (cheap, no network)
+                try:
+                    self.client = OpenAI(**self._client_kwargs)
+                except Exception:
+                    pass
+                raise InterruptedError("Agent interrupted during streaming API call")
+
+            try:
+                kind, payload = q.get(timeout=0.2)
+            except queue.Empty:
+                now = time.time()
+                if (not first_chunk_seen and self.stream_first_chunk_timeout is not None
+                        and (now - start_ts) > float(self.stream_first_chunk_timeout)):
+                    try:
+                        self.client.close()
+                    except Exception:
+                        pass
+                    raise TimeoutError(
+                        f"No first stream chunk received within {self.stream_first_chunk_timeout}s"
+                    )
+                if (first_chunk_seen and self.stream_idle_timeout is not None
+                        and (now - last_chunk_ts) > float(self.stream_idle_timeout)):
+                    try:
+                        self.client.close()
+                    except Exception:
+                        pass
+                    raise TimeoutError(
+                        f"Stream idle timeout after {self.stream_idle_timeout}s without chunks"
+                    )
+                continue
+
+            if kind == "chunk":
+                first_chunk_seen = True
+                last_chunk_ts = time.time()
+                on_chunk(payload)
+                continue
+            if kind == "error":
+                raise payload
+            if kind == "done":
+                return
+
+    def _interruptible_api_call(self, api_kwargs: dict):
+        """Backward-compatible non-stream call wrapper."""
+        return self._interruptible_non_stream_call(api_kwargs)
+
+    def _init_stream_turn_state(self) -> Dict[str, Any]:
+        # trying to support different providers/models
+        return {
+            "content_parts": [],
+            "reasoning_parts": [],
+            "reasoning_details": [],
+            "tool_calls_by_index": {},
+            "finish_reason": None,
+            "usage": None,
+            "delta_chunks": 0,
+        }
+
+    def _accumulate_tool_call_fragment(self, state: Dict[str, Any], tool_call_fragment: Any) -> None:
+        idx = self._obj_get(tool_call_fragment, "index")
+        if idx is None:
+            idx = len(state["tool_calls_by_index"])
+
+        entry = state["tool_calls_by_index"].setdefault(idx, {
+            "id": None,
+            "type": "function",
+            "name": None,
+            "arguments": "",
+        })
+
+        call_id = self._obj_get(tool_call_fragment, "id")
+        if call_id:
+            entry["id"] = call_id
+
+        call_type = self._obj_get(tool_call_fragment, "type")
+        if call_type:
+            entry["type"] = call_type
+
+        fn_delta = self._obj_get(tool_call_fragment, "function")
+        if fn_delta:
+            fn_name = self._obj_get(fn_delta, "name")
+            if fn_name:
+                entry["name"] = fn_name
+            args_delta = self._obj_get(fn_delta, "arguments")
+            if isinstance(args_delta, str):
+                entry["arguments"] += args_delta
+
+    def _consume_stream_chunk(self, chunk: Any, state: Dict[str, Any], *, request_id: Optional[str] = None) -> None:
+        usage = self._obj_get(chunk, "usage")
+        if usage is not None:
+            state["usage"] = usage
+
+        choices = self._obj_get(chunk, "choices") or []
+        if not choices:
+            return
+
+        choice = choices[0]
+        finish_reason = self._obj_get(choice, "finish_reason")
+        if finish_reason:
+            state["finish_reason"] = finish_reason
+
+        delta = self._obj_get(choice, "delta")
+        if delta is None:
+            return
+
+        text_delta = self._obj_get(delta, "content")
+        if isinstance(text_delta, str) and text_delta:
+            state["content_parts"].append(text_delta)
+            if self.emit_assistant_delta_events:
+                state["delta_chunks"] += 1
+                self._emit_event(
+                    "assistant_delta",
+                    request_id=request_id,
+                    delta=text_delta,
+                    delta_index=state["delta_chunks"],
+                    native=True,
+                )
+
+        reasoning_delta = self._obj_get(delta, "reasoning_content")
+        if reasoning_delta is None:
+            reasoning_delta = self._obj_get(delta, "reasoning")
+        if isinstance(reasoning_delta, str) and reasoning_delta:
+            state["reasoning_parts"].append(reasoning_delta)
+
+        reasoning_details_delta = self._obj_get(delta, "reasoning_details")
+        if isinstance(reasoning_details_delta, list):
+            state["reasoning_details"].extend(
+                d for d in reasoning_details_delta if isinstance(d, dict)
+            )
+
+        tool_calls_delta = self._obj_get(delta, "tool_calls")
+        if isinstance(tool_calls_delta, list):
+            for tc in tool_calls_delta:
+                self._accumulate_tool_call_fragment(state, tc)
+
+    def _finalize_stream_turn(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        content = "".join(state["content_parts"])
+        reasoning = "\\n".join(part for part in state["reasoning_parts"] if isinstance(part, str)).strip() or None
+
+        tool_calls = []
+        for idx in sorted(state["tool_calls_by_index"].keys()):
+            entry = state["tool_calls_by_index"][idx]
+            call_id = entry.get("id") or f"stream_tool_{idx}"
+            call_type = entry.get("type") or "function"
+            fn_name = entry.get("name") or "unknown"
+            args = entry.get("arguments") or ""
+            if not isinstance(args, str):
+                args = json.dumps(args)
+            if not args.strip():
+                args = "{}"
+
+            tool_calls.append(
+                SimpleNamespace(
+                    id=call_id,
+                    type=call_type,
+                    function=SimpleNamespace(name=fn_name, arguments=args),
+                )
+            )
+
+        assistant_message = SimpleNamespace(
+            content=content,
+            tool_calls=tool_calls,
+            reasoning=reasoning,
+        )
+        if state["reasoning_details"]:
+            assistant_message.reasoning_details = state["reasoning_details"]
+
+        usage = state.get("usage")
+        if isinstance(usage, dict):
+            usage = SimpleNamespace(**usage)
+
+        return {
+            "assistant_message": assistant_message,
+            "finish_reason": state.get("finish_reason"),
+            "usage": usage,
+            "delta_chunks": int(state.get("delta_chunks", 0) or 0),
+        }
+
+    def _build_api_kwargs(self, api_messages: list, *, stream: bool = False) -> dict:
         """Build the keyword arguments dict for the chat completions API call."""
         provider_preferences = {}
         if self.providers_allowed:
@@ -1312,6 +1569,9 @@ class AIAgent:
             "tools": self.tools if self.tools else None,
             "timeout": 900.0,
         }
+
+        if stream:
+            api_kwargs["stream"] = True
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -1342,7 +1602,7 @@ class AIAgent:
 
         return api_kwargs
 
-    def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
+    def _build_assistant_message(self, assistant_message, finish_reason: Optional[str]) -> dict:
         """Build a normalized assistant message dict from an API response message.
 
         Handles reasoning extraction, reasoning_details, and optional tool_calls
@@ -1356,34 +1616,36 @@ class AIAgent:
 
         msg = {
             "role": "assistant",
-            "content": assistant_message.content or "",
+            "content": (self._obj_get(assistant_message, "content") or ""),
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
         }
 
-        if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+        reasoning_details = self._obj_get(assistant_message, "reasoning_details")
+        if reasoning_details:
             msg["reasoning_details"] = [
                 {"type": d.get("type"), "text": d.get("text"), "signature": d.get("signature")}
-                for d in assistant_message.reasoning_details
+                for d in reasoning_details
                 if isinstance(d, dict)
             ]
 
-        if assistant_message.tool_calls:
+        tool_calls = self._obj_get(assistant_message, "tool_calls") or []
+        if tool_calls:
             msg["tool_calls"] = [
                 {
-                    "id": tool_call.id,
-                    "type": tool_call.type,
+                    "id": self._obj_get(tool_call, "id"),
+                    "type": self._obj_get(tool_call, "type"),
                     "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
+                        "name": self._obj_get(self._obj_get(tool_call, "function"), "name"),
+                        "arguments": self._obj_get(self._obj_get(tool_call, "function"), "arguments")
                     }
                 }
-                for tool_call in assistant_message.tool_calls
+                for tool_call in tool_calls
             ]
 
         return msg
 
-    def flush_memories(self, messages: list = None, min_turns: int = None):
+    def flush_memories(self, messages: Optional[list] = None, min_turns: Optional[int] = None):
         """Give the model one turn to persist memories before context is lost.
 
         Called before compression, session reset, or CLI exit. Injects a flush
@@ -1490,7 +1752,7 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: Optional[str], *, approx_tokens: Optional[int] = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
@@ -1499,7 +1761,12 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        current_tokens = (
+            approx_tokens
+            if approx_tokens is not None
+            else int(getattr(self.context_compressor, "last_prompt_tokens", 0) or 0)
+        )
+        compressed = self.context_compressor.compress(messages, current_tokens=current_tokens)
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
@@ -1544,6 +1811,12 @@ class AIAgent:
                     }
                     messages.append(skip_msg)
                     self._log_msg_to_db(skip_msg)
+                    self._emit_event(
+                        "tool_skipped",
+                        tool_call_id=skipped_tc.id,
+                        name=getattr(getattr(skipped_tc, "function", None), "name", "unknown"),
+                        reason="interrupted",
+                    )
                 break
 
             function_name = tool_call.function.name
@@ -1554,11 +1827,31 @@ class AIAgent:
             elif function_name == "skill_manage":
                 self._iters_since_skill = 0
 
+            raw_arguments = getattr(getattr(tool_call, "function", None), "arguments", "{}")
+            if not isinstance(raw_arguments, str):
+                try:
+                    raw_arguments = json.dumps(raw_arguments)
+                except Exception:
+                    raw_arguments = "{}"
+            if not raw_arguments.strip():
+                raw_arguments = "{}"
+
             try:
-                function_args = json.loads(tool_call.function.arguments)
+                function_args = json.loads(raw_arguments)
+                if not isinstance(function_args, dict):
+                    logging.warning("Tool args must decode to an object; got %s", type(function_args).__name__)
+                    function_args = {}
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}
+
+            self._emit_event(
+                "tool_start",
+                tool_call_id=tool_call.id,
+                name=function_name,
+                arguments=function_args,
+                index=i,
+            )
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -1573,6 +1866,7 @@ class AIAgent:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
             tool_start_time = time.time()
+            tool_ok = True
 
             if function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
@@ -1586,13 +1880,15 @@ class AIAgent:
                     print(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
                 if not self._session_db:
+                    tool_ok = False
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
                 else:
                     from tools.session_search_tool import session_search as _session_search
+                    role_filter = function_args.get("role_filter")
                     function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
+                        query=str(function_args.get("query", "")),
+                        role_filter=str(role_filter) if role_filter is not None else "",
+                        limit=int(function_args.get("limit", 3)),
                         db=self._session_db,
                     )
                 tool_duration = time.time() - tool_start_time
@@ -1602,10 +1898,10 @@ class AIAgent:
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
                 function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
+                    action=str(function_args.get("action", "")),
+                    target=str(target),
+                    content=str(function_args.get("content", "")),
+                    old_text=str(function_args.get("old_text", "")),
                     store=self._memory_store,
                 )
                 # Also send user observations to Honcho when active
@@ -1687,6 +1983,7 @@ class AIAgent:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
                     _spinner_result = function_result
                 except Exception as tool_error:
+                    tool_ok = False
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
                 finally:
@@ -1697,6 +1994,7 @@ class AIAgent:
                 try:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
                 except Exception as tool_error:
+                    tool_ok = False
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
                 tool_duration = time.time() - tool_start_time
@@ -1728,6 +2026,23 @@ class AIAgent:
             messages.append(tool_msg)
             self._log_msg_to_db(tool_msg)
 
+            self._emit_event(
+                "tool_result",
+                tool_call_id=tool_call.id,
+                name=function_name,
+                ok=tool_ok,
+                duration_ms=int(tool_duration * 1000),
+                content=function_result,
+            )
+            if not tool_ok:
+                self._emit_event(
+                    "error",
+                    stage="tool_execution",
+                    message=f"Tool '{function_name}' failed",
+                    retryable=False,
+                    tool_call_id=tool_call.id,
+                )
+
             if not self.quiet_mode:
                 response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
@@ -1743,6 +2058,12 @@ class AIAgent:
                     }
                     messages.append(skip_msg)
                     self._log_msg_to_db(skip_msg)
+                    self._emit_event(
+                        "tool_skipped",
+                        tool_call_id=skipped_tc.id,
+                        name=getattr(getattr(skipped_tc, "function", None), "name", "unknown"),
+                        reason="interrupted",
+                    )
                 break
 
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -1800,12 +2121,26 @@ class AIAgent:
                 final_response = summary_response.choices[0].message.content
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-                messages.append({"role": "assistant", "content": final_response})
+                summary_msg = {"role": "assistant", "content": final_response}
+                messages.append(summary_msg)
+                self._emit_event(
+                    "assistant_message",
+                    content=summary_msg.get("content"),
+                    has_tool_calls=False,
+                    finish_reason="max_iterations_summary",
+                    reasoning_present=False,
+                )
             else:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
         except Exception as e:
             logging.warning(f"Failed to get summary response: {e}")
+            self._emit_event(
+                "error",
+                stage="max_iterations_summary",
+                message=str(e),
+                retryable=False,
+            )
             final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
         return final_response
@@ -1813,9 +2148,10 @@ class AIAgent:
     def run_conversation(
         self,
         user_message: str,
-        system_message: str = None,
-        conversation_history: List[Dict[str, Any]] = None,
-        task_id: str = None
+        system_message: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        task_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -1825,6 +2161,7 @@ class AIAgent:
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
             task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+            request_id (str): Optional external correlation ID (useful for bridge transports).
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -1923,6 +2260,54 @@ class AIAgent:
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
+        self._active_request_id = request_id
+
+        def _finalize_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+            error_msg = payload.get("error")
+            if error_msg:
+                self._emit_event(
+                    "error",
+                    request_id=request_id,
+                    stage=payload.get("error_stage", "run_conversation"),
+                    message=error_msg,
+                    retryable=payload.get("retryable", False),
+                )
+            self._emit_event(
+                "conversation_end",
+                request_id=request_id,
+                api_calls=payload.get("api_calls", api_call_count),
+                completed=payload.get("completed", False),
+                interrupted=payload.get("interrupted", False),
+                final_response_present=bool(payload.get("final_response")),
+                partial=payload.get("partial", False),
+                failed=payload.get("failed", False),
+            )
+            self._active_request_id = None
+            return payload
+
+        def _emit_assistant_turn_end_if_streamed() -> None:
+            if not stream_result:
+                return
+            delta_chunks = int(stream_result.get("delta_chunks") or 0)
+            if delta_chunks <= 0:
+                return
+            self._emit_event(
+                "assistant_message_end",
+                request_id=request_id,
+                delta_chunks=delta_chunks,
+                has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
+                finish_reason=finish_reason,
+                reasoning_present=bool(self._extract_reasoning(assistant_message)),
+                native=True,
+            )
+
+        self._emit_event(
+            "conversation_start",
+            request_id=request_id,
+            user_message=user_message,
+            max_iterations=self.max_iterations,
+            resumed=bool(conversation_history),
+        )
         
         while api_call_count < self.max_iterations:
             # Check for interrupt request (e.g., user sent new message)
@@ -2018,15 +2403,40 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            api_kwargs: Dict[str, Any] = {}
+            response: Any = None
+            finish_reason: Optional[str] = None
+            stream_result: Optional[Dict[str, Any]] = None
+            native_stream_in_use = bool(self.enable_native_streaming)
 
             while retry_count < max_retries:
                 try:
-                    api_kwargs = self._build_api_kwargs(api_messages)
+                    stream_result = None
+                    api_kwargs = self._build_api_kwargs(api_messages, stream=native_stream_in_use)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    response = self._interruptible_api_call(api_kwargs)
+                    if native_stream_in_use:
+                        stream_state: Dict[str, Any] = self._init_stream_turn_state()
+                        self._interruptible_stream_call(
+                            api_kwargs,
+                            lambda chunk, _state=stream_state: self._consume_stream_chunk(
+                                chunk,
+                                _state,
+                                request_id=request_id,
+                            ),
+                        )
+                        stream_result = self._finalize_stream_turn(stream_state)
+                        assistant_stream_msg = stream_result["assistant_message"]
+                        finish_reason = stream_result.get("finish_reason")
+                        response = SimpleNamespace(
+                            choices=[SimpleNamespace(message=assistant_stream_msg, finish_reason=finish_reason)],
+                            usage=stream_result.get("usage"),
+                            model=self.model,
+                        )
+                    else:
+                        response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -2094,13 +2504,13 @@ class AIAgent:
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return _finalize_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Invalid API response (choices is None/empty). Likely rate limited by provider.",
                                 "failed": True  # Mark as failure for filtering
-                            }
+                            })
                         
                         # Longer backoff for rate limiting (likely cause of None choices)
                         wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
@@ -2114,13 +2524,13 @@ class AIAgent:
                                 print(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
-                                return {
+                                return _finalize_result({
                                     "final_response": "Operation interrupted.",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "interrupted": True,
-                                }
+                                })
                             time.sleep(0.2)
                         continue  # Retry the API call
 
@@ -2139,26 +2549,26 @@ class AIAgent:
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
                             
-                            return {
+                            return _finalize_result({
                                 "final_response": None,
                                 "messages": rolled_back_messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": "Response truncated due to output length limit"
-                            }
+                            })
                         else:
                             # First message was truncated - mark as failed
                             print(f"{self.log_prefix}❌ First response truncated - cannot recover")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return _finalize_result({
                                 "final_response": None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "failed": True,
                                 "error": "First response truncated due to output length limit"
-                            }
+                            })
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
@@ -2199,6 +2609,14 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
+
+                    self._emit_event(
+                        "error",
+                        request_id=request_id,
+                        stage="api_call",
+                        message=str(api_error),
+                        retryable=True,
+                    )
                     
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -2217,13 +2635,13 @@ class AIAgent:
                         print(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.")
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
-                        return {
+                        return _finalize_result({
                             "final_response": "Operation interrupted.",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "interrupted": True,
-                        }
+                        })
                     
                     # Check for 413 payload-too-large BEFORE generic 4xx handler.
                     # A 413 is a payload-size error — the correct response is to
@@ -2251,13 +2669,13 @@ class AIAgent:
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return _finalize_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": "Request payload too large (413). Cannot compress further.",
                                 "partial": True
-                            }
+                            })
 
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
@@ -2280,14 +2698,14 @@ class AIAgent:
                         print(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.")
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
                         self._persist_session(messages, conversation_history)
-                        return {
+                        return _finalize_result({
                             "final_response": None,
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
                             "error": str(api_error),
-                        }
+                        })
                     
                     # Check for non-retryable errors (context length exceeded)
                     is_context_length_error = any(phrase in error_msg for phrase in [
@@ -2313,13 +2731,13 @@ class AIAgent:
                             print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return _finalize_result({
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
                                 "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
                                 "partial": True
-                            }
+                            })
                     
                     if retry_count > max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
@@ -2341,18 +2759,36 @@ class AIAgent:
                             print(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.")
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
-                            return {
+                            return _finalize_result({
                                 "final_response": "Operation interrupted.",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "interrupted": True,
-                            }
+                            })
                         time.sleep(0.2)  # Check interrupt every 200ms
             
             # If the API call was interrupted, skip response processing
             if interrupted:
                 break
+
+            if response is None or not getattr(response, "choices", None):
+                self._emit_event(
+                    "error",
+                    request_id=request_id,
+                    stage="response_processing",
+                    message="Missing response payload after retries",
+                    retryable=False,
+                )
+                self._persist_session(messages, conversation_history)
+                return _finalize_result({
+                    "final_response": None,
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "failed": True,
+                    "error": "Missing response payload after retries",
+                })
 
             try:
                 assistant_message = response.choices[0].message
@@ -2383,14 +2819,14 @@ class AIAgent:
                         self._cleanup_task_resources(effective_task_id)
                         self._persist_session(messages, conversation_history)
                         
-                        return {
+                        return _finalize_result({
                             "final_response": None,
                             "messages": rolled_back_messages,
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
-                        }
+                        })
                 
                 # Reset incomplete scratchpad counter on clean response
                 if hasattr(self, '_incomplete_scratchpad_retries'):
@@ -2430,14 +2866,14 @@ class AIAgent:
                             # Return partial result - don't include the bad tool call in messages
                             self._invalid_tool_retries = 0
                             self._persist_session(messages, conversation_history)
-                            return {
+                            return _finalize_result({
                                 "final_response": None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": f"Model generated invalid tool call: {invalid_preview}"
-                            }
+                            })
                     
                     # Reset retry counter on successful tool call validation
                     if hasattr(self, '_invalid_tool_retries'):
@@ -2506,6 +2942,14 @@ class AIAgent:
                     
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
+                    _emit_assistant_turn_end_if_streamed()
+                    self._emit_event(
+                        "assistant_message",
+                        content=assistant_msg.get("content"),
+                        has_tool_calls=bool(assistant_msg.get("tool_calls")),
+                        finish_reason=assistant_msg.get("finish_reason"),
+                        reasoning_present=bool(assistant_msg.get("reasoning")),
+                    )
                     
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
                     
@@ -2579,18 +3023,26 @@ class AIAgent:
                             }
                             messages.append(empty_msg)
                             self._log_msg_to_db(empty_msg)
+                            _emit_assistant_turn_end_if_streamed()
+                            self._emit_event(
+                                "assistant_message",
+                                content=empty_msg.get("content"),
+                                has_tool_calls=False,
+                                finish_reason=empty_msg.get("finish_reason"),
+                                reasoning_present=bool(empty_msg.get("reasoning")),
+                            )
                             
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
                             
-                            return {
+                            return _finalize_result({
                                 "final_response": final_response or None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": "Model generated only think blocks with no actual response after 3 retries"
-                            }
+                            })
                     
                     # Reset retry counter on successful content
                     if hasattr(self, '_empty_content_retries'):
@@ -2600,6 +3052,14 @@ class AIAgent:
                     
                     messages.append(final_msg)
                     self._log_msg_to_db(final_msg)
+                    _emit_assistant_turn_end_if_streamed()
+                    self._emit_event(
+                        "assistant_message",
+                        content=final_msg.get("content"),
+                        has_tool_calls=bool(final_msg.get("tool_calls")),
+                        finish_reason=final_msg.get("finish_reason"),
+                        reasoning_present=bool(final_msg.get("reasoning")),
+                    )
                     
                     if not self.quiet_mode:
                         print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
@@ -2607,6 +3067,13 @@ class AIAgent:
                 
             except Exception as e:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+                self._emit_event(
+                    "error",
+                    request_id=request_id,
+                    stage="response_processing",
+                    message=error_msg,
+                    retryable=False,
+                )
                 print(f"❌ {error_msg}")
                 
                 if self.verbose_logging:
@@ -2692,7 +3159,7 @@ class AIAgent:
         # Clear interrupt state after handling
         self.clear_interrupt()
         
-        return result
+        return _finalize_result(result)
     
     def chat(self, message: str) -> str:
         """
@@ -2709,13 +3176,13 @@ class AIAgent:
 
 
 def main(
-    query: str = None,
+    query: Optional[str] = None,
     model: str = "anthropic/claude-opus-4.6",
-    api_key: str = None,
+    api_key: Optional[str] = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
-    enabled_toolsets: str = None,
-    disabled_toolsets: str = None,
+    enabled_toolsets: Optional[str] = None,
+    disabled_toolsets: Optional[str] = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,

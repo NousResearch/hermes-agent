@@ -75,3 +75,10 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration'"
+
+# Ruff formatter settings - match original style before Signal commit
+[tool.ruff.format]
+quote-style = "double"              # Use double quotes like original code
+indent-style = "space"              # Use spaces for indentation
+skip-magic-trailing-comma = true    # Don't enforce trailing commas
+line-ending = "auto"                # Keep existing line endings                   # Allow much longer lines like original

@@ -1398,12 +1398,66 @@ def run_setup_wizard(args):
             
             print_info("Start the gateway with 'hermes gateway' and scan the QR code.")
     
+    # Signal
+    existing_signal_url = get_env_value('SIGNAL_HTTP_URL')
+    existing_signal_account = get_env_value('SIGNAL_ACCOUNT')
+    if not existing_signal_url and not existing_signal_account:
+        if prompt_yes_no("Set up Signal?", False):
+            print_info("Signal connects via signal-cli daemon in HTTP mode.")
+            print_info("Requires signal-cli installed and a linked account.")
+            print_info("Installation: https://github.com/AsamK/signal-cli")
+            print()
+            
+            # Get HTTP URL
+            http_url = prompt(
+                "Signal-cli HTTP URL",
+                "http://127.0.0.1:8080"
+            )
+            save_env_value("SIGNAL_HTTP_URL", http_url)
+            
+            # Get account
+            account = prompt(
+                "Signal account (E.164 format, e.g., +1234567890)",
+                ""
+            )
+            save_env_value("SIGNAL_ACCOUNT", account)
+            
+            # Security configuration
+            print()
+            print_info("🔒 Security: Who can interact with your bot?")
+            print_info(" Find your Signal number in the app settings")
+            print()
+            
+            allowed_users = prompt(
+                "Allowed users (comma-separated phone numbers or UUIDs, leave empty for self-only)",
+                account
+            )
+            if allowed_users:
+                save_env_value("SIGNAL_ALLOWED_USERS", allowed_users.replace(" ", ""))
+            
+            # DM policy
+            dm_policy_choice = prompt_choice(
+                "DM policy for unknown users:",
+                ["pairing (require approval code)", "allowlist (strict)", "open (anyone)"]
+            )
+            save_env_value("SIGNAL_DM_POLICY", ["pairing", "allowlist", "open"][dm_policy_choice])
+            
+            # Group policy
+            group_choice = prompt_choice(
+                "Group messaging:",
+                ["disabled (DM only)", "allowlist only", "open to all groups"]
+            )
+            save_env_value("SIGNAL_GROUP_POLICY", ["disabled", "allowlist", "open"][group_choice])
+            
+            print_success("Signal configured!")
+
     # Gateway reminder
     any_messaging = (
         get_env_value('TELEGRAM_BOT_TOKEN')
         or get_env_value('DISCORD_BOT_TOKEN')
         or get_env_value('SLACK_BOT_TOKEN')
         or get_env_value('WHATSAPP_ENABLED')
+        or get_env_value('SIGNAL_HTTP_URL')
     )
     if any_messaging:
         print()

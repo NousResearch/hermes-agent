@@ -13,6 +13,7 @@ Core layers:
 Concrete environments:
     - terminal_test_env/: Simple file-creation tasks for testing the stack
     - hermes_swe_env/: SWE-bench style tasks with Modal sandboxes
+    - endless_terminals/: Terminal tasks from HuggingFace dataset with Apptainer containers
 
 Benchmarks (eval-only):
     - benchmarks/terminalbench_2/: Terminal-Bench 2.0 evaluation

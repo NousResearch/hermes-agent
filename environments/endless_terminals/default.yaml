@@ -1,0 +1,67 @@
+# Endless Terminals Environment -- Default Configuration
+#
+# Trains agents on terminal tasks from the Endless Terminals HuggingFace dataset.
+# Uses hermes-agent backends (modal/docker/local) with per-task Docker images.
+# Tests run in the same sandbox the agent used (no separate containers needed).
+#
+# Dataset: https://huggingface.co/datasets/obiwan96/endless-terminals-train
+#
+# Prerequisites:
+#   1. Download dataset: huggingface-cli download obiwan96/endless-terminals-train \
+#        --repo-type dataset --local-dir ~/endless-terminals-data \
+#        --local-dir-use-symlinks False
+#   2. Set TASKS_BASE_DIR environment variable or configure tasks_base_dir below
+#   3. For modal backend: Configure Modal CLI (modal token set)
+#   4. For docker backend: Install Docker
+#
+# Usage:
+#   python environments/endless_terminals/endless_terminals_env.py process \
+#       --config environments/endless_terminals/default.yaml
+
+env:
+  # Toolsets
+  enabled_toolsets: ["terminal", "file"]
+
+  # Agent configuration
+  max_agent_turns: 32
+  max_token_length: 4096
+  agent_temperature: 1.0
+
+  # Terminal backend
+  terminal_backend: "local"  # Change to "modal" or "docker" for cloud isolation
+
+  # Dataset settings
+  use_dataset: true
+  dataset_name: "obiwan96/endless-terminals"
+  dataset_split: "train"
+  dataset_cache_dir: "~/.cache/huggingface/datasets"
+  tasks_base_dir: ""  # Set to directory containing task_* folders (e.g., ~/endless-terminals-data)
+
+  # Test execution
+  test_timeout_s: 60
+
+  # Training configuration
+  group_size: 8
+  total_steps: 10000
+  steps_per_eval: 500
+  num_eval_tasks: 10
+
+  # Logging
+  use_wandb: true
+  wandb_name: "endless-terminals"
+
+  # System prompt
+  system_prompt: >
+    You are a skilled Linux system administrator and programmer.
+    You have access to a terminal and file tools to complete system administration
+    and programming tasks. Use the tools effectively to solve the given task,
+    and verify your solution works correctly before finishing.
+
+openai:
+  base_url: "https://openrouter.ai/api/v1"
+  model_name: "anthropic/claude-sonnet-4.5"
+  server_type: "openai"
+  api_key: ""  # Loaded from OPENROUTER_API_KEY env var
+  health_check: false
+  timeout: 30  # 30 second timeout per request
+  max_retries: 2  # Only retry twice

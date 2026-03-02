@@ -3441,7 +3441,7 @@ class AIAgent:
                     self._codex_incomplete_retries += 1
 
                     interim_msg = self._build_assistant_message(assistant_message, finish_reason)
-                    interim_has_content = bool(interim_msg.get("content", "").strip())
+                    interim_has_content = bool((interim_msg.get("content") or "").strip())
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
 
                     if interim_has_content or interim_has_reasoning:

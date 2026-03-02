@@ -862,3 +862,36 @@ class TestFlushSentinelNotLeaked:
             assert "_flush_sentinel" not in msg, (
                 f"_flush_sentinel leaked to API in message: {msg}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Conversation history mutation
+# ---------------------------------------------------------------------------
+
+class TestConversationHistoryNotMutated:
+    """run_conversation must not mutate the caller's conversation_history list."""
+
+    def test_caller_list_unchanged_after_run(self, agent):
+        """Passing conversation_history should not modify the original list."""
+        history = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+        original_len = len(history)
+
+        resp = _mock_response(content="new answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("new question", conversation_history=history)
+
+        # Caller's list must be untouched
+        assert len(history) == original_len, (
+            f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
+        )
+        # Result should have more messages than the original history
+        assert len(result["messages"]) > original_len

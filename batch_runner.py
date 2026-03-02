@@ -239,7 +239,7 @@ def _process_single_prompt(
     
     Args:
         prompt_index (int): Index of prompt in dataset
-        prompt_data (Dict): Prompt data containing 'prompt' field
+        prompt_data (Dict): Prompt data containing 'prompt' field and optional 'image' field
         batch_num (int): Batch number
         config (Dict): Configuration dict with agent parameters
         
@@ -247,6 +247,57 @@ def _process_single_prompt(
         Dict: Result containing trajectory, stats, and metadata
     """
     prompt = prompt_data["prompt"]
+    task_id = f"task_{prompt_index}"
+    
+    # Per-prompt container image override: if the dataset row has an 'image' field,
+    # register it for this task's sandbox. Works with Docker, Modal, and Singularity.
+    container_image = prompt_data.get("image") or prompt_data.get("docker_image")
+    if container_image:
+        # Verify the image is accessible before spending tokens on the agent loop.
+        # For Docker: check local cache, then try pulling.
+        # For Modal: skip local check (Modal pulls server-side).
+        env_type = os.getenv("TERMINAL_ENV", "local")
+        if env_type == "docker":
+            import subprocess as _sp
+            try:
+                probe = _sp.run(
+                    ["docker", "image", "inspect", container_image],
+                    capture_output=True, timeout=10,
+                )
+                if probe.returncode != 0:
+                    if config.get("verbose"):
+                        print(f"   Prompt {prompt_index}: Pulling docker image {container_image}...", flush=True)
+                    pull = _sp.run(
+                        ["docker", "pull", container_image],
+                        capture_output=True, text=True, timeout=600,
+                    )
+                    if pull.returncode != 0:
+                        return {
+                            "success": False,
+                            "prompt_index": prompt_index,
+                            "error": f"Docker image not available: {container_image}\n{pull.stderr[:500]}",
+                            "trajectory": None,
+                            "tool_stats": {},
+                            "toolsets_used": [],
+                            "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat()},
+                        }
+            except FileNotFoundError:
+                pass  # Docker CLI not installed — skip check (e.g., Modal backend)
+            except Exception as img_err:
+                if config.get("verbose"):
+                    print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
+
+        from tools.terminal_tool import register_task_env_overrides
+        overrides = {
+            "docker_image": container_image,
+            "modal_image": container_image,
+            "singularity_image": f"docker://{container_image}",
+        }
+        if prompt_data.get("cwd"):
+            overrides["cwd"] = prompt_data["cwd"]
+        register_task_env_overrides(task_id, overrides)
+        if config.get("verbose"):
+            print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
     try:
         # Sample toolsets from distribution for this prompt
@@ -280,7 +331,7 @@ def _process_single_prompt(
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM
-        result = agent.run_conversation(prompt, task_id=f"task_{prompt_index}")
+        result = agent.run_conversation(prompt, task_id=task_id)
         
         # Extract tool usage statistics
         tool_stats = _extract_tool_stats(result["messages"])

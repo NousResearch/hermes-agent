@@ -31,6 +31,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
         "schedule_cronjob": "name",
+        "execute_code": "code", "delegate_task": "goal",
+        "clarify": "question", "skill_manage": "name",
     }
 
     if tool_name == "process":
@@ -97,7 +99,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
 
     key = primary_args.get(tool_name)
     if not key:
-        for fallback_key in ("query", "text", "command", "path", "name", "prompt"):
+        for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
             if fallback_key in args:
                 key = fallback_key
                 break

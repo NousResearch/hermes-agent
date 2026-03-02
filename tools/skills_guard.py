@@ -157,7 +157,7 @@ THREAT_PATTERNS = [
      "markdown link with variable interpolation"),
 
     # ── Prompt injection ──
-    (r'ignore\s+(previous|all|above|prior)\s+instructions',
+    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
      "prompt injection: ignore previous instructions"),
     (r'you\s+are\s+now\s+',

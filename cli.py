@@ -229,7 +229,8 @@ def load_cli_config() -> Dict[str, Any]:
                     # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
             
-            # Deep merge other keys with defaults
+            # Deep merge file_config into defaults.
+            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
             for key in defaults:
                 if key == "model":
                     continue  # Already handled above
@@ -238,6 +239,12 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
+            
+            # Second: carry over keys from file_config that aren't in defaults
+            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
+            for key in file_config:
+                if key not in defaults and key != "model":
+                    defaults[key] = file_config[key]
             
             # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
             if "max_turns" in file_config and "agent" not in file_config:

@@ -398,7 +398,20 @@ class BasePlatformAdapter(ABC):
             SendResult with success status and message ID
         """
         pass
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """
+        Edit a previously sent message. Optional — platforms that don't
+        support editing return success=False and callers fall back to
+        sending a new message.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_typing(self, chat_id: str) -> None:
         """
         Send a typing indicator.

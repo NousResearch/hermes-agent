@@ -1214,7 +1214,7 @@ class GatewayRunner:
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
             if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
+                last_user_msg = history[i].get("content") or ""
                 last_user_idx = i
                 break
         
@@ -1253,7 +1253,7 @@ class GatewayRunner:
         if last_user_idx is None:
             return "Nothing to undo."
         
-        removed_msg = history[last_user_idx].get("content", "")
+        removed_msg = history[last_user_idx].get("content") or ""
         removed_count = len(history) - last_user_idx
         self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
@@ -1916,7 +1916,7 @@ class GatewayRunner:
             _history_media_paths: set = set()
             for _hm in agent_history:
                 if _hm.get("role") in ("tool", "function"):
-                    _hc = _hm.get("content", "")
+                    _hc = _hm.get("content") or ""
                     if "MEDIA:" in _hc:
                         for _match in re.finditer(r'MEDIA:(\S+)', _hc):
                             _p = _match.group(1).strip().rstrip('",}')
@@ -1952,7 +1952,7 @@ class GatewayRunner:
                 has_voice_directive = False
                 for msg in result.get("messages", []):
                     if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
+                        content = msg.get("content") or ""
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')

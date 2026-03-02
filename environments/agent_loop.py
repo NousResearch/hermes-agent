@@ -184,7 +184,7 @@ class HermesAgentLoop:
         _user_task = None
         for msg in messages:
             if msg.get("role") == "user":
-                content = msg.get("content", "")
+                content = msg.get("content") or ""
                 if isinstance(content, str) and content.strip():
                     _user_task = content.strip()[:500]  # Cap to avoid huge strings
                 break

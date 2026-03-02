@@ -335,7 +335,7 @@ class HermesAgentBaseEnv(BaseEnv):
         parts = []
         for msg in messages:
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
 
             if role == "system":
                 parts.append(f"[SYSTEM]\n{content}")

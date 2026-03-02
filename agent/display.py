@@ -65,7 +65,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         action = args.get("action", "")
         target = args.get("target", "")
         if action == "add":
-            content = args.get("content", "")
+            content = args.get("content") or ""
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
             return f"~{target}: \"{args.get('old_text', '')[:20]}\""

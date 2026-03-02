@@ -1285,7 +1285,7 @@ class HermesCLI:
         
         for i, msg in enumerate(self.conversation_history, 1):
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             
             if role == "user":
                 print(f"\n  [You #{i}]")
@@ -1350,7 +1350,7 @@ class HermesCLI:
             return None
         
         # Extract the message text and remove everything from that point forward
-        last_message = self.conversation_history[last_user_idx].get("content", "")
+        last_message = self.conversation_history[last_user_idx].get("content") or ""
         self.conversation_history = self.conversation_history[:last_user_idx]
         
         print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
@@ -1379,7 +1379,7 @@ class HermesCLI:
         
         # Count how many messages we're removing
         removed_count = len(self.conversation_history) - last_user_idx
-        removed_msg = self.conversation_history[last_user_idx].get("content", "")
+        removed_msg = self.conversation_history[last_user_idx].get("content") or ""
         
         # Truncate history to before the last user message
         self.conversation_history = self.conversation_history[:last_user_idx]

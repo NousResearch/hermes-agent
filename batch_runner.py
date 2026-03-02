@@ -146,7 +146,7 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
         # Track tool responses
         elif msg["role"] == "tool":
             tool_call_id = msg.get("tool_call_id", "")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             
             # Determine if tool call was successful
             is_success = True

@@ -775,6 +775,21 @@ class TestRetryExhaustion:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
+    @staticmethod
+    def _make_fast_time_mock():
+        """Return a mock time module where sleep loops exit instantly."""
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0  # jump 500s per call so sleep_end is always in the past
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()  # no-op
+        mock_time.monotonic.return_value = 12345.0
+        return mock_time
+
     def test_invalid_response_returns_error_not_crash(self, agent):
         """Exhausted retries on invalid (empty choices) response must not IndexError."""
         self._setup_agent(agent)
@@ -789,6 +804,7 @@ class TestRetryExhaustion:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
         ):
             result = agent.run_conversation("hello")
         assert result.get("failed") is True or result.get("completed") is False
@@ -801,6 +817,7 @@ class TestRetryExhaustion:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
         ):
             with pytest.raises(RuntimeError, match="rate limited"):
                 agent.run_conversation("hello")

@@ -602,7 +602,7 @@ class SessionStore:
         
         # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8", errors="replace", newline="") as f:
             for msg in messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 

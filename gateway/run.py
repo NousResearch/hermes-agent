@@ -1006,6 +1006,48 @@ class GatewayRunner:
                         "timestamp": ts,
                     }
                 )
+
+            def _strip_ts(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                normalized: List[Dict[str, Any]] = []
+                for m in msgs or []:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("role") == "system":
+                        continue
+                    normalized.append({k: v for k, v in m.items() if k != "timestamp"})
+                return normalized
+
+            normalized_history = _strip_ts(history)
+            normalized_agent = _strip_ts(agent_messages)
+            history_prefix_matches = (
+                len(normalized_agent) >= len(normalized_history)
+                and normalized_agent[: len(normalized_history)] == normalized_history
+            )
+            history_was_rewritten = bool(normalized_history) and not history_prefix_matches
+
+            # If agent history was compressed/rewritten, replace transcript with
+            # the returned message list so future turns stay compact.
+            if history_was_rewritten:
+                rewritten: List[Dict[str, Any]] = []
+
+                # Preserve an existing session_meta entry if present.
+                existing_meta = next(
+                    (m for m in (history or []) if isinstance(m, dict) and m.get("role") == "session_meta"),
+                    None,
+                )
+                if existing_meta:
+                    meta_entry = dict(existing_meta)
+                    meta_entry.setdefault("timestamp", ts)
+                    rewritten.append(meta_entry)
+
+                for msg in normalized_agent:
+                    entry = dict(msg)
+                    entry.setdefault("timestamp", ts)
+                    rewritten.append(entry)
+
+                self.session_store.rewrite_transcript(session_entry.session_id, rewritten)
+                self.session_store.update_session(session_entry.session_key)
+                return response
             
             # Find only the NEW messages from this turn (skip history we loaded)
             history_len = len(history)

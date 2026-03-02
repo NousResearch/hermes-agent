@@ -1566,6 +1566,8 @@ class AIAgent:
     def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
         items: List[Dict[str, Any]] = []
+        known_function_call_ids: set[str] = set()
+        deferred_tool_outputs: List[Dict[str, str]] = []
 
         for msg in messages:
             if not isinstance(msg, dict):
@@ -1630,6 +1632,7 @@ class AIAgent:
                                 "name": fn_name,
                                 "arguments": arguments,
                             })
+                            known_function_call_ids.add(call_id)
                     continue
 
                 items.append({"role": role, "content": content_text})
@@ -1643,11 +1646,50 @@ class AIAgent:
                         call_id = raw_tool_call_id.strip()
                 if not isinstance(call_id, str) or not call_id.strip():
                     continue
-                items.append({
+                output_text = str(msg.get("content", "") or "")
+
+                # Responses API rejects function_call_output items whose call_id
+                # is not present as a function_call in the same payload.
+                # Keep unmatched outputs deferred so we can reconcile call_/fc_
+                # variants once all assistant tool_calls are collected.
+                deferred_tool_outputs.append(
+                    {
+                        "call_id": call_id,
+                        "output": output_text,
+                    }
+                )
+
+        def _call_id_variants(raw_call_id: str) -> List[str]:
+            variants: List[str] = []
+            candidate = (raw_call_id or "").strip()
+            if not candidate:
+                return variants
+            variants.append(candidate)
+            if candidate.startswith("fc_") and len(candidate) > len("fc_"):
+                variants.append(f"call_{candidate[len('fc_'):]}")
+            elif candidate.startswith("call_") and len(candidate) > len("call_"):
+                variants.append(f"fc_{candidate[len('call_'):]}")
+            return variants
+
+        for entry in deferred_tool_outputs:
+            raw_call_id = entry.get("call_id", "")
+            output = entry.get("output", "")
+            variants = _call_id_variants(raw_call_id)
+            matched_call_id = next((cid for cid in variants if cid in known_function_call_ids), None)
+            if not matched_call_id:
+                logger.debug(
+                    "Skipping orphan function_call_output for unmatched call_id=%s",
+                    raw_call_id,
+                )
+                continue
+
+            items.append(
+                {
                     "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": str(msg.get("content", "") or ""),
-                })
+                    "call_id": matched_call_id,
+                    "output": output,
+                }
+            )
 
         return items
 
@@ -1733,6 +1775,52 @@ class AIAgent:
 
             raise ValueError(
                 f"Codex Responses input[{idx}] has unsupported item shape (type={item_type!r}, role={role!r})."
+            )
+
+        def _normalize_call_id(raw_call_id: Any) -> str:
+            if not isinstance(raw_call_id, str):
+                return ""
+            cid = raw_call_id.strip()
+            if not cid:
+                return ""
+            if cid.startswith("fc_") and len(cid) > len("fc_"):
+                return f"call_{cid[len('fc_'):]}"
+            return cid
+
+        # Final guard: Responses API requires each function_call to have a
+        # matching function_call_output in the same payload. If history got
+        # interrupted/truncated and a tool output is missing, synthesize one
+        # deterministically so the request is still valid.
+        declared_calls: List[str] = []
+        answered_calls: set[str] = set()
+        for item in normalized:
+            item_type = item.get("type")
+            if item_type == "function_call":
+                cid = item.get("call_id")
+                if isinstance(cid, str) and cid.strip():
+                    declared_calls.append(cid.strip())
+            elif item_type == "function_call_output":
+                cid = _normalize_call_id(item.get("call_id"))
+                if cid:
+                    answered_calls.add(cid)
+
+        for call_id in declared_calls:
+            if _normalize_call_id(call_id) in answered_calls:
+                continue
+            normalized.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": (
+                        "Error executing tool: Missing tool output recovered automatically "
+                        "during request preflight."
+                    ),
+                }
+            )
+            answered_calls.add(_normalize_call_id(call_id))
+            logger.warning(
+                "Synthesized missing function_call_output during preflight for call_id=%s",
+                call_id,
             )
 
         return normalized
@@ -2262,6 +2350,81 @@ class AIAgent:
             api_kwargs["extra_body"] = extra_body
 
         return api_kwargs
+
+    def _prepare_api_messages(
+        self,
+        messages: list,
+        active_system_prompt: str,
+    ) -> tuple[list, int, int]:
+        """Build API-ready messages and rough size estimates from chat history."""
+        api_messages = []
+        for msg in messages:
+            api_msg = msg.copy()
+
+            # Preserve reasoning continuity for providers that support/expect it.
+            if msg.get("role") == "assistant":
+                reasoning_text = msg.get("reasoning")
+                if reasoning_text:
+                    api_msg["reasoning_content"] = reasoning_text
+
+            # Internal-only fields not accepted by strict APIs.
+            if "reasoning" in api_msg:
+                api_msg.pop("reasoning")
+            if "finish_reason" in api_msg:
+                api_msg.pop("finish_reason")
+
+            api_messages.append(api_msg)
+
+        effective_system = active_system_prompt or ""
+        extra_ephemeral = []
+        if self.ephemeral_system_prompt:
+            extra_ephemeral.append(self.ephemeral_system_prompt)
+        env_hint = self._build_environment_hint()
+        if env_hint:
+            extra_ephemeral.append(env_hint)
+        if extra_ephemeral:
+            effective_system = (effective_system + "\n\n" + "\n\n".join(extra_ephemeral)).strip()
+        if self._honcho_context:
+            effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Inject ephemeral prefill messages right after system, before history.
+        if self.prefill_messages:
+            sys_offset = 1 if effective_system else 0
+            for idx, pfm in enumerate(self.prefill_messages):
+                api_messages.insert(sys_offset + idx, pfm.copy())
+
+        # Anthropic prompt caching tweaks for Claude on OpenRouter.
+        if self._use_prompt_caching:
+            api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
+
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        approx_tokens = total_chars // 4  # Rough estimate: 4 chars/token
+        return api_messages, total_chars, approx_tokens
+
+    def _hard_trim_context(self, messages: list) -> list:
+        """Emergency shrink path when summarization-based compression cannot reduce more."""
+        if not isinstance(messages, list) or len(messages) <= 24:
+            return messages
+
+        keep = max(24, min(120, len(messages) // 2))
+        trimmed = list(messages[-keep:])
+
+        # A leading tool role without its assistant tool_call context is invalid.
+        while trimmed and isinstance(trimmed[0], dict) and trimmed[0].get("role") == "tool":
+            trimmed.pop(0)
+
+        # Prefer starting on a user/assistant text turn, not an orphan tool-call turn.
+        while (
+            trimmed
+            and isinstance(trimmed[0], dict)
+            and trimmed[0].get("role") == "assistant"
+            and trimmed[0].get("tool_calls")
+        ):
+            trimmed.pop(0)
+
+        return trimmed if trimmed else list(messages[-24:])
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -3192,67 +3355,10 @@ class AIAgent:
                 self._iters_since_skill += 1
             
             # Prepare messages for API call
-            # If we have an ephemeral system prompt, prepend it to the messages
-            # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
-            # However, providers like Moonshot AI require a separate 'reasoning_content' field
-            # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-                
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
-                
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
-                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-                # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
-            
-            # Build the final system message: cached prompt + ephemeral system prompt
-            # + environment hint. The ephemeral parts are appended here (not baked
-            # into the cached prompt) so they stay out of the session DB and logs.
-            effective_system = active_system_prompt or ""
-            extra_ephemeral = []
-            if self.ephemeral_system_prompt:
-                extra_ephemeral.append(self.ephemeral_system_prompt)
-            env_hint = self._build_environment_hint()
-            if env_hint:
-                extra_ephemeral.append(env_hint)
-            if extra_ephemeral:
-                effective_system = (effective_system + "\n\n" + "\n\n".join(extra_ephemeral)).strip()
-            if self._honcho_context:
-                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            
-            # Inject ephemeral prefill messages right after the system prompt
-            # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
-            
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
-            if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
-            
-            # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                messages,
+                active_system_prompt,
+            )
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
@@ -3279,6 +3385,7 @@ class AIAgent:
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
             codex_auth_retry_attempted = False
+            missing_tool_output_recovery_attempted = False
 
             finish_reason = "stop"
 
@@ -3557,6 +3664,34 @@ class AIAgent:
                         or 'payload too large' in error_msg
                         or 'error code: 413' in error_msg
                     )
+                    is_missing_tool_output_error = (
+                        "no tool output found for function call" in error_msg
+                    )
+                    is_context_length_error = any(phrase in error_msg for phrase in [
+                        'context length', 'maximum context', 'context window', 'token limit',
+                        'too many tokens', 'reduce the length', 'exceeds the limit',
+                        'exceeds the context window',
+                        'request entity too large',  # OpenRouter/Nous 413 safety net
+                    ])
+
+                    if (
+                        is_missing_tool_output_error
+                        and not missing_tool_output_recovery_attempted
+                    ):
+                        missing_tool_output_recovery_attempted = True
+                        recovered = self._fill_missing_tool_outputs(
+                            messages,
+                            "Recovered missing tool output after provider validation error.",
+                        )
+                        if recovered:
+                            print(
+                                f"{self.log_prefix}🔧 Recovered missing tool output(s); rebuilding request and retrying..."
+                            )
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
+                            continue
 
                     if is_payload_too_large:
                         print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
@@ -3568,8 +3703,23 @@ class AIAgent:
 
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
                             continue  # Retry with compressed messages
                         else:
+                            trimmed = self._hard_trim_context(messages)
+                            if len(trimmed) < len(messages):
+                                messages = trimmed
+                                print(
+                                    f"{self.log_prefix}   ✂️  Hard-trimmed history to {len(messages)} messages after 413; retrying..."
+                                )
+                                api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                    messages,
+                                    active_system_prompt,
+                                )
+                                continue
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
@@ -3594,7 +3744,7 @@ class AIAgent:
                         'unauthorized', 'forbidden', 'not found',
                     ])
 
-                    if is_client_error:
+                    if is_client_error and not is_context_length_error:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
@@ -3611,13 +3761,6 @@ class AIAgent:
                             "error": str(api_error),
                         }
                     
-                    # Check for non-retryable errors (context length exceeded)
-                    is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'maximum context', 'token limit',
-                        'too many tokens', 'reduce the length', 'exceeds the limit',
-                        'request entity too large',  # OpenRouter/Nous 413 safety net
-                    ])
-                    
                     if is_context_length_error:
                         print(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
                         
@@ -3628,9 +3771,25 @@ class AIAgent:
                         
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
                             continue  # Retry with compressed messages
                         else:
-                            # Can't compress further
+                            trimmed = self._hard_trim_context(messages)
+                            if len(trimmed) < len(messages):
+                                messages = trimmed
+                                print(
+                                    f"{self.log_prefix}   ✂️  Hard-trimmed history to {len(messages)} messages; retrying..."
+                                )
+                                api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                    messages,
+                                    active_system_prompt,
+                                )
+                                continue
+
+                            # Can't compress or trim further
                             print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
                             print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")

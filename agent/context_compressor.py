@@ -31,8 +31,9 @@ class ContextCompressor:
         threshold_percent: float = 0.85,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
-        summary_target_tokens: int = 500,
+        summary_target_tokens: int = 2500,
         quiet_mode: bool = False,
+        summary_model_override: str = None,
     ):
         self.model = model
         self.threshold_percent = threshold_percent
@@ -49,7 +50,8 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, self.summary_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client()
+        self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -85,7 +87,7 @@ class ContextCompressor:
         parts = []
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             if len(content) > 2000:
                 content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
             tool_calls = msg.get("tool_calls", [])
@@ -191,7 +193,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
             compressed.append(msg)
 
         compressed.append({"role": "user", "content": summary})

@@ -425,6 +425,28 @@ class BasePlatformAdapter(ABC):
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
     
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send an animated GIF natively via the platform API.
+        
+        Override in subclasses to send GIFs as proper animations
+        (e.g., Telegram send_animation) so they auto-play inline.
+        Default falls back to send_image.
+        """
+        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to)
+    
+    @staticmethod
+    def _is_animation_url(url: str) -> bool:
+        """Check if a URL points to an animated GIF (vs a static image)."""
+        lower = url.lower().split('?')[0]  # Strip query params
+        return lower.endswith('.gif')
+
     @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
@@ -636,11 +658,19 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        img_result = await self.send_image(
-                            chat_id=event.source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text if alt_text else None,
-                        )
+                        # Route animated GIFs through send_animation for proper playback
+                        if self._is_animation_url(image_url):
+                            img_result = await self.send_animation(
+                                chat_id=event.source.chat_id,
+                                animation_url=image_url,
+                                caption=alt_text if alt_text else None,
+                            )
+                        else:
+                            img_result = await self.send_image(
+                                chat_id=event.source.chat_id,
+                                image_url=image_url,
+                                caption=alt_text if alt_text else None,
+                            )
                         if not img_result.success:
                             print(f"[{self.name}] Failed to send image: {img_result.error}")
                     except Exception as img_err:
@@ -706,9 +736,13 @@ class BasePlatformAdapter(ABC):
         chat_type: str = "dm",
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        chat_topic: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
+        # Normalize empty topic to None
+        if chat_topic is not None and not chat_topic.strip():
+            chat_topic = None
         return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
@@ -717,6 +751,7 @@ class BasePlatformAdapter(ABC):
             user_id=str(user_id) if user_id else None,
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
+            chat_topic=chat_topic.strip() if chat_topic else None,
         )
     
     @abstractmethod

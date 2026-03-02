@@ -11,20 +11,26 @@ from tools.environments.base import BaseEnvironment
 
 # Noise lines emitted by interactive shells when stdin is not a terminal.
 # Filtered from output to keep tool results clean.
-_SHELL_NOISE = frozenset({
+_SHELL_NOISE_SUBSTRINGS = (
+    "bash: cannot set terminal process group",
     "bash: no job control in this shell",
-    "bash: no job control in this shell\n",
     "no job control in this shell",
-    "no job control in this shell\n",
-})
+    "cannot set terminal process group",
+    "tcsetattr: Inappropriate ioctl for device",
+)
 
 
 def _clean_shell_noise(output: str) -> str:
-    """Strip shell startup warnings that leak when using -i without a TTY."""
-    lines = output.split("\n", 2)  # only check first two lines
-    if lines and lines[0].strip() in _SHELL_NOISE:
-        return "\n".join(lines[1:])
-    return output
+    """Strip shell startup warnings that leak when using -i without a TTY.
+
+    Removes all leading lines that match known noise patterns, not just the first.
+    Some environments emit multiple noise lines (e.g. Docker, non-TTY sessions).
+    """
+    lines = output.split("\n")
+    # Strip all leading noise lines
+    while lines and any(noise in lines[0] for noise in _SHELL_NOISE_SUBSTRINGS):
+        lines.pop(0)
+    return "\n".join(lines)
 
 
 class LocalEnvironment(BaseEnvironment):

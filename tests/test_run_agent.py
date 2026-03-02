@@ -758,3 +758,66 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+
+
+class TestRetryExhaustion:
+    """Regression: retry_count > max_retries was dead code (off-by-one).
+
+    When retries were exhausted the condition never triggered, causing
+    the loop to exit and fall through to response.choices[0] on an
+    invalid response, raising IndexError.
+    """
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    @staticmethod
+    def _make_fast_time_mock():
+        """Return a mock time module where sleep loops exit instantly."""
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0  # jump 500s per call so sleep_end is always in the past
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()  # no-op
+        mock_time.monotonic.return_value = 12345.0
+        return mock_time
+
+    def test_invalid_response_returns_error_not_crash(self, agent):
+        """Exhausted retries on invalid (empty choices) response must not IndexError."""
+        self._setup_agent(agent)
+        # Return response with empty choices every time
+        bad_resp = SimpleNamespace(
+            choices=[],
+            model="test/model",
+            usage=None,
+        )
+        agent.client.chat.completions.create.return_value = bad_resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True or result.get("completed") is False
+
+    def test_api_error_raises_after_retries(self, agent):
+        """Exhausted retries on API errors must raise, not fall through."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            with pytest.raises(RuntimeError, match="rate limited"):
+                agent.run_conversation("hello")

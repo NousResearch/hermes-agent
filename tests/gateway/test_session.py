@@ -1,9 +1,13 @@
 """Tests for gateway session management."""
 
+import json
 import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.session import (
     SessionSource,
+    SessionStore,
     build_session_context,
     build_session_context_prompt,
 )
@@ -31,6 +35,24 @@ class TestSessionSourceRoundtrip:
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
 
+    def test_full_roundtrip_with_chat_topic(self):
+        """chat_topic should survive to_dict/from_dict roundtrip."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="789",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_id="42",
+            user_name="bob",
+            chat_topic="Planning and coordination for Project X",
+        )
+        d = source.to_dict()
+        assert d["chat_topic"] == "Planning and coordination for Project X"
+
+        restored = SessionSource.from_dict(d)
+        assert restored.chat_topic == "Planning and coordination for Project X"
+        assert restored.chat_name == "Server / #project-planning"
+
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
         d = source.to_dict()
@@ -57,6 +79,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id is None
         assert restored.user_name is None
         assert restored.thread_id is None
+        assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
     def test_invalid_platform_raises(self):
@@ -174,6 +197,52 @@ class TestBuildSessionContextPrompt:
 
         assert "Discord" in prompt
 
+    def test_discord_prompt_with_channel_topic(self):
+        """Channel topic should appear in the session context prompt."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_name="alice",
+            chat_topic="Planning and coordination for Project X",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Discord" in prompt
+        assert "**Channel Topic:** Planning and coordination for Project X" in prompt
+
+    def test_prompt_omits_channel_topic_when_none(self):
+        """Channel Topic line should NOT appear when chat_topic is None."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #general",
+            chat_type="group",
+            user_name="alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Channel Topic" not in prompt
+
     def test_local_prompt_mentions_machine(self):
         config = GatewayConfig()
         source = SessionSource.local_cli()
@@ -199,3 +268,59 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
+
+
+class TestSessionStoreRewriteTranscript:
+    """Regression: /retry and /undo must persist truncated history to disk."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None  # no SQLite for these tests
+        s._loaded = True
+        return s
+
+    def test_rewrite_replaces_jsonl(self, store, tmp_path):
+        session_id = "test_session_1"
+        # Write initial transcript
+        for msg in [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "undo this"},
+            {"role": "assistant", "content": "ok"},
+        ]:
+            store.append_to_transcript(session_id, msg)
+
+        # Rewrite with truncated history
+        store.rewrite_transcript(session_id, [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ])
+
+        reloaded = store.load_transcript(session_id)
+        assert len(reloaded) == 2
+        assert reloaded[0]["content"] == "hello"
+        assert reloaded[1]["content"] == "hi"
+
+    def test_rewrite_with_empty_list(self, store):
+        session_id = "test_session_2"
+        store.append_to_transcript(session_id, {"role": "user", "content": "hi"})
+
+        store.rewrite_transcript(session_id, [])
+
+        reloaded = store.load_transcript(session_id)
+        assert reloaded == []
+
+
+class TestSessionStoreEntriesAttribute:
+    """Regression: /reset must access _entries, not _sessions."""
+
+    def test_entries_attribute_exists(self):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=Path("/tmp"), config=config)
+        store._loaded = True
+        assert hasattr(store, "_entries")
+        assert not hasattr(store, "_sessions")

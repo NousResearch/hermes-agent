@@ -21,6 +21,7 @@ Usage:
 """
 
 import copy
+import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ import re
 import sys
 import time
 import threading
+from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
@@ -87,6 +89,7 @@ from agent.prompt_builder import build_skills_system_prompt, build_context_files
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
+    _detect_tool_failure,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
@@ -106,6 +109,8 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
+        provider: str = None,
+        api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
         max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
@@ -121,9 +126,12 @@ class AIAgent:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        provider_require_parameters: bool = False,
+        provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
+        step_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -139,6 +147,8 @@ class AIAgent:
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
+            provider (str): Provider identifier (optional; used for telemetry/routing hints)
+            api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 60)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
@@ -186,6 +196,17 @@ class AIAgent:
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
+        provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
+        self.provider = provider_name or "openrouter"
+        if api_mode in {"chat_completions", "codex_responses"}:
+            self.api_mode = api_mode
+        elif self.provider == "openai-codex":
+            self.api_mode = "codex_responses"
+        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self.base_url.lower():
+            self.api_mode = "codex_responses"
+            self.provider = "openai-codex"
+        else:
+            self.api_mode = "chat_completions"
         if base_url and "api.anthropic.com" in base_url.strip().lower():
             raise ValueError(
                 "Anthropic's native /v1/messages API is not supported yet (planned for a future release). "
@@ -195,6 +216,7 @@ class AIAgent:
             )
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
+        self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -210,6 +232,8 @@ class AIAgent:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.provider_require_parameters = provider_require_parameters
+        self.provider_data_collection = provider_data_collection
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -228,13 +252,33 @@ class AIAgent:
         self._use_prompt_caching = is_openrouter and is_claude
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
-        # Configure logging
+        # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
+        # so tool failures, API errors, etc. are inspectable after the fact.
+        from agent.redact import RedactingFormatter
+        _error_log_dir = Path.home() / ".hermes" / "logs"
+        _error_log_dir.mkdir(parents=True, exist_ok=True)
+        _error_log_path = _error_log_dir / "errors.log"
+        from logging.handlers import RotatingFileHandler
+        _error_file_handler = RotatingFileHandler(
+            _error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
+        )
+        _error_file_handler.setLevel(logging.WARNING)
+        _error_file_handler.setFormatter(RedactingFormatter(
+            '%(asctime)s %(levelname)s %(name)s: %(message)s',
+        ))
+        logging.getLogger().addHandler(_error_file_handler)
+
         if self.verbose_logging:
             logging.basicConfig(
                 level=logging.DEBUG,
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%H:%M:%S'
             )
+            for handler in logging.getLogger().handlers:
+                handler.setFormatter(RedactingFormatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    datefmt='%H:%M:%S',
+                ))
             # Keep third-party libraries at WARNING level to reduce noise
             # We have our own retry and error logging that's more informative
             logging.getLogger('openai').setLevel(logging.WARNING)
@@ -297,7 +341,7 @@ class AIAgent:
             client_kwargs["default_headers"] = {
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
                 "X-OpenRouter-Title": "Hermes Agent",
-                "X-OpenRouter-Categories": "cli-agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
             }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
@@ -479,9 +523,10 @@ class AIAgent:
         
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
-        # Configuration via environment variables (can be set in .env or cli-config.yaml)
+        # Configuration via config.yaml (compression section) or environment variables
         compression_threshold = float(os.getenv("CONTEXT_COMPRESSION_THRESHOLD", "0.85"))
         compression_enabled = os.getenv("CONTEXT_COMPRESSION_ENABLED", "true").lower() in ("true", "1", "yes")
+        compression_summary_model = os.getenv("CONTEXT_COMPRESSION_MODEL") or None
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -489,10 +534,17 @@ class AIAgent:
             protect_first_n=3,
             protect_last_n=4,
             summary_target_tokens=500,
+            summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
+
+        # Cumulative token usage for the session
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.session_api_calls = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -542,6 +594,77 @@ class AIAgent:
         if not content:
             return ""
         return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+
+    def _looks_like_codex_intermediate_ack(
+        self,
+        user_message: str,
+        assistant_content: str,
+        messages: List[Dict[str, Any]],
+    ) -> bool:
+        """Detect a planning/ack message that should continue instead of ending the turn."""
+        if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+            return False
+
+        assistant_text = self._strip_think_blocks(assistant_content or "").strip().lower()
+        if not assistant_text:
+            return False
+        if len(assistant_text) > 1200:
+            return False
+
+        has_future_ack = bool(
+            re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        )
+        if not has_future_ack:
+            return False
+
+        action_markers = (
+            "look into",
+            "look at",
+            "inspect",
+            "scan",
+            "check",
+            "analyz",
+            "review",
+            "explore",
+            "read",
+            "open",
+            "run",
+            "test",
+            "fix",
+            "debug",
+            "search",
+            "find",
+            "walkthrough",
+            "report back",
+            "summarize",
+        )
+        workspace_markers = (
+            "directory",
+            "current directory",
+            "current dir",
+            "cwd",
+            "repo",
+            "repository",
+            "codebase",
+            "project",
+            "folder",
+            "filesystem",
+            "file tree",
+            "files",
+            "path",
+        )
+
+        user_text = (user_message or "").strip().lower()
+        user_targets_workspace = (
+            any(marker in user_text for marker in workspace_markers)
+            or "~/" in user_text
+            or "/" in user_text
+        )
+        assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
+        assistant_targets_workspace = any(
+            marker in assistant_text for marker in workspace_markers
+        )
+        return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
     
     
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
@@ -1029,6 +1152,8 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
+                "system_prompt": self._cached_system_prompt or "",
+                "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
@@ -1257,6 +1382,639 @@ class AIAgent:
         if self._memory_store:
             self._memory_store.load_from_disk()
 
+    def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
+        """Convert chat-completions tool schemas to Responses function-tool schemas."""
+        source_tools = tools if tools is not None else self.tools
+        if not source_tools:
+            return None
+
+        converted: List[Dict[str, Any]] = []
+        for item in source_tools:
+            fn = item.get("function", {}) if isinstance(item, dict) else {}
+            name = fn.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            converted.append({
+                "type": "function",
+                "name": name,
+                "description": fn.get("description", ""),
+                "strict": False,
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            })
+        return converted or None
+
+    @staticmethod
+    def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
+        """Split a stored tool id into (call_id, response_item_id)."""
+        if not isinstance(raw_id, str):
+            return None, None
+        value = raw_id.strip()
+        if not value:
+            return None, None
+        if "|" in value:
+            call_id, response_item_id = value.split("|", 1)
+            call_id = call_id.strip() or None
+            response_item_id = response_item_id.strip() or None
+            return call_id, response_item_id
+        if value.startswith("fc_"):
+            return None, value
+        return value, None
+
+    def _derive_responses_function_call_id(
+        self,
+        call_id: str,
+        response_item_id: Optional[str] = None,
+    ) -> str:
+        """Build a valid Responses `function_call.id` (must start with `fc_`)."""
+        if isinstance(response_item_id, str):
+            candidate = response_item_id.strip()
+            if candidate.startswith("fc_"):
+                return candidate
+
+        source = (call_id or "").strip()
+        if source.startswith("fc_"):
+            return source
+        if source.startswith("call_") and len(source) > len("call_"):
+            return f"fc_{source[len('call_'):]}"
+
+        sanitized = re.sub(r"[^A-Za-z0-9_-]", "", source)
+        if sanitized.startswith("fc_"):
+            return sanitized
+        if sanitized.startswith("call_") and len(sanitized) > len("call_"):
+            return f"fc_{sanitized[len('call_'):]}"
+        if sanitized:
+            return f"fc_{sanitized[:48]}"
+
+        seed = source or str(response_item_id or "") or uuid.uuid4().hex
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+        return f"fc_{digest}"
+
+    def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert internal chat-style messages to Responses input items."""
+        items: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "system":
+                continue
+
+            if role in {"user", "assistant"}:
+                content = msg.get("content", "")
+                content_text = str(content) if content is not None else ""
+
+                if role == "assistant":
+                    # Replay encrypted reasoning items from previous turns
+                    # so the API can maintain coherent reasoning chains.
+                    codex_reasoning = msg.get("codex_reasoning_items")
+                    if isinstance(codex_reasoning, list):
+                        for ri in codex_reasoning:
+                            if isinstance(ri, dict) and ri.get("encrypted_content"):
+                                items.append(ri)
+
+                    if content_text.strip():
+                        items.append({"role": "assistant", "content": content_text})
+
+                    tool_calls = msg.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        for tc in tool_calls:
+                            if not isinstance(tc, dict):
+                                continue
+                            fn = tc.get("function", {})
+                            fn_name = fn.get("name")
+                            if not isinstance(fn_name, str) or not fn_name.strip():
+                                continue
+
+                            embedded_call_id, embedded_response_item_id = self._split_responses_tool_id(
+                                tc.get("id")
+                            )
+                            call_id = tc.get("call_id")
+                            if not isinstance(call_id, str) or not call_id.strip():
+                                call_id = embedded_call_id
+                            if not isinstance(call_id, str) or not call_id.strip():
+                                if (
+                                    isinstance(embedded_response_item_id, str)
+                                    and embedded_response_item_id.startswith("fc_")
+                                    and len(embedded_response_item_id) > len("fc_")
+                                ):
+                                    call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
+                                else:
+                                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                            call_id = call_id.strip()
+
+                            arguments = fn.get("arguments", "{}")
+                            if isinstance(arguments, dict):
+                                arguments = json.dumps(arguments, ensure_ascii=False)
+                            elif not isinstance(arguments, str):
+                                arguments = str(arguments)
+                            arguments = arguments.strip() or "{}"
+
+                            items.append({
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": fn_name,
+                                "arguments": arguments,
+                            })
+                    continue
+
+                items.append({"role": role, "content": content_text})
+                continue
+
+            if role == "tool":
+                raw_tool_call_id = msg.get("tool_call_id")
+                call_id, _ = self._split_responses_tool_id(raw_tool_call_id)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip():
+                        call_id = raw_tool_call_id.strip()
+                if not isinstance(call_id, str) or not call_id.strip():
+                    continue
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": str(msg.get("content", "") or ""),
+                })
+
+        return items
+
+    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_items, list):
+            raise ValueError("Codex Responses input must be a list of input items.")
+
+        normalized: List[Dict[str, Any]] = []
+        for idx, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                raise ValueError(f"Codex Responses input[{idx}] must be an object.")
+
+            item_type = item.get("type")
+            if item_type == "function_call":
+                call_id = item.get("call_id")
+                name = item.get("name")
+                if not isinstance(call_id, str) or not call_id.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
+
+                arguments = item.get("arguments", "{}")
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments, ensure_ascii=False)
+                elif not isinstance(arguments, str):
+                    arguments = str(arguments)
+                arguments = arguments.strip() or "{}"
+
+                normalized.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id.strip(),
+                        "name": name.strip(),
+                        "arguments": arguments,
+                    }
+                )
+                continue
+
+            if item_type == "function_call_output":
+                call_id = item.get("call_id")
+                if not isinstance(call_id, str) or not call_id.strip():
+                    raise ValueError(f"Codex Responses input[{idx}] function_call_output is missing call_id.")
+                output = item.get("output", "")
+                if output is None:
+                    output = ""
+                if not isinstance(output, str):
+                    output = str(output)
+
+                normalized.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id.strip(),
+                        "output": output,
+                    }
+                )
+                continue
+
+            if item_type == "reasoning":
+                encrypted = item.get("encrypted_content")
+                if isinstance(encrypted, str) and encrypted:
+                    reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    item_id = item.get("id")
+                    if isinstance(item_id, str) and item_id:
+                        reasoning_item["id"] = item_id
+                    summary = item.get("summary")
+                    if isinstance(summary, list):
+                        reasoning_item["summary"] = summary
+                    else:
+                        reasoning_item["summary"] = []
+                    normalized.append(reasoning_item)
+                continue
+
+            role = item.get("role")
+            if role in {"user", "assistant"}:
+                content = item.get("content", "")
+                if content is None:
+                    content = ""
+                if not isinstance(content, str):
+                    content = str(content)
+
+                normalized.append({"role": role, "content": content})
+                continue
+
+            raise ValueError(
+                f"Codex Responses input[{idx}] has unsupported item shape (type={item_type!r}, role={role!r})."
+            )
+
+        return normalized
+
+    def _preflight_codex_api_kwargs(
+        self,
+        api_kwargs: Any,
+        *,
+        allow_stream: bool = False,
+    ) -> Dict[str, Any]:
+        if not isinstance(api_kwargs, dict):
+            raise ValueError("Codex Responses request must be a dict.")
+
+        required = {"model", "instructions", "input"}
+        missing = [key for key in required if key not in api_kwargs]
+        if missing:
+            raise ValueError(f"Codex Responses request missing required field(s): {', '.join(sorted(missing))}.")
+
+        model = api_kwargs.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Codex Responses request 'model' must be a non-empty string.")
+        model = model.strip()
+
+        instructions = api_kwargs.get("instructions")
+        if instructions is None:
+            instructions = ""
+        if not isinstance(instructions, str):
+            instructions = str(instructions)
+        instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+
+        normalized_input = self._preflight_codex_input_items(api_kwargs.get("input"))
+
+        tools = api_kwargs.get("tools")
+        normalized_tools = None
+        if tools is not None:
+            if not isinstance(tools, list):
+                raise ValueError("Codex Responses request 'tools' must be a list when provided.")
+            normalized_tools = []
+            for idx, tool in enumerate(tools):
+                if not isinstance(tool, dict):
+                    raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
+                if tool.get("type") != "function":
+                    raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
+
+                name = tool.get("name")
+                parameters = tool.get("parameters")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"Codex Responses tools[{idx}] is missing a valid name.")
+                if not isinstance(parameters, dict):
+                    raise ValueError(f"Codex Responses tools[{idx}] is missing valid parameters.")
+
+                description = tool.get("description", "")
+                if description is None:
+                    description = ""
+                if not isinstance(description, str):
+                    description = str(description)
+
+                strict = tool.get("strict", False)
+                if not isinstance(strict, bool):
+                    strict = bool(strict)
+
+                normalized_tools.append(
+                    {
+                        "type": "function",
+                        "name": name.strip(),
+                        "description": description,
+                        "strict": strict,
+                        "parameters": parameters,
+                    }
+                )
+
+        store = api_kwargs.get("store", False)
+        if store is not False:
+            raise ValueError("Codex Responses contract requires 'store' to be false.")
+
+        allowed_keys = {
+            "model", "instructions", "input", "tools", "store",
+            "reasoning", "include", "max_output_tokens", "temperature",
+        }
+        normalized: Dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": normalized_input,
+            "tools": normalized_tools,
+            "store": False,
+        }
+
+        # Pass through reasoning config
+        reasoning = api_kwargs.get("reasoning")
+        if isinstance(reasoning, dict):
+            normalized["reasoning"] = reasoning
+        include = api_kwargs.get("include")
+        if isinstance(include, list):
+            normalized["include"] = include
+
+        # Pass through max_output_tokens and temperature
+        max_output_tokens = api_kwargs.get("max_output_tokens")
+        if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
+            normalized["max_output_tokens"] = int(max_output_tokens)
+        temperature = api_kwargs.get("temperature")
+        if isinstance(temperature, (int, float)):
+            normalized["temperature"] = float(temperature)
+
+        if allow_stream:
+            stream = api_kwargs.get("stream")
+            if stream is not None and stream is not True:
+                raise ValueError("Codex Responses 'stream' must be true when set.")
+            if stream is True:
+                normalized["stream"] = True
+            allowed_keys.add("stream")
+        elif "stream" in api_kwargs:
+            raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
+
+        unexpected = sorted(key for key in api_kwargs.keys() if key not in allowed_keys)
+        if unexpected:
+            raise ValueError(
+                f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
+            )
+
+        return normalized
+
+    def _extract_responses_message_text(self, item: Any) -> str:
+        """Extract assistant text from a Responses message output item."""
+        content = getattr(item, "content", None)
+        if not isinstance(content, list):
+            return ""
+
+        chunks: List[str] = []
+        for part in content:
+            ptype = getattr(part, "type", None)
+            if ptype not in {"output_text", "text"}:
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                chunks.append(text)
+        return "".join(chunks).strip()
+
+    def _extract_responses_reasoning_text(self, item: Any) -> str:
+        """Extract a compact reasoning text from a Responses reasoning item."""
+        summary = getattr(item, "summary", None)
+        if isinstance(summary, list):
+            chunks: List[str] = []
+            for part in summary:
+                text = getattr(part, "text", None)
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+            if chunks:
+                return "\n".join(chunks).strip()
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and text:
+            return text.strip()
+        return ""
+
+    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
+        """Normalize a Responses API object to an assistant_message-like object."""
+        output = getattr(response, "output", None)
+        if not isinstance(output, list) or not output:
+            raise RuntimeError("Responses API returned no output items")
+
+        response_status = getattr(response, "status", None)
+        if isinstance(response_status, str):
+            response_status = response_status.strip().lower()
+        else:
+            response_status = None
+
+        if response_status in {"failed", "cancelled"}:
+            error_obj = getattr(response, "error", None)
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get("message") or str(error_obj)
+            else:
+                error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
+            raise RuntimeError(error_msg)
+
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        reasoning_items_raw: List[Dict[str, Any]] = []
+        tool_calls: List[Any] = []
+        has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+        saw_commentary_phase = False
+        saw_final_answer_phase = False
+
+        for item in output:
+            item_type = getattr(item, "type", None)
+            item_status = getattr(item, "status", None)
+            if isinstance(item_status, str):
+                item_status = item_status.strip().lower()
+            else:
+                item_status = None
+
+            if item_status in {"queued", "in_progress", "incomplete"}:
+                has_incomplete_items = True
+
+            if item_type == "message":
+                item_phase = getattr(item, "phase", None)
+                if isinstance(item_phase, str):
+                    normalized_phase = item_phase.strip().lower()
+                    if normalized_phase in {"commentary", "analysis"}:
+                        saw_commentary_phase = True
+                    elif normalized_phase in {"final_answer", "final"}:
+                        saw_final_answer_phase = True
+                message_text = self._extract_responses_message_text(item)
+                if message_text:
+                    content_parts.append(message_text)
+            elif item_type == "reasoning":
+                reasoning_text = self._extract_responses_reasoning_text(item)
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
+                # Capture the full reasoning item for multi-turn continuity.
+                # encrypted_content is an opaque blob the API needs back on
+                # subsequent turns to maintain coherent reasoning chains.
+                encrypted = getattr(item, "encrypted_content", None)
+                if isinstance(encrypted, str) and encrypted:
+                    raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    item_id = getattr(item, "id", None)
+                    if isinstance(item_id, str) and item_id:
+                        raw_item["id"] = item_id
+                    # Capture summary — required by the API when replaying reasoning items
+                    summary = getattr(item, "summary", None)
+                    if isinstance(summary, list):
+                        raw_summary = []
+                        for part in summary:
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str):
+                                raw_summary.append({"type": "summary_text", "text": text})
+                        raw_item["summary"] = raw_summary
+                    reasoning_items_raw.append(raw_item)
+            elif item_type == "function_call":
+                if item_status in {"queued", "in_progress", "incomplete"}:
+                    continue
+                fn_name = getattr(item, "name", "") or ""
+                arguments = getattr(item, "arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = str(arguments)
+                raw_call_id = getattr(item, "call_id", None)
+                raw_item_id = getattr(item, "id", None)
+                embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
+                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+                response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+                response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
+                tool_calls.append(SimpleNamespace(
+                    id=call_id,
+                    call_id=call_id,
+                    response_item_id=response_item_id,
+                    type="function",
+                    function=SimpleNamespace(name=fn_name, arguments=arguments),
+                ))
+            elif item_type == "custom_tool_call":
+                fn_name = getattr(item, "name", "") or ""
+                arguments = getattr(item, "input", "{}")
+                if not isinstance(arguments, str):
+                    arguments = str(arguments)
+                raw_call_id = getattr(item, "call_id", None)
+                raw_item_id = getattr(item, "id", None)
+                embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
+                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+                response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+                response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
+                tool_calls.append(SimpleNamespace(
+                    id=call_id,
+                    call_id=call_id,
+                    response_item_id=response_item_id,
+                    type="function",
+                    function=SimpleNamespace(name=fn_name, arguments=arguments),
+                ))
+
+        final_text = "\n".join([p for p in content_parts if p]).strip()
+        if not final_text and hasattr(response, "output_text"):
+            out_text = getattr(response, "output_text", "")
+            if isinstance(out_text, str):
+                final_text = out_text.strip()
+
+        assistant_message = SimpleNamespace(
+            content=final_text,
+            tool_calls=tool_calls,
+            reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=reasoning_items_raw or None,
+        )
+
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+            finish_reason = "incomplete"
+        else:
+            finish_reason = "stop"
+        return assistant_message, finish_reason
+
+    def _run_codex_stream(self, api_kwargs: dict):
+        """Execute one streaming Responses API request and return the final response."""
+        max_stream_retries = 1
+        for attempt in range(max_stream_retries + 1):
+            try:
+                with self.client.responses.stream(**api_kwargs) as stream:
+                    for _ in stream:
+                        pass
+                    return stream.get_final_response()
+            except RuntimeError as exc:
+                err_text = str(exc)
+                missing_completed = "response.completed" in err_text
+                if missing_completed and attempt < max_stream_retries:
+                    logger.debug(
+                        "Responses stream closed before completion (attempt %s/%s); retrying.",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                    )
+                    continue
+                if missing_completed:
+                    logger.debug(
+                        "Responses stream did not emit response.completed; falling back to create(stream=True)."
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs)
+                raise
+
+    def _run_codex_create_stream_fallback(self, api_kwargs: dict):
+        """Fallback path for stream completion edge cases on Codex-style Responses backends."""
+        fallback_kwargs = dict(api_kwargs)
+        fallback_kwargs["stream"] = True
+        fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        stream_or_response = self.client.responses.create(**fallback_kwargs)
+
+        # Compatibility shim for mocks or providers that still return a concrete response.
+        if hasattr(stream_or_response, "output"):
+            return stream_or_response
+        if not hasattr(stream_or_response, "__iter__"):
+            return stream_or_response
+
+        terminal_response = None
+        try:
+            for event in stream_or_response:
+                event_type = getattr(event, "type", None)
+                if not event_type and isinstance(event, dict):
+                    event_type = event.get("type")
+                if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
+                    continue
+
+                terminal_response = getattr(event, "response", None)
+                if terminal_response is None and isinstance(event, dict):
+                    terminal_response = event.get("response")
+                if terminal_response is not None:
+                    return terminal_response
+        finally:
+            close_fn = getattr(stream_or_response, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        if terminal_response is not None:
+            return terminal_response
+        raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+
+    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
+        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(force_refresh=force)
+        except Exception as exc:
+            logger.debug("Codex credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        try:
+            self.client = OpenAI(**self._client_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to rebuild OpenAI client after Codex refresh: %s", exc)
+            return False
+
+        return True
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -1270,7 +2028,10 @@ class AIAgent:
 
         def _call():
             try:
-                result["response"] = self.client.chat.completions.create(**api_kwargs)
+                if self.api_mode == "codex_responses":
+                    result["response"] = self._run_codex_stream(api_kwargs)
+                else:
+                    result["response"] = self.client.chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
 
@@ -1295,7 +2056,44 @@ class AIAgent:
         return result["response"]
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
-        """Build the keyword arguments dict for the chat completions API call."""
+        """Build the keyword arguments dict for the active API mode."""
+        if self.api_mode == "codex_responses":
+            instructions = ""
+            payload_messages = api_messages
+            if api_messages and api_messages[0].get("role") == "system":
+                instructions = str(api_messages[0].get("content") or "").strip()
+                payload_messages = api_messages[1:]
+            if not instructions:
+                instructions = DEFAULT_AGENT_IDENTITY
+
+            # Resolve reasoning effort: config > default (xhigh)
+            reasoning_effort = "xhigh"
+            reasoning_enabled = True
+            if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                if self.reasoning_config.get("enabled") is False:
+                    reasoning_enabled = False
+                elif self.reasoning_config.get("effort"):
+                    reasoning_effort = self.reasoning_config["effort"]
+
+            kwargs = {
+                "model": self.model,
+                "instructions": instructions,
+                "input": self._chat_messages_to_responses_input(payload_messages),
+                "tools": self._responses_tools(),
+                "store": False,
+            }
+
+            if reasoning_enabled:
+                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            else:
+                kwargs["include"] = []
+
+            if self.max_tokens is not None:
+                kwargs["max_output_tokens"] = self.max_tokens
+
+            return kwargs
+
         provider_preferences = {}
         if self.providers_allowed:
             provider_preferences["only"] = self.providers_allowed
@@ -1305,6 +2103,10 @@ class AIAgent:
             provider_preferences["order"] = self.providers_order
         if self.provider_sort:
             provider_preferences["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            provider_preferences["require_parameters"] = True
+        if self.provider_data_collection:
+            provider_preferences["data_collection"] = self.provider_data_collection
 
         api_kwargs = {
             "model": self.model,
@@ -1324,7 +2126,8 @@ class AIAgent:
         _is_openrouter = "openrouter" in self.base_url.lower()
         _is_nous = "nousresearch" in self.base_url.lower()
 
-        if _is_openrouter or _is_nous:
+        _is_mistral = "api.mistral.ai" in self.base_url.lower()
+        if (_is_openrouter or _is_nous) and not _is_mistral:
             if self.reasoning_config is not None:
                 extra_body["reasoning"] = self.reasoning_config
             else:
@@ -1362,24 +2165,65 @@ class AIAgent:
         }
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
-            msg["reasoning_details"] = [
-                {"type": d.get("type"), "text": d.get("text"), "signature": d.get("signature")}
-                for d in assistant_message.reasoning_details
-                if isinstance(d, dict)
-            ]
+            # Pass reasoning_details back unmodified so providers (OpenRouter,
+            # Anthropic, OpenAI) can maintain reasoning continuity across turns.
+            # Each provider may include opaque fields (signature, encrypted_content)
+            # that must be preserved exactly.
+            raw_details = assistant_message.reasoning_details
+            preserved = []
+            for d in raw_details:
+                if isinstance(d, dict):
+                    preserved.append(d)
+                elif hasattr(d, "__dict__"):
+                    preserved.append(d.__dict__)
+                elif hasattr(d, "model_dump"):
+                    preserved.append(d.model_dump())
+            if preserved:
+                msg["reasoning_details"] = preserved
+
+        # Codex Responses API: preserve encrypted reasoning items for
+        # multi-turn continuity. These get replayed as input on the next turn.
+        codex_items = getattr(assistant_message, "codex_reasoning_items", None)
+        if codex_items:
+            msg["codex_reasoning_items"] = codex_items
 
         if assistant_message.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tool_call.id,
+            tool_calls = []
+            for tool_call in assistant_message.tool_calls:
+                raw_id = getattr(tool_call, "id", None)
+                call_id = getattr(tool_call, "call_id", None)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    embedded_call_id, _ = self._split_responses_tool_id(raw_id)
+                    call_id = embedded_call_id
+                if not isinstance(call_id, str) or not call_id.strip():
+                    if isinstance(raw_id, str) and raw_id.strip():
+                        call_id = raw_id.strip()
+                    else:
+                        call_id = f"call_{uuid.uuid4().hex[:12]}"
+                call_id = call_id.strip()
+
+                response_item_id = getattr(tool_call, "response_item_id", None)
+                if not isinstance(response_item_id, str) or not response_item_id.strip():
+                    _, embedded_response_item_id = self._split_responses_tool_id(raw_id)
+                    response_item_id = embedded_response_item_id
+
+                response_item_id = self._derive_responses_function_call_id(
+                    call_id,
+                    response_item_id if isinstance(response_item_id, str) else None,
+                )
+
+                tool_calls.append({
+                    "id": call_id,
+                    "call_id": call_id,
+                    "response_item_id": response_item_id,
                     "type": tool_call.type,
                     "function": {
                         "name": tool_call.function.name,
                         "arguments": tool_call.function.arguments
-                    }
+                    },
                 }
-                for tool_call in assistant_message.tool_calls
-            ]
+                )
+            msg["tool_calls"] = tool_calls
 
         return msg
 
@@ -1428,6 +2272,7 @@ class AIAgent:
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
+                api_msg.pop("finish_reason", None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -1444,40 +2289,68 @@ class AIAgent:
                 messages.pop()  # remove flush msg
                 return
 
-            api_kwargs = {
-                "model": self.model,
-                "messages": api_messages,
-                "tools": [memory_tool_def],
-                "temperature": 0.3,
-                **self._max_tokens_param(1024),
-            }
+            # Use auxiliary client for the flush call when available --
+            # it's cheaper and avoids Codex Responses API incompatibility.
+            from agent.auxiliary_client import get_text_auxiliary_client
+            aux_client, aux_model = get_text_auxiliary_client()
 
-            response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
+            if aux_client:
+                api_kwargs = {
+                    "model": aux_model,
+                    "messages": api_messages,
+                    "tools": [memory_tool_def],
+                    "temperature": 0.3,
+                    "max_tokens": 5120,
+                }
+                response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
+            elif self.api_mode == "codex_responses":
+                # No auxiliary client -- use the Codex Responses path directly
+                codex_kwargs = self._build_api_kwargs(api_messages)
+                codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
+                codex_kwargs["temperature"] = 0.3
+                if "max_output_tokens" in codex_kwargs:
+                    codex_kwargs["max_output_tokens"] = 5120
+                response = self._run_codex_stream(codex_kwargs)
+            else:
+                api_kwargs = {
+                    "model": self.model,
+                    "messages": api_messages,
+                    "tools": [memory_tool_def],
+                    "temperature": 0.3,
+                    **self._max_tokens_param(5120),
+                }
+                response = self.client.chat.completions.create(**api_kwargs, timeout=30.0)
 
-            if response.choices:
+            # Extract tool calls from the response, handling both API formats
+            tool_calls = []
+            if self.api_mode == "codex_responses" and not aux_client:
+                assistant_msg, _ = self._normalize_codex_response(response)
+                if assistant_msg and assistant_msg.tool_calls:
+                    tool_calls = assistant_msg.tool_calls
+            elif hasattr(response, "choices") and response.choices:
                 assistant_message = response.choices[0].message
                 if assistant_message.tool_calls:
-                    # Execute only memory tool calls
-                    for tc in assistant_message.tool_calls:
-                        if tc.function.name == "memory":
-                            try:
-                                args = json.loads(tc.function.arguments)
-                                flush_target = args.get("target", "memory")
-                                from tools.memory_tool import memory_tool as _memory_tool
-                                result = _memory_tool(
-                                    action=args.get("action"),
-                                    target=flush_target,
-                                    content=args.get("content"),
-                                    old_text=args.get("old_text"),
-                                    store=self._memory_store,
-                                )
-                                # Also send user observations to Honcho when active
-                                if self._honcho and flush_target == "user" and args.get("action") == "add":
-                                    self._honcho_save_user_observation(args.get("content", ""))
-                                if not self.quiet_mode:
-                                    print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
-                            except Exception as e:
-                                logger.debug("Memory flush tool call failed: %s", e)
+                    tool_calls = assistant_message.tool_calls
+
+            for tc in tool_calls:
+                if tc.function.name == "memory":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        flush_target = args.get("target", "memory")
+                        from tools.memory_tool import memory_tool as _memory_tool
+                        result = _memory_tool(
+                            action=args.get("action"),
+                            target=flush_target,
+                            content=args.get("content"),
+                            old_text=args.get("old_text"),
+                            store=self._memory_store,
+                        )
+                        if self._honcho and flush_target == "user" and args.get("action") == "add":
+                            self._honcho_save_user_observation(args.get("content", ""))
+                        if not self.quiet_mode:
+                            print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
+                    except Exception as e:
+                        logger.debug("Memory flush tool call failed: %s", e)
         except Exception as e:
             logger.debug("Memory flush API call failed: %s", e)
         finally:
@@ -1688,7 +2561,7 @@ class AIAgent:
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
@@ -1698,10 +2571,16 @@ class AIAgent:
                     function_result = handle_function_call(function_name, function_args, effective_task_id)
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error)
+                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result[:200] if len(function_result) > 200 else function_result
+
+            # Log tool errors to the persistent error log so [error] tags
+            # in the UI always have a corresponding detailed entry on disk.
+            _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+            if _is_error_result:
+                logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -1785,24 +2664,81 @@ class AIAgent:
             if _is_nous:
                 summary_extra_body["tags"] = ["product=hermes-agent"]
 
-            summary_kwargs = {
-                "model": self.model,
-                "messages": api_messages,
-            }
-            if self.max_tokens is not None:
-                summary_kwargs.update(self._max_tokens_param(self.max_tokens))
-            if summary_extra_body:
-                summary_kwargs["extra_body"] = summary_extra_body
+            if self.api_mode == "codex_responses":
+                codex_kwargs = self._build_api_kwargs(api_messages)
+                codex_kwargs["tools"] = None
+                summary_response = self._run_codex_stream(codex_kwargs)
+                assistant_message, _ = self._normalize_codex_response(summary_response)
+                final_response = (assistant_message.content or "").strip() if assistant_message else ""
+            else:
+                summary_kwargs = {
+                    "model": self.model,
+                    "messages": api_messages,
+                }
+                if self.max_tokens is not None:
+                    summary_kwargs.update(self._max_tokens_param(self.max_tokens))
 
-            summary_response = self.client.chat.completions.create(**summary_kwargs)
+                # Include provider routing preferences
+                provider_preferences = {}
+                if self.providers_allowed:
+                    provider_preferences["only"] = self.providers_allowed
+                if self.providers_ignored:
+                    provider_preferences["ignore"] = self.providers_ignored
+                if self.providers_order:
+                    provider_preferences["order"] = self.providers_order
+                if self.provider_sort:
+                    provider_preferences["sort"] = self.provider_sort
+                if provider_preferences:
+                    summary_extra_body["provider"] = provider_preferences
 
-            if summary_response.choices and summary_response.choices[0].message.content:
-                final_response = summary_response.choices[0].message.content
+                if summary_extra_body:
+                    summary_kwargs["extra_body"] = summary_extra_body
+
+                summary_response = self.client.chat.completions.create(**summary_kwargs)
+
+                if summary_response.choices and summary_response.choices[0].message.content:
+                    final_response = summary_response.choices[0].message.content
+                else:
+                    final_response = ""
+
+            if final_response:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-                messages.append({"role": "assistant", "content": final_response})
+                if final_response:
+                    messages.append({"role": "assistant", "content": final_response})
+                else:
+                    final_response = "I reached the iteration limit and couldn't generate a summary."
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                # Retry summary generation
+                if self.api_mode == "codex_responses":
+                    codex_kwargs = self._build_api_kwargs(api_messages)
+                    codex_kwargs["tools"] = None
+                    retry_response = self._run_codex_stream(codex_kwargs)
+                    retry_msg, _ = self._normalize_codex_response(retry_response)
+                    final_response = (retry_msg.content or "").strip() if retry_msg else ""
+                else:
+                    summary_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                    }
+                    if self.max_tokens is not None:
+                        summary_kwargs["max_tokens"] = self.max_tokens
+                    if summary_extra_body:
+                        summary_kwargs["extra_body"] = summary_extra_body
+
+                    summary_response = self.client.chat.completions.create(**summary_kwargs)
+
+                    if summary_response.choices and summary_response.choices[0].message.content:
+                        final_response = summary_response.choices[0].message.content
+                    else:
+                        final_response = ""
+
+                if final_response:
+                    if "<think>" in final_response:
+                        final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    messages.append({"role": "assistant", "content": final_response})
+                else:
+                    final_response = "I reached the iteration limit and couldn't generate a summary."
 
         except Exception as e:
             logging.warning(f"Failed to get summary response: {e}")
@@ -1920,6 +2856,7 @@ class AIAgent:
         api_call_count = 0
         final_response = None
         interrupted = False
+        codex_ack_continuations = 0
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -1933,6 +2870,22 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # Fire step_callback for gateway hooks (agent:step event)
+            if self.step_callback is not None:
+                try:
+                    prev_tools = []
+                    for _m in reversed(messages):
+                        if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                            prev_tools = [
+                                tc["function"]["name"]
+                                for tc in _m["tool_calls"]
+                                if isinstance(tc, dict)
+                            ]
+                            break
+                    self.step_callback(api_call_count, prev_tools)
+                except Exception as _step_err:
+                    logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
             # Track tool-calling iterations for skill nudge.
             # Counter resets whenever skill_manage is actually used.
@@ -1961,6 +2914,9 @@ class AIAgent:
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
                     api_msg.pop("reasoning")
+                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
+                if "finish_reason" in api_msg:
+                    api_msg.pop("finish_reason")
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
@@ -2018,10 +2974,15 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            codex_auth_retry_attempted = False
+
+            finish_reason = "stop"
 
             while retry_count < max_retries:
                 try:
                     api_kwargs = self._build_api_kwargs(api_messages)
+                    if self.api_mode == "codex_responses":
+                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -2044,8 +3005,33 @@ class AIAgent:
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
                     
-                    # Validate response has valid choices before proceeding
-                    if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
+                    # Validate response shape before proceeding
+                    response_invalid = False
+                    error_details = []
+                    if self.api_mode == "codex_responses":
+                        output_items = getattr(response, "output", None) if response is not None else None
+                        if response is None:
+                            response_invalid = True
+                            error_details.append("response is None")
+                        elif not isinstance(output_items, list):
+                            response_invalid = True
+                            error_details.append("response.output is not a list")
+                        elif len(output_items) == 0:
+                            response_invalid = True
+                            error_details.append("response.output is empty")
+                    else:
+                        if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
+                            response_invalid = True
+                            if response is None:
+                                error_details.append("response is None")
+                            elif not hasattr(response, 'choices'):
+                                error_details.append("response has no 'choices' attribute")
+                            elif response.choices is None:
+                                error_details.append("response.choices is None")
+                            else:
+                                error_details.append("response.choices is empty")
+
+                    if response_invalid:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
                             thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
@@ -2053,15 +3039,6 @@ class AIAgent:
                         
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
-                        error_details = []
-                        if response is None:
-                            error_details.append("response is None")
-                        elif not hasattr(response, 'choices'):
-                            error_details.append("response has no 'choices' attribute")
-                        elif response.choices is None:
-                            error_details.append("response.choices is None")
-                        else:
-                            error_details.append("response.choices is empty")
                         
                         # Check for error field in response (some providers include this)
                         error_msg = "Unknown"
@@ -2090,7 +3067,7 @@ class AIAgent:
                         print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
-                        if retry_count > max_retries:
+                        if retry_count >= max_retries:
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -2098,7 +3075,7 @@ class AIAgent:
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": f"Invalid API response (choices is None/empty). Likely rate limited by provider.",
+                                "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
                                 "failed": True  # Mark as failure for filtering
                             }
                         
@@ -2125,7 +3102,20 @@ class AIAgent:
                         continue  # Retry the API call
 
                     # Check finish_reason before proceeding
-                    finish_reason = response.choices[0].finish_reason
+                    if self.api_mode == "codex_responses":
+                        status = getattr(response, "status", None)
+                        incomplete_details = getattr(response, "incomplete_details", None)
+                        incomplete_reason = None
+                        if isinstance(incomplete_details, dict):
+                            incomplete_reason = incomplete_details.get("reason")
+                        else:
+                            incomplete_reason = getattr(incomplete_details, "reason", None)
+                        if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+                            finish_reason = "length"
+                        else:
+                            finish_reason = "stop"
+                    else:
+                        finish_reason = response.choices[0].finish_reason
                     
                     # Handle "length" finish_reason - response was truncated
                     if finish_reason == "length":
@@ -2162,12 +3152,28 @@ class AIAgent:
                     
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
+                        if self.api_mode == "codex_responses":
+                            prompt_tokens = getattr(response.usage, 'input_tokens', 0) or 0
+                            completion_tokens = getattr(response.usage, 'output_tokens', 0) or 0
+                            total_tokens = (
+                                getattr(response.usage, 'total_tokens', None)
+                                or (prompt_tokens + completion_tokens)
+                            )
+                        else:
+                            prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
+                            completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
+                            total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
                         usage_dict = {
-                            "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
-                            "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
-                            "total_tokens": getattr(response.usage, 'total_tokens', 0),
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+
+                        self.session_prompt_tokens += prompt_tokens
+                        self.session_completion_tokens += completion_tokens
+                        self.session_total_tokens += total_tokens
+                        self.session_api_calls += 1
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
@@ -2199,7 +3205,19 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
-                    
+
+                    status_code = getattr(api_error, "status_code", None)
+                    if (
+                        self.api_mode == "codex_responses"
+                        and self.provider == "openai-codex"
+                        and status_code == 401
+                        and not codex_auth_retry_attempted
+                    ):
+                        codex_auth_retry_attempted = True
+                        if self._try_refresh_codex_client_credentials(force=True):
+                            print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            continue
+
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     
@@ -2321,7 +3339,7 @@ class AIAgent:
                                 "partial": True
                             }
                     
-                    if retry_count > max_retries:
+                    if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
@@ -2355,11 +3373,32 @@ class AIAgent:
                 break
 
             try:
-                assistant_message = response.choices[0].message
+                if self.api_mode == "codex_responses":
+                    assistant_message, finish_reason = self._normalize_codex_response(response)
+                else:
+                    assistant_message = response.choices[0].message
                 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+
+                # Notify progress callback of model's thinking (used by subagent
+                # delegation to relay the child's reasoning to the parent display).
+                # Guard: only fire for subagents (_delegate_depth >= 1) to avoid
+                # spamming gateway platforms with the main agent's every thought.
+                if (assistant_message.content and self.tool_progress_callback
+                        and getattr(self, '_delegate_depth', 0) > 0):
+                    _think_text = assistant_message.content.strip()
+                    # Strip reasoning XML tags that shouldn't leak to parent display
+                    _think_text = re.sub(
+                        r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
+                    ).strip()
+                    first_line = _think_text.split('\n')[0][:80] if _think_text else ""
+                    if first_line:
+                        try:
+                            self.tool_progress_callback("_thinking", first_line)
+                        except Exception:
+                            pass
                 
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
@@ -2395,6 +3434,48 @@ class AIAgent:
                 # Reset incomplete scratchpad counter on clean response
                 if hasattr(self, '_incomplete_scratchpad_retries'):
                     self._incomplete_scratchpad_retries = 0
+
+                if self.api_mode == "codex_responses" and finish_reason == "incomplete":
+                    if not hasattr(self, "_codex_incomplete_retries"):
+                        self._codex_incomplete_retries = 0
+                    self._codex_incomplete_retries += 1
+
+                    interim_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    interim_has_content = bool((interim_msg.get("content") or "").strip())
+                    interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
+
+                    if interim_has_content or interim_has_reasoning:
+                        last_msg = messages[-1] if messages else None
+                        duplicate_interim = (
+                            isinstance(last_msg, dict)
+                            and last_msg.get("role") == "assistant"
+                            and last_msg.get("finish_reason") == "incomplete"
+                            and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
+                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                        )
+                        if not duplicate_interim:
+                            messages.append(interim_msg)
+                            self._log_msg_to_db(interim_msg)
+
+                    if self._codex_incomplete_retries < 3:
+                        if not self.quiet_mode:
+                            print(f"{self.log_prefix}↻ Codex response incomplete; continuing turn ({self._codex_incomplete_retries}/3)")
+                        self._session_messages = messages
+                        self._save_session_log(messages)
+                        continue
+
+                    self._codex_incomplete_retries = 0
+                    self._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": None,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "partial": True,
+                        "error": "Codex response remained incomplete after 3 continuation attempts",
+                    }
+                elif hasattr(self, "_codex_incomplete_retries"):
+                    self._codex_incomplete_retries = 0
                 
                 # Check for tool calls
                 if assistant_message.tool_calls:
@@ -2501,8 +3582,7 @@ class AIAgent:
                         if self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                preview = clean[:120] + "..." if len(clean) > 120 else clean
-                                print(f"  ┊ 💬 {preview}")
+                                print(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
@@ -2567,7 +3647,8 @@ class AIAgent:
                                             tool_names.append(fn.get("name", "unknown"))
                                         msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
                                         break
-                                final_response = fallback
+                                # Strip <think> blocks from fallback content for user display
+                                final_response = self._strip_think_blocks(fallback).strip()
                                 break
                             
                             # No fallback -- append the empty message as-is
@@ -2595,6 +3676,39 @@ class AIAgent:
                     # Reset retry counter on successful content
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
+
+                    if (
+                        self.api_mode == "codex_responses"
+                        and self.valid_tool_names
+                        and codex_ack_continuations < 2
+                        and self._looks_like_codex_intermediate_ack(
+                            user_message=user_message,
+                            assistant_content=final_response,
+                            messages=messages,
+                        )
+                    ):
+                        codex_ack_continuations += 1
+                        interim_msg = self._build_assistant_message(assistant_message, "incomplete")
+                        messages.append(interim_msg)
+                        self._log_msg_to_db(interim_msg)
+
+                        continue_msg = {
+                            "role": "user",
+                            "content": (
+                                "[System: Continue now. Execute the required tool calls and only "
+                                "send your final answer after completing the task.]"
+                            ),
+                        }
+                        messages.append(continue_msg)
+                        self._log_msg_to_db(continue_msg)
+                        self._session_messages = messages
+                        self._save_session_log(messages)
+                        continue
+
+                    codex_ack_continuations = 0
+                    
+                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
+                    final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     

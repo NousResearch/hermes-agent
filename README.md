@@ -769,7 +769,7 @@ Hermes includes multiple layers of security beyond sandboxed terminals and exec 
 | **Write deny list with symlink resolution** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`, etc.) are resolved via `os.path.realpath()` before comparison, preventing symlink bypass |
 | **Recursive delete false-positive fix** | Dangerous command detection uses precise flag-matching to avoid blocking safe commands |
 | **Code execution sandbox** | `execute_code` scripts run in a child process with API keys and credentials stripped from the environment |
-| **Container hardening** | Docker containers run with read-only root, all capabilities dropped, no privilege escalation, PID limits |
+| **Container hardening** | Docker containers run with all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
 | **DM pairing** | Cryptographically random pairing codes with 1-hour expiry and rate limiting |
 | **User allowlists** | Default deny-all for messaging platforms; explicit allowlists or DM pairing required |
 

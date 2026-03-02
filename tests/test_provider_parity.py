@@ -539,7 +539,8 @@ class TestCodexReasoningPreflight:
                             base_url="https://chatgpt.com/backend-api/codex")
         raw_input = [
             {"role": "user", "content": "hello"},
-            {"type": "reasoning", "encrypted_content": "abc123encrypted", "id": "r_001"},
+            {"type": "reasoning", "encrypted_content": "abc123encrypted", "id": "r_001",
+             "summary": [{"type": "summary_text", "text": "Thinking about it"}]},
             {"role": "assistant", "content": "hi there"},
         ]
         normalized = agent._preflight_codex_input_items(raw_input)
@@ -547,6 +548,7 @@ class TestCodexReasoningPreflight:
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
         assert reasoning_items[0]["id"] == "r_001"
+        assert reasoning_items[0]["summary"] == [{"type": "summary_text", "text": "Thinking about it"}]
 
     def test_reasoning_item_without_id(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
@@ -557,6 +559,7 @@ class TestCodexReasoningPreflight:
         normalized = agent._preflight_codex_input_items(raw_input)
         assert len(normalized) == 1
         assert "id" not in normalized[0]
+        assert normalized[0]["summary"] == []  # default empty summary
 
     def test_reasoning_item_empty_encrypted_skipped(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

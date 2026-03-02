@@ -1596,6 +1596,11 @@ class AIAgent:
                     item_id = item.get("id")
                     if isinstance(item_id, str) and item_id:
                         reasoning_item["id"] = item_id
+                    summary = item.get("summary")
+                    if isinstance(summary, list):
+                        reasoning_item["summary"] = summary
+                    else:
+                        reasoning_item["summary"] = []
                     normalized.append(reasoning_item)
                 continue
 
@@ -1828,6 +1833,15 @@ class AIAgent:
                     item_id = getattr(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id
+                    # Capture summary — required by the API when replaying reasoning items
+                    summary = getattr(item, "summary", None)
+                    if isinstance(summary, list):
+                        raw_summary = []
+                        for part in summary:
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str):
+                                raw_summary.append({"type": "summary_text", "text": text})
+                        raw_item["summary"] = raw_summary
                     reasoning_items_raw.append(raw_item)
             elif item_type == "function_call":
                 if item_status in {"queued", "in_progress", "incomplete"}:

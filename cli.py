@@ -719,7 +719,7 @@ class SlashCommandCompleter(Completer):
                     cmd_name,
                     start_position=-len(word),
                     display=cmd,
-                    display_meta=f"⚡ {info['description'][:50]}",
+                    display_meta=f"⚡ {info['description'][:50]}{'...' if len(info['description']) > 50 else ''}",
                 )
 
 
@@ -1137,9 +1137,12 @@ class HermesCLI:
         
         # Header
         print()
-        print("+" + "-" * 78 + "+")
-        print("|" + " " * 25 + "(^_^)/ Available Tools" + " " * 30 + "|")
-        print("+" + "-" * 78 + "+")
+        title = "(^_^)/ Available Tools"
+        width = 78
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         
         # Group tools by toolset
@@ -1172,16 +1175,19 @@ class HermesCLI:
         
         # Header
         print()
-        print("+" + "-" * 58 + "+")
-        print("|" + " " * 15 + "(^_^)b Available Toolsets" + " " * 17 + "|")
-        print("+" + "-" * 58 + "+")
+        title = "(^_^)b Available Toolsets"
+        width = 58
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         
         for name in sorted(all_toolsets.keys()):
             info = get_toolset_info(name)
             if info:
                 tool_count = info["tool_count"]
-                desc = info["description"][:45]
+                desc = info["description"]
                 
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
@@ -1212,9 +1218,12 @@ class HermesCLI:
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
         print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 15 + "(^_^) Configuration" + " " * 15 + "|")
-        print("+" + "-" * 50 + "+")
+        title = "(^_^) Configuration"
+        width = 50
+        pad = width - len(title)
+        print("+" + "-" * width + "+")
+        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
+        print("+" + "-" * width + "+")
         print()
         print("  -- Model --")
         print(f"  Model:     {self.model}")
@@ -1438,8 +1447,7 @@ class HermesCLI:
             print("+" + "-" * 50 + "+")
             print()
             for name, prompt in self.personalities.items():
-                truncated = prompt[:40] + "..." if len(prompt) > 40 else prompt
-                print(f"  {name:<12} - \"{truncated}\"")
+                print(f"  {name:<12} - \"{prompt}\"")
             print()
             print("  Usage: /personality <name>")
             print()

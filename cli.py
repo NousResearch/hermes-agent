@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import json
+import webbrowser
 import atexit
 import uuid
 from pathlib import Path
@@ -495,7 +496,15 @@ def _get_available_skills() -> Dict[str, List[str]]:
     return skills_by_category
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None):
+def build_welcome_banner(
+    console: Console,
+    model: str,
+    cwd: str,
+    tools: List[dict] = None,
+    enabled_toolsets: List[str] = None,
+    session_id: str = None,
+    provider_label: str = None,
+):
     """
     Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
     
@@ -506,6 +515,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         tools: List of tool definitions
         enabled_toolsets: List of enabled toolset names
         session_id: Unique session identifier for logging
+        provider_label: Optional provider label to display next to the model
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     
@@ -531,7 +541,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     
-    left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
+    provider_text = provider_label or "Nous Research"
+    left_lines.append(f"[#FFBF00]{model_short}[/] [dim #B8860B]·[/] [dim #B8860B]{provider_text}[/]")
     left_lines.append(f"[dim #B8860B]{cwd}[/]")
     
     # Add session ID if provided
@@ -803,7 +814,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex")
+            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "codex-app-server")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -843,6 +854,11 @@ class HermesCLI:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
+        self._app_server_bin: str = os.getenv("HERMES_CODEX_APP_SERVER_BIN", "codex")
+        self._codex_app_client = None
+        self._codex_thread_id: Optional[str] = None
+        self._codex_override_notice_shown = False
+        self._session_db = None
         # Max turns priority: CLI arg > env var > config file (agent.max_turns or root max_turns) > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
@@ -910,6 +926,70 @@ class HermesCLI:
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
 
+    def _ensure_session_store(self) -> None:
+        """Initialize SQLite session store once."""
+        if self._session_db is not None:
+            return
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
+            self._session_db = None
+
+    def _restore_or_init_session(self) -> bool:
+        """Restore resumed sessions or create a fresh session row."""
+        self._ensure_session_store()
+        if not self._session_db:
+            return True
+
+        session_meta = self._session_db.get_session(self.session_id)
+        if self._resumed:
+            if not session_meta:
+                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
+                _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
+                return False
+            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            if restored:
+                self.conversation_history = restored
+                msg_count = len([m for m in restored if m.get("role") == "user"])
+                _cprint(
+                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
+                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
+                    f"{len(restored)} total messages){_RST}"
+                )
+            else:
+                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
+            try:
+                self._session_db._conn.execute(
+                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                    (self.session_id,),
+                )
+                self._session_db._conn.commit()
+            except Exception:
+                pass
+            return True
+
+        if session_meta:
+            return True
+
+        try:
+            self._session_db.create_session(
+                session_id=self.session_id,
+                source="cli",
+                model=self.model,
+                model_config={
+                    "provider": self.provider,
+                    "api_mode": self.api_mode,
+                    "base_url": self.base_url,
+                    "max_turns": self.max_turns,
+                },
+                system_prompt=self.system_prompt or None,
+            )
+        except Exception as e:
+            logger.debug("Could not create SQLite session row: %s", e)
+        return True
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -937,9 +1017,10 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
-        if not isinstance(api_key, str) or not api_key:
-            self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
-            return False
+        if resolved_provider != "codex-app-server":
+            if not isinstance(api_key, str) or not api_key:
+                self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
+                return False
         if not isinstance(base_url, str) or not base_url:
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False
@@ -954,12 +1035,202 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self._app_server_bin = runtime.get("app_server_bin", self._app_server_bin)
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
         if (credentials_changed or routing_changed) and self.agent is not None:
             self.agent = None
+        if (credentials_changed or routing_changed) and self._codex_app_client is not None:
+            try:
+                self._codex_app_client.close()
+            except Exception:
+                pass
+            self._codex_app_client = None
+            self._codex_thread_id = None
 
         return True
+
+    def _init_codex_app_server(self) -> bool:
+        """Initialize codex app-server backend and ensure ChatGPT auth."""
+        if self._codex_app_client is not None and self._codex_thread_id:
+            return True
+
+        try:
+            from hermes_cli import __version__ as hermes_version
+            from hermes_cli.codex_app_server import (
+                CodexAppServerClient,
+                wait_for_notification,
+            )
+
+            client = CodexAppServerClient(binary=self._app_server_bin, cwd=os.getcwd())
+            client.start()
+            client.initialize(
+                client_name="hermes_agent",
+                client_title="Hermes Agent",
+                client_version=str(hermes_version),
+                experimental_api=False,
+            )
+
+            account = client.call("account/read", params={"refreshToken": False}, timeout=20.0)
+            account_info = account.get("account")
+            requires_auth = bool(account.get("requiresOpenaiAuth"))
+            if isinstance(account_info, dict):
+                account_type = account_info.get("type")
+                account_email = account_info.get("email")
+                if account_type == "chatgpt":
+                    if isinstance(account_email, str) and account_email:
+                        _cprint(f"{_DIM}codex app-server auth: using existing ChatGPT session ({account_email}){_RST}")
+                    else:
+                        _cprint(f"{_DIM}codex app-server auth: using existing ChatGPT session{_RST}")
+                elif account_type:
+                    _cprint(f"{_DIM}codex app-server auth: using existing session ({account_type}){_RST}")
+            if account_info is None and requires_auth:
+                login = client.call("account/login/start", params={"type": "chatgpt"}, timeout=20.0)
+                auth_url = login.get("authUrl", "")
+                login_id = login.get("loginId")
+                if isinstance(auth_url, str) and auth_url.strip():
+                    _cprint(f"{_GOLD}🔐 Sign in required for codex app-server{_RST}")
+                    _cprint(f"{_DIM}Open this URL to continue:{_RST} {auth_url.strip()}")
+                    try:
+                        webbrowser.open(auth_url.strip())
+                    except Exception:
+                        pass
+                if not isinstance(login_id, str) or not login_id:
+                    raise RuntimeError("app-server login did not return loginId.")
+
+                completed = wait_for_notification(
+                    client,
+                    method="account/login/completed",
+                    login_id=login_id,
+                    timeout=600.0,
+                )
+                if not completed.get("success"):
+                    detail = completed.get("error") or "unknown error"
+                    raise RuntimeError(f"ChatGPT login failed: {detail}")
+
+            thread_resp = client.call(
+                "thread/start",
+                params={
+                    "model": self.model,
+                    "cwd": os.getcwd(),
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "writableRoots": [os.getcwd()],
+                        "networkAccess": True,
+                    },
+                },
+                timeout=30.0,
+            )
+            thread = thread_resp.get("thread", {})
+            thread_id = thread.get("id")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RuntimeError("app-server thread/start did not return thread id.")
+
+            self._codex_app_client = client
+            self._codex_thread_id = thread_id
+            if not self._codex_override_notice_shown:
+                _cprint(f"{_DIM}codex app-server overrides per turn: model, cwd, approvalPolicy=never, sandboxPolicy=workspaceWrite+networkEnabled{_RST}")
+                _cprint(f"{_DIM}other app-server behavior still follows your ~/.codex/config.toml settings{_RST}")
+                self._codex_override_notice_shown = True
+            return True
+        except (OSError, FileNotFoundError) as exc:
+            self.console.print(
+                "[bold red]Could not start codex app-server.[/] "
+                "Install Codex CLI or set HERMES_CODEX_APP_SERVER_BIN."
+            )
+            logger.debug("codex app-server startup failure: %s", exc)
+            return False
+        except Exception as exc:
+            self.console.print(f"[bold red]Failed to initialize codex app-server: {exc}[/]")
+            try:
+                if self._codex_app_client is not None:
+                    self._codex_app_client.close()
+            except Exception:
+                pass
+            self._codex_app_client = None
+            self._codex_thread_id = None
+            return False
+
+    def _chat_via_codex_app_server(self, message: str) -> Optional[str]:
+        """Run one turn through codex app-server and return final text."""
+        client = self._codex_app_client
+        thread_id = self._codex_thread_id
+        if client is None or not thread_id:
+            return None
+
+        try:
+            turn_resp = client.call(
+                "turn/start",
+                params={
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": message}],
+                    "model": self.model,
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "writableRoots": [os.getcwd()],
+                        "networkAccess": True,
+                    },
+                },
+                timeout=30.0,
+            )
+        except Exception as exc:
+            return f"Error: failed to start turn: {exc}"
+
+        turn = turn_resp.get("turn", {})
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id:
+            return "Error: turn/start did not return a turn id."
+
+        chunks: List[str] = []
+        final_text: Optional[str] = None
+        turn_error: Optional[str] = None
+        deadline = datetime.now().timestamp() + 1800.0
+
+        while datetime.now().timestamp() < deadline:
+            msg = client.next_notification(timeout=0.2)
+            if not msg:
+                continue
+            method = msg.get("method")
+            params = msg.get("params", {})
+            if not isinstance(params, dict):
+                continue
+
+            if method == "item/agentMessage/delta":
+                delta = params.get("delta")
+                if not isinstance(delta, str):
+                    delta = params.get("textDelta")
+                if isinstance(delta, str) and delta:
+                    chunks.append(delta)
+                continue
+
+            if method == "item/completed":
+                item = params.get("item", {})
+                if isinstance(item, dict) and item.get("type") == "agentMessage":
+                    item_text = item.get("text")
+                    if isinstance(item_text, str):
+                        final_text = item_text
+                continue
+
+            if method == "turn/completed":
+                completed_turn = params.get("turn", {})
+                if not isinstance(completed_turn, dict) or completed_turn.get("id") != turn_id:
+                    continue
+                status = completed_turn.get("status")
+                if status == "failed":
+                    err = completed_turn.get("error", {})
+                    if isinstance(err, dict):
+                        turn_error = err.get("message") or str(err)
+                    else:
+                        turn_error = str(err)
+                break
+
+        if turn_error:
+            return f"Error: {turn_error}"
+        if final_text:
+            return final_text
+        return "".join(chunks).strip() or "(No response from codex app-server)"
 
     def _init_agent(self) -> bool:
         """
@@ -969,48 +1240,18 @@ class HermesCLI:
         Returns:
             bool: True if successful, False otherwise
         """
-        if self.agent is not None:
-            return True
-
         if not self._ensure_runtime_credentials():
             return False
 
-        # Initialize SQLite session store for CLI sessions
-        self._session_db = None
-        try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            logger.debug("SQLite session store not available: %s", e)
-        
-        # If resuming, validate the session exists and load its history
-        if self._resumed and self._session_db:
-            session_meta = self._session_db.get_session(self.session_id)
-            if not session_meta:
-                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
-                _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
-                return False
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
-            if restored:
-                self.conversation_history = restored
-                msg_count = len([m for m in restored if m.get("role") == "user"])
-                _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
-                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
-                    f"{len(restored)} total messages){_RST}"
-                )
-            else:
-                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
-            # Re-open the session (clear ended_at so it's active again)
-            try:
-                self._session_db._conn.execute(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                    (self.session_id,),
-                )
-                self._session_db._conn.commit()
-            except Exception:
-                pass
-        
+        if not self._restore_or_init_session():
+            return False
+
+        if self.provider == "codex-app-server":
+            return self._init_codex_app_server()
+
+        if self.agent is not None:
+            return True
+
         try:
             self.agent = AIAgent(
                 model=self.model,
@@ -1044,6 +1285,10 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        try:
+            self._ensure_runtime_credentials()
+        except Exception:
+            pass
         self.console.clear()
         
         if self.compact:
@@ -1057,6 +1302,12 @@ class HermesCLI:
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             
             # Build and display the banner
+            provider_labels = {
+                "openrouter": "OpenRouter",
+                "nous": "Nous Portal",
+                "openai-codex": "OpenAI Codex",
+                "codex-app-server": "Codex App Server",
+            }
             build_welcome_banner(
                 console=self.console,
                 model=self.model,
@@ -1064,6 +1315,7 @@ class HermesCLI:
                 tools=tools,
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
+                provider_label=provider_labels.get(self.provider, self.provider),
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -1105,7 +1357,9 @@ class HermesCLI:
             model_short = model_short[:27] + "..."
         
         # Get API status indicator
-        if self.api_key:
+        if self.provider == "codex-app-server":
+            api_indicator = "[green bold]●[/]"
+        elif self.api_key:
             api_indicator = "[green bold]●[/]"
         else:
             api_indicator = "[red bold]●[/]"
@@ -1217,6 +1471,10 @@ class HermesCLI:
     
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
+        # Refresh runtime routing/auth details so displayed provider/base URL
+        # match what chat execution will actually use.
+        self._ensure_runtime_credentials()
+
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -1230,7 +1488,12 @@ class HermesCLI:
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
-        api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
+        if self.provider == "codex-app-server":
+            base_url_display = "stdio://codex-app-server"
+            api_key_display = "N/A (ChatGPT OAuth via app-server)"
+        else:
+            base_url_display = self.base_url
+            api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
         print()
         title = "(^_^) Configuration"
@@ -1242,8 +1505,11 @@ class HermesCLI:
         print()
         print("  -- Model --")
         print(f"  Model:     {self.model}")
-        print(f"  Base URL:  {self.base_url}")
+        print(f"  Provider:  {self.provider}")
+        print(f"  Base URL:  {base_url_display}")
         print(f"  API Key:   {api_key_display}")
+        if self.provider == "codex-app-server":
+            print("  Overrides: model, cwd, approvalPolicy=never, sandboxPolicy=workspaceWrite+networkEnabled")
         print()
         print("  -- Terminal --")
         print(f"  Environment:  {terminal_env}")
@@ -2045,12 +2311,42 @@ class HermesCLI:
         
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
+        if self.provider == "codex-app-server" and self._session_db:
+            try:
+                self._session_db.append_message(
+                    session_id=self.session_id,
+                    role="user",
+                    content=message,
+                )
+            except Exception as e:
+                logger.debug("Could not persist user message for codex-app-server: %s", e)
         
         w = self.console.width
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
         try:
+            if self.provider == "codex-app-server":
+                response = self._chat_via_codex_app_server(message) or ""
+                if response:
+                    w = self.console.width
+                    label = " ⚕ Hermes "
+                    fill = w - 2 - len(label)
+                    top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
+                    bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                    _cprint(f"\n{top}\n{response}\n\n{bot}")
+                self.conversation_history.append({"role": "assistant", "content": response})
+                if self._session_db:
+                    try:
+                        self._session_db.append_message(
+                            session_id=self.session_id,
+                            role="assistant",
+                            content=response,
+                        )
+                    except Exception as e:
+                        logger.debug("Could not persist assistant message for codex-app-server: %s", e)
+                return response
+
             # Run the conversation with interrupt monitoring
             result = None
             
@@ -2836,11 +3132,18 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             # Close session in SQLite
-            if hasattr(self, '_session_db') and self._session_db and self.agent:
+            if self._session_db:
                 try:
-                    self._session_db.end_session(self.agent.session_id, "cli_close")
+                    self._session_db.end_session(self.session_id, "cli_close")
                 except Exception as e:
                     logger.debug("Could not close session in DB: %s", e)
+            if self._codex_app_client is not None:
+                try:
+                    self._codex_app_client.close()
+                except Exception:
+                    pass
+                self._codex_app_client = None
+                self._codex_thread_id = None
             _run_cleanup()
             self._print_exit_summary()
 
@@ -2873,7 +3176,7 @@ def main(
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous")
+        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "codex-app-server")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)

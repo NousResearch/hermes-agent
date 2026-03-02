@@ -639,7 +639,18 @@ def run_setup_wizard(args):
         print()
 
     # Detect if any provider is already configured
-    has_any_provider = bool(active_oauth or existing_custom or existing_or)
+    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+    configured_provider = (
+        str(model_cfg.get("provider", "")).strip().lower()
+        if isinstance(model_cfg, dict)
+        else ""
+    )
+    has_any_provider = bool(
+        active_oauth
+        or existing_custom
+        or existing_or
+        or configured_provider == "codex-app-server"
+    )
     
     # Build "keep current" label
     if active_oauth and active_oauth in PROVIDER_REGISTRY:
@@ -648,12 +659,15 @@ def run_setup_wizard(args):
         keep_label = f"Keep current (Custom: {existing_custom})"
     elif existing_or:
         keep_label = "Keep current (OpenRouter)"
+    elif configured_provider == "codex-app-server":
+        keep_label = "Keep current (Codex App Server)"
     else:
         keep_label = None  # No provider configured — don't show "Keep current"
 
     provider_choices = [
         "Login with Nous Portal (Nous Research subscription)",
         "Login with OpenAI Codex",
+        "Use Codex App Server (ChatGPT OAuth via codex app-server)",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
     ]
@@ -670,7 +684,7 @@ def run_setup_wizard(args):
     provider_idx = prompt_choice("Select your inference provider:", provider_choices, default_provider)
 
     # Track which provider was selected for model step
-    selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
+    selected_provider = None  # "nous", "openai-codex", "codex-app-server", "openrouter", "custom", or None (keep)
     nous_models = []  # populated if Nous login succeeds
 
     if provider_idx == 0:  # Nous Portal
@@ -737,7 +751,38 @@ def run_setup_wizard(args):
             print_info("You can try again later with: hermes model")
             selected_provider = None
 
-    elif provider_idx == 2:  # OpenRouter
+    elif provider_idx == 2:  # Codex App Server
+        selected_provider = "codex-app-server"
+        print()
+        print_header("Codex App Server")
+        print_info("Hermes will launch local `codex app-server` and complete ChatGPT OAuth on first chat if needed.")
+        print_info("No API key is required for this provider path.")
+
+        # Clear custom endpoint vars that could override provider resolution.
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        # Persist provider marker in config so auto-resolution picks this path.
+        current_model_cfg = config.get("model")
+        if isinstance(current_model_cfg, dict):
+            current_model_cfg["provider"] = "codex-app-server"
+            current_model_cfg["base_url"] = "stdio://codex-app-server"
+        elif isinstance(current_model_cfg, str) and current_model_cfg.strip():
+            config["model"] = {
+                "default": current_model_cfg.strip(),
+                "provider": "codex-app-server",
+                "base_url": "stdio://codex-app-server",
+            }
+        else:
+            config["model"] = {
+                "provider": "codex-app-server",
+                "base_url": "stdio://codex-app-server",
+            }
+        save_config(config)
+        print_success("Codex App Server provider configured")
+
+    elif provider_idx == 3:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -764,7 +809,7 @@ def run_setup_wizard(args):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
-    elif provider_idx == 3:  # Custom endpoint
+    elif provider_idx == 4:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -791,14 +836,14 @@ def run_setup_wizard(args):
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
         print_success("Custom endpoint configured")
-    # else: provider_idx == 4 (Keep current) — only shown when a provider already exists
+    # else: keep current (only shown when a provider already exists)
 
     # =========================================================================
     # Step 1b: OpenRouter API Key for tools (if not already set)
     # =========================================================================
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "openai-codex", "custom") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "codex-app-server", "custom") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -871,6 +916,42 @@ def run_setup_wizard(args):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        elif selected_provider == "codex-app-server":
+            from hermes_cli.codex_models import get_codex_model_ids
+
+            codex_models = get_codex_model_ids(access_token=None)
+            model_choices = [f"{m}" for m in codex_models]
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(codex_models):
+                config['model'] = codex_models[model_idx]
+                save_env_value("LLM_MODEL", codex_models[model_idx])
+            elif model_idx == len(codex_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+
+            # Persist provider marker in config.
+            selected_model = config.get("model")
+            if isinstance(selected_model, dict):
+                selected_model["provider"] = "codex-app-server"
+                selected_model["base_url"] = "stdio://codex-app-server"
+            elif isinstance(selected_model, str) and selected_model.strip():
+                config["model"] = {
+                    "default": selected_model.strip(),
+                    "provider": "codex-app-server",
+                    "base_url": "stdio://codex-app-server",
+                }
+            else:
+                config["model"] = {
+                    "provider": "codex-app-server",
+                    "base_url": "stdio://codex-app-server",
+                }
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

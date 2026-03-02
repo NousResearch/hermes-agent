@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Hermes Agent CLI launcher (argparse entrypoint)."""
+"""
+Hermes Agent CLI Launcher
+
+This is a convenience wrapper to launch the Hermes CLI.
+Usage: hermes [options]
+"""
 
 if __name__ == "__main__":
     from hermes_cli.main import main
-
     main()

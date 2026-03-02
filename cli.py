@@ -1285,7 +1285,7 @@ class HermesCLI:
         
         for i, msg in enumerate(self.conversation_history, 1):
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             
             if role == "user":
                 print(f"\n  [You #{i}]")

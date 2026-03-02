@@ -81,7 +81,7 @@ class _CodexCompletionsAdapter:
         input_msgs: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             if role == "system":
                 instructions = content
             else:

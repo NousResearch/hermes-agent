@@ -351,7 +351,36 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a previously sent message via the WhatsApp bridge."""
+        if not self._running:
+            return SendResult(success=False, error="Not connected")
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"http://localhost:{self._bridge_port}/edit",
+                    json={
+                        "chatId": chat_id,
+                        "messageId": message_id,
+                        "message": content,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    if resp.status == 200:
+                        return SendResult(success=True, message_id=message_id)
+                    else:
+                        error = await resp.text()
+                        return SendResult(success=False, error=error)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_typing(self, chat_id: str) -> None:
         """Send typing indicator via bridge."""
         if not self._running:

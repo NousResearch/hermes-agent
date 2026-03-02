@@ -645,7 +645,7 @@ def get_active_environments_info() -> Dict[str, Any]:
         scratch_dir = _get_scratch_dir()
         for pattern in [f"hermes-*{task_id[:8]}*"]:
             import glob
-            for path in glob.glob(str(scratch_dir / "hermes-*")):
+            for path in glob.glob(str(scratch_dir / pattern)):
                 try:
                     size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
                     total_size += size

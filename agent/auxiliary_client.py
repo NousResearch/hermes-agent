@@ -268,15 +268,11 @@ def _nous_base_url() -> str:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid Codex OAuth access token from ~/.codex/auth.json."""
+    """Read a valid Codex OAuth access token from Hermes auth store (~/.hermes/auth.json)."""
     try:
-        codex_auth = Path.home() / ".codex" / "auth.json"
-        if not codex_auth.is_file():
-            return None
-        data = json.loads(codex_auth.read_text())
-        tokens = data.get("tokens")
-        if not isinstance(tokens, dict):
-            return None
+        from hermes_cli.auth import _read_codex_tokens
+        data = _read_codex_tokens()
+        tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
         if isinstance(access_token, str) and access_token.strip():
             return access_token.strip()

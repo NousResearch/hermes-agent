@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import webbrowser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -144,6 +145,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "app_server_bin": runtime.get("app_server_bin"),
     }
 
 
@@ -184,6 +186,8 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
+        self._codex_app_sessions: Dict[str, Dict[str, Any]] = {}
+        self._codex_app_lock = threading.Lock()
         
         # Initialize session database for session_search tool support
         self._session_db = None
@@ -447,6 +451,19 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
+
+        # Close codex app-server sessions.
+        with self._codex_app_lock:
+            codex_sessions = list(self._codex_app_sessions.values())
+            self._codex_app_sessions.clear()
+        for entry in codex_sessions:
+            client = entry.get("client")
+            if client is None:
+                continue
+            try:
+                client.close()
+            except Exception:
+                pass
         
         for platform, adapter in self.adapters.items():
             try:
@@ -1824,9 +1841,62 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            provider = str(runtime_kwargs.get("provider") or "").strip().lower()
+            if provider == "codex-app-server":
+                def _codex_progress_event(item: Dict[str, Any], phase: str) -> None:
+                    if not tool_progress_enabled:
+                        return
+                    tool_name, preview = self._codex_progress_from_item(item)
+                    if not tool_name:
+                        return
+                    if phase == "started":
+                        progress_callback(tool_name, preview or None)
+                        return
+                    if progress_mode == "verbose" and progress_queue is not None:
+                        status = str(item.get("status") or "").strip().lower()
+                        suffix = f" ({status})" if status else ""
+                        progress_queue.put(f"✓ {tool_name}{suffix}")
+
+                try:
+                    app_server_bin = str(runtime_kwargs.get("app_server_bin") or "codex").strip() or "codex"
+                    cwd = os.getenv("MESSAGING_CWD") or os.getenv("TERMINAL_CWD") or str(Path.home())
+                    final_response = self._run_codex_app_server_turn(
+                        session_key=session_key or session_id,
+                        app_server_bin=app_server_bin,
+                        model=model,
+                        cwd=cwd,
+                        message=message,
+                        effort=self._codex_app_effort(),
+                        on_progress_event=_codex_progress_event,
+                    )
+                except Exception as exc:
+                    logger.exception("codex app-server gateway turn failed")
+                    return {
+                        "final_response": f"⚠️ codex app-server error: {exc}",
+                        "messages": history + [{"role": "user", "content": message}],
+                        "api_calls": 0,
+                        "tools": [],
+                    }
+                return {
+                    "final_response": final_response,
+                    "messages": history + [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": final_response},
+                    ],
+                    "api_calls": 1,
+                    "tools": [],
+                }
+
+            agent_runtime_kwargs = {
+                "api_key": runtime_kwargs.get("api_key"),
+                "base_url": runtime_kwargs.get("base_url"),
+                "provider": runtime_kwargs.get("provider"),
+                "api_mode": runtime_kwargs.get("api_mode"),
+            }
+
             agent = AIAgent(
                 model=model,
-                **runtime_kwargs,
+                **agent_runtime_kwargs,
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,
@@ -2056,6 +2126,274 @@ class GatewayRunner:
                         pass
         
         return response
+
+    def _codex_progress_from_item(self, item: Dict[str, Any]) -> tuple[str, str]:
+        """Map app-server item payloads to Hermes tool-progress names/previews."""
+        if not isinstance(item, dict):
+            return "", ""
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type in {"usermessage", "agentmessage", "reasoning", "plan"}:
+            return "", ""
+
+        if item_type == "commandexecution":
+            cmd = item.get("command")
+            if isinstance(cmd, list):
+                return "terminal", " ".join(str(x) for x in cmd if x is not None).strip()
+            if isinstance(cmd, str):
+                return "terminal", cmd.strip()
+            return "terminal", ""
+
+        if item_type == "filechange":
+            changes = item.get("changes")
+            if isinstance(changes, list) and changes:
+                first = changes[0]
+                if isinstance(first, dict):
+                    return "file_change", str(first.get("path") or "").strip()
+            return "file_change", ""
+
+        if item_type == "websearch":
+            query = item.get("query")
+            if not isinstance(query, str) or not query.strip():
+                action = item.get("action")
+                if isinstance(action, dict):
+                    query = action.get("query")
+            return "web_search", str(query or "").strip()
+
+        if item_type == "mcptoolcall":
+            server = str(item.get("server") or "").strip()
+            tool = str(item.get("tool") or "").strip()
+            return "mcp_tool", f"{server}.{tool}".strip(".")
+
+        if item_type == "collabtoolcall":
+            return "collab_tool", str(item.get("tool") or "").strip()
+
+        if item_type == "imageview":
+            return "image_view", str(item.get("path") or "").strip()
+
+        if item_type == "contextcompaction":
+            return "context_compaction", ""
+
+        return item_type or "tool", ""
+
+    def _codex_app_effort(self) -> Optional[str]:
+        """Translate Hermes reasoning config to codex app-server effort values."""
+        cfg = self._reasoning_config
+        if not isinstance(cfg, dict):
+            return None
+        if cfg.get("enabled") is False:
+            return None
+
+        effort = str(cfg.get("effort") or "").strip().lower()
+        if not effort:
+            return None
+
+        # app-server effort values are narrower than Hermes/OpenRouter's set.
+        if effort == "xhigh":
+            return "high"
+        if effort == "minimal":
+            return "low"
+        if effort in {"high", "medium", "low"}:
+            return effort
+        return None
+
+    def _run_codex_app_server_turn(
+        self,
+        *,
+        session_key: str,
+        app_server_bin: str,
+        model: str,
+        cwd: str,
+        message: str,
+        effort: Optional[str] = None,
+        on_progress_event=None,
+    ) -> str:
+        """Run one message turn via codex app-server for a gateway session."""
+        from hermes_cli import __version__ as hermes_version
+        from hermes_cli.codex_app_server import (
+            CodexAppServerClient,
+            CodexAppServerError,
+            wait_for_notification,
+        )
+
+        def _ensure_session() -> tuple[CodexAppServerClient, str]:
+            with self._codex_app_lock:
+                existing = self._codex_app_sessions.get(session_key)
+                if existing:
+                    client = existing.get("client")
+                    thread_id = existing.get("thread_id")
+                    if client is not None and isinstance(thread_id, str) and thread_id:
+                        return client, thread_id
+
+            client = CodexAppServerClient(binary=app_server_bin, cwd=cwd)
+            client.start()
+            client.initialize(
+                client_name="hermes_gateway",
+                client_title="Hermes Gateway",
+                client_version=str(hermes_version),
+                experimental_api=False,
+            )
+
+            account = client.call("account/read", params={"refreshToken": False}, timeout=20.0)
+            account_info = account.get("account")
+            requires_auth = bool(account.get("requiresOpenaiAuth"))
+            if account_info is None and requires_auth:
+                login = client.call("account/login/start", params={"type": "chatgpt"}, timeout=20.0)
+                auth_url = str(login.get("authUrl") or "").strip()
+                login_id = login.get("loginId")
+                if auth_url:
+                    logger.warning("Codex app-server login required. Open this URL to continue: %s", auth_url)
+                    try:
+                        webbrowser.open(auth_url)
+                    except Exception:
+                        pass
+                if not isinstance(login_id, str) or not login_id:
+                    raise RuntimeError("codex app-server login did not return loginId")
+                completed = wait_for_notification(
+                    client,
+                    method="account/login/completed",
+                    login_id=login_id,
+                    timeout=600.0,
+                )
+                if not completed.get("success"):
+                    detail = completed.get("error") or "unknown error"
+                    raise RuntimeError(f"ChatGPT login failed: {detail}")
+
+            thread_resp = client.call(
+                "thread/start",
+                params={
+                    "model": model,
+                    "cwd": cwd,
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "writableRoots": [cwd],
+                        "networkAccess": True,
+                    },
+                },
+                timeout=30.0,
+            )
+            thread_id = thread_resp.get("thread", {}).get("id")
+            if not isinstance(thread_id, str) or not thread_id:
+                client.close()
+                raise RuntimeError("codex app-server thread/start did not return thread id")
+
+            with self._codex_app_lock:
+                prior = self._codex_app_sessions.get(session_key)
+                self._codex_app_sessions[session_key] = {
+                    "client": client,
+                    "thread_id": thread_id,
+                    "bin": app_server_bin,
+                    "cwd": cwd,
+                    "model": model,
+                }
+            if prior:
+                old_client = prior.get("client")
+                if old_client is not None and old_client is not client:
+                    try:
+                        old_client.close()
+                    except Exception:
+                        pass
+            return client, thread_id
+
+        client, thread_id = _ensure_session()
+
+        try:
+            turn_params: Dict[str, Any] = {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": message}],
+                "model": model,
+                "cwd": cwd,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {
+                    "type": "workspaceWrite",
+                    "writableRoots": [cwd],
+                    "networkAccess": True,
+                },
+            }
+            if effort:
+                turn_params["effort"] = effort
+            turn_resp = client.call(
+                "turn/start",
+                params=turn_params,
+                timeout=30.0,
+            )
+        except CodexAppServerError:
+            with self._codex_app_lock:
+                stale = self._codex_app_sessions.pop(session_key, None)
+            stale_client = stale.get("client") if isinstance(stale, dict) else None
+            if stale_client is not None:
+                try:
+                    stale_client.close()
+                except Exception:
+                    pass
+            raise
+
+        turn_id = turn_resp.get("turn", {}).get("id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RuntimeError("codex app-server turn/start did not return turn id")
+
+        chunks: List[str] = []
+        final_text: Optional[str] = None
+        turn_error: Optional[str] = None
+        deadline = datetime.now().timestamp() + 1800.0
+
+        while datetime.now().timestamp() < deadline:
+            msg = client.next_notification(timeout=0.2)
+            if not msg:
+                continue
+            method = msg.get("method")
+            params = msg.get("params", {})
+            if not isinstance(params, dict):
+                continue
+
+            if method == "item/agentMessage/delta":
+                delta = params.get("delta")
+                if not isinstance(delta, str):
+                    delta = params.get("textDelta")
+                if isinstance(delta, str) and delta:
+                    chunks.append(delta)
+                continue
+
+            if method == "item/started":
+                item = params.get("item", {})
+                if on_progress_event and isinstance(item, dict):
+                    try:
+                        on_progress_event(item, "started")
+                    except Exception:
+                        pass
+                continue
+
+            if method == "item/completed":
+                item = params.get("item", {})
+                if isinstance(item, dict) and item.get("type") == "agentMessage":
+                    item_text = item.get("text")
+                    if isinstance(item_text, str):
+                        final_text = item_text
+                elif on_progress_event and isinstance(item, dict):
+                    try:
+                        on_progress_event(item, "completed")
+                    except Exception:
+                        pass
+                continue
+
+            if method == "turn/completed":
+                completed_turn = params.get("turn", {})
+                if not isinstance(completed_turn, dict) or completed_turn.get("id") != turn_id:
+                    continue
+                status = completed_turn.get("status")
+                if status == "failed":
+                    err = completed_turn.get("error", {})
+                    if isinstance(err, dict):
+                        turn_error = err.get("message") or str(err)
+                    else:
+                        turn_error = str(err)
+                break
+
+        if turn_error:
+            raise RuntimeError(turn_error)
+        if final_text:
+            return final_text
+        return "".join(chunks).strip() or "(No response from codex app-server)"
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int = 60):

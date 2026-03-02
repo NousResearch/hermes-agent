@@ -1151,19 +1151,23 @@ class HermesCLI:
             return None
 
         try:
+            codex_effort = self._codex_app_effort()
+            turn_params = {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": message}],
+                "model": self.model,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {
+                    "type": "workspaceWrite",
+                    "writableRoots": [os.getcwd()],
+                    "networkAccess": True,
+                },
+            }
+            if codex_effort:
+                turn_params["effort"] = codex_effort
             turn_resp = client.call(
                 "turn/start",
-                params={
-                    "threadId": thread_id,
-                    "input": [{"type": "text", "text": message}],
-                    "model": self.model,
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {
-                        "type": "workspaceWrite",
-                        "writableRoots": [os.getcwd()],
-                        "networkAccess": True,
-                    },
-                },
+                params=turn_params,
                 timeout=30.0,
             )
         except Exception as exc:
@@ -1177,7 +1181,90 @@ class HermesCLI:
         chunks: List[str] = []
         final_text: Optional[str] = None
         turn_error: Optional[str] = None
+        last_progress_key: Optional[str] = None
         deadline = datetime.now().timestamp() + 1800.0
+
+        def _extract_progress(item: Dict[str, Any]) -> tuple[str, str, str]:
+            """Map app-server item payloads to Hermes tool progress fields."""
+            if not isinstance(item, dict):
+                return "", "", ""
+            item_type = str(item.get("type") or "").strip()
+            item_type_l = item_type.lower()
+            if item_type_l in {"usermessage", "agentmessage", "reasoning", "plan"}:
+                return "", "", ""
+
+            if item_type_l == "commandexecution":
+                cmd = item.get("command")
+                preview = ""
+                if isinstance(cmd, list):
+                    preview = " ".join(str(x) for x in cmd if x is not None).strip()
+                elif isinstance(cmd, str):
+                    preview = cmd.strip()
+                return "terminal", "💻", preview
+
+            if item_type_l == "filechange":
+                changes = item.get("changes")
+                preview = ""
+                if isinstance(changes, list) and changes:
+                    first = changes[0]
+                    if isinstance(first, dict):
+                        preview = str(first.get("path") or "").strip()
+                return "file_change", "✍️", preview
+
+            if item_type_l == "websearch":
+                query = item.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    action = item.get("action")
+                    if isinstance(action, dict):
+                        query = action.get("query")
+                return "web_search", "🔍", str(query or "").strip()
+
+            if item_type_l == "mcptoolcall":
+                server = str(item.get("server") or "").strip()
+                tool = str(item.get("tool") or "").strip()
+                preview = f"{server}.{tool}".strip(".")
+                return "mcp_tool", "🔌", preview
+
+            if item_type_l == "collabtoolcall":
+                tool = str(item.get("tool") or "").strip()
+                return "collab_tool", "🔀", tool
+
+            if item_type_l == "imageview":
+                path = str(item.get("path") or "").strip()
+                return "image_view", "🖼️", path
+
+            if item_type_l == "contextcompaction":
+                return "context_compaction", "🗜️", ""
+
+            return item_type_l or "tool", "⚙️", ""
+
+        def _emit_progress(item: Dict[str, Any], phase: str) -> None:
+            nonlocal last_progress_key
+            mode = (self.tool_progress_mode or "all").strip().lower()
+            if mode == "off":
+                return
+
+            tool_key, emoji, preview = _extract_progress(item)
+            if not tool_key:
+                return
+
+            if phase == "started":
+                if mode == "new" and last_progress_key == tool_key:
+                    return
+                last_progress_key = tool_key
+                preview_short = preview.strip()
+                if len(preview_short) > 60:
+                    preview_short = preview_short[:57] + "..."
+                if preview_short:
+                    _cprint(f"{_DIM}┊ {emoji} {tool_key} {preview_short}{_RST}")
+                else:
+                    _cprint(f"{_DIM}┊ {emoji} {tool_key}{_RST}")
+                return
+
+            if mode == "verbose" and phase == "completed":
+                status = str(item.get("status") or "").strip().lower()
+                if status:
+                    _cprint(f"{_DIM}┊ ✓ {tool_key} ({status}){_RST}")
 
         while datetime.now().timestamp() < deadline:
             msg = client.next_notification(timeout=0.2)
@@ -1196,12 +1283,20 @@ class HermesCLI:
                     chunks.append(delta)
                 continue
 
+            if method == "item/started":
+                item = params.get("item", {})
+                if isinstance(item, dict):
+                    _emit_progress(item, "started")
+                continue
+
             if method == "item/completed":
                 item = params.get("item", {})
                 if isinstance(item, dict) and item.get("type") == "agentMessage":
                     item_text = item.get("text")
                     if isinstance(item_text, str):
                         final_text = item_text
+                elif isinstance(item, dict):
+                    _emit_progress(item, "completed")
                 continue
 
             if method == "turn/completed":
@@ -1222,6 +1317,27 @@ class HermesCLI:
         if final_text:
             return final_text
         return "".join(chunks).strip() or "(No response from codex app-server)"
+
+    def _codex_app_effort(self) -> Optional[str]:
+        """Translate Hermes reasoning config to codex app-server effort values."""
+        cfg = self.reasoning_config
+        if not isinstance(cfg, dict):
+            return None
+        if cfg.get("enabled") is False:
+            return None
+
+        effort = str(cfg.get("effort") or "").strip().lower()
+        if not effort:
+            return None
+
+        # app-server effort values are narrower than Hermes/OpenRouter's set.
+        if effort == "xhigh":
+            return "high"
+        if effort == "minimal":
+            return "low"
+        if effort in {"high", "medium", "low"}:
+            return effort
+        return None
 
     def _init_agent(self) -> bool:
         """

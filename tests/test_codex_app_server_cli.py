@@ -246,6 +246,37 @@ def test_codex_turn_lifecycle_parses_final_text(monkeypatch):
     assert response == "Hello final"
 
 
+def test_codex_turn_start_includes_mapped_effort(monkeypatch):
+    cli = _import_cli()
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None)
+
+    class FakeTurnClient:
+        def __init__(self):
+            self.turn_start_params = None
+            self.notifications = [
+                {"method": "turn/completed", "params": {"turn": {"id": "turn_effort", "status": "completed"}}},
+            ]
+
+        def call(self, method, params=None, timeout=30.0):
+            if method == "turn/start":
+                self.turn_start_params = params
+                return {"turn": {"id": "turn_effort"}}
+            raise AssertionError(f"Unexpected call: {method}")
+
+        def next_notification(self, timeout=0.2):
+            if self.notifications:
+                return self.notifications.pop(0)
+            return None
+
+    shell = cli.HermesCLI(model="gpt-5.3-codex", provider="codex-app-server", compact=True, max_turns=1)
+    shell.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    shell._codex_app_client = FakeTurnClient()
+    shell._codex_thread_id = "thr_effort"
+
+    shell._chat_via_codex_app_server("test")
+    assert shell._codex_app_client.turn_start_params.get("effort") == "high"
+
+
 def test_codex_app_server_process_failure_and_client_rotation(monkeypatch):
     cli = _import_cli()
 

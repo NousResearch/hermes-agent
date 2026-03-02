@@ -45,8 +45,6 @@ def clarify_callback(cli, question, choices):
             remaining = cli._clarify_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
-                cli._app.invalidate()
 
     cli._clarify_state = None
     cli._clarify_freetext = False
@@ -90,8 +88,6 @@ def sudo_password_callback(cli) -> str:
             remaining = cli._sudo_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
-                cli._app.invalidate()
 
     cli._sudo_state = None
     cli._sudo_deadline = 0
@@ -134,8 +130,6 @@ def approval_callback(cli, command: str, description: str) -> str:
             remaining = cli._approval_deadline - _time.monotonic()
             if remaining <= 0:
                 break
-            if hasattr(cli, '_app') and cli._app:
-                cli._app.invalidate()
 
     cli._approval_state = None
     cli._approval_deadline = 0

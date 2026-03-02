@@ -531,8 +531,8 @@ DELEGATE_TASK_SCHEMA = {
             "max_iterations": {
                 "type": "integer",
                 "description": (
-                    "Max tool-calling turns per subagent (default: 25). "
-                    "Lower for simple tasks, higher for complex ones."
+                    "Max tool-calling turns per subagent (default: 50). "
+                    "Only set lower for simple tasks."
                 ),
             },
         },

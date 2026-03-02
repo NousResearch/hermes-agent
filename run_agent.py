@@ -2743,37 +2743,63 @@ class AIAgent:
 
         Returns True if any synthetic tool output was appended.
         """
+        def _extract_call_id(tc: Any) -> Optional[str]:
+            if isinstance(tc, dict):
+                tc_id = tc.get("id")
+                if not tc_id:
+                    tc_id = tc.get("call_id")
+            else:
+                tc_id = getattr(tc, "id", None)
+                if not tc_id:
+                    tc_id = getattr(tc, "call_id", None)
+
+            if not isinstance(tc_id, str):
+                return None
+
+            tc_id = tc_id.strip()
+            if not tc_id:
+                return None
+
+            if tc_id.startswith("fc_"):
+                tc_id = f"call_{tc_id[len('fc_'):]}"
+
+            return tc_id
+
         pending_handled = False
         for idx in range(len(messages) - 1, -1, -1):
             msg = messages[idx]
             if not isinstance(msg, dict):
-                break
-            if msg.get("role") == "tool":
                 continue
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                answered_ids = {
-                    m["tool_call_id"]
-                    for m in messages[idx + 1:]
-                    if isinstance(m, dict) and m.get("role") == "tool"
-                }
-                for tc in msg["tool_calls"]:
-                    if isinstance(tc, dict):
-                        tc_id = tc.get("id")
-                    else:
-                        tc_id = getattr(tc, "id", None)
-                    if tc_id in answered_ids:
-                        continue
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": f"Error executing tool: {error_msg}",
-                    })
-                    self._log_msg_to_db(messages[-1])
-                    pending_handled = True
-                return pending_handled
-            break
-        return False
+            answered_ids = set()
+            for m in messages[idx + 1:]:
+                if not isinstance(m, dict) or m.get("role") != "tool":
+                    continue
+                raw_tool_call_id = m.get("tool_call_id")
+                if isinstance(raw_tool_call_id, str):
+                    raw_tool_call_id = raw_tool_call_id.strip()
+                    if raw_tool_call_id:
+                        if raw_tool_call_id.startswith("fc_"):
+                            answered_ids.add(f"call_{raw_tool_call_id[len('fc_'):]}")
+                        else:
+                            answered_ids.add(raw_tool_call_id)
+
+            for tc in msg["tool_calls"]:
+                tc_id = _extract_call_id(tc)
+                if not tc_id or tc_id in answered_ids:
+                    continue
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"Error executing tool: {error_msg}",
+                })
+                self._log_msg_to_db(messages[-1])
+                pending_handled = True
+
+        return pending_handled
 
     def _tool_call_signature(self, tool_calls: list) -> str:
         """Build a deterministic signature for a sequence of tool calls."""
@@ -3129,6 +3155,14 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # If we ever have pending tool calls from an interrupted or failed
+            # previous turn, synthesize deterministic error outputs before the
+            # next API request. This keeps API request history valid.
+            self._fill_missing_tool_outputs(
+                messages,
+                "Recovered tool output(s) before API request after a previous interruption.",
+            )
 
             # Fire step_callback for gateway hooks (agent:step event)
             if self.step_callback is not None:

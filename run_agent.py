@@ -3569,15 +3569,12 @@ class AIAgent:
                     # answer and calls memory/skill tools as a side-effect in the same
                     # turn. If the follow-up turn after tools is empty, we use this.
                     turn_content = assistant_message.content or ""
-                    if turn_content and self._has_content_after_think_block(turn_content):
-                        self._last_content_with_tools = turn_content
-                        # Show intermediate commentary so the user can follow along
-                        if self.quiet_mode:
-                            clean = self._strip_think_blocks(turn_content).strip()
-                            if clean:
-                                preview = clean[:120] + "..." if len(clean) > 120 else clean
-                                print(f"  ┊ 💬 {preview}")
-                    
+                    cleaned_turn_content = ""  # default to avoid UnboundLocalError
+                    if  turn_content and self._has_content_after_think_block(turn_content):
+                        cleaned_turn_content = self._strip_think_blocks(turn_content).strip()
+                        self._last_content_with_tools = cleaned_turn_content if cleaned_turn_content else None
+                    if  self.quiet_mode and cleaned_turn_content:
+                        print(f"  ┊ 💬 {cleaned_turn_content[:120] + '...' if len(cleaned_turn_content) > 120 else cleaned_turn_content}")
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
                     
@@ -3599,7 +3596,7 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
-                    
+                    final_response = self._strip_think_blocks(final_response).strip()
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
                         # Track retries for empty-after-think responses

@@ -74,8 +74,8 @@ def _resolve_openrouter_runtime(
 
     api_key = (
         explicit_api_key
-        or os.getenv("OPENAI_API_KEY")
         or os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
         or ""
     )
 

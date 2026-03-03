@@ -774,6 +774,96 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
+def _update_via_zip(args):
+    """Update Hermes Agent by downloading a ZIP archive.
+    
+    Used on Windows when git file I/O is broken (antivirus, NTFS filter 
+    drivers causing 'Invalid argument' errors on file creation).
+    """
+    import shutil
+    import tempfile
+    import zipfile
+    from urllib.request import urlretrieve
+    
+    branch = "main"
+    zip_url = f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+    
+    print("→ Downloading latest version...")
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        urlretrieve(zip_url, zip_path)
+        
+        print("→ Extracting...")
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(tmp_dir)
+        
+        # GitHub ZIPs extract to hermes-agent-<branch>/
+        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
+        if not os.path.isdir(extracted):
+            # Try to find it
+            for d in os.listdir(tmp_dir):
+                candidate = os.path.join(tmp_dir, d)
+                if os.path.isdir(candidate) and d != "__MACOSX":
+                    extracted = candidate
+                    break
+        
+        # Copy updated files over existing installation, preserving venv/node_modules/.git
+        preserve = {'venv', 'node_modules', '.git', '__pycache__', '.env'}
+        update_count = 0
+        for item in os.listdir(extracted):
+            if item in preserve:
+                continue
+            src = os.path.join(extracted, item)
+            dst = os.path.join(str(PROJECT_ROOT), item)
+            if os.path.isdir(src):
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            update_count += 1
+        
+        print(f"✓ Updated {update_count} items from ZIP")
+        
+        # Cleanup
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        
+    except Exception as e:
+        print(f"✗ ZIP update failed: {e}")
+        sys.exit(1)
+    
+    # Reinstall Python dependencies
+    print("→ Updating Python dependencies...")
+    import subprocess
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        subprocess.run(
+            [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+            cwd=PROJECT_ROOT, check=True,
+            env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        )
+    else:
+        venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
+        if venv_pip.exists():
+            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+    
+    # Sync skills
+    try:
+        from tools.skills_sync import sync_skills
+        print("→ Checking for new bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
+        else:
+            print("  ✓ Skills are up to date")
+    except Exception:
+        pass
+    
+    print()
+    print("✓ Update complete!")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import subprocess
@@ -782,29 +872,44 @@ def cmd_update(args):
     print("⚕ Updating Hermes Agent...")
     print()
     
-    # Check if we're in a git repo
+    # Try git-based update first, fall back to ZIP download on Windows
+    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    use_zip_update = False
     git_dir = PROJECT_ROOT / '.git'
+    
     if not git_dir.exists():
-        print("✗ Not a git repository. Please reinstall:")
-        print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
-        sys.exit(1)
+        if sys.platform == "win32":
+            use_zip_update = True
+        else:
+            print("✗ Not a git repository. Please reinstall:")
+            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+            sys.exit(1)
     
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
-    if sys.platform == "win32":
+    if sys.platform == "win32" and git_dir.exists():
         subprocess.run(
-            ["git", "config", "windows.appendAtomically", "false"],
+            ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
             cwd=PROJECT_ROOT, check=False, capture_output=True
         )
+
+    if use_zip_update:
+        # ZIP-based update for Windows when git is broken
+        _update_via_zip(args)
+        return
 
     # Fetch and pull
     try:
         print("→ Fetching updates...")
-        subprocess.run(["git", "fetch", "origin"], cwd=PROJECT_ROOT, check=True)
+        git_cmd = ["git"]
+        if sys.platform == "win32":
+            git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        
+        subprocess.run(git_cmd + ["fetch", "origin"], cwd=PROJECT_ROOT, check=True)
         
         # Get current branch
         result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -814,7 +919,7 @@ def cmd_update(args):
         
         # Check if there are updates
         result = subprocess.run(
-            ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -828,7 +933,7 @@ def cmd_update(args):
         
         print(f"→ Found {commit_count} new commit(s)")
         print("→ Pulling updates...")
-        subprocess.run(["git", "pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
         
         # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")
@@ -936,8 +1041,14 @@ def cmd_update(args):
         print("  hermes model              # Select provider and model")
         
     except subprocess.CalledProcessError as e:
-        print(f"✗ Update failed: {e}")
-        sys.exit(1)
+        if sys.platform == "win32":
+            print(f"⚠ Git update failed: {e}")
+            print("→ Falling back to ZIP download...")
+            print()
+            _update_via_zip(args)
+        else:
+            print(f"✗ Update failed: {e}")
+            sys.exit(1)
 
 
 def main():

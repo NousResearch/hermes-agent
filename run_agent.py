@@ -1360,7 +1360,8 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        now = datetime.now()
+        from hermes_time import now as _hermes_now
+        now = _hermes_now()
         prompt_parts.append(
             f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         )

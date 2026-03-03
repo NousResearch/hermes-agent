@@ -135,11 +135,15 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
+    # Empty string means use server-local time.
+    "timezone": "",
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
-    
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 4,
+    "_config_version": 5,
 }
 
 # =============================================================================
@@ -471,6 +475,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
+    # ── Version 4 → 5: add timezone field ──
+    if current_ver < 5:
+        config = load_config()
+        if "timezone" not in config:
+            old_tz = get_env_value("HERMES_TIMEZONE") if "get_env_value" in dir() else os.getenv("HERMES_TIMEZONE", "")
+            if old_tz and old_tz.strip():
+                config["timezone"] = old_tz.strip()
+                results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")
+            else:
+                config["timezone"] = ""
+                results["config_added"].append("timezone= (empty, uses server-local)")
+            save_config(config)
+            if not quiet:
+                tz_display = config["timezone"] or "(server-local)"
+                print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -754,6 +774,15 @@ def show_config():
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
     
+    # Timezone
+    print()
+    print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
+    tz = config.get('timezone', '')
+    if tz:
+        print(f"  Timezone:     {tz}")
+    else:
+        print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+
     # Compression
     print()
     print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))

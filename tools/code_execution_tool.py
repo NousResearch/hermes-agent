@@ -400,6 +400,11 @@ def execute_code(
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Inject user's configured timezone so datetime.now() in sandboxed
+        # code reflects the correct wall-clock time.
+        _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+        if _tz_name:
+            child_env["TZ"] = _tz_name
 
         proc = subprocess.Popen(
             [sys.executable, "script.py"],

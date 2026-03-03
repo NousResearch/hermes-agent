@@ -416,12 +416,9 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            $savedEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            git fetch origin 2>&1 | Out-Null
-            git checkout $Branch 2>&1 | Out-Null
-            git pull origin $Branch 2>&1 | Out-Null
-            $ErrorActionPreference = $savedEAP
+            git fetch origin
+            git checkout $Branch
+            git pull origin $Branch
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
@@ -429,20 +426,23 @@ function Install-Repository {
             exit 1
         }
     } else {
-        # Git writes progress to stderr. With $ErrorActionPreference = "Stop",
-        # PowerShell treats ANY stderr output from native commands as a
-        # terminating NativeCommandError — even successful git clones.
-        # Temporarily relax this so git can run normally.
-        $savedEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-
         # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
         # when no key is configured (fails immediately instead of prompting).
+        #
+        # IMPORTANT: Do NOT use 2>&1 on git commands in PowerShell.
+        # With $ErrorActionPreference = "Stop", PowerShell wraps captured
+        # stderr lines in ErrorRecord objects, turning git's normal progress
+        # messages ("Cloning into ...") into terminating NativeCommandErrors.
+        # Let stderr flow to the console naturally (like OpenClaw does).
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
-        $sshExitCode = $LASTEXITCODE
+        try {
+            git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+            $sshExitCode = $LASTEXITCODE
+        } catch {
+            $sshExitCode = 1
+        }
         $env:GIT_SSH_COMMAND = $null
         
         if ($sshExitCode -eq 0) {
@@ -451,30 +451,21 @@ function Install-Repository {
             # Clean up partial SSH clone before retrying
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
-            $httpsResult = git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir 2>&1
+            git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
             
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "Cloned via HTTPS"
             } else {
-                $ErrorActionPreference = $savedEAP
                 Write-Err "Failed to clone repository"
                 exit 1
             }
         }
-
-        $ErrorActionPreference = $savedEAP
     }
     
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
     Push-Location $InstallDir
-
-    # Same stderr issue applies to git submodule commands
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    git submodule update --init --recursive 2>&1 | Out-Null
-    $ErrorActionPreference = $savedEAP
-
+    git submodule update --init --recursive
     Pop-Location
     Write-Success "Submodules ready"
     

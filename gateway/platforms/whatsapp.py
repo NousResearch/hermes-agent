@@ -19,7 +19,10 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import subprocess
+
+_IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -166,7 +169,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
             )
             
             # Wait for bridge to be ready via HTTP health check
@@ -211,13 +214,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 # Kill the entire process group so child node processes die too
                 import signal
                 try:
-                    os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGTERM)
+                    if _IS_WINDOWS:
+                        self._bridge_process.terminate()
+                    else:
+                        os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     self._bridge_process.terminate()
                 await asyncio.sleep(1)
                 if self._bridge_process.poll() is None:
                     try:
-                        os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGKILL)
+                        if _IS_WINDOWS:
+                            self._bridge_process.kill()
+                        else:
+                            os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         self._bridge_process.kill()
             except Exception as e:

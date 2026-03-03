@@ -346,3 +346,154 @@ class TestCleanupTempRecordings:
         deleted = cleanup_temp_recordings(max_age_seconds=3600)
         assert deleted == 0
         assert other_file.exists()
+
+
+# ============================================================================
+# play_beep
+# ============================================================================
+
+class TestPlayBeep:
+    def test_beep_calls_sounddevice_play(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        from tools.voice_mode import play_beep
+
+        play_beep(frequency=880, duration=0.1, count=1)
+
+        mock_sd.play.assert_called_once()
+        mock_sd.wait.assert_called_once()
+        # Verify audio data is int16 numpy array
+        audio_arg = mock_sd.play.call_args[0][0]
+        assert audio_arg.dtype == np.int16
+        assert len(audio_arg) > 0
+
+    def test_beep_double_produces_longer_audio(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        from tools.voice_mode import play_beep
+
+        play_beep(frequency=660, duration=0.1, count=2)
+
+        audio_arg = mock_sd.play.call_args[0][0]
+        single_beep_samples = int(16000 * 0.1)
+        # Double beep should be longer than a single beep
+        assert len(audio_arg) > single_beep_samples
+
+    def test_beep_noop_without_audio(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", False)
+
+        from tools.voice_mode import play_beep
+
+        # Should not raise
+        play_beep()
+
+    def test_beep_handles_playback_error(self, mock_sd):
+        mock_sd.play.side_effect = Exception("device error")
+
+        from tools.voice_mode import play_beep
+
+        # Should not raise
+        play_beep()
+
+
+# ============================================================================
+# Silence detection
+# ============================================================================
+
+class TestSilenceDetection:
+    def test_silence_callback_fires_after_speech_then_silence(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+
+        recorder = AudioRecorder()
+        # Use very short silence duration for testing
+        recorder._silence_duration = 0.05
+
+        fired = threading.Event()
+
+        def on_silence():
+            fired.set()
+
+        recorder.start(on_silence_stop=on_silence)
+
+        # Get the callback function from InputStream constructor
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        # Simulate loud audio (speech) -- RMS well above threshold
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        assert recorder._has_spoken is True
+
+        # Simulate silence
+        silent_frame = np.zeros((1600, 1), dtype="int16")
+        callback(silent_frame, 1600, None, None)
+
+        # Wait a bit past the silence duration, then send another silent frame
+        time.sleep(0.06)
+        callback(silent_frame, 1600, None, None)
+
+        # The callback should have been fired
+        assert fired.wait(timeout=1.0) is True
+
+        recorder.cancel()
+
+    def test_silence_without_speech_does_not_fire(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._silence_duration = 0.02
+
+        fired = threading.Event()
+        recorder.start(on_silence_stop=lambda: fired.set())
+
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        # Only silence -- no speech detected, so callback should NOT fire
+        silent_frame = np.zeros((1600, 1), dtype="int16")
+        for _ in range(5):
+            callback(silent_frame, 1600, None, None)
+            time.sleep(0.01)
+
+        assert fired.wait(timeout=0.2) is False
+
+        recorder.cancel()
+
+    def test_no_callback_means_no_silence_detection(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()  # no on_silence_stop
+
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        # Even with speech then silence, nothing should happen
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        silent_frame = np.zeros((1600, 1), dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        callback(silent_frame, 1600, None, None)
+
+        # No crash, no callback
+        assert recorder._on_silence_stop is None
+        recorder.cancel()

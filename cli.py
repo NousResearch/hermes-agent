@@ -916,6 +916,15 @@ class HermesCLI:
         
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
+        self._last_invalidate: float = 0.0  # throttle UI repaints
+
+    def _invalidate(self, min_interval: float = 0.25) -> None:
+        """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
+        import time as _time
+        now = _time.monotonic()
+        if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
+            self._last_invalidate = now
+            self._app.invalidate()
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1903,8 +1912,7 @@ class HermesCLI:
         self._clarify_freetext = is_open_ended
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         # Poll in 1-second ticks so the countdown refreshes in the UI.
         # Each tick triggers an invalidate() to repaint the hint line.
@@ -1918,15 +1926,13 @@ class HermesCLI:
                 if remaining <= 0:
                     break
                 # Repaint so the countdown updates
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
             "The user did not provide a response within the time limit. "
@@ -1951,16 +1957,14 @@ class HermesCLI:
         }
         self._sudo_deadline = _time.monotonic() + timeout
 
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         while True:
             try:
                 result = response_queue.get(timeout=1)
                 self._sudo_state = None
                 self._sudo_deadline = 0
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
                 if result:
                     _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
                 else:
@@ -1970,13 +1974,11 @@ class HermesCLI:
                 remaining = self._sudo_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         self._sudo_state = None
         self._sudo_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
@@ -2002,28 +2004,24 @@ class HermesCLI:
         }
         self._approval_deadline = _time.monotonic() + timeout
 
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         while True:
             try:
                 result = response_queue.get(timeout=1)
                 self._approval_state = None
                 self._approval_deadline = 0
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
                 return result
             except queue.Empty:
                 remaining = self._approval_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         self._approval_state = None
         self._approval_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "deny"
 

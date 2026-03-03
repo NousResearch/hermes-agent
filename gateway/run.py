@@ -645,7 +645,7 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage"}
+                          "compress", "usage", "reload-mcp"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -686,6 +686,9 @@ class GatewayRunner:
 
         if command == "usage":
             return await self._handle_usage_command(event)
+
+        if command == "reload-mcp":
+            return await self._handle_reload_mcp_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1086,6 +1089,7 @@ class GatewayRunner:
             "`/sethome` — Set this chat as the home channel",
             "`/compress` — Compress conversation context",
             "`/usage` — Show token usage for this session",
+            "`/reload-mcp` — Reload MCP servers from config",
             "`/help` — Show this message",
         ]
         try:
@@ -1378,6 +1382,51 @@ class GatewayRunner:
                 f"_(Detailed usage available during active conversations)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
+        """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+        loop = asyncio.get_event_loop()
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            # Capture old server names before shutdown
+            with _lock:
+                old_servers = set(_servers.keys())
+
+            # Read new config before shutting down, so we know what will be added/removed
+            new_config = _load_mcp_config()
+            new_server_names = set(new_config.keys())
+
+            # Shutdown existing connections
+            await loop.run_in_executor(None, shutdown_mcp_servers)
+
+            # Reconnect by discovering tools (reads config.yaml fresh)
+            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+
+            # Compute what changed
+            with _lock:
+                connected_servers = set(_servers.keys())
+
+            added = connected_servers - old_servers
+            removed = old_servers - connected_servers
+            reconnected = connected_servers & old_servers
+
+            lines = ["🔄 **MCP Servers Reloaded**\n"]
+            if reconnected:
+                lines.append(f"♻️ Reconnected: {', '.join(sorted(reconnected))}")
+            if added:
+                lines.append(f"➕ Added: {', '.join(sorted(added))}")
+            if removed:
+                lines.append(f"➖ Removed: {', '.join(sorted(removed))}")
+            if not connected_servers:
+                lines.append("No MCP servers connected.")
+            else:
+                lines.append(f"\n🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("MCP reload failed: %s", e)
+            return f"❌ MCP reload failed: {e}"
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""

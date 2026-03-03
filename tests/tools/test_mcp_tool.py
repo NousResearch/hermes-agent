@@ -1063,3 +1063,429 @@ class TestConfigurableTimeouts:
                        call_kwargs[1].get("timeout") == 180
         finally:
             _servers.pop("test_srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Utility tool schemas (Resources & Prompts)
+# ---------------------------------------------------------------------------
+
+class TestUtilitySchemas:
+    """Tests for _build_utility_schemas() and the schema format of utility tools."""
+
+    def test_builds_four_utility_schemas(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("myserver")
+        assert len(schemas) == 4
+        names = [s["schema"]["name"] for s in schemas]
+        assert "mcp_myserver_list_resources" in names
+        assert "mcp_myserver_read_resource" in names
+        assert "mcp_myserver_list_prompts" in names
+        assert "mcp_myserver_get_prompt" in names
+
+    def test_hyphens_sanitized_in_utility_names(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("my-server")
+        names = [s["schema"]["name"] for s in schemas]
+        for name in names:
+            assert "-" not in name
+        assert "mcp_my_server_list_resources" in names
+
+    def test_list_resources_schema_no_required_params(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("srv")
+        lr = next(s for s in schemas if s["handler_key"] == "list_resources")
+        params = lr["schema"]["parameters"]
+        assert params["type"] == "object"
+        assert params["properties"] == {}
+        assert "required" not in params
+
+    def test_read_resource_schema_requires_uri(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("srv")
+        rr = next(s for s in schemas if s["handler_key"] == "read_resource")
+        params = rr["schema"]["parameters"]
+        assert "uri" in params["properties"]
+        assert params["properties"]["uri"]["type"] == "string"
+        assert params["required"] == ["uri"]
+
+    def test_list_prompts_schema_no_required_params(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("srv")
+        lp = next(s for s in schemas if s["handler_key"] == "list_prompts")
+        params = lp["schema"]["parameters"]
+        assert params["type"] == "object"
+        assert params["properties"] == {}
+        assert "required" not in params
+
+    def test_get_prompt_schema_requires_name(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("srv")
+        gp = next(s for s in schemas if s["handler_key"] == "get_prompt")
+        params = gp["schema"]["parameters"]
+        assert "name" in params["properties"]
+        assert params["properties"]["name"]["type"] == "string"
+        assert "arguments" in params["properties"]
+        assert params["properties"]["arguments"]["type"] == "object"
+        assert params["required"] == ["name"]
+
+    def test_schemas_have_descriptions(self):
+        from tools.mcp_tool import _build_utility_schemas
+
+        schemas = _build_utility_schemas("test_srv")
+        for entry in schemas:
+            desc = entry["schema"]["description"]
+            assert desc and len(desc) > 0
+            assert "test_srv" in desc
+
+
+# ---------------------------------------------------------------------------
+# Utility tool handlers (Resources & Prompts)
+# ---------------------------------------------------------------------------
+
+class TestUtilityHandlers:
+    """Tests for the MCP Resources & Prompts handler functions."""
+
+    def _patch_mcp_loop(self):
+        """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
+        def fake_run(coro, timeout=30):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
+
+    # -- list_resources --
+
+    def test_list_resources_success(self):
+        from tools.mcp_tool import _make_list_resources_handler, _servers
+
+        mock_resource = SimpleNamespace(
+            uri="file:///tmp/test.txt", name="test.txt",
+            description="A test file", mimeType="text/plain",
+        )
+        mock_session = MagicMock()
+        mock_session.list_resources = AsyncMock(
+            return_value=SimpleNamespace(resources=[mock_resource])
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_list_resources_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+            assert "resources" in result
+            assert len(result["resources"]) == 1
+            assert result["resources"][0]["uri"] == "file:///tmp/test.txt"
+            assert result["resources"][0]["name"] == "test.txt"
+        finally:
+            _servers.pop("srv", None)
+
+    def test_list_resources_empty(self):
+        from tools.mcp_tool import _make_list_resources_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.list_resources = AsyncMock(
+            return_value=SimpleNamespace(resources=[])
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_list_resources_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+            assert result["resources"] == []
+        finally:
+            _servers.pop("srv", None)
+
+    def test_list_resources_disconnected(self):
+        from tools.mcp_tool import _make_list_resources_handler, _servers
+        _servers.pop("ghost", None)
+        handler = _make_list_resources_handler("ghost", 120)
+        result = json.loads(handler({}))
+        assert "error" in result
+        assert "not connected" in result["error"]
+
+    # -- read_resource --
+
+    def test_read_resource_success(self):
+        from tools.mcp_tool import _make_read_resource_handler, _servers
+
+        content_block = SimpleNamespace(text="Hello from resource")
+        mock_session = MagicMock()
+        mock_session.read_resource = AsyncMock(
+            return_value=SimpleNamespace(contents=[content_block])
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_read_resource_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"uri": "file:///tmp/test.txt"}))
+            assert result["result"] == "Hello from resource"
+            mock_session.read_resource.assert_called_once_with("file:///tmp/test.txt")
+        finally:
+            _servers.pop("srv", None)
+
+    def test_read_resource_missing_uri(self):
+        from tools.mcp_tool import _make_read_resource_handler, _servers
+
+        server = _make_mock_server("srv", session=MagicMock())
+        _servers["srv"] = server
+
+        try:
+            handler = _make_read_resource_handler("srv", 120)
+            result = json.loads(handler({}))
+            assert "error" in result
+            assert "uri" in result["error"].lower()
+        finally:
+            _servers.pop("srv", None)
+
+    def test_read_resource_disconnected(self):
+        from tools.mcp_tool import _make_read_resource_handler, _servers
+        _servers.pop("ghost", None)
+        handler = _make_read_resource_handler("ghost", 120)
+        result = json.loads(handler({"uri": "test://x"}))
+        assert "error" in result
+        assert "not connected" in result["error"]
+
+    # -- list_prompts --
+
+    def test_list_prompts_success(self):
+        from tools.mcp_tool import _make_list_prompts_handler, _servers
+
+        mock_prompt = SimpleNamespace(
+            name="summarize", description="Summarize text",
+            arguments=[
+                SimpleNamespace(name="text", description="Text to summarize", required=True),
+            ],
+        )
+        mock_session = MagicMock()
+        mock_session.list_prompts = AsyncMock(
+            return_value=SimpleNamespace(prompts=[mock_prompt])
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_list_prompts_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+            assert "prompts" in result
+            assert len(result["prompts"]) == 1
+            assert result["prompts"][0]["name"] == "summarize"
+            assert result["prompts"][0]["arguments"][0]["name"] == "text"
+        finally:
+            _servers.pop("srv", None)
+
+    def test_list_prompts_empty(self):
+        from tools.mcp_tool import _make_list_prompts_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.list_prompts = AsyncMock(
+            return_value=SimpleNamespace(prompts=[])
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_list_prompts_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+            assert result["prompts"] == []
+        finally:
+            _servers.pop("srv", None)
+
+    def test_list_prompts_disconnected(self):
+        from tools.mcp_tool import _make_list_prompts_handler, _servers
+        _servers.pop("ghost", None)
+        handler = _make_list_prompts_handler("ghost", 120)
+        result = json.loads(handler({}))
+        assert "error" in result
+        assert "not connected" in result["error"]
+
+    # -- get_prompt --
+
+    def test_get_prompt_success(self):
+        from tools.mcp_tool import _make_get_prompt_handler, _servers
+
+        mock_msg = SimpleNamespace(
+            role="assistant",
+            content=SimpleNamespace(text="Here is a summary of your text."),
+        )
+        mock_session = MagicMock()
+        mock_session.get_prompt = AsyncMock(
+            return_value=SimpleNamespace(messages=[mock_msg], description=None)
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_get_prompt_handler("srv", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"name": "summarize", "arguments": {"text": "hello"}}))
+            assert "messages" in result
+            assert len(result["messages"]) == 1
+            assert result["messages"][0]["role"] == "assistant"
+            assert "summary" in result["messages"][0]["content"].lower()
+            mock_session.get_prompt.assert_called_once_with(
+                "summarize", arguments={"text": "hello"}
+            )
+        finally:
+            _servers.pop("srv", None)
+
+    def test_get_prompt_missing_name(self):
+        from tools.mcp_tool import _make_get_prompt_handler, _servers
+
+        server = _make_mock_server("srv", session=MagicMock())
+        _servers["srv"] = server
+
+        try:
+            handler = _make_get_prompt_handler("srv", 120)
+            result = json.loads(handler({}))
+            assert "error" in result
+            assert "name" in result["error"].lower()
+        finally:
+            _servers.pop("srv", None)
+
+    def test_get_prompt_disconnected(self):
+        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        _servers.pop("ghost", None)
+        handler = _make_get_prompt_handler("ghost", 120)
+        result = json.loads(handler({"name": "test"}))
+        assert "error" in result
+        assert "not connected" in result["error"]
+
+    def test_get_prompt_default_arguments(self):
+        from tools.mcp_tool import _make_get_prompt_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.get_prompt = AsyncMock(
+            return_value=SimpleNamespace(messages=[], description=None)
+        )
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = _make_get_prompt_handler("srv", 120)
+            with self._patch_mcp_loop():
+                handler({"name": "test_prompt"})
+            # arguments defaults to {} when not provided
+            mock_session.get_prompt.assert_called_once_with(
+                "test_prompt", arguments={}
+            )
+        finally:
+            _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Utility tools registration in _discover_and_register_server
+# ---------------------------------------------------------------------------
+
+class TestUtilityToolRegistration:
+    """Verify utility tools are registered alongside regular MCP tools."""
+
+    def test_utility_tools_registered(self):
+        """_discover_and_register_server registers all 4 utility tools."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        mock_tools = [_make_mcp_tool("read_file", "Read a file")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("fs", {"command": "npx", "args": []})
+            )
+
+        # Regular tool + 4 utility tools
+        assert "mcp_fs_read_file" in registered
+        assert "mcp_fs_list_resources" in registered
+        assert "mcp_fs_read_resource" in registered
+        assert "mcp_fs_list_prompts" in registered
+        assert "mcp_fs_get_prompt" in registered
+        assert len(registered) == 5
+
+        # All in the registry
+        all_names = mock_registry.get_all_tool_names()
+        for name in registered:
+            assert name in all_names
+
+        _servers.pop("fs", None)
+
+    def test_utility_tools_in_same_toolset(self):
+        """Utility tools belong to the same mcp-{server} toolset."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = []
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            asyncio.run(
+                _discover_and_register_server("myserv", {"command": "test"})
+            )
+
+        # Check that utility tools are in the right toolset
+        for tool_name in ["mcp_myserv_list_resources", "mcp_myserv_read_resource",
+                          "mcp_myserv_list_prompts", "mcp_myserv_get_prompt"]:
+            entry = mock_registry._tools.get(tool_name)
+            assert entry is not None, f"{tool_name} not found in registry"
+            assert entry.toolset == "mcp-myserv"
+
+        _servers.pop("myserv", None)
+
+    def test_utility_tools_have_check_fn(self):
+        """Utility tools have a working check_fn."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = []
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            asyncio.run(
+                _discover_and_register_server("chk", {"command": "test"})
+            )
+
+        entry = mock_registry._tools.get("mcp_chk_list_resources")
+        assert entry is not None
+        # Server is connected, check_fn should return True
+        assert entry.check_fn() is True
+
+        # Disconnect the server
+        _servers["chk"].session = None
+        assert entry.check_fn() is False
+
+        _servers.pop("chk", None)

@@ -1,300 +1,223 @@
 """
-Notification tool for Hermes Agent.
-
-Sends desktop/system notifications without requiring any messaging platform
-(Telegram, Discord, etc.). Works on Linux, macOS, and Windows.
-
-Dependencies: none (uses OS built-ins only)
+notification_tool — Send desktop notifications and alert sounds when Hermes
+finishes long-running tasks. Works locally and degrades gracefully over SSH.
 """
 
-import json
-import platform
-import subprocess
 import shutil
-from typing import Optional
+import subprocess
+import sys
+from typing import Any
+
+from tools.registry import registry
 
 
-# ---------------------------------------------------------------------------
-# Registration helper (mirrors the pattern used by other Hermes tools)
-# ---------------------------------------------------------------------------
-
-def register(registry):
-    """Register notification tools with the tool registry."""
-
-    registry.register(
-        name="notify",
-        description=(
-            "Send a desktop/system notification to the user. "
-            "Use this when a long-running task finishes, when something needs "
-            "the user's attention, or when explicitly asked to notify. "
-            "Works on Linux (libnotify/notify-send), macOS (osascript), and "
-            "Windows (PowerShell toast). Falls back gracefully if not supported."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Short notification title (e.g. 'Task Complete')",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Notification body text.",
-                },
-                "urgency": {
-                    "type": "string",
-                    "enum": ["low", "normal", "critical"],
-                    "description": "Urgency level. Defaults to 'normal'.",
-                },
-            },
-            "required": ["title", "message"],
-        },
-        handler=handle_notify,
-        check_fn=_notify_available,
-    )
-
-    registry.register(
-        name="notify_sound",
-        description=(
-            "Play a short system alert sound to get the user's attention. "
-            "Useful after notify when you want an audible cue. "
-            "Works on Linux (paplay/aplay/beep), macOS (afplay), Windows (PowerShell)."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "sound": {
-                    "type": "string",
-                    "enum": ["default", "bell", "complete"],
-                    "description": "Which sound to play. Defaults to 'default'.",
-                },
-            },
-            "required": [],
-        },
-        handler=handle_notify_sound,
-        check_fn=_sound_available,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Availability checks
-# ---------------------------------------------------------------------------
-
-def _notify_available() -> bool:
-    """Return True if at least one notification backend is available."""
-    system = platform.system()
-    if system == "Linux":
+def _check_notify() -> bool:
+    if sys.platform == "linux":
         return shutil.which("notify-send") is not None
-    if system == "Darwin":
-        return shutil.which("osascript") is not None
-    if system == "Windows":
-        return True  # PowerShell is always available on Windows
-    return False
-
-
-def _sound_available() -> bool:
-    """Return True if at least one sound backend is available."""
-    system = platform.system()
-    if system == "Linux":
-        return any(
-            shutil.which(cmd) is not None
-            for cmd in ("paplay", "aplay", "beep", "pw-play")
-        )
-    if system == "Darwin":
-        return shutil.which("afplay") is not None
-    if system == "Windows":
+    if sys.platform == "darwin":
+        return True
+    if sys.platform == "win32":
         return True
     return False
 
 
-# ---------------------------------------------------------------------------
-# Handlers
-# ---------------------------------------------------------------------------
-
-def handle_notify(title: str, message: str, urgency: str = "normal") -> str:
-    """Send a desktop notification. Returns JSON with status."""
-    system = platform.system()
-
-    try:
-        if system == "Linux":
-            result = _notify_linux(title, message, urgency)
-        elif system == "Darwin":
-            result = _notify_macos(title, message)
-        elif system == "Windows":
-            result = _notify_windows(title, message)
-        else:
-            return json.dumps({
-                "success": False,
-                "error": f"Unsupported platform: {system}",
-            })
-
-        return json.dumps(result)
-
-    except Exception as exc:
-        return json.dumps({"success": False, "error": str(exc)})
+def _check_sound() -> bool:
+    if sys.platform == "linux":
+        return shutil.which("paplay") is not None or shutil.which("aplay") is not None
+    if sys.platform == "darwin":
+        return True
+    if sys.platform == "win32":
+        return True
+    return False
 
 
-def handle_notify_sound(sound: str = "default") -> str:
-    """Play a system alert sound. Returns JSON with status."""
-    system = platform.system()
+def _applescript_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _handle_notify(args: dict[str, Any], **kwargs) -> dict[str, Any]:
+    title   = str(args.get("title",   "Hermes"))
+    message = str(args.get("message", "Task complete."))
+    urgency = str(args.get("urgency", "normal"))
+
+    if urgency not in ("low", "normal", "critical"):
+        urgency = "normal"
 
     try:
-        if system == "Linux":
-            result = _sound_linux(sound)
-        elif system == "Darwin":
-            result = _sound_macos(sound)
-        elif system == "Windows":
-            result = _sound_windows()
-        else:
-            return json.dumps({
-                "success": False,
-                "error": f"Unsupported platform: {system}",
-            })
-
-        return json.dumps(result)
-
-    except Exception as exc:
-        return json.dumps({"success": False, "error": str(exc)})
-
-
-# ---------------------------------------------------------------------------
-# Linux backends
-# ---------------------------------------------------------------------------
-
-def _notify_linux(title: str, message: str, urgency: str) -> dict:
-    if not shutil.which("notify-send"):
-        return {"success": False, "error": "notify-send not found. Install libnotify-bin."}
-
-    urgency_map = {"low": "low", "normal": "normal", "critical": "critical"}
-    level = urgency_map.get(urgency, "normal")
-
-    cmd = ["notify-send", "--urgency", level, title, message]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-
-    if proc.returncode == 0:
-        return {"success": True, "backend": "notify-send", "platform": "linux"}
-    return {"success": False, "error": proc.stderr.strip() or "notify-send failed"}
-
-
-def _sound_linux(sound: str) -> dict:
-    # Try common sound players in order of preference
-    # paplay (PulseAudio), pw-play (PipeWire), aplay (ALSA), beep (PC speaker)
-    sound_files = {
-        "default": [
-            "/usr/share/sounds/freedesktop/stereo/message.oga",
-            "/usr/share/sounds/freedesktop/stereo/bell.oga",
-            "/usr/share/sounds/ubuntu/stereo/message.ogg",
-        ],
-        "bell": [
-            "/usr/share/sounds/freedesktop/stereo/bell.oga",
-            "/usr/share/sounds/ubuntu/stereo/bell.ogg",
-        ],
-        "complete": [
-            "/usr/share/sounds/freedesktop/stereo/complete.oga",
-            "/usr/share/sounds/ubuntu/stereo/dialog-information.ogg",
-        ],
-    }
-
-    files = sound_files.get(sound, sound_files["default"])
-
-    for player in ("paplay", "pw-play", "aplay"):
-        if not shutil.which(player):
-            continue
-        for f in files:
-            try:
-                proc = subprocess.run(
-                    [player, f], capture_output=True, timeout=5
+        if sys.platform == "linux":
+            if shutil.which("notify-send"):
+                subprocess.run(
+                    ["notify-send", "--urgency", urgency, "--", title, message],
+                    check=True,
+                    capture_output=True,
                 )
-                if proc.returncode == 0:
-                    return {"success": True, "backend": player, "platform": "linux"}
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                continue
+            else:
+                print("\a", end="", flush=True)
+                return {"success": True, "backend": "terminal_bell",
+                        "note": "notify-send not found; used terminal bell"}
 
-    # Last resort: terminal bell via echo
+        elif sys.platform == "darwin":
+            script = (
+                f'display notification {_applescript_quote(message)} '
+                f'with title {_applescript_quote(title)}'
+            )
+            subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+
+        elif sys.platform == "win32":
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$n = New-Object System.Windows.Forms.NotifyIcon;"
+                "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+                "$n.Visible = $true;"
+                "$n.ShowBalloonTip(5000, $args[0], $args[1], "
+                "[System.Windows.Forms.ToolTipIcon]::None);"
+                "Start-Sleep -Seconds 6; $n.Dispose()"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script,
+                 "-ArgumentList", title, message],
+                check=True,
+                capture_output=True,
+            )
+
+        else:
+            print("\a", end="", flush=True)
+            return {"success": True, "backend": "terminal_bell"}
+
+        return {"success": True, "backend": sys.platform}
+
+    except subprocess.CalledProcessError as e:
+        print("\a", end="", flush=True)
+        return {
+            "success": True,
+            "backend": "terminal_bell",
+            "note": f"Primary backend failed ({e}); used terminal bell",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _handle_notify_sound(args: dict[str, Any], **kwargs) -> dict[str, Any]:
+    sound = str(args.get("sound", "default"))
+
     try:
-        subprocess.run(["bash", "-c", "echo -ne '\\a'"], timeout=2)
-        return {"success": True, "backend": "terminal-bell", "platform": "linux"}
-    except Exception:
-        pass
+        if sys.platform == "linux":
+            candidates = [
+                "/usr/share/sounds/freedesktop/stereo/complete.oga",
+                "/usr/share/sounds/freedesktop/stereo/message.oga",
+                "/usr/share/sounds/alsa/Front_Center.wav",
+            ]
+            played = False
+            for path in candidates:
+                player = shutil.which("paplay") or shutil.which("aplay")
+                if player:
+                    try:
+                        subprocess.run([player, path], check=True, capture_output=True)
+                        played = True
+                        break
+                    except subprocess.CalledProcessError:
+                        continue
+            if not played:
+                print("\a", end="", flush=True)
+                return {"success": True, "backend": "terminal_bell"}
 
-    return {"success": False, "error": "No sound backend found (tried paplay, pw-play, aplay)"}
+        elif sys.platform == "darwin":
+            sound_map = {
+                "default":  "Ping",
+                "error":    "Basso",
+                "complete": "Glass",
+            }
+            sound_name = sound_map.get(sound, "Ping")
+            subprocess.run(
+                ["afplay", f"/System/Library/Sounds/{sound_name}.aiff"],
+                check=True,
+                capture_output=True,
+            )
 
+        elif sys.platform == "win32":
+            freq = {"default": 800, "error": 400, "complete": 1000}.get(sound, 800)
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"[console]::beep({freq}, 400)"],
+                check=True,
+                capture_output=True,
+            )
 
-# ---------------------------------------------------------------------------
-# macOS backends
-# ---------------------------------------------------------------------------
+        else:
+            print("\a", end="", flush=True)
+            return {"success": True, "backend": "terminal_bell"}
 
-def _notify_macos(title: str, message: str) -> dict:
-    # osascript display notification
-    script = (
-        f'display notification "{_esc(message)}" '
-        f'with title "{_esc(title)}"'
-    )
-    proc = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=5,
-    )
-    if proc.returncode == 0:
-        return {"success": True, "backend": "osascript", "platform": "macos"}
-    return {"success": False, "error": proc.stderr.strip() or "osascript failed"}
+        return {"success": True, "backend": sys.platform}
 
-
-def _sound_macos(sound: str) -> dict:
-    sound_map = {
-        "default": "/System/Library/Sounds/Funk.aiff",
-        "bell": "/System/Library/Sounds/Ping.aiff",
-        "complete": "/System/Library/Sounds/Glass.aiff",
-    }
-    sound_file = sound_map.get(sound, sound_map["default"])
-    proc = subprocess.run(
-        ["afplay", sound_file],
-        capture_output=True, timeout=5,
-    )
-    if proc.returncode == 0:
-        return {"success": True, "backend": "afplay", "platform": "macos"}
-    return {"success": False, "error": proc.stderr.strip() or "afplay failed"}
-
-
-# ---------------------------------------------------------------------------
-# Windows backends
-# ---------------------------------------------------------------------------
-
-def _notify_windows(title: str, message: str) -> dict:
-    # PowerShell toast notification (Windows 10+)
-    script = (
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null;"
-        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] | Out-Null;"
-        "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
-        f"$template.GetElementsByTagName('text')[0].InnerText = '{_esc(title)}';"
-        f"$template.GetElementsByTagName('text')[1].InnerText = '{_esc(message)}';"
-        "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);"
-        "$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Hermes Agent');"
-        "$notifier.Show($toast);"
-    )
-    proc = subprocess.run(
-        ["powershell", "-Command", script],
-        capture_output=True, text=True, timeout=10,
-    )
-    if proc.returncode == 0:
-        return {"success": True, "backend": "powershell-toast", "platform": "windows"}
-    return {"success": False, "error": proc.stderr.strip() or "PowerShell toast failed"}
+    except subprocess.CalledProcessError as e:
+        print("\a", end="", flush=True)
+        return {
+            "success": True,
+            "backend": "terminal_bell",
+            "note": f"Primary backend failed ({e}); used terminal bell",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
-def _sound_windows() -> dict:
-    script = "[System.Media.SystemSounds]::Beep.Play()"
-    proc = subprocess.run(
-        ["powershell", "-Command", script],
-        capture_output=True, text=True, timeout=5,
-    )
-    if proc.returncode == 0:
-        return {"success": True, "backend": "powershell-beep", "platform": "windows"}
-    return {"success": False, "error": proc.stderr.strip() or "PowerShell beep failed"}
+registry.register(
+    name="notify",
+    toolset="notification",
+    schema={
+        "name": "notify",
+        "description": (
+            "Send a desktop notification to the user. "
+            "Falls back to a terminal bell when running over SSH or "
+            "when no display server is available."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Notification title, e.g. 'Task Complete'",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Notification body text",
+                },
+                "urgency": {
+                    "type": "string",
+                    "enum": ["low", "normal", "critical"],
+                    "description": "Urgency level (Linux only). Default: normal",
+                    "default": "normal",
+                },
+            },
+            "required": ["title", "message"],
+        },
+    },
+    handler=lambda args, **kw: _handle_notify(args, **kw),
+    check_fn=_check_notify,
+)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _esc(s: str) -> str:
-    """Escape single quotes for shell/AppleScript strings."""
-    return s.replace("'", "\\'").replace('"', '\\"')
+registry.register(
+    name="notify_sound",
+    toolset="notification",
+    schema={
+        "name": "notify_sound",
+        "description": (
+            "Play a system alert sound. "
+            "Falls back to a terminal bell on headless / SSH environments."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sound": {
+                    "type": "string",
+                    "enum": ["default", "error", "complete"],
+                    "description": "Sound style hint. Default: default",
+                    "default": "default",
+                },
+            },
+            "required": [],
+        },
+    },
+    handler=lambda args, **kw: _handle_notify_sound(args, **kw),
+    check_fn=_check_sound,
+)

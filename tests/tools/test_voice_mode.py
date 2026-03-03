@@ -86,6 +86,7 @@ class TestCheckVoiceRequirements:
     def test_missing_stt_key(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", True)
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
         from tools.voice_mode import check_voice_requirements
 

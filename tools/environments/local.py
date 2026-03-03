@@ -12,6 +12,43 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 from tools.environments.base import BaseEnvironment
 
+
+def _find_shell() -> str:
+    """Find the best shell for command execution.
+
+    On Unix: uses $SHELL, falls back to bash.
+    On Windows: uses Git Bash (bundled with Git for Windows).
+    Raises RuntimeError if no suitable shell is found on Windows.
+    """
+    if not _IS_WINDOWS:
+        return os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+
+    # Windows: look for Git Bash (installed with Git for Windows).
+    # Allow override via env var (same pattern as Claude Code).
+    custom = os.environ.get("HERMES_GIT_BASH_PATH")
+    if custom and os.path.isfile(custom):
+        return custom
+
+    # shutil.which finds bash.exe if Git\bin is on PATH
+    found = shutil.which("bash")
+    if found:
+        return found
+
+    # Check common Git for Windows install locations
+    for candidate in (
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+
+    raise RuntimeError(
+        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
+        "Install it from: https://git-scm.com/download/win\n"
+        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+    )
+
 # Noise lines emitted by interactive shells when stdin is not a terminal.
 # Filtered from output to keep tool results clean.
 _SHELL_NOISE_SUBSTRINGS = (
@@ -66,7 +103,7 @@ class LocalEnvironment(BaseEnvironment):
             # tools like nvm, pyenv, and cargo install their init scripts.
             # -l alone isn't enough: .profile sources .bashrc, but the guard
             # returns early because the shell isn't interactive.
-            user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+            user_shell = _find_shell()
             proc = subprocess.Popen(
                 [user_shell, "-lic", exec_command],
                 text=True,

@@ -18,6 +18,8 @@ import shutil
 import sys
 import json
 import atexit
+import tempfile
+import time
 import uuid
 import textwrap
 from contextlib import contextmanager
@@ -3601,14 +3603,37 @@ class HermesCLI:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
             import json
+            import re
 
-            # Truncate to TTS limit
+            # Strip markdown formatting for cleaner TTS
             tts_text = text[:4000] if len(text) > 4000 else text
-            result_json = text_to_speech_tool(text=tts_text)
-            result = json.loads(result_json)
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
 
-            if result.get("success") and result.get("file_path"):
-                play_audio_file(result["file_path"])
+            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
+            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
+            os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+            mp3_path = os.path.join(
+                tempfile.gettempdir(), "hermes_voice",
+                f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
+            )
+
+            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+
+            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
+            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+                play_audio_file(mp3_path)
+                # Clean up
+                try:
+                    os.unlink(mp3_path)
+                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                    if os.path.isfile(ogg_path):
+                        os.unlink(ogg_path)
+                except OSError:
+                    pass
         except Exception as e:
             logger.debug("Voice TTS playback failed: %s", e)
 

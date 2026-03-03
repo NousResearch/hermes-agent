@@ -11,20 +11,18 @@ import shutil
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from agent.env_loader import load_dotenv_with_fallback, read_env_text_with_fallback
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
+_ENV_LOAD_ERROR = ""
 
-# Load environment variables from ~/.hermes/.env so API key checks work
-from dotenv import load_dotenv
+# Load environment variables (encoding-safe on Windows)
 _env_path = get_env_path()
 if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+    load_dotenv_with_fallback(_env_path)
+if (PROJECT_ROOT / ".env").exists():
+    load_dotenv_with_fallback(PROJECT_ROOT / ".env", override=False)
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(HERMES_HOME))
@@ -129,14 +127,19 @@ def run_doctor(args):
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok("~/.hermes/.env file exists")
-        
-        # Check for common issues
-        content = env_path.read_text()
-        if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
-            check_ok("API key configured")
+
+        if _ENV_LOAD_ERROR:
+            check_fail("Invalid .env encoding/value detected", f"({_ENV_LOAD_ERROR})")
+            issues.append("Re-save ~/.hermes/.env as UTF-8 and re-enter invalid key values")
         else:
-            check_warn("No API key found in ~/.hermes/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            # Check for common issues
+            content, _ = read_env_text_with_fallback(env_path)
+            if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
+                check_ok("API key configured")
+            else:
+                check_warn("No API key found in ~/.hermes/.env")
+                issues.append("Run 'hermes setup' to configure API keys")
+        
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'

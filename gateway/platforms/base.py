@@ -26,6 +26,8 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Image cache utilities
@@ -640,7 +642,13 @@ class BasePlatformAdapter(ABC):
                     
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
-                        print(f"[{self.name}] Failed to send response: {result.error}")
+                        logger.error(
+                            "[%s] Failed to send response (chat_id=%s, len=%d): %s",
+                            self.name,
+                            event.source.chat_id,
+                            len(text_content),
+                            result.error,
+                        )
                         # Try sending without markdown as fallback
                         fallback_result = await self.send(
                             chat_id=event.source.chat_id,
@@ -648,7 +656,12 @@ class BasePlatformAdapter(ABC):
                             reply_to=event.message_id
                         )
                         if not fallback_result.success:
-                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+                            logger.error(
+                                "[%s] Fallback send also failed (chat_id=%s): %s",
+                                self.name,
+                                event.source.chat_id,
+                                fallback_result.error,
+                            )
                 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -672,12 +685,15 @@ class BasePlatformAdapter(ABC):
                                 caption=alt_text if alt_text else None,
                             )
                         if not img_result.success:
-                            print(f"[{self.name}] Failed to send image: {img_result.error}")
+                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
-                        print(f"[{self.name}] Error sending image: {img_err}")
+                        logger.exception("[%s] Error sending image: %s", self.name, img_err)
                 
                 # Send extracted audio/voice files as native attachments
                 for audio_path, is_voice in media_files:
+                    if not os.path.exists(audio_path):
+                        print(f"[{self.name}] Skipping stale voice path (missing file): {audio_path}")
+                        continue
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -686,9 +702,9 @@ class BasePlatformAdapter(ABC):
                             audio_path=audio_path,
                         )
                         if not voice_result.success:
-                            print(f"[{self.name}] Failed to send voice: {voice_result.error}")
+                            logger.error("[%s] Failed to send voice: %s", self.name, voice_result.error)
                     except Exception as voice_err:
-                        print(f"[{self.name}] Error sending voice: {voice_err}")
+                        logger.exception("[%s] Error sending voice: %s", self.name, voice_err)
             
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
@@ -707,9 +723,7 @@ class BasePlatformAdapter(ABC):
                 return  # Already cleaned up
                 
         except Exception as e:
-            print(f"[{self.name}] Error handling message: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("[%s] Error handling message: %s", self.name, e)
         finally:
             # Stop typing indicator
             typing_task.cancel()
@@ -865,3 +879,13 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+    async def edit_message(self, chat_id: str, message_id: str, content: str) -> None:
+        """
+        Optional hook for platforms that support in-place message edits.
+        
+        Default implementation is a no-op; adapters like Discord/Telegram
+        can override this to update a single progress/status message instead
+        of sending many separate updates.
+        """
+        return None

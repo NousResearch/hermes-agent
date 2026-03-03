@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import fire
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+# Load environment variables (encoding-safe on Windows)
+from agent.env_loader import load_dotenv_with_fallback
+for _p in (Path.home() / ".hermes" / ".env", Path.cwd() / ".env"):
+    if _p.exists():
+        load_dotenv_with_fallback(_p)
+        break
 
 
 # Default datasets to sample from

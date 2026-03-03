@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -33,14 +34,26 @@ _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 # Load environment variables from ~/.hermes/.env first
 from dotenv import load_dotenv
+from agent.env_loader import load_dotenv_with_fallback
 _env_path = _hermes_home / '.env'
 if _env_path.exists():
     try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
+        load_dotenv_with_fallback(_env_path, logger=logging.getLogger(__name__))
+    except ValueError as exc:
+        print(f"Failed to load {_env_path}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 # Also try project .env as fallback
-load_dotenv()
+_project_env = Path(__file__).parent.parent / '.env'
+if _project_env.exists():
+    try:
+        load_dotenv_with_fallback(
+            _project_env,
+            override=False,
+            logger=logging.getLogger(__name__),
+        )
+    except ValueError as exc:
+        print(f"Failed to load {_project_env}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -48,7 +61,7 @@ _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
-        with open(_config_path) as _f:
+        with open(_config_path, encoding="utf-8") as _f:
             _cfg = _yaml.safe_load(_f) or {}
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
@@ -101,10 +114,16 @@ os.environ["HERMES_QUIET"] = "1"
 # Enable interactive exec approval for dangerous commands on messaging platforms
 os.environ["HERMES_EXEC_ASK"] = "1"
 
-# Set terminal working directory for messaging platforms
-# Uses MESSAGING_CWD if set, otherwise defaults to home directory
-# This is separate from CLI which uses the directory where `hermes` is run
-messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
+# Set terminal working directory for messaging platforms.
+# Uses MESSAGING_CWD if set. Otherwise prefer ~/.hermes/workspace (where
+# project files are commonly located), then ~/.hermes, then home.
+# This is separate from CLI which uses the directory where `hermes` is run.
+_default_messaging_cwd = Path.home() / ".hermes" / "workspace"
+if not _default_messaging_cwd.exists():
+    _default_messaging_cwd = Path.home() / ".hermes"
+if not _default_messaging_cwd.exists():
+    _default_messaging_cwd = Path.home()
+messaging_cwd = os.getenv("MESSAGING_CWD") or str(_default_messaging_cwd)
 os.environ["TERMINAL_CWD"] = messaging_cwd
 
 from gateway.config import (
@@ -123,6 +142,36 @@ from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
+
+# Default model when nothing is configured (must match hermes_cli.config DEFAULT_CONFIG / CLI fallback)
+_DEFAULT_MODEL = "google/gemini-2.0-flash-001:free"
+
+
+def _resolve_gateway_model() -> str:
+    """
+    Resolve the model for gateway agents. Same priority as CLI so gateway and
+    CLI share one source of truth: HERMES_MODEL (session override) > LLM_MODEL
+    > OPENAI_MODEL > config.yaml model > default.
+    """
+    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL")
+    if model:
+        return model.strip()
+    try:
+        import yaml as _yaml
+        cfg_path = Path.home() / ".hermes" / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _yaml.safe_load(_f) or {}
+            m = cfg.get("model")
+            if isinstance(m, str) and m.strip():
+                return m.strip()
+            if isinstance(m, dict):
+                default = (m.get("default") or "").strip()
+                if default:
+                    return default
+    except Exception:
+        pass
+    return _DEFAULT_MODEL
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -272,7 +321,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     file_path = cfg.get("prefill_messages_file", "")
             except Exception:
@@ -310,7 +359,7 @@ class GatewayRunner:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
         except Exception:
@@ -331,7 +380,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
             except Exception:
@@ -419,11 +468,11 @@ class GatewayRunner:
                 if success:
                     self.adapters[platform] = adapter
                     connected_count += 1
-                    logger.info("✓ %s connected", platform.value)
+                    logger.info("ok: %s connected", platform.value)
                 else:
-                    logger.warning("✗ %s failed to connect", platform.value)
+                    logger.warning("x: %s failed to connect", platform.value)
             except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
+                logger.error("x: %s error: %s", platform.value, e)
         
         if connected_count == 0:
             logger.warning("No messaging platforms connected.")
@@ -466,9 +515,9 @@ class GatewayRunner:
         for platform, adapter in self.adapters.items():
             try:
                 await adapter.disconnect()
-                logger.info("✓ %s disconnected", platform.value)
+                logger.info("%s disconnected", platform.value)
             except Exception as e:
-                logger.error("✗ %s disconnect error: %s", platform.value, e)
+                logger.error("%s disconnect error: %s", platform.value, e)
         
         self.adapters.clear()
         self._shutdown_event.set()
@@ -591,9 +640,24 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        logger.info(
+            "Gateway message received: platform=%s chat_type=%s chat_id=%s user_id=%s text_len=%s",
+            source.platform.value if source.platform else "unknown",
+            source.chat_type,
+            source.chat_id,
+            source.user_id,
+            len(event.text or ""),
+        )
+        authorized = self._is_user_authorized(source)
+        logger.info(
+            "Gateway auth check: platform=%s user_id=%s authorized=%s",
+            source.platform.value if source.platform else "unknown",
+            source.user_id,
+            authorized,
+        )
         
         # Check if user is authorized
-        if not self._is_user_authorized(source):
+        if not authorized:
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm":
@@ -641,11 +705,14 @@ class GatewayRunner:
         
         # Check for commands
         command = event.get_command()
-        
+        if command:
+            logger.info("Gateway command detected: /%s from user_id=%s", command, source.user_id)
         # Emit command:* hook for any recognized slash command
-        _known_commands = {"new", "reset", "help", "status", "stop", "model",
-                          "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "reload-mcp"}
+        _known_commands = {
+            "new", "reset", "help", "status", "stop", "model",
+            "personality", "retry", "undo", "sethome", "set-home",
+            "terminal", "shell", "compress", "usage", "reload-mcp"
+        }
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -653,7 +720,7 @@ class GatewayRunner:
                 "command": command,
                 "args": event.get_command_args().strip(),
             })
-        
+
         if command in ["new", "reset"]:
             return await self._handle_reset_command(event)
         
@@ -671,6 +738,9 @@ class GatewayRunner:
         
         if command == "personality":
             return await self._handle_personality_command(event)
+        
+        if command in ["terminal", "shell"]:
+            return await self._handle_terminal_command(event)
         
         if command == "retry":
             return await self._handle_retry_command(event)
@@ -934,11 +1004,53 @@ class GatewayRunner:
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": os.getenv("HERMES_MODEL", ""),
+                        "model": _resolve_gateway_model(),
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
                 )
+
+            def _strip_ts(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                normalized: List[Dict[str, Any]] = []
+                for m in msgs or []:
+                    if not isinstance(m, dict):
+                        continue
+                    if m.get("role") == "system":
+                        continue
+                    normalized.append({k: v for k, v in m.items() if k != "timestamp"})
+                return normalized
+
+            normalized_history = _strip_ts(history)
+            normalized_agent = _strip_ts(agent_messages)
+            history_prefix_matches = (
+                len(normalized_agent) >= len(normalized_history)
+                and normalized_agent[: len(normalized_history)] == normalized_history
+            )
+            history_was_rewritten = bool(normalized_history) and not history_prefix_matches
+
+            # If agent history was compressed/rewritten, replace transcript with
+            # the returned message list so future turns stay compact.
+            if history_was_rewritten:
+                rewritten: List[Dict[str, Any]] = []
+
+                # Preserve an existing session_meta entry if present.
+                existing_meta = next(
+                    (m for m in (history or []) if isinstance(m, dict) and m.get("role") == "session_meta"),
+                    None,
+                )
+                if existing_meta:
+                    meta_entry = dict(existing_meta)
+                    meta_entry.setdefault("timestamp", ts)
+                    rewritten.append(meta_entry)
+
+                for msg in normalized_agent:
+                    entry = dict(msg)
+                    entry.setdefault("timestamp", ts)
+                    rewritten.append(entry)
+
+                self.session_store.rewrite_transcript(session_entry.session_id, rewritten)
+                self.session_store.update_session(session_entry.session_key)
+                return response
             
             # Find only the NEW messages from this turn (skip history we loaded)
             history_len = len(history)
@@ -1115,7 +1227,7 @@ class GatewayRunner:
         current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
         try:
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, str):
@@ -1141,12 +1253,12 @@ class GatewayRunner:
         try:
             user_config = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             if "model" not in user_config or not isinstance(user_config["model"], dict):
                 user_config["model"] = {}
             user_config["model"]["default"] = args
-            with open(config_path, 'w') as f:
+            with open(config_path, "w", encoding="utf-8", newline="") as f:
                 yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
         except Exception as e:
             return f"⚠️ Failed to save model change: {e}"
@@ -1165,7 +1277,7 @@ class GatewayRunner:
 
         try:
             if config_path.exists():
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
@@ -1187,25 +1299,120 @@ class GatewayRunner:
             return "\n".join(lines)
 
         if args in personalities:
-            new_prompt = personalities[args]
+            selected_prompt = personalities[args]
+            # Backward-compatible legacy env var (not read by current runtime).
+            os.environ["HERMES_PERSONALITY"] = selected_prompt
+            # Runtime-consumed ephemeral prompt env var.
+            os.environ["HERMES_EPHEMERAL_SYSTEM_PROMPT"] = selected_prompt
+            # Keep current GatewayRunner instance in sync immediately.
+            self._ephemeral_system_prompt = selected_prompt
 
-            # Write to config.yaml, same pattern as CLI save_config_value.
+            # Persist as agent.system_prompt so restarts keep the selected personality.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w') as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                if config_path.exists():
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        persisted = yaml.safe_load(f) or {}
+                else:
+                    persisted = {}
+                persisted.setdefault("agent", {})
+                persisted["agent"]["system_prompt"] = selected_prompt
+                with open(config_path, 'w', encoding='utf-8', newline='') as f:
+                    yaml.dump(persisted, f, default_flow_style=False)
             except Exception as e:
-                return f"⚠️ Failed to save personality change: {e}"
-
-            # Update in-memory so it takes effect on the very next message.
-            self._ephemeral_system_prompt = new_prompt
+                logger.warning("Failed to persist selected personality prompt: %s", e)
 
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
 
         available = ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
+    
+    async def _handle_terminal_command(self, event: MessageEvent) -> str:
+        """Handle /terminal command - show or change the current Windows shell mode.
+
+        Syntax (Windows only):
+          /terminal windows   -> HERMES_WINDOWS_SHELL=powershell
+          /terminal wsl       -> HERMES_WINDOWS_SHELL=wsl
+          /terminal auto      -> HERMES_WINDOWS_SHELL=auto (WSL > PowerShell > cmd)
+          /terminal cmd       -> HERMES_WINDOWS_SHELL=cmd
+        
+        On non-Windows hosts this command is a no-op and reports that only POSIX
+        shells are available.
+        """
+        args = event.get_command_args().strip().lower()
+
+        if os.name != "nt":
+            return (
+                "Terminal mode only applies when the **gateway** runs on Windows. "
+                "Right now the gateway is running on Linux/WSL, so local commands "
+                "always use your default (POSIX) shell. Setting PowerShell here has no effect; "
+                "to use PowerShell for commands, start the gateway from Windows (e.g. PowerShell or cmd)."
+            )
+
+        current = os.getenv("HERMES_WINDOWS_SHELL", "auto")
+        if not args:
+            return (
+                "🖥️ **Current terminal mode:** "
+                f"`{current}`\n\n"
+                "Usage: `/terminal powershell`, `/terminal wsl`, `/terminal auto`, `/terminal cmd`"
+            )
+
+        mode_map = {
+            "windows": "powershell",
+            "pwsh": "powershell",
+            "powershell": "powershell",
+            "wsl": "wsl",
+            "linux": "wsl",
+            "auto": "auto",
+            "cmd": "cmd",
+            "cmd.exe": "cmd",
+        }
+
+        if args not in mode_map:
+            return (
+                f"Unknown terminal mode: `{args}`\n\n"
+                "Valid options on Windows are: `powershell`, `wsl`, `auto`, `cmd` "
+                "(aliases like `windows` and `pwsh` also map to `powershell`)."
+            )
+
+        new_value = mode_map[args]
+        os.environ["HERMES_WINDOWS_SHELL"] = new_value
+        logger.info(
+            "Terminal mode switched to %s (HERMES_WINDOWS_SHELL=%s) by user",
+            new_value,
+            new_value,
+        )
+
+        # Persist into ~/.hermes/config.yaml so restarts keep the selected mode.
+        try:
+            import yaml
+            config_path = Path.home() / ".hermes" / "config.yaml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    persisted = yaml.safe_load(f) or {}
+            else:
+                persisted = {}
+
+            # Top-level key so shell_utils can see it even without nested terminal config.
+            persisted["HERMES_WINDOWS_SHELL"] = new_value
+
+            with open(config_path, "w", encoding="utf-8", newline="") as f:
+                yaml.dump(persisted, f, default_flow_style=False)
+        except Exception as e:
+            logger.warning("Failed to persist terminal mode to config.yaml: %s", e)
+
+        human_mode = {
+            "powershell": "PowerShell",
+            "wsl": "WSL (Linux shell)",
+            "cmd": "cmd.exe",
+            "auto": "auto (WSL > PowerShell > cmd)",
+        }.get(new_value, new_value)
+
+        return (
+            f"🖥️ Terminal mode set to **{human_mode}** "
+            f"(`HERMES_WINDOWS_SHELL={new_value}`).\n"
+            "Future *local* commands will use this shell. "
+            "Remote/Unix environments (Docker/SSH/etc.) still use POSIX shells."
+        )
     
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
@@ -1279,10 +1486,10 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             user_config = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding='utf-8') as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding='utf-8', newline='') as f:
                 yaml.dump(user_config, f, default_flow_style=False)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
@@ -1700,7 +1907,7 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 import yaml
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     user_config = yaml.safe_load(f) or {}
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
         except Exception as e:
@@ -1730,7 +1937,7 @@ class GatewayRunner:
             _tp_cfg_path = _hermes_home / "config.yaml"
             if _tp_cfg_path.exists():
                 import yaml as _tp_yaml
-                with open(_tp_cfg_path) as _tp_f:
+                with open(_tp_cfg_path, encoding="utf-8") as _tp_f:
                     _tp_data = _tp_yaml.safe_load(_tp_f) or {}
                 _progress_cfg = _tp_data.get("display", {})
         except Exception:
@@ -1745,6 +1952,54 @@ class GatewayRunner:
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
+        progress_state = {
+            "started_at": time.monotonic(),
+            "phase": "thinking",
+            "last_detail": "Queued request...",
+            "tool_calls": 0,
+            "updates": 0,
+        }
+        heartbeat_faces = ["(·_·)", "(•‿•)", "(⌐■_■)", "(^_^)/"]
+        phase_labels = {
+            "starting": "starting",
+            "thinking": "thinking",
+            "tool": "using tools",
+            "finalizing": "finalizing",
+        }
+        phase_emojis = {
+            "starting": "🚀",
+            "thinking": "💡",
+            "tool": "🛠️",
+            "finalizing": "🧾",
+        }
+
+        def _set_progress_state(*, phase: str | None = None, detail: str | None = None, tool_call: bool = False):
+            if phase:
+                progress_state["phase"] = phase
+            if detail:
+                progress_state["last_detail"] = detail
+            if tool_call:
+                progress_state["tool_calls"] += 1
+            progress_state["updates"] += 1
+            if progress_queue:
+                # A tiny queue signal wakes the async updater. Actual text is built
+                # centrally so tool updates + heartbeat share one edited message.
+                progress_queue.put("__tick__")
+
+        def _build_progress_message() -> str:
+            elapsed = int(max(0, time.monotonic() - progress_state["started_at"]))
+            face = heartbeat_faces[elapsed % len(heartbeat_faces)]
+            phase = progress_state.get("phase", "thinking")
+            phase_text = phase_labels.get(phase, "working")
+            phase_emoji = phase_emojis.get(phase, "⚙️")
+            detail = (progress_state.get("last_detail") or "Working...").strip()
+            if len(detail) > 180:
+                detail = detail[:177] + "..."
+            return (
+                f"{phase_emoji} {face} Hermes is {phase_text}... ({elapsed}s)\n"
+                f"{detail}\n"
+                f"Tools: {progress_state['tool_calls']} | Updates: {progress_state['updates']}"
+            )
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
@@ -1806,7 +2061,7 @@ class GatewayRunner:
                 if len(args_str) > 200:
                     args_str = args_str[:197] + "..."
                 msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                progress_queue.put(msg)
+                _set_progress_state(phase="tool", detail=msg, tool_call=tool_name != "_thinking")
                 return
             
             if preview:
@@ -1816,8 +2071,11 @@ class GatewayRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            
-            progress_queue.put(msg)
+
+            if tool_name == "_thinking":
+                _set_progress_state(phase="thinking", detail=f"💡 thinking: {preview or 'working...'}")
+            else:
+                _set_progress_state(phase="tool", detail=msg, tool_call=True)
         
         # Background task to send progress messages
         async def send_progress_messages():
@@ -1827,25 +2085,58 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform)
             if not adapter:
                 return
-            
+
+            # Keep track of a single in-flight progress message so we can edit
+            # it in place instead of spamming the channel with many updates.
+            progress_message_id: str | None = None
+            last_heartbeat_at = 0.0
+            last_rendered = ""
+
             while True:
+                # Drain queue signals so bursts collapse into one edit.
+                got_signal = False
+                while True:
+                    try:
+                        progress_queue.get_nowait()
+                        got_signal = True
+                    except queue.Empty:
+                        break
+
                 try:
-                    # Non-blocking check with small timeout
-                    msg = progress_queue.get_nowait()
-                    await adapter.send(chat_id=source.chat_id, content=msg)
-                    # Restore typing indicator after sending progress message
-                    await asyncio.sleep(0.3)
-                    await adapter.send_typing(source.chat_id)
-                except queue.Empty:
-                    await asyncio.sleep(0.3)  # Check again soon
-                except asyncio.CancelledError:
-                    # Drain remaining messages
-                    while not progress_queue.empty():
+                    now = time.monotonic()
+                    heartbeat_due = (now - last_heartbeat_at) >= 1.0
+                    if not got_signal and not heartbeat_due:
+                        await asyncio.sleep(0.2)
+                        continue
+
+                    msg = _build_progress_message()
+                    if not got_signal and not heartbeat_due and msg == last_rendered:
+                        await asyncio.sleep(0.2)
+                        continue
+
+                    # For platforms that support edits (Discord/Telegram/etc.),
+                    # send the first progress message and then edit it in place
+                    # for subsequent updates.
+                    if progress_message_id is None:
+                        result = await adapter.send(chat_id=source.chat_id, content=msg)
+                        if result and result.success and result.message_id:
+                            progress_message_id = result.message_id
+                    else:
                         try:
-                            msg = progress_queue.get_nowait()
-                            await adapter.send(chat_id=source.chat_id, content=msg)
+                            await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_message_id,
+                                content=msg,
+                            )
                         except Exception:
-                            break
+                            result = await adapter.send(chat_id=source.chat_id, content=msg)
+                            if result and result.success and result.message_id:
+                                progress_message_id = result.message_id
+
+                    last_rendered = msg
+                    last_heartbeat_at = now
+                    await adapter.send_typing(source.chat_id)
+                except asyncio.CancelledError:
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -1876,12 +2167,40 @@ class GatewayRunner:
                 logger.debug("agent:step hook error: %s", _e)
 
         def run_sync():
+            if tool_progress_enabled:
+                _set_progress_state(phase="starting", detail="Preparing gateway session...")
+
+            # Do NOT overwrite mode from config on every turn.
+            # /terminal updates os.environ immediately; config is only persistence for restarts.
+            if os.name == "nt":
+                current_shell = os.environ.get("HERMES_WINDOWS_SHELL", "auto")
+                logger.info(
+                    "Agent run: using in-memory HERMES_WINDOWS_SHELL=%s",
+                    current_shell,
+                )
+                # Force next get_local_shell_mode() call to emit a mode log entry.
+                try:
+                    import tools.environments.shell_utils as _sh
+                    _sh._last_logged_mode = None
+                except Exception:
+                    pass
+
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "60"))
+            max_tokens_env = os.getenv("HERMES_MAX_TOKENS", "").strip()
+            if max_tokens_env == "0":
+                max_tokens = None  # use model default
+            elif max_tokens_env:
+                max_tokens = int(max_tokens_env)
+            else:
+                max_tokens = 32768
+            # Default 32768 when unset so long replies aren't cut off when the model
+            # uses reasoning/thinking (which consumes tokens). Set HERMES_MAX_TOKENS=0
+            # to use the model default; set to a number (e.g. 8192, 32768) to override.
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -1893,11 +2212,9 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart).
+            # keys may change without restart). Use encoding-safe loader.
             try:
-                load_dotenv(_env_path, override=True, encoding="utf-8")
-            except UnicodeDecodeError:
-                load_dotenv(_env_path, override=True, encoding="latin-1")
+                load_dotenv_with_fallback(_env_path, override=True, logger=logging.getLogger(__name__))
             except Exception:
                 pass
 
@@ -1907,13 +2224,18 @@ class GatewayRunner:
                 import yaml as _y
                 _cfg_path = _hermes_home / "config.yaml"
                 if _cfg_path.exists():
-                    with open(_cfg_path) as _f:
+                    with open(_cfg_path, encoding="utf-8") as _f:
                         _cfg = _y.safe_load(_f) or {}
                     _model_cfg = _cfg.get("model", {})
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
+                    # Apply persisted terminal mode so /terminal choice wins over .env.
+                    # Otherwise load_dotenv(override=True) can overwrite in-memory wsl with .env's value.
+                    _shell = _cfg.get("HERMES_WINDOWS_SHELL")
+                    if isinstance(_shell, str) and _shell.strip():
+                        os.environ["HERMES_WINDOWS_SHELL"] = _shell.strip().lower()
             except Exception:
                 pass
 
@@ -1932,6 +2254,7 @@ class GatewayRunner:
                 model=model,
                 **runtime_kwargs,
                 max_iterations=max_iterations,
+                max_tokens=max_tokens,
                 quiet_mode=True,
                 verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
@@ -2012,8 +2335,12 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
+            if tool_progress_enabled:
+                _set_progress_state(phase="thinking", detail="Calling model...")
             result = agent.run_conversation(message, conversation_history=agent_history)
             result_holder[0] = result
+            if tool_progress_enabled:
+                _set_progress_state(phase="finalizing", detail="Preparing final response...")
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -2057,6 +2384,44 @@ class GatewayRunner:
                         if tag not in seen:
                             seen.add(tag)
                             unique_tags.append(tag)
+
+                    # Drop media tags that point to files no longer on disk.
+                    # This prevents stale-session replay from repeatedly trying
+                    # to send deleted TTS artifacts on startup/new turns.
+                    existing_tags = []
+                    missing_count = 0
+                    for tag in unique_tags:
+                        raw_path = tag.removeprefix("MEDIA:")
+                        if os.path.exists(raw_path):
+                            existing_tags.append(tag)
+                        else:
+                            missing_count += 1
+                    if missing_count:
+                        logger.warning(
+                            "Dropped %d stale media tag(s) with missing file path(s)",
+                            missing_count,
+                        )
+                    unique_tags = existing_tags
+
+                    # Safety valve: cap auto-appended audio attachments to one
+                    # per response (keep the most recent) to prevent TTS floods
+                    # when the model triggers multiple text_to_speech calls.
+                    audio_idx = []
+                    for i, tag in enumerate(unique_tags):
+                        path = tag.removeprefix("MEDIA:").lower()
+                        if path.endswith((".ogg", ".opus", ".mp3", ".wav", ".m4a", ".webm")):
+                            audio_idx.append(i)
+                    if len(audio_idx) > 1:
+                        keep = audio_idx[-1]
+                        unique_tags = [
+                            tag for i, tag in enumerate(unique_tags)
+                            if i == keep or i not in audio_idx
+                        ]
+                        logger.warning(
+                            "Capped auto media delivery: dropped %d extra audio tag(s)",
+                            len(audio_idx) - 1,
+                        )
+
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
@@ -2071,6 +2436,7 @@ class GatewayRunner:
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
+            _set_progress_state(phase="thinking", detail="Hermes is thinking...")
             progress_task = asyncio.create_task(send_progress_messages())
         
         # Track this agent as running for this session (for interrupt support)
@@ -2227,13 +2593,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
-    # Configure rotating file log so gateway output is persisted for debugging
+    # Configure rotating file log so gateway output is persisted for debugging.
+    # On Windows, reconfigure stderr to UTF-8 so emoji/Unicode in log messages don't cause UnicodeEncodeError.
+    if sys.stderr and getattr(sys.stderr, 'reconfigure', None) is not None:
+        try:
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(
         log_dir / 'gateway.log',
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
+        encoding='utf-8',
     )
     from agent.redact import RedactingFormatter
     file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
@@ -2257,11 +2630,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
         asyncio.create_task(runner.stop())
     
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, signal_handler)
-        except NotImplementedError:
-            pass
+    # On POSIX, integrate SIGINT/SIGTERM with the event loop so a signal
+    # triggers a graceful shutdown. On Windows we deliberately do NOT
+    # override SIGINT handling here and instead rely on the default
+    # KeyboardInterrupt behaviour in `hermes_cli.gateway.run_gateway`,
+    # which already catches Ctrl+C and exits cleanly.
+    if os.name != "nt":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, signal_handler)
+            except NotImplementedError:
+                pass
     
     # Start the gateway
     success = await runner.start()
@@ -2315,7 +2694,7 @@ def main():
     config = None
     if args.config:
         import json
-        with open(args.config) as f:
+        with open(args.config, encoding="utf-8") as f:
             data = json.load(f)
             config = GatewayConfig.from_dict(data)
     

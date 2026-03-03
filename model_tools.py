@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import os
+import sys
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -106,11 +107,18 @@ def _discover_tools():
 _discover_tools()
 
 # MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+_running_under_pytest = "pytest" in sys.modules
+_allow_mcp_in_tests = os.getenv("HERMES_TEST_ENABLE_MCP_DISCOVERY", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+if not _running_under_pytest or _allow_mcp_in_tests:
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools()
+    except Exception as e:
+        logger.debug("MCP tool discovery failed: %s", e)
+else:
+    logger.debug("Skipping MCP discovery during pytest import (set HERMES_TEST_ENABLE_MCP_DISCOVERY=1 to enable).")
 
 
 # =============================================================================

@@ -165,9 +165,9 @@ async def _summarize_session(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                **({} if not _extra else {"extra_body": _extra}),
                 temperature=0.1,
                 **auxiliary_max_tokens_param(MAX_SUMMARY_TOKENS),
+                **({} if not _extra else {"extra_body": _extra}),
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

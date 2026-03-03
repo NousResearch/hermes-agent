@@ -21,59 +21,93 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 def find_gateway_pids() -> list:
     """Find PIDs of running gateway processes."""
     pids = []
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    ]
-
     try:
         if is_windows():
-            # Windows: use wmic to search command lines
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True, text=True
+            ps_cmd = (
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.Name -match '^(python|python3|pythonw|hermes|uv)(\\.exe)?$' -and $_.CommandLine -and ("
+                "$_.CommandLine -like '*hermes.exe* gateway*' -or "
+                "$_.CommandLine -like '*hermes gateway*' -or "
+                "$_.CommandLine -like '*hermes_cli.main gateway*' -or "
+                "$_.CommandLine -like '*gateway/run.py*'"
+                ") } | "
+                "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
             )
-            # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
-            current_cmd = ""
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine="):]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns):
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+            )
+            # Fallback for shells where CIM is restricted.
+            if result.returncode != 0:
+                ps_cmd = (
+                    "Get-WmiObject Win32_Process | "
+                    "Where-Object { $_.Name -match '^(python|pythonw|hermes|uv)(\\.exe)?$' -and $_.CommandLine -and ("
+                    "$_.CommandLine -like '*hermes.exe* gateway*' -or "
+                    "$_.CommandLine -like '*hermes gateway*' -or "
+                    "$_.CommandLine -like '*hermes_cli.main gateway*' -or "
+                    "$_.CommandLine -like '*gateway/run.py*'"
+                    ") } | "
+                    "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                data = json.loads(result.stdout.strip())
+                if isinstance(data, dict):
+                    data = [data]
+                excluded = (
+                    " gateway status",
+                    " gateway stop",
+                    " gateway restart",
+                    " gateway install",
+                    " gateway uninstall",
+                )
+                for item in data:
+                    pid = int(item.get("ProcessId", item.get("Id", 0)))
+                    cmdline = str(item.get("CommandLine", "")).lower()
+                    if any(marker in cmdline for marker in excluded):
+                        continue
+                    if pid and pid != os.getpid() and pid not in pids:
+                        pids.append(pid)
+            return pids
+
+        # Look for gateway processes with multiple patterns
+        patterns = [
+            "hermes_cli.main gateway",
+            "hermes gateway",
+            "gateway/run.py",
+        ]
+        
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True
+        )
+        
+        for line in result.stdout.split('\n'):
+            # Skip grep and current process
+            if 'grep' in line or str(os.getpid()) in line:
+                continue
+            
+            for pattern in patterns:
+                if pattern in line:
+                    parts = line.split()
+                    if len(parts) > 1:
                         try:
-                            pid = int(pid_str)
-                            if pid != os.getpid() and pid not in pids:
+                            pid = int(parts[1])
+                            if pid not in pids:
                                 pids.append(pid)
                         except ValueError:
-                            pass
-                    current_cmd = ""
-        else:
-            result = subprocess.run(
-                ["ps", "aux"],
-                capture_output=True,
-                text=True
-            )
-            for line in result.stdout.split('\n'):
-                # Skip grep and current process
-                if 'grep' in line or str(os.getpid()) in line:
-                    continue
-                for pattern in patterns:
-                    if pattern in line:
-                        parts = line.split()
-                        if len(parts) > 1:
-                            try:
-                                pid = int(parts[1])
-                                if pid not in pids:
-                                    pids.append(pid)
-                            except ValueError:
-                                continue
-                        break
+                            continue
+                    break
     except Exception:
         pass
-
+    
     return pids
 
 
@@ -84,7 +118,15 @@ def kill_gateway_processes(force: bool = False) -> int:
     
     for pid in pids:
         try:
-            if force and not is_windows():
+            if is_windows():
+                cmd = ["taskkill", "/PID", str(pid), "/T"]
+                if force:
+                    cmd.append("/F")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    killed += 1
+                continue
+            elif force:
                 os.kill(pid, signal.SIGKILL)
             else:
                 os.kill(pid, signal.SIGTERM)
@@ -122,10 +164,7 @@ def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
     if venv_python.exists():
         return str(venv_python)
     return sys.executable
@@ -386,7 +425,11 @@ def run_gateway(verbose: bool = False):
     
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    success = asyncio.run(start_gateway())
+    try:
+        success = asyncio.run(start_gateway())
+    except KeyboardInterrupt:
+        print("\nGateway stopped.")
+        return
     if not success:
         sys.exit(1)
 
@@ -432,7 +475,9 @@ def gateway_command(args):
         elif is_macos():
             launchd_start()
         else:
-            print("Not supported on this platform.")
+            print("Gateway service start is not supported on this platform.")
+            print("Run in foreground instead: hermes gateway")
+            print("For background execution on Windows, use Task Scheduler.")
             sys.exit(1)
     
     elif subcmd == "stop":
@@ -454,7 +499,15 @@ def gateway_command(args):
         
         if not service_available:
             # Kill gateway processes directly
-            killed = kill_gateway_processes()
+            killed = kill_gateway_processes(force=is_windows())
+            # On some Windows setups, child processes can survive the first pass.
+            # Do one extra forced sweep before reporting status.
+            if is_windows():
+                import time
+                time.sleep(0.5)
+                remaining = find_gateway_pids()
+                if remaining:
+                    killed += kill_gateway_processes(force=True)
             if killed:
                 print(f"✓ Stopped {killed} gateway process(es)")
             else:
@@ -479,7 +532,7 @@ def gateway_command(args):
         
         if not service_available:
             # Manual restart: kill existing processes
-            killed = kill_gateway_processes()
+            killed = kill_gateway_processes(force=is_windows())
             if killed:
                 print(f"✓ Stopped {killed} gateway process(es)")
             

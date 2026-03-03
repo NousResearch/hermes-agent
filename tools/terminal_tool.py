@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -334,10 +335,34 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.shell_utils import get_local_shell_mode
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem persists between calls.
+def _build_terminal_tool_description() -> str:
+    windows_note = ""
+    if os.name == "nt":
+        mode = get_local_shell_mode()
+        if mode == "wsl":
+            windows_note = (
+                "Windows note: with terminal.backend=local, commands run in WSL bash. "
+                "Use Linux syntax and WSL paths (e.g. /mnt/c/Users/... or /mnt/d/...).\n\n"
+            )
+        elif mode == "powershell":
+            windows_note = (
+                "Windows note: with terminal.backend=local, commands run in PowerShell. "
+                "Use PowerShell syntax and Windows paths (e.g. C:\\Users\\... or D:\\...). "
+                "To detect shell: (dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell (prints CMD or PowerShell).\n\n"
+            )
+        else:
+            windows_note = (
+                "Windows note: with terminal.backend=local, commands run in cmd.exe. "
+                "Run commands directly in cmd (dir, type, cd, echo %VAR%); do NOT use "
+                "powershell -Command or POSIX (pwd, uname, ls). Use Windows paths (e.g. C:\\Users\\...). "
+                "To detect shell: (dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell (prints CMD or PowerShell).\n\n"
+            )
+
+    return windows_note + """Execute shell commands in the configured terminal backend. Filesystem persists between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -354,6 +379,9 @@ PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REP
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
+
+
+TERMINAL_TOOL_DESCRIPTION = _build_terminal_tool_description()
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
@@ -425,7 +453,8 @@ def _get_env_config() -> Dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if env_type in ("modal", "docker", "singularity") and cwd:
         host_prefixes = ("/Users/", "C:\\", "C:/")
-        if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
+        looks_like_windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", cwd))
+        if (any(cwd.startswith(p) for p in host_prefixes) or looks_like_windows_drive) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
@@ -784,6 +813,19 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+        if env_type == "local":
+            logger.info(
+                "Terminal execution request: backend=%s HERMES_WINDOWS_SHELL=%s TERMINAL_CWD=%s",
+                env_type,
+                os.getenv("HERMES_WINDOWS_SHELL", "auto"),
+                config.get("cwd", ""),
+            )
+        else:
+            logger.info(
+                "Terminal execution request: backend=%s cwd=%s",
+                env_type,
+                config.get("cwd", ""),
+            )
 
         # Use task_id for environment isolation
         effective_task_id = task_id or "default"
@@ -1022,7 +1064,13 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+            if returncode != 0:
+                logger.info(
+                    "Terminal command failed: exit_code=%s command=%s output=%s",
+                    returncode,
+                    command[:200] + ("..." if len(command) > 200 else ""),
+                    (output[:500] + "..." if len(output) > 500 else output) or "(no output)",
+                )
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
             
@@ -1064,7 +1112,8 @@ def check_terminal_requirements() -> bool:
     
     try:
         if env_type == "local":
-            from minisweagent.environments.local import LocalEnvironment
+            # Local backend uses Hermes' own LocalEnvironment wrapper.
+            # No external runtime dependency is required.
             return True
         elif env_type == "docker":
             from minisweagent.environments.docker import DockerEnvironment

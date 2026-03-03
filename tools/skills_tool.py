@@ -348,7 +348,14 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "categories": [],
                 "message": "No skills found. Skills directory created at ~/.hermes/skills/"
             }, ensure_ascii=False)
-        
+
+        # Sync any new bundled skills (e.g. from repo skills/) so they appear without hermes update
+        try:
+            from tools.skills_sync import sync_skills
+            sync_skills(quiet=True)
+        except Exception:
+            pass
+
         # Find all skills
         all_skills = _find_all_skills()
         

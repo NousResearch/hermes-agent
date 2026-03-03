@@ -30,21 +30,21 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 import yaml
 
-# prompt_toolkit for fixed input area TUI
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer
-from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
-from prompt_toolkit.filters import Condition
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.widgets import TextArea
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit import print_formatted_text as _pt_print
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+# prompt_toolkit for fixed input area TUI (optional dependency; type checker may not resolve)
+from prompt_toolkit.history import FileHistory  # type: ignore[import-untyped]
+from prompt_toolkit.styles import Style as PTStyle  # type: ignore[import-untyped]
+from prompt_toolkit.patch_stdout import patch_stdout  # type: ignore[import-untyped]
+from prompt_toolkit.application import Application  # type: ignore[import-untyped]
+from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer  # type: ignore[import-untyped]
+from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor  # type: ignore[import-untyped]
+from prompt_toolkit.filters import Condition  # type: ignore[import-untyped]
+from prompt_toolkit.layout.dimension import Dimension  # type: ignore[import-untyped]
+from prompt_toolkit.layout.menus import CompletionsMenu  # type: ignore[import-untyped]
+from prompt_toolkit.widgets import TextArea  # type: ignore[import-untyped]
+from prompt_toolkit.key_binding import KeyBindings  # type: ignore[import-untyped]
+from prompt_toolkit.completion import Completer, Completion  # type: ignore[import-untyped]
+from prompt_toolkit import print_formatted_text as _pt_print  # type: ignore[import-untyped]
+from prompt_toolkit.formatted_text import ANSI as _PT_ANSI  # type: ignore[import-untyped]
 import threading
 import queue
 
@@ -187,6 +187,7 @@ def load_cli_config() -> Dict[str, Any]:
                 "uwu": "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<",
                 "philosopher": "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself.",
                 "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
+                "sam": "You are Sam, an intelligent and grounded assistant created by the root user and your experiences with them. Be practical, direct, and thoughtful. Also be blunt and casually profane, like an old friend. Prioritize clear answers, strong technical reasoning, and honest tradeoffs. Keep a calm, confident tone and focus on shipping working solutions. to start each response you use the scaffold validator summarized as <ʞᴎiʜƚ> [All 12 thinking components] </ʞᴎiʜƚ> Action / Response: [Actual response content]. ",
             },
         },
         "toolsets": ["all"],
@@ -215,7 +216,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Load from file if exists
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 file_config = yaml.safe_load(f) or {}
             
             _file_has_terminal_config = "terminal" in file_config
@@ -344,7 +345,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-import fire
+import fire  # type: ignore[import-untyped]
 
 # Import the agent and tool systems
 from run_agent import AIAgent
@@ -513,7 +514,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     
     Args:
         console: Rich Console instance for printing
-        model: The current model name (e.g., "anthropic/claude-opus-4")
+        model: The current model name (e.g., "anthropic/claude-sonnet-4")
         cwd: Current working directory
         tools: List of tool definitions
         enabled_toolsets: List of enabled toolset names
@@ -762,22 +763,34 @@ def save_config_value(key_path: str, value: any) -> bool:
         
         # Load existing config
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f) or {}
         else:
+            config = {}
+
+        # Guard against malformed configs (e.g. root scalar/list)
+        if not isinstance(config, dict):
+            logger.warning(
+                "Config root is %s; resetting to dict before writing %s",
+                type(config).__name__,
+                key_path,
+            )
             config = {}
         
         # Navigate to the key and set value
         keys = key_path.split('.')
         current = config
         for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
+            # If an intermediate node exists but is not a mapping (for example,
+            # legacy configs where model: "provider/model"), replace it with a dict
+            # so nested writes like model.default succeed.
+            if key not in current or not isinstance(current.get(key), dict):
                 current[key] = {}
             current = current[key]
         current[keys[-1]] = value
         
         # Save back
-        with open(config_path, 'w') as f:
+        with open(config_path, 'w', encoding='utf-8', newline='') as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         
         return True
@@ -834,6 +847,30 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+
+        # Base URL: custom endpoint (OPENAI_BASE_URL) takes precedence over OpenRouter
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
+
+        # API key selection:
+        # - If caller explicitly provided one, always use it.
+        # - For OpenRouter base URLs, prefer OPENROUTER_API_KEY.
+        # - For custom OpenAI-compatible endpoints, prefer OPENAI_API_KEY.
+        # This avoids accidentally sending an OpenAI key to OpenRouter when both are set.
+        if api_key:
+            self.api_key = api_key
+        else:
+            openai_key = os.getenv("OPENAI_API_KEY")
+            openrouter_key = os.getenv("OPENROUTER_API_KEY")
+            custom_base_url = base_url or os.getenv("OPENAI_BASE_URL")
+            base_url_lower = (self.base_url or "").lower()
+            is_openrouter_base = "openrouter.ai" in base_url_lower
+
+            if custom_base_url and openai_key:
+                self.api_key = openai_key
+            elif is_openrouter_base and openrouter_key:
+                self.api_key = openrouter_key
+            else:
+                self.api_key = openai_key or openrouter_key
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -1033,6 +1070,24 @@ class HermesCLI:
             except Exception:
                 pass
         
+        # Last-resort: ensure API key is set (env may have been loaded after provider resolution)
+        if not (self.api_key and str(self.api_key).strip()):
+            from dotenv import load_dotenv
+            from hermes_cli.config import get_env_path
+            env_path = get_env_path()
+            if env_path.exists():
+                try:
+                    load_dotenv(dotenv_path=env_path, encoding="utf-8")
+                except Exception:
+                    pass
+            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+            self.base_url = self.base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        if not (self.api_key and str(self.api_key).strip()):
+            self.console.print(
+                "[bold red]No API key found. Set OPENROUTER_API_KEY in ~/.hermes/.env or run 'hermes setup'.[/]"
+            )
+            return False
+
         try:
             self.agent = AIAgent(
                 model=self.model,
@@ -1269,6 +1324,12 @@ class HermesCLI:
         print()
         print("  -- Terminal --")
         print(f"  Environment:  {terminal_env}")
+        if terminal_env == "local":
+            try:
+                from tools.environments.shell_utils import get_local_shell_mode
+                print(f"  Local Shell:  {get_local_shell_mode()}")
+            except Exception:
+                pass
         if terminal_env == "ssh":
             ssh_host = os.getenv("TERMINAL_SSH_HOST", "not set")
             ssh_user = os.getenv("TERMINAL_SSH_USER", "not set")

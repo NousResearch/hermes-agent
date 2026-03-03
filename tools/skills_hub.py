@@ -1107,7 +1107,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
         parts.append(extra)
     line = " ".join(parts) + "\n"
     try:
-        with open(AUDIT_LOG, "a") as f:
+        with open(AUDIT_LOG, "a", encoding="utf-8", errors="replace", newline="") as f:
             f.write(line)
     except OSError as e:
         logger.debug("Could not write audit log: %s", e)

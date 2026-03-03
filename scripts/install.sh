@@ -537,6 +537,16 @@ show_manual_install_hint() {
     esac
 }
 
+is_hermes_origin_ssh() {
+    local origin_url="$1"
+    case "$origin_url" in
+        git@github.com:NousResearch/hermes-agent|git@github.com:NousResearch/hermes-agent.git|ssh://git@github.com/NousResearch/hermes-agent|ssh://git@github.com/NousResearch/hermes-agent.git)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
@@ -548,7 +558,17 @@ clone_repo() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
-            git fetch origin
+            origin_url="$(git remote get-url origin 2>/dev/null || true)"
+            if ! git fetch origin; then
+                if is_hermes_origin_ssh "$origin_url"; then
+                    log_warn "SSH fetch failed, switching origin remote to HTTPS..."
+                    git remote set-url origin "$REPO_URL_HTTPS"
+                    git fetch origin
+                else
+                    log_error "Failed to fetch updates from origin"
+                    exit 1
+                fi
+            fi
             git checkout "$BRANCH"
             git pull origin "$BRANCH"
         else
@@ -557,21 +577,21 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
+        # Prefer HTTPS (works without SSH keys), fall back to SSH for private access
         # Use --recurse-submodules to also clone mini-swe-agent and tinker-atropos
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+        log_info "Trying HTTPS clone..."
+        if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            log_success "Cloned via HTTPS"
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+            log_info "HTTPS failed, trying SSH..."
+            if git clone --branch "$BRANCH" --recurse-submodules "$REPO_URL_SSH" "$INSTALL_DIR"; then
+                log_success "Cloned via SSH"
             else
                 log_error "Failed to clone repository"
+                log_info "If this is a public install, HTTPS should work without SSH keys."
+                log_info "For private repo access, configure GitHub authentication:"
+                log_info "  gh auth login"
+                log_info "  # or configure SSH and test with: ssh -T git@github.com"
                 exit 1
             fi
         fi

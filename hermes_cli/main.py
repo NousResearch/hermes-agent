@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -33,22 +34,32 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback
-from dotenv import load_dotenv
+def _ensure_utf8_stdio():
+    """Best-effort UTF-8 stdout/stderr on Windows to avoid print crashes."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+_ensure_utf8_stdio()
+
+# Load .env from ~/.hermes/.env first, then project root as dev fallback (encoding-safe on Windows)
+from agent.env_loader import load_dotenv_with_fallback
 from hermes_cli.config import get_env_path, get_hermes_home
 _user_env = get_env_path()
 if _user_env.exists():
-    try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
-load_dotenv(dotenv_path=PROJECT_ROOT / '.env', override=False)
+    load_dotenv_with_fallback(_user_env, logger=logging.getLogger(__name__))
+_project_env = PROJECT_ROOT / ".env"
+if _project_env.exists():
+    load_dotenv_with_fallback(_project_env, override=False, logger=logging.getLogger(__name__))
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
-
-import logging
 
 from hermes_cli import __version__
 from hermes_constants import OPENROUTER_BASE_URL
@@ -72,7 +83,8 @@ def _has_any_provider_configured() -> bool:
     env_file = get_env_path()
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
+            content, _ = read_env_text_with_fallback(env_file)
+            for line in content.splitlines():
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
@@ -464,7 +476,7 @@ def _prompt_provider_choice(choices):
         idx = menu.show()
         print()
         return idx
-    except (ImportError, NotImplementedError):
+    except ImportError:
         pass
 
     # Fallback: numbered list
@@ -1546,12 +1558,12 @@ For more help on a command:
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
-                with open(args.output, "w") as f:
+                with open(args.output, "w", encoding="utf-8", newline="") as f:
                     f.write(_json.dumps(data, ensure_ascii=False) + "\n")
                 print(f"Exported 1 session to {args.output}")
             else:
                 sessions = db.export_all(source=args.source)
-                with open(args.output, "w") as f:
+                with open(args.output, "w", encoding="utf-8", newline="") as f:
                     for s in sessions:
                         f.write(_json.dumps(s, ensure_ascii=False) + "\n")
                 print(f"Exported {len(sessions)} sessions to {args.output}")

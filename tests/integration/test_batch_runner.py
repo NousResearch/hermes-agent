@@ -25,7 +25,7 @@ def create_test_dataset():
         {"prompt": "Explain what Python is in one sentence."},
     ]
     
-    with open(test_file, 'w') as f:
+    with open(test_file, "w", encoding="utf-8", newline="") as f:
         for prompt in prompts:
             f.write(json.dumps(prompt, ensure_ascii=False) + "\n")
     
@@ -74,7 +74,7 @@ def verify_output(run_name):
     print(f"   - Batch files: {len(batch_files)}")
     
     # Load and display statistics
-    with open(stats_file) as f:
+    with open(stats_file, encoding="utf-8") as f:
         stats = json.load(f)
     
     print(f"\n📊 Statistics Summary:")

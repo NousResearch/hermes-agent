@@ -163,7 +163,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
             continue
         
         try:
-            with open(py_file, "r") as f:
+            with open(py_file, "r", encoding="utf-8", errors="replace") as f:
                 tree = ast.parse(f.read())
             
             for node in ast.walk(tree):
@@ -323,7 +323,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 1: Start the Atropos API server (run-api)
         print(f"[{run_id}] Starting Atropos API server (run-api)...")
         
-        api_log_file = open(api_log, "w")
+        api_log_file = open(api_log, "w", encoding="utf-8", newline="")
         run_state.api_process = subprocess.Popen(
             ["run-api"],
             stdout=api_log_file,
@@ -344,7 +344,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         # Step 2: Start the Tinker trainer
         print(f"[{run_id}] Starting Tinker trainer: launch_training.py --config {config_path}")
         
-        trainer_log_file = open(trainer_log, "w")
+        trainer_log_file = open(trainer_log, "w", encoding="utf-8", newline="")
         run_state.trainer_process = subprocess.Popen(
             [sys.executable, "launch_training.py", "--config", str(config_path)],
             stdout=trainer_log_file,
@@ -384,7 +384,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         print(f"[{run_id}] Starting environment: {env_info.file_path} serve")
         
-        env_log_file = open(env_log, "w")
+        env_log_file = open(env_log, "w", encoding="utf-8", newline="")
         run_state.env_process = subprocess.Popen(
             [sys.executable, str(env_info.file_path), "serve", "--config", str(config_path)],
             stdout=env_log_file,
@@ -760,7 +760,7 @@ async def rl_start_training() -> str:
     if "wandb_name" in _current_config and _current_config["wandb_name"]:
         run_config["env"]["wandb_name"] = _current_config["wandb_name"]
     
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8", newline="") as f:
         yaml.dump(run_config, f, default_flow_style=False)
     
     # Create run state
@@ -1190,7 +1190,7 @@ async def rl_test_inference(
             stderr_text = "\n".join(stderr_lines)
             
             # Write logs to files for inspection outside CLI
-            with open(log_file, "w") as f:
+            with open(log_file, "w", encoding="utf-8", newline="") as f:
                 f.write(f"Command: {cmd_display}\n")
                 f.write(f"Working dir: {TINKER_ATROPOS_ROOT}\n")
                 f.write(f"Return code: {process.returncode}\n")
@@ -1222,7 +1222,7 @@ async def rl_test_inference(
                 # Parse the output JSONL file
                 if output_file.exists():
                     # Read JSONL file (one JSON object per line = one step)
-                    with open(output_file, "r") as f:
+                    with open(output_file, "r", encoding="utf-8", errors="replace") as f:
                         for line in f:
                             line = line.strip()
                             if not line:

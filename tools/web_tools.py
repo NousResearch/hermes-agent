@@ -154,8 +154,8 @@ async def process_content_with_llm(
         return processed_content
         
     except Exception as e:
-        logger.debug("Error processing content with LLM: %s", e)
-        return f"[Failed to process content: {str(e)[:100]}. Content size: {len(content):,} chars]"
+        logger.info("LLM processing failed for content (%d chars): %s", len(content), str(e)[:200])
+        return None  # Caller falls back to raw content
 
 
 async def _call_summarizer_llm(
@@ -317,7 +317,7 @@ async def _process_large_content_chunked(
     
     if not summaries:
         logger.debug("All chunk summarizations failed")
-        return "[Failed to process large content: all chunk summarizations failed]"
+        return None  # Caller falls back to raw content
     
     logger.info("Got %d/%d chunk summaries", len(summaries), len(chunks))
     
@@ -476,6 +476,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             query=query,
             limit=limit
         )
+        if response is None:
+            logger.info("Search returned no response")
+            return json.dumps({"error": "Search returned no data.", "success": False})
         
         # The response is a SearchData object with web, news, and images attributes
         # When not scraping, the results are directly in these attributes
@@ -532,14 +535,14 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return result_json
         
     except Exception as e:
-        error_msg = f"Error searching web: {str(e)}"
-        logger.debug("%s", error_msg)
+        error_msg = str(e) or "Search failed (timeout or server error)."
+        logger.info("Search failed: %s", error_msg[:200])
         
         debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
         
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return json.dumps({"error": f"Error searching web: {error_msg}"}, ensure_ascii=False)
 
 
 async def web_extract_tool(
@@ -611,76 +614,84 @@ async def web_extract_tool(
 
             try:
                 logger.info("Scraping: %s", url)
+                # Timeout 60s (ms) to avoid long hangs; many sites block or slow-respond
                 scrape_result = _get_firecrawl_client().scrape(
                     url=url,
-                    formats=formats
+                    formats=formats,
+                    timeout=60000,
                 )
-                
+                if scrape_result is None:
+                    results.append({
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "Scrape returned no data (site may block crawlers or require JS).",
+                    })
+                    continue
+
                 # Process the result - properly handle object serialization
                 metadata = {}
                 title = ""
                 content_markdown = None
                 content_html = None
-                
-                # Extract data from the scrape result
-                if hasattr(scrape_result, 'model_dump'):
-                    # Pydantic model - use model_dump to get dict
+
+                if hasattr(scrape_result, "model_dump"):
                     result_dict = scrape_result.model_dump()
-                    content_markdown = result_dict.get('markdown')
-                    content_html = result_dict.get('html')
-                    metadata = result_dict.get('metadata', {})
-                elif hasattr(scrape_result, '__dict__'):
-                    # Regular object with attributes
-                    content_markdown = getattr(scrape_result, 'markdown', None)
-                    content_html = getattr(scrape_result, 'html', None)
-                    
-                    # Handle metadata - convert to dict if it's an object
-                    metadata_obj = getattr(scrape_result, 'metadata', {})
-                    if hasattr(metadata_obj, 'model_dump'):
+                    content_markdown = result_dict.get("markdown")
+                    content_html = result_dict.get("html")
+                    metadata = result_dict.get("metadata") or {}
+                elif hasattr(scrape_result, "__dict__"):
+                    content_markdown = getattr(scrape_result, "markdown", None)
+                    content_html = getattr(scrape_result, "html", None)
+                    metadata_obj = getattr(scrape_result, "metadata", None) or {}
+                    if hasattr(metadata_obj, "model_dump"):
                         metadata = metadata_obj.model_dump()
-                    elif hasattr(metadata_obj, '__dict__'):
-                        metadata = metadata_obj.__dict__
                     elif isinstance(metadata_obj, dict):
                         metadata = metadata_obj
-                    else:
-                        metadata = {}
+                    elif hasattr(metadata_obj, "__dict__"):
+                        metadata = getattr(metadata_obj, "__dict__", {})
                 elif isinstance(scrape_result, dict):
-                    # Already a dictionary
-                    content_markdown = scrape_result.get('markdown')
-                    content_html = scrape_result.get('html')
-                    metadata = scrape_result.get('metadata', {})
-                
-                # Ensure metadata is a dict (not an object)
+                    content_markdown = scrape_result.get("markdown")
+                    content_html = scrape_result.get("html")
+                    metadata = scrape_result.get("metadata") or {}
+
                 if not isinstance(metadata, dict):
-                    if hasattr(metadata, 'model_dump'):
-                        metadata = metadata.model_dump()
-                    elif hasattr(metadata, '__dict__'):
-                        metadata = metadata.__dict__
-                    else:
-                        metadata = {}
-                
-                # Get title from metadata
-                title = metadata.get("title", "")
-                
-                # Choose content based on requested format
-                chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-                
+                    metadata = metadata.model_dump() if hasattr(metadata, "model_dump") else {}
+
+                title = (metadata or {}).get("title", "")
+                source_url = (metadata or {}).get("sourceURL") or (metadata or {}).get("source_url") or url
+                chosen_content = (
+                    content_markdown
+                    if (format == "markdown" or (format is None and content_markdown))
+                    else (content_html or content_markdown or "")
+                )
+                if not (chosen_content or "").strip():
+                    results.append({
+                        "url": source_url,
+                        "title": title or "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "Page returned no extractable content (blocked, paywall, or empty).",
+                    })
+                    continue
+
                 results.append({
-                    "url": metadata.get("sourceURL", url),
+                    "url": source_url,
                     "title": title,
                     "content": chosen_content,
                     "raw_content": chosen_content,
-                    "metadata": metadata  # Now guaranteed to be a dict
+                    "metadata": metadata,
                 })
-                
             except Exception as scrape_err:
-                logger.debug("Scrape failed for %s: %s", url, scrape_err)
+                err_msg = str(scrape_err)
+                logger.info("Scrape failed for %s: %s", url, err_msg[:200])
                 results.append({
                     "url": url,
                     "title": "",
                     "content": "",
                     "raw_content": "",
-                    "error": str(scrape_err)
+                    "error": err_msg if err_msg else "Scrape failed (timeout, block, or server error).",
                 })
 
         response = {"results": results}
@@ -893,8 +904,16 @@ async def web_crawl_tool(
                 **crawl_params
             )
         except Exception as e:
-            logger.debug("Crawl API call failed: %s", e)
-            raise
+            err_msg = str(e) or "Crawl failed (timeout or server error)."
+            logger.info("Crawl API call failed: %s", err_msg[:200])
+            debug_call_data["error"] = err_msg
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return json.dumps({"error": f"Crawl failed: {err_msg}"}, ensure_ascii=False)
+
+        if crawl_result is None:
+            logger.info("Crawl returned no result")
+            return json.dumps({"error": "Crawl returned no data.", "results": []}, ensure_ascii=False)
 
         pages: List[Dict[str, Any]] = []
         
@@ -967,9 +986,10 @@ async def web_crawl_tool(
                 else:
                     metadata = {}
             
-            # Extract URL and title from metadata
-            page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
-            title = metadata.get("title", "")
+            # Extract URL and title from metadata (support sourceURL and source_url)
+            meta = metadata or {}
+            page_url = meta.get("sourceURL") or meta.get("source_url") or meta.get("url", "Unknown URL")
+            title = meta.get("title", "")
             
             # Choose content (prefer markdown)
             content = content_markdown or content_html or ""
@@ -979,13 +999,21 @@ async def web_crawl_tool(
                 "title": title,
                 "content": content,
                 "raw_content": content,
-                "metadata": metadata  # Now guaranteed to be a dict
+                "metadata": metadata
             })
 
         response = {"results": pages}
         
         pages_crawled = len(response.get('results', []))
         logger.info("Crawled %d pages", pages_crawled)
+        if pages_crawled == 0:
+            debug_call_data["pages_crawled"] = 0
+            _debug.log_call("web_crawl_tool", debug_call_data)
+            _debug.save()
+            return json.dumps({
+                "error": "Crawl returned no pages (site may block crawlers or be unreachable).",
+                "results": []
+            }, ensure_ascii=False)
         
         debug_call_data["pages_crawled"] = pages_crawled
         debug_call_data["original_response_size"] = len(json.dumps(response))

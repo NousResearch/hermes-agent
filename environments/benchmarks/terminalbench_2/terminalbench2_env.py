@@ -292,7 +292,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
-        self._streaming_file = open(self._streaming_path, "w")
+        self._streaming_file = open(self._streaming_path, "w", encoding="utf-8", errors="replace", newline="")
         self._streaming_lock = __import__("threading").Lock()
         print(f"  Streaming results to: {self._streaming_path}")
 

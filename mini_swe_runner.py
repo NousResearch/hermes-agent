@@ -37,10 +37,13 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Literal
 
 import fire
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (encoding-safe on Windows)
+from agent.env_loader import load_dotenv_with_fallback
+for _p in (Path.home() / ".hermes" / ".env", Path.cwd() / ".env"):
+    if _p.exists():
+        load_dotenv_with_fallback(_p)
+        break
 
 # Add mini-swe-agent to path if not installed
 mini_swe_path = Path(__file__).parent / "mini-swe-agent" / "src"

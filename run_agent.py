@@ -97,6 +97,49 @@ from agent.trajectory import (
 )
 
 
+def _repair_terminal_tool_args(tool_name: str, raw_args: str) -> Optional[str]:
+    """If the tool is 'terminal' and raw_args is broken JSON, try to salvage the command.
+
+    LLMs often produce invalid JSON for terminal (e.g. unescaped quotes in the command
+    string, or truncated output). This tries to extract the "command" value and return
+    valid JSON so we don't have to retry the whole API call.
+    """
+    if tool_name != "terminal" or not raw_args or not raw_args.strip():
+        return None
+    raw = raw_args.strip()
+
+    def try_return(cmd: str) -> Optional[str]:
+        if not cmd:
+            return None
+        try:
+            return json.dumps({"command": cmd})
+        except (TypeError, ValueError):
+            return None
+
+    # 1) Strict: value with only proper \" escapes (stops at first unescaped ")
+    m = re.search(r'"command"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    if m:
+        return try_return(m.group(1))
+
+    # 2) Unescaped quote in value (e.g. "command": "powershell -Command "Get-Location..."):
+    #    capture from first " to last " before "}" or ", "
+    m = re.search(r'"command"\s*:\s*"(.*)"\s*[,}]', raw)
+    if m:
+        return try_return(m.group(1))
+
+    # 3) Truncated: "command": " to end
+    m2 = re.search(r'"command"\s*:\s*"(.*)', raw, re.DOTALL)
+    if m2:
+        cmd = m2.group(1).rstrip()
+        if cmd.endswith('"}'):
+            cmd = cmd[:-2]
+        elif cmd.endswith('"'):
+            cmd = cmd[:-1]
+        cmd = re.sub(r'["}\],\s]+$', '', cmd)
+        return try_return(cmd) if cmd else None
+    return None
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -329,12 +372,27 @@ class AIAgent:
             client_kwargs["base_url"] = OPENROUTER_BASE_URL
         
         # Handle API key - OpenRouter is the primary provider
-        if api_key:
-            client_kwargs["api_key"] = api_key
+        if api_key and str(api_key).strip():
+            client_kwargs["api_key"] = api_key.strip()
         else:
             # Primary: OPENROUTER_API_KEY, fallback to direct provider keys
-            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "")
-        
+            client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+        # Last-resort: load ~/.hermes/.env if key still empty (e.g. env not loaded before this process)
+        if not (client_kwargs.get("api_key") and str(client_kwargs["api_key"]).strip()):
+            try:
+                from dotenv import load_dotenv
+                _hermes_home = os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes"))
+                _env_path = os.path.join(_hermes_home, ".env")
+                if os.path.isfile(_env_path):
+                    load_dotenv(dotenv_path=_env_path, encoding="utf-8")
+                    client_kwargs["api_key"] = os.getenv("OPENROUTER_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+            except Exception:
+                pass
+        if not (client_kwargs.get("api_key") and str(client_kwargs["api_key"]).strip()):
+            raise ValueError(
+                "No API key available. Set OPENROUTER_API_KEY (or OPENAI_API_KEY) in ~/.hermes/.env or pass api_key= to AIAgent."
+            )
+
         # OpenRouter app attribution — shows hermes-agent in rankings/analytics
         effective_base = client_kwargs.get("base_url", "")
         if "openrouter" in effective_base.lower():
@@ -532,7 +590,7 @@ class AIAgent:
             model=self.model,
             threshold_percent=compression_threshold,
             protect_first_n=3,
-            protect_last_n=4,
+            protect_last_n=8,
             summary_target_tokens=500,
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
@@ -551,10 +609,10 @@ class AIAgent:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
-    
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
-        
+
         OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
         'max_completion_tokens'. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
@@ -570,25 +628,25 @@ class AIAgent:
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any <think></think> blocks.
-        
+
         This detects cases where the model only outputs reasoning but no actual
         response, which indicates an incomplete generation that should be retried.
-        
+
         Args:
             content: The assistant message content to check
-            
+
         Returns:
             True if there's meaningful content after think blocks, False otherwise
         """
         if not content:
             return False
-        
+
         # Remove all <think>...</think> blocks (including nested ones, non-greedy)
         cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        
+
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
-    
+
     def _strip_think_blocks(self, content: str) -> str:
         """Remove <think>...</think> blocks from content, returning only visible text."""
         if not content:
@@ -1359,7 +1417,7 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt()
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
-
+        
         now = datetime.now()
         prompt_parts.append(
             f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
@@ -1370,6 +1428,62 @@ class AIAgent:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
+    
+    def _build_environment_hint(self) -> str:
+        """
+        Build a per-call environment hint describing the local shell/OS.
+
+        This is injected via the ephemeral system prompt so that changes to
+        HERMES_WINDOWS_SHELL (for example, switching between PowerShell and WSL)
+        take effect on the very next turn without requiring a new session.
+        """
+        # Only add explicit hints for Windows hosts; POSIX shells are already
+        # implied by the environment and less likely to conflict.
+        if os.name != "nt":
+            return ""
+
+        from tools.environments.shell_utils import get_local_shell_mode
+
+        mode = get_local_shell_mode()
+        override = os.getenv("HERMES_WINDOWS_SHELL", "auto").strip().lower() or "auto"
+
+        if mode == "powershell":
+            return (
+                "Environment: You are running on a Windows host with a PowerShell local terminal "
+                f"(HERMES_WINDOWS_SHELL={override}). For commands that run in the *local* terminal, "
+                "use PowerShell syntax and Windows-style paths. Prefer `Get-ChildItem` instead of "
+                "`ls`, `Select-String` instead of `grep`, and `New-Item -ItemType Directory -Force` "
+                "instead of `mkdir -p`. POSIX commands are only appropriate when a tool explicitly "
+                "targets a remote or containerized Unix environment. "
+                "To verify the active shell, run: (dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell — "
+                "it prints CMD in cmd.exe and PowerShell in PowerShell."
+            )
+        if mode == "wsl":
+            return (
+                "Environment: You are on a Windows host but the local terminal is WSL (Linux) "
+                f"(HERMES_WINDOWS_SHELL={override}). Commands run in a POSIX shell with tools like "
+                "`ls`, `grep`, and `mkdir -p` available, and the Windows filesystem is visible under "
+                "`/mnt/<drive>/...` (for example, `/mnt/c/Users/...`). Use POSIX paths inside WSL, "
+                "not raw `C:\\`-style paths."
+            )
+        if mode == "cmd":
+            return (
+                "Environment: You are running on Windows with a cmd.exe local terminal "
+                f"(HERMES_WINDOWS_SHELL={override}). Run commands *directly in cmd*: use `dir`, `type`, "
+                "`cd`, `mkdir`, `echo %VAR%` for env vars, and `C:\\`-style paths. Do NOT invoke "
+                "powershell.exe or use PowerShell syntax (no `powershell -Command ...`). Do NOT use "
+                "POSIX commands (`pwd`, `uname`, `ls`, `grep`). If a command fails (exit non-zero), "
+                "do not repeat it; try a different approach or report the error. "
+                "To verify the active shell, run: (dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell — "
+                "it prints CMD in cmd.exe and PowerShell in PowerShell."
+            )
+
+        # Fallback for unexpected modes.
+        return (
+            f"Environment: You are running on Windows with local shell mode '{mode}' "
+            f"(HERMES_WINDOWS_SHELL={override}). Choose command syntax appropriate for this shell "
+            "and do not assume a Unix/POSIX environment unless explicitly indicated."
+        )
     
     def _invalidate_system_prompt(self):
         """
@@ -1452,6 +1566,8 @@ class AIAgent:
     def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
         items: List[Dict[str, Any]] = []
+        known_function_call_ids: set[str] = set()
+        deferred_tool_outputs: List[Dict[str, str]] = []
 
         for msg in messages:
             if not isinstance(msg, dict):
@@ -1516,6 +1632,7 @@ class AIAgent:
                                 "name": fn_name,
                                 "arguments": arguments,
                             })
+                            known_function_call_ids.add(call_id)
                     continue
 
                 items.append({"role": role, "content": content_text})
@@ -1529,11 +1646,50 @@ class AIAgent:
                         call_id = raw_tool_call_id.strip()
                 if not isinstance(call_id, str) or not call_id.strip():
                     continue
-                items.append({
+                output_text = str(msg.get("content", "") or "")
+
+                # Responses API rejects function_call_output items whose call_id
+                # is not present as a function_call in the same payload.
+                # Keep unmatched outputs deferred so we can reconcile call_/fc_
+                # variants once all assistant tool_calls are collected.
+                deferred_tool_outputs.append(
+                    {
+                        "call_id": call_id,
+                        "output": output_text,
+                    }
+                )
+
+        def _call_id_variants(raw_call_id: str) -> List[str]:
+            variants: List[str] = []
+            candidate = (raw_call_id or "").strip()
+            if not candidate:
+                return variants
+            variants.append(candidate)
+            if candidate.startswith("fc_") and len(candidate) > len("fc_"):
+                variants.append(f"call_{candidate[len('fc_'):]}")
+            elif candidate.startswith("call_") and len(candidate) > len("call_"):
+                variants.append(f"fc_{candidate[len('call_'):]}")
+            return variants
+
+        for entry in deferred_tool_outputs:
+            raw_call_id = entry.get("call_id", "")
+            output = entry.get("output", "")
+            variants = _call_id_variants(raw_call_id)
+            matched_call_id = next((cid for cid in variants if cid in known_function_call_ids), None)
+            if not matched_call_id:
+                logger.debug(
+                    "Skipping orphan function_call_output for unmatched call_id=%s",
+                    raw_call_id,
+                )
+                continue
+
+            items.append(
+                {
                     "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": str(msg.get("content", "") or ""),
-                })
+                    "call_id": matched_call_id,
+                    "output": output,
+                }
+            )
 
         return items
 
@@ -1621,6 +1777,52 @@ class AIAgent:
                 f"Codex Responses input[{idx}] has unsupported item shape (type={item_type!r}, role={role!r})."
             )
 
+        def _normalize_call_id(raw_call_id: Any) -> str:
+            if not isinstance(raw_call_id, str):
+                return ""
+            cid = raw_call_id.strip()
+            if not cid:
+                return ""
+            if cid.startswith("fc_") and len(cid) > len("fc_"):
+                return f"call_{cid[len('fc_'):]}"
+            return cid
+
+        # Final guard: Responses API requires each function_call to have a
+        # matching function_call_output in the same payload. If history got
+        # interrupted/truncated and a tool output is missing, synthesize one
+        # deterministically so the request is still valid.
+        declared_calls: List[str] = []
+        answered_calls: set[str] = set()
+        for item in normalized:
+            item_type = item.get("type")
+            if item_type == "function_call":
+                cid = item.get("call_id")
+                if isinstance(cid, str) and cid.strip():
+                    declared_calls.append(cid.strip())
+            elif item_type == "function_call_output":
+                cid = _normalize_call_id(item.get("call_id"))
+                if cid:
+                    answered_calls.add(cid)
+
+        for call_id in declared_calls:
+            if _normalize_call_id(call_id) in answered_calls:
+                continue
+            normalized.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": (
+                        "Error executing tool: Missing tool output recovered automatically "
+                        "during request preflight."
+                    ),
+                }
+            )
+            answered_calls.add(_normalize_call_id(call_id))
+            logger.warning(
+                "Synthesized missing function_call_output during preflight for call_id=%s",
+                call_id,
+            )
+
         return normalized
 
     def _preflight_codex_api_kwargs(
@@ -1696,7 +1898,8 @@ class AIAgent:
 
         allowed_keys = {
             "model", "instructions", "input", "tools", "store",
-            "reasoning", "include", "max_output_tokens", "temperature",
+            "reasoning", "include", "max_output_tokens", "max_tokens", "temperature",
+            "extra_body",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -1714,10 +1917,16 @@ class AIAgent:
         if isinstance(include, list):
             normalized["include"] = include
 
-        # Pass through max_output_tokens and temperature
-        max_output_tokens = api_kwargs.get("max_output_tokens")
-        if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
-            normalized["max_output_tokens"] = int(max_output_tokens)
+        extra_body = api_kwargs.get("extra_body")
+        normalized_extra_body: Dict[str, Any] = {}
+        if isinstance(extra_body, dict):
+            normalized_extra_body = dict(extra_body)
+
+        # Codex Responses currently rejects token-cap parameters in this runtime.
+        # Accept legacy fields for compatibility but strip them from requests.
+        normalized_extra_body.pop("max_tokens", None)
+        if normalized_extra_body:
+            normalized["extra_body"] = normalized_extra_body
         temperature = api_kwargs.get("temperature")
         if isinstance(temperature, (int, float)):
             normalized["temperature"] = float(temperature)
@@ -2089,9 +2298,6 @@ class AIAgent:
             else:
                 kwargs["include"] = []
 
-            if self.max_tokens is not None:
-                kwargs["max_output_tokens"] = self.max_tokens
-
             return kwargs
 
         provider_preferences = {}
@@ -2144,6 +2350,175 @@ class AIAgent:
             api_kwargs["extra_body"] = extra_body
 
         return api_kwargs
+
+    def _prepare_api_messages(
+        self,
+        messages: list,
+        active_system_prompt: str,
+    ) -> tuple[list, int, int]:
+        """Build API-ready messages and rough size estimates from chat history."""
+        api_messages = []
+        for msg in messages:
+            api_msg = msg.copy()
+
+            # Preserve reasoning continuity for providers that support/expect it.
+            if msg.get("role") == "assistant":
+                reasoning_text = msg.get("reasoning")
+                if reasoning_text:
+                    api_msg["reasoning_content"] = reasoning_text
+
+            # Internal-only fields not accepted by strict APIs.
+            if "reasoning" in api_msg:
+                api_msg.pop("reasoning")
+            if "finish_reason" in api_msg:
+                api_msg.pop("finish_reason")
+
+            api_messages.append(api_msg)
+
+        effective_system = active_system_prompt or ""
+        extra_ephemeral = []
+        if self.ephemeral_system_prompt:
+            extra_ephemeral.append(self.ephemeral_system_prompt)
+        env_hint = self._build_environment_hint()
+        if env_hint:
+            extra_ephemeral.append(env_hint)
+        if extra_ephemeral:
+            effective_system = (effective_system + "\n\n" + "\n\n".join(extra_ephemeral)).strip()
+        if self._honcho_context:
+            effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Inject ephemeral prefill messages right after system, before history.
+        if self.prefill_messages:
+            sys_offset = 1 if effective_system else 0
+            for idx, pfm in enumerate(self.prefill_messages):
+                api_messages.insert(sys_offset + idx, pfm.copy())
+
+        # Anthropic prompt caching tweaks for Claude on OpenRouter.
+        if self._use_prompt_caching:
+            api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
+
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        approx_tokens = total_chars // 4  # Rough estimate: 4 chars/token
+        return api_messages, total_chars, approx_tokens
+
+    def _hard_trim_context(self, messages: list) -> list:
+        """Emergency shrink path when summarization-based compression cannot reduce more."""
+        if not isinstance(messages, list) or len(messages) <= 24:
+            return messages
+
+        keep = max(24, min(120, len(messages) // 2))
+        trimmed = list(messages[-keep:])
+
+        # A leading tool role without its assistant tool_call context is invalid.
+        while trimmed and isinstance(trimmed[0], dict) and trimmed[0].get("role") == "tool":
+            trimmed.pop(0)
+
+        # Prefer starting on a user/assistant text turn, not an orphan tool-call turn.
+        while (
+            trimmed
+            and isinstance(trimmed[0], dict)
+            and trimmed[0].get("role") == "assistant"
+            and trimmed[0].get("tool_calls")
+        ):
+            trimmed.pop(0)
+
+        return trimmed if trimmed else list(messages[-24:])
+
+    @staticmethod
+    def _normalize_tool_call_id(raw_id: Any) -> str:
+        if not isinstance(raw_id, str):
+            return ""
+        value = raw_id.strip()
+        if not value:
+            return ""
+        if value.startswith("fc_") and len(value) > len("fc_"):
+            return f"call_{value[len('fc_'):]}"
+        return value
+
+    def _has_in_flight_tool_calls(self, messages: list) -> bool:
+        """True when any assistant tool_call is still missing its tool output."""
+        if not isinstance(messages, list) or not messages:
+            return False
+
+        for idx, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+
+            pending: set[str] = set()
+            for tc in msg.get("tool_calls", []):
+                tc_id = ""
+                if isinstance(tc, dict):
+                    tc_id = self._normalize_tool_call_id(tc.get("id") or tc.get("call_id"))
+                else:
+                    tc_id = self._normalize_tool_call_id(getattr(tc, "id", None) or getattr(tc, "call_id", None))
+                if tc_id:
+                    pending.add(tc_id)
+
+            if not pending:
+                continue
+
+            for follow in messages[idx + 1:]:
+                if not isinstance(follow, dict):
+                    continue
+                if follow.get("role") == "assistant":
+                    break
+                if follow.get("role") != "tool":
+                    continue
+                out_id = self._normalize_tool_call_id(follow.get("tool_call_id"))
+                if out_id in pending:
+                    pending.remove(out_id)
+
+            if pending:
+                return True
+
+        return False
+
+    def _answers_latest_user_message(self, response_text: str, latest_user_message: str) -> bool:
+        """Heuristic guard to reduce off-topic final replies.
+
+        This intentionally focuses on catching obvious "acknowledgement" non-answers
+        (e.g., "I'll check that") while allowing concise legitimate answers.
+        Overly strict lexical overlap checks can cause false negatives and trigger
+        unnecessary regeneration loops.
+        """
+        if not isinstance(response_text, str) or not response_text.strip():
+            return False
+        if not isinstance(latest_user_message, str) or not latest_user_message.strip():
+            return True
+
+        response_l = response_text.lower()
+        # Fast-path: common explicit completion/answer markers.
+        if any(
+            marker in response_l
+            for marker in (
+                "here's", "here is", "result", "summary", "complete", "completed",
+                "done", "fixed", "updated", "answer:", "the answer",
+            )
+        ):
+            return True
+
+        # Reject obvious "not yet an answer" acknowledgements.
+        ack_prefixes = (
+            "sure", "absolutely", "got it", "okay", "ok", "i'll", "i will",
+            "let me", "i can do that", "i can help with that",
+        )
+        ack_body_hints = (
+            "check", "inspect", "look into", "take a look", "dig into",
+            "work on that", "get started",
+        )
+        stripped = response_l.strip()
+        is_ack_like = any(stripped.startswith(p) for p in ack_prefixes) and any(
+            h in response_l for h in ack_body_hints
+        )
+        if is_ack_like:
+            return False
+
+        # Default permissive behavior for concise, substantive replies.
+        return True
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.
@@ -2301,7 +2676,6 @@ class AIAgent:
                     "messages": api_messages,
                     "tools": [memory_tool_def],
                     "temperature": 0.3,
-                    "max_tokens": 5120,
                 }
                 response = aux_client.chat.completions.create(**api_kwargs, timeout=30.0)
             elif self.api_mode == "codex_responses":
@@ -2309,8 +2683,6 @@ class AIAgent:
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
                 codex_kwargs["temperature"] = 0.3
-                if "max_output_tokens" in codex_kwargs:
-                    codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)
             else:
                 api_kwargs = {
@@ -2370,6 +2742,12 @@ class AIAgent:
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        if self._has_in_flight_tool_calls(messages):
+            if not self.quiet_mode:
+                print(f"{self.log_prefix}⏸️  Skipping compression: tool call outputs still in flight.")
+            current_prompt = self._cached_system_prompt or self._build_system_prompt(system_message)
+            return messages, current_prompt
+
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
@@ -2628,6 +3006,143 @@ class AIAgent:
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
 
+    def _fill_missing_tool_outputs(self, messages: list, error_msg: str) -> bool:
+        """Add synthetic tool outputs for assistant tool calls that were never answered.
+
+        Returns True if any synthetic tool output was appended.
+        """
+        def _extract_call_id(tc: Any) -> Optional[str]:
+            if isinstance(tc, dict):
+                tc_id = tc.get("id")
+                if not tc_id:
+                    tc_id = tc.get("call_id")
+            else:
+                tc_id = getattr(tc, "id", None)
+                if not tc_id:
+                    tc_id = getattr(tc, "call_id", None)
+
+            if not isinstance(tc_id, str):
+                return None
+
+            tc_id = tc_id.strip()
+            if not tc_id:
+                return None
+
+            if tc_id.startswith("fc_"):
+                tc_id = f"call_{tc_id[len('fc_'):]}"
+
+            return tc_id
+
+        pending_handled = False
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+
+            answered_ids = set()
+            for m in messages[idx + 1:]:
+                if not isinstance(m, dict) or m.get("role") != "tool":
+                    continue
+                raw_tool_call_id = m.get("tool_call_id")
+                if isinstance(raw_tool_call_id, str):
+                    raw_tool_call_id = raw_tool_call_id.strip()
+                    if raw_tool_call_id:
+                        if raw_tool_call_id.startswith("fc_"):
+                            answered_ids.add(f"call_{raw_tool_call_id[len('fc_'):]}")
+                        else:
+                            answered_ids.add(raw_tool_call_id)
+
+            for tc in msg["tool_calls"]:
+                tc_id = _extract_call_id(tc)
+                if not tc_id or tc_id in answered_ids:
+                    continue
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"Error executing tool: {error_msg}",
+                })
+                self._log_msg_to_db(messages[-1])
+                pending_handled = True
+
+        return pending_handled
+
+    def _tool_call_signature(self, tool_calls: list) -> str:
+        """Build a deterministic signature for a sequence of tool calls."""
+        if not tool_calls:
+            return ""
+
+        parts = []
+        for tc in tool_calls:
+            if tc is None:
+                parts.append("null")
+                continue
+
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                name = fn.get("name", "unknown")
+                raw_args = fn.get("arguments", "{}")
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", "unknown") if fn is not None else "unknown"
+                raw_args = getattr(fn, "arguments", "{}") if fn is not None else "{}"
+
+            try:
+                normalized = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except Exception:
+                normalized = raw_args
+
+            try:
+                args_text = json.dumps(
+                    normalized,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+            except Exception:
+                args_text = str(raw_args)
+
+            if len(args_text) > 220:
+                args_text = args_text[:220] + "..."
+
+            parts.append(f"{name}:{args_text}")
+
+        return "|".join(parts)
+
+    def _build_summary_fallback(self, messages: list) -> str | None:
+        """Generate a minimal human-readable fallback summary from available messages."""
+        if not messages:
+            return None
+
+        snippets = []
+        for msg in messages[-30:]:
+            if not isinstance(msg, dict):
+                continue
+
+            role = msg.get("role")
+            content = msg.get("content")
+            if not content:
+                continue
+
+            text = self._strip_think_blocks(content) if isinstance(content, str) else str(content)
+            text = text.strip()
+            if not text:
+                continue
+
+            text = text[:220] + "..." if len(text) > 220 else text
+            snippets.append(f"{role}: {text}")
+
+        if not snippets:
+            return None
+
+        lines = ["I reached the iteration limit and could not generate a clean final response."]
+        lines.append("Recent context:")
+        for snippet in snippets[-10:]:
+            lines.append(f"- {snippet}")
+        return "\n".join(lines)
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -2637,13 +3152,22 @@ class AIAgent:
             "Please provide a final response summarizing what you've found and accomplished so far, "
             "without calling any more tools."
         )
+        self._fill_missing_tool_outputs(messages, "Tool execution was skipped while handling iteration limit.")
         messages.append({"role": "user", "content": summary_request})
 
         try:
             api_messages = messages.copy()
             effective_system = self._cached_system_prompt or ""
+
+            # Attach ephemeral system prompt and environment hint at API-call time.
+            extra_ephemeral = []
             if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                extra_ephemeral.append(self.ephemeral_system_prompt)
+            env_hint = self._build_environment_hint()
+            if env_hint:
+                extra_ephemeral.append(env_hint)
+            if extra_ephemeral:
+                effective_system = (effective_system + "\n\n" + "\n\n".join(extra_ephemeral)).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -2668,6 +3192,7 @@ class AIAgent:
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs["tools"] = None
+                codex_kwargs["tool_choice"] = "none"
                 summary_response = self._run_codex_stream(codex_kwargs)
                 assistant_message, _ = self._normalize_codex_response(summary_response)
                 final_response = (assistant_message.content or "").strip() if assistant_message else ""
@@ -2675,6 +3200,7 @@ class AIAgent:
                 summary_kwargs = {
                     "model": self.model,
                     "messages": api_messages,
+                    "tools": [],
                 }
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -2697,7 +3223,12 @@ class AIAgent:
 
                 summary_response = self.client.chat.completions.create(**summary_kwargs)
 
-                if summary_response.choices and summary_response.choices[0].message.content:
+                if (
+                    summary_response is not None
+                    and summary_response.choices
+                    and summary_response.choices[0].message
+                    and summary_response.choices[0].message.content
+                ):
                     final_response = summary_response.choices[0].message.content
                 else:
                     final_response = ""
@@ -2708,12 +3239,15 @@ class AIAgent:
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = self._build_summary_fallback(messages) or (
+                        "I reached the iteration limit and couldn't generate a summary."
+                    )
             else:
                 # Retry summary generation
                 if self.api_mode == "codex_responses":
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs["tools"] = None
+                    codex_kwargs["tool_choice"] = "none"
                     retry_response = self._run_codex_stream(codex_kwargs)
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""
@@ -2721,6 +3255,7 @@ class AIAgent:
                     summary_kwargs = {
                         "model": self.model,
                         "messages": api_messages,
+                        "tools": [],
                     }
                     if self.max_tokens is not None:
                         summary_kwargs["max_tokens"] = self.max_tokens
@@ -2729,7 +3264,12 @@ class AIAgent:
 
                     summary_response = self.client.chat.completions.create(**summary_kwargs)
 
-                    if summary_response.choices and summary_response.choices[0].message.content:
+                    if (
+                        summary_response is not None
+                        and summary_response.choices
+                        and summary_response.choices[0].message
+                        and summary_response.choices[0].message.content
+                    ):
                         final_response = summary_response.choices[0].message.content
                     else:
                         final_response = ""
@@ -2739,11 +3279,20 @@ class AIAgent:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = self._build_summary_fallback(messages) or (
+                        "I reached the iteration limit and couldn't generate a summary."
+                    )
 
         except Exception as e:
             logging.warning(f"Failed to get summary response: {e}")
+            fallback = self._build_summary_fallback(messages)
             final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
+            if fallback:
+                final_response = f"{fallback}\n{final_response}"
+
+        if final_response is None:
+            fallback = self._build_summary_fallback(messages)
+            final_response = fallback or "I reached the maximum iterations but couldn't generate any response."
 
         return final_response
 
@@ -2776,6 +3325,9 @@ class AIAgent:
         self._last_content_with_tools = None
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        last_tool_signature = None
+        repeated_tool_signature_count = 0
+        tool_signature_repeat_limit = 3
         
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
@@ -2858,6 +3410,7 @@ class AIAgent:
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
+        final_answer_guard_retries = 0
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -2871,6 +3424,14 @@ class AIAgent:
                 break
             
             api_call_count += 1
+
+            # If we ever have pending tool calls from an interrupted or failed
+            # previous turn, synthesize deterministic error outputs before the
+            # next API request. This keeps API request history valid.
+            self._fill_missing_tool_outputs(
+                messages,
+                "Recovered tool output(s) before API request after a previous interruption.",
+            )
 
             # Fire step_callback for gateway hooks (agent:step event)
             if self.step_callback is not None:
@@ -2895,61 +3456,10 @@ class AIAgent:
                 self._iters_since_skill += 1
             
             # Prepare messages for API call
-            # If we have an ephemeral system prompt, prepend it to the messages
-            # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
-            # However, providers like Moonshot AI require a separate 'reasoning_content' field
-            # on assistant messages with tool_calls. We handle both cases here.
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-                
-                # For ALL assistant messages, pass reasoning back to the API
-                # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
-                
-                # Remove 'reasoning' field - it's for trajectory storage only
-                # We've copied it to 'reasoning_content' for the API above
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
-                # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-                # The signature field helps maintain reasoning continuity
-                api_messages.append(api_msg)
-            
-            # Build the final system message: cached prompt + ephemeral system prompt.
-            # The ephemeral part is appended here (not baked into the cached prompt)
-            # so it stays out of the session DB and logs.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if self._honcho_context:
-                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            
-            # Inject ephemeral prefill messages right after the system prompt
-            # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
-                    api_messages.insert(sys_offset + idx, pfm.copy())
-            
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
-            if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
-            
-            # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                messages,
+                active_system_prompt,
+            )
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
@@ -2976,6 +3486,7 @@ class AIAgent:
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
             codex_auth_retry_attempted = False
+            missing_tool_output_recovery_attempted = False
 
             finish_reason = "stop"
 
@@ -3254,6 +3765,34 @@ class AIAgent:
                         or 'payload too large' in error_msg
                         or 'error code: 413' in error_msg
                     )
+                    is_missing_tool_output_error = (
+                        "no tool output found for function call" in error_msg
+                    )
+                    is_context_length_error = any(phrase in error_msg for phrase in [
+                        'context length', 'maximum context', 'context window', 'token limit',
+                        'too many tokens', 'reduce the length', 'exceeds the limit',
+                        'exceeds the context window',
+                        'request entity too large',  # OpenRouter/Nous 413 safety net
+                    ])
+
+                    if (
+                        is_missing_tool_output_error
+                        and not missing_tool_output_recovery_attempted
+                    ):
+                        missing_tool_output_recovery_attempted = True
+                        recovered = self._fill_missing_tool_outputs(
+                            messages,
+                            "Recovered missing tool output after provider validation error.",
+                        )
+                        if recovered:
+                            print(
+                                f"{self.log_prefix}🔧 Recovered missing tool output(s); rebuilding request and retrying..."
+                            )
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
+                            continue
 
                     if is_payload_too_large:
                         print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
@@ -3265,8 +3804,23 @@ class AIAgent:
 
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
                             continue  # Retry with compressed messages
                         else:
+                            trimmed = self._hard_trim_context(messages)
+                            if len(trimmed) < len(messages):
+                                messages = trimmed
+                                print(
+                                    f"{self.log_prefix}   ✂️  Hard-trimmed history to {len(messages)} messages after 413; retrying..."
+                                )
+                                api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                    messages,
+                                    active_system_prompt,
+                                )
+                                continue
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
@@ -3291,7 +3845,7 @@ class AIAgent:
                         'unauthorized', 'forbidden', 'not found',
                     ])
 
-                    if is_client_error:
+                    if is_client_error and not is_context_length_error:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
@@ -3308,13 +3862,6 @@ class AIAgent:
                             "error": str(api_error),
                         }
                     
-                    # Check for non-retryable errors (context length exceeded)
-                    is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'maximum context', 'token limit',
-                        'too many tokens', 'reduce the length', 'exceeds the limit',
-                        'request entity too large',  # OpenRouter/Nous 413 safety net
-                    ])
-                    
                     if is_context_length_error:
                         print(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
                         
@@ -3325,9 +3872,25 @@ class AIAgent:
                         
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                messages,
+                                active_system_prompt,
+                            )
                             continue  # Retry with compressed messages
                         else:
-                            # Can't compress further
+                            trimmed = self._hard_trim_context(messages)
+                            if len(trimmed) < len(messages):
+                                messages = trimmed
+                                print(
+                                    f"{self.log_prefix}   ✂️  Hard-trimmed history to {len(messages)} messages; retrying..."
+                                )
+                                api_messages, total_chars, approx_tokens = self._prepare_api_messages(
+                                    messages,
+                                    active_system_prompt,
+                                )
+                                continue
+
+                            # Can't compress or trim further
                             print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
                             print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
@@ -3527,6 +4090,7 @@ class AIAgent:
                     
                     # Validate tool call arguments are valid JSON
                     # Handle empty strings as empty objects (common model quirk)
+                    # For "terminal", try to repair common LLM JSON errors (unescaped quotes, truncation)
                     invalid_json_args = []
                     for tc in assistant_message.tool_calls:
                         args = tc.function.arguments
@@ -3537,7 +4101,11 @@ class AIAgent:
                         try:
                             json.loads(args)
                         except json.JSONDecodeError as e:
-                            invalid_json_args.append((tc.function.name, str(e)))
+                            repaired = _repair_terminal_tool_args(tc.function.name, args)
+                            if repaired is not None:
+                                tc.function.arguments = repaired
+                            else:
+                                invalid_json_args.append((tc.function.name, str(e)))
                     
                     if invalid_json_args:
                         # Track retries for invalid JSON arguments
@@ -3577,17 +4145,34 @@ class AIAgent:
                     # answer and calls memory/skill tools as a side-effect in the same
                     # turn. If the follow-up turn after tools is empty, we use this.
                     turn_content = assistant_message.content or ""
-                    if turn_content and self._has_content_after_think_block(turn_content):
+                    if turn_content and turn_content.strip():
                         self._last_content_with_tools = turn_content
                         # Show intermediate commentary so the user can follow along
                         if self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                print(f"  ┊ 💬 {clean}")
-                    
+                                preview = clean[:120] + "..." if len(clean) > 120 else clean
+                                print(f"  ┊ 💬 {preview}")
+
+                    assistant_signature = self._tool_call_signature(assistant_message.tool_calls)
+                    if assistant_signature == last_tool_signature:
+                        repeated_tool_signature_count += 1
+                    else:
+                        last_tool_signature = assistant_signature
+                        repeated_tool_signature_count = 1
+
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
-                    
+
+                    if repeated_tool_signature_count >= tool_signature_repeat_limit:
+                        if not self.quiet_mode:
+                            print(
+                                f"{self.log_prefix}⚠️ Repeated tool-call pattern detected. "
+                                "Summarizing now to avoid a loop."
+                            )
+                        final_response = self._handle_max_iterations(messages, api_call_count)
+                        break
+
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
                     
                     if self.compression_enabled and self.context_compressor.should_compress():
@@ -3607,17 +4192,16 @@ class AIAgent:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
                     
-                    # Check if response only has think block with no actual content after it
-                    if not self._has_content_after_think_block(final_response):
+                    # Retry only when the model returned truly empty content.
+                    if not final_response.strip():
                         # Track retries for empty-after-think responses
                         if not hasattr(self, '_empty_content_retries'):
                             self._empty_content_retries = 0
                         self._empty_content_retries += 1
                         
-                        # Show the reasoning/thinking content so the user can see
-                        # what the model was thinking even though content is empty
+                        # Show any reasoning/thinking content for debugging context.
                         reasoning_text = self._extract_reasoning(assistant_message)
-                        print(f"{self.log_prefix}⚠️  Response only contains think block with no content after it")
+                        print(f"{self.log_prefix}⚠️  Response content was empty")
                         if reasoning_text:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
                             print(f"{self.log_prefix}   Reasoning: {reasoning_preview}")
@@ -3710,6 +4294,24 @@ class AIAgent:
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
+
+                    if (
+                        final_answer_guard_retries < 1
+                        and not self._answers_latest_user_message(final_response, original_user_message)
+                    ):
+                        final_answer_guard_retries += 1
+                        guard_msg = {
+                            "role": "user",
+                            "content": (
+                                "[System check: Your previous draft did not directly answer the most recent user "
+                                "message. Re-read the latest user request and respond directly, without changing topics.]"
+                            ),
+                        }
+                        messages.append(guard_msg)
+                        self._log_msg_to_db(guard_msg)
+                        continue
+
+                    final_answer_guard_retries = 0
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
@@ -3730,30 +4332,7 @@ class AIAgent:
                 # If an assistant message with tool_calls was already appended,
                 # the API expects a role="tool" result for every tool_call_id.
                 # Fill in error results for any that weren't answered yet.
-                pending_handled = False
-                for idx in range(len(messages) - 1, -1, -1):
-                    msg = messages[idx]
-                    if not isinstance(msg, dict):
-                        break
-                    if msg.get("role") == "tool":
-                        continue
-                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                        answered_ids = {
-                            m["tool_call_id"]
-                            for m in messages[idx + 1:]
-                            if isinstance(m, dict) and m.get("role") == "tool"
-                        }
-                        for tc in msg["tool_calls"]:
-                            if tc["id"] not in answered_ids:
-                                err_msg = {
-                                    "role": "tool",
-                                    "tool_call_id": tc["id"],
-                                    "content": f"Error executing tool: {error_msg}",
-                                }
-                                messages.append(err_msg)
-                                self._log_msg_to_db(err_msg)
-                        pending_handled = True
-                    break
+                pending_handled = self._fill_missing_tool_outputs(messages, error_msg)
                 
                 if not pending_handled:
                     # Error happened before tool processing (e.g. response parsing).

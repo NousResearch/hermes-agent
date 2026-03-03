@@ -21,15 +21,17 @@ import sys
 import json
 from pathlib import Path
 
-# Try to load .env file if python-dotenv is available
+# Try to load .env file (encoding-safe on Windows)
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from agent.env_loader import load_dotenv_with_fallback
+    _env_path = Path(__file__).parent.parent.parent / ".env"
+    if _env_path.exists():
+        load_dotenv_with_fallback(_env_path)
 except ImportError:
     # Manually load .env if dotenv not available
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
-        with open(env_file) as f:
+        with open(env_file, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:

@@ -130,6 +130,18 @@ def _handle_send(args):
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
+    # Guardrail: prevent recursive self-sends from inside a live messaging
+    # session (most commonly Discord -> send_message(target='discord')).
+    current_platform = os.getenv("HERMES_SESSION_PLATFORM", "").strip().lower()
+    current_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "").strip()
+    if current_platform == platform_name and current_chat_id and str(chat_id) == current_chat_id:
+        return json.dumps({
+            "error": (
+                f"Refusing to send_message to the current active {platform_name} chat "
+                f"({current_chat_id}) to prevent message loops."
+            )
+        })
+
     try:
         from model_tools import _run_async
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, message))

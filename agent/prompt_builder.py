@@ -97,7 +97,7 @@ PLATFORM_HINTS = {
         "Please do not use markdown as it does not render."
     ),
     "discord": (
-        "You are in a Discord server or group chat communicating with your user."
+        "You are in a Discord server, DM, or group chat communicating with your user."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "

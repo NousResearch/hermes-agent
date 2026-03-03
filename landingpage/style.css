@@ -245,132 +245,33 @@ strong {
     margin-bottom: 32px;
 }
 
-/* --- Install Widget (hero tabbed installer) --- */
-.install-widget {
-    max-width: 740px;
-    margin: 0 auto;
+.install-box {
+    display: flex;
+    align-items: center;
+    gap: 0;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
-    transition: border-color 0.3s;
-}
-
-.install-widget:hover {
-    border-color: var(--border-hover);
-}
-
-.install-widget-header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 10px 16px;
-    background: rgba(255, 255, 255, 0.02);
-    border-bottom: 1px solid var(--border);
-}
-
-.install-dots {
-    display: flex;
-    gap: 6px;
-    flex-shrink: 0;
-}
-
-.install-dots .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-}
-
-.install-tabs {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-}
-
-.install-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 14px;
-    border: none;
-    border-radius: 6px;
-    font-family: var(--font-sans);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: transparent;
-    color: var(--text-muted);
-}
-
-.install-tab:hover {
-    color: var(--text-dim);
-    background: rgba(255, 255, 255, 0.04);
-}
-
-.install-tab.active {
-    background: rgba(255, 215, 0, 0.12);
-    color: var(--gold);
-}
-
-.install-tab svg {
-    flex-shrink: 0;
-}
-
-.install-widget-body {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     padding: 14px 16px;
+    max-width: 680px;
+    margin: 0 auto;
     font-family: var(--font-mono);
     font-size: 13px;
     color: var(--text);
     overflow-x: auto;
+    transition: border-color 0.3s;
 }
 
-.install-prompt {
-    color: var(--gold);
-    font-weight: 600;
-    flex-shrink: 0;
-    opacity: 0.7;
+.install-box:hover {
+    border-color: var(--border-hover);
 }
 
-.install-widget-body code {
+.install-box code {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     text-align: left;
-    transition: opacity 0.15s;
-}
-
-/* --- Code block tabs (install step section) --- */
-.code-tabs {
-    display: flex;
-    gap: 2px;
-}
-
-.code-tab {
-    padding: 3px 10px;
-    border: none;
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: transparent;
-    color: var(--text-muted);
-}
-
-.code-tab:hover {
-    color: var(--text-dim);
-    background: rgba(255, 255, 255, 0.04);
-}
-
-.code-tab.active {
-    background: rgba(255, 215, 0, 0.1);
-    color: var(--gold);
 }
 
 .copy-btn {
@@ -1047,33 +948,15 @@ strong {
         margin: 0 auto 28px;
     }
 
-    .install-widget-body {
+    .install-box {
         font-size: 10px;
         padding: 10px 12px;
     }
 
-    .install-widget-body code {
+    .install-box code {
         overflow: hidden;
         text-overflow: ellipsis;
         display: block;
-    }
-
-    .install-widget-header {
-        padding: 8px 12px;
-        gap: 10px;
-    }
-
-    .install-tabs {
-        gap: 2px;
-    }
-
-    .install-tab {
-        padding: 4px 10px;
-        font-size: 11px;
-    }
-
-    .install-tab svg {
-        display: none;
     }
 
     .copy-btn {

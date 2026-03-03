@@ -211,7 +211,7 @@ class TestFlushMemoriesCodexFallback:
                 "instructions": "test",
                 "input": [],
                 "tools": [],
-                "max_output_tokens": 4096,
+                "max_tokens": 4096,
             }
             messages = [
                 {"role": "user", "content": "Hello"},

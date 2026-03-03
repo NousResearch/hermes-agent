@@ -30,7 +30,7 @@ class ContextCompressor:
         model: str,
         threshold_percent: float = 0.85,
         protect_first_n: int = 3,
-        protect_last_n: int = 4,
+        protect_last_n: int = 8,
         summary_target_tokens: int = 2500,
         quiet_mode: bool = False,
         summary_model_override: str = None,
@@ -80,9 +80,19 @@ class ContextCompressor:
         }
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """Generate a concise summary of conversation turns using a fast model."""
+        """Generate a structured summary of conversation turns using a fast model."""
         if not self.client:
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed to save space. The assistant performed various actions and received responses."
+            return (
+                "[CONTEXT SUMMARY]:\n"
+                "active_topic: compressed_context\n"
+                "latest_user_goal: continue helping with the current request using available context\n"
+                "open_questions:\n"
+                "- none recorded\n"
+                "hard_constraints:\n"
+                "- do not drift topics\n"
+                "actions_taken:\n"
+                "- previous turns were compressed due to context limits"
+            )
 
         parts = []
         for msg in turns_to_summarize:
@@ -97,22 +107,33 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
+        prompt = f"""Summarize these conversation turns into a STRUCTURED context record.
+This summary will replace older turns in conversation history.
+Keep factual, concise, and actionable. Target ~{self.summary_target_tokens} tokens.
 
-Write from a neutral perspective describing:
-1. What actions were taken (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
+Return EXACTLY this format:
+[CONTEXT SUMMARY]:
+active_topic: <single line>
+latest_user_goal: <single line>
+open_questions:
+- <question 1 or 'none recorded'>
+hard_constraints:
+- <constraint 1, include do-not-drift guidance when applicable>
+actions_taken:
+- <important action/result 1>
 
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
+Rules:
+- Keep the last recent conversation details out of this summary; they remain verbatim elsewhere.
+- Preserve critical constraints and unresolved asks.
+- Include important tool outcomes, file paths, and decisions in actions_taken.
+- Do not add any fields beyond the template above.
 
 ---
 TURNS TO SUMMARIZE:
 {content_to_summarize}
 ---
 
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+Write only the structured summary."""
 
         try:
             kwargs = {
@@ -137,11 +158,21 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
             summary = response.choices[0].message.content.strip()
             if not summary.startswith("[CONTEXT SUMMARY]:"):
-                summary = "[CONTEXT SUMMARY]: " + summary
+                summary = "[CONTEXT SUMMARY]:\n" + summary
             return summary
         except Exception as e:
             logging.warning(f"Failed to generate context summary: {e}")
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+            return (
+                "[CONTEXT SUMMARY]:\n"
+                "active_topic: compressed_context\n"
+                "latest_user_goal: continue helping with the current request using available context\n"
+                "open_questions:\n"
+                "- none recorded\n"
+                "hard_constraints:\n"
+                "- do not drift topics\n"
+                "actions_taken:\n"
+                "- previous turns were compressed after summary model fallback"
+            )
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.

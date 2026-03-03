@@ -265,8 +265,8 @@ def _rpc_server_loop(
                 # their status prints don't leak into the CLI spinner.
                 try:
                     _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                    sys.stdout = open(os.devnull, "w")
-                    sys.stderr = open(os.devnull, "w")
+                    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+                    sys.stderr = open(os.devnull, "w", encoding="utf-8")
                     try:
                         result = handle_function_call(
                             tool_name, tool_args, task_id=task_id
@@ -361,11 +361,11 @@ def execute_code(
         tools_src = generate_hermes_tools_module(
             list(sandbox_tools) if enabled_tools else list(SANDBOX_ALLOWED_TOOLS)
         )
-        with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
+        with open(os.path.join(tmpdir, "hermes_tools.py"), "w", encoding="utf-8", newline="") as f:
             f.write(tools_src)
 
         # Write the user's script
-        with open(os.path.join(tmpdir, "script.py"), "w") as f:
+        with open(os.path.join(tmpdir, "script.py"), "w", encoding="utf-8", newline="") as f:
             f.write(code)
 
         # --- Start UDS server ---

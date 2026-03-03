@@ -16,8 +16,8 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
+    [string]$HermesHome = "$env:USERPROFILE\.hermes",
+    [string]$InstallDir = "$env:USERPROFILE\.hermes\hermes-agent"
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,6 +63,31 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     Write-Host "✗ $Message" -ForegroundColor Red
+}
+
+function Invoke-GitCommand {
+    param([Parameter(Mandatory = $true)][string[]]$Args)
+
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        # Clone fallback paths intentionally probe and can fail.
+        $ErrorActionPreference = "Continue"
+        $output = & git @Args 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = @($output)
+    }
+}
+
+function Test-IsHermesOriginSsh {
+    param([string]$Url)
+    if (-not $Url) { return $false }
+    return $Url -match "^(git@github\.com:NousResearch/hermes-agent(\.git)?|ssh://git@github\.com/NousResearch/hermes-agent(\.git)?)$"
 }
 
 # ============================================================================
@@ -145,49 +170,17 @@ function Test-Python {
     # Python not found — use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Python installed: $ver"
-                return $true
-            }
-        } else {
-            Write-Warn "uv python install output:"
-            Write-Host $uvOutput -ForegroundColor DarkGray
-        }
-    } catch {
-        Write-Warn "uv python install error: $_"
-    }
-
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
-    foreach ($fallbackVer in @("3.12", "3.13", "3.10")) {
-        try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
-                return $true
-            }
-        } catch { }
-    }
-
-    # Fallback: try system python
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $sysVer = python --version 2>$null
-        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
-            Write-Success "Using system Python: $sysVer"
+        & $UvCmd python install $PythonVersion 2>&1 | Out-Null
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Success "Python installed: $ver"
             return $true
         }
-    }
+    } catch { }
     
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
+    Write-Info "Install Python $PythonVersion manually, then re-run this script"
     return $false
 }
 
@@ -416,9 +409,34 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git -c windows.appendAtomically=false fetch origin
-            git -c windows.appendAtomically=false checkout $Branch
-            git -c windows.appendAtomically=false pull origin $Branch
+            $originUrl = (& git remote get-url origin 2>$null)
+            $fetchResult = Invoke-GitCommand -Args @("-c", "windows.appendAtomically=false", "fetch", "origin")
+            if ($fetchResult.ExitCode -ne 0 -and (Test-IsHermesOriginSsh -Url $originUrl)) {
+                Write-Warn "SSH fetch failed, switching origin remote to HTTPS..."
+                $setUrlResult = Invoke-GitCommand -Args @("remote", "set-url", "origin", $RepoUrlHttps)
+                if ($setUrlResult.ExitCode -eq 0) {
+                    $fetchResult = Invoke-GitCommand -Args @("-c", "windows.appendAtomically=false", "fetch", "origin")
+                }
+            }
+            if ($fetchResult.ExitCode -ne 0) {
+                Pop-Location
+                Write-Err "Failed to fetch updates from origin"
+                exit 1
+            }
+
+            $checkoutResult = Invoke-GitCommand -Args @("-c", "windows.appendAtomically=false", "checkout", $Branch)
+            if ($checkoutResult.ExitCode -ne 0) {
+                Pop-Location
+                Write-Err "Failed to checkout branch '$Branch'"
+                exit 1
+            }
+
+            $pullResult = Invoke-GitCommand -Args @("-c", "windows.appendAtomically=false", "pull", "origin", $Branch)
+            if ($pullResult.ExitCode -ne 0) {
+                Pop-Location
+                Write-Err "Failed to pull latest changes from origin/$Branch"
+                exit 1
+            }
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
@@ -614,8 +632,8 @@ function Set-PathVariable {
     }
     
     # Set HERMES_HOME so the Python code finds config/data in the right place.
-    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
-    # of the Unix default ~/.hermes
+    # Keep user-facing path examples aligned with the default Windows install
+    # location under %USERPROFILE%\.hermes (same layout as Unix ~/.hermes)
     $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
     if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
         [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
@@ -865,8 +883,8 @@ function Write-Completion {
     Write-Host "View/edit configuration"
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
+    Write-Host "   hermes gateway install " -NoNewline -ForegroundColor Green
+    Write-Host "Install gateway service (messaging + cron)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""

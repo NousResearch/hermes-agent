@@ -76,11 +76,54 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent-codex-home"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
     assert exc.value.code == "codex_auth_missing_access_token"
     assert exc.value.relogin_required is True
+
+
+def test_resolve_codex_runtime_credentials_recovers_from_invalid_shape_with_cli_tokens(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "openai-codex": {
+                        "auth_file": "/tmp/codex/auth.json",
+                        "source": "codex-auth-json",
+                    }
+                },
+            },
+            indent=2,
+        )
+    )
+
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "cli-at",
+                    "refresh_token": "cli-rt",
+                }
+            }
+        )
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert resolved["api_key"] == "cli-at"
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "cli-at"
+    assert data["tokens"]["refresh_token"] == "cli-rt"
 
 
 def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):

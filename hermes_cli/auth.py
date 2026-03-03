@@ -600,18 +600,28 @@ def resolve_codex_runtime_credentials(
     try:
         data = _read_codex_tokens()
     except AuthError as orig_err:
-        # Only attempt migration when there are NO tokens stored at all
-        # (code == "codex_auth_missing"), not when tokens exist but are invalid.
-        if orig_err.code != "codex_auth_missing":
+        # Auto-recover from legacy/partial Codex auth states by importing
+        # tokens from ~/.codex/auth.json when available.
+        recoverable_codes = {
+            "codex_auth_missing",
+            "codex_auth_invalid_shape",
+            "codex_auth_missing_access_token",
+            "codex_auth_missing_refresh_token",
+        }
+        if orig_err.code not in recoverable_codes:
             raise
 
-        # Migration: user had Codex as active provider with old storage (~/.codex/).
+        # Migration/recovery: user may have valid Codex CLI tokens in ~/.codex/.
         cli_tokens = _import_codex_cli_tokens()
         if cli_tokens:
-            logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
-            print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
-            print("   This avoids conflicts with Codex CLI and VS Code.")
-            print("   Run `hermes login` to create a fully independent session.\n")
+            logger.info(
+                "Recovering Codex credentials from ~/.codex/ to Hermes auth store "
+                "(reason=%s)",
+                orig_err.code,
+            )
+            print("WARNING: Migrating Codex credentials to Hermes auth store.")
+            print("         This avoids conflicts with Codex CLI and VS Code.")
+            print("         Run `hermes login` to create a fully independent session.\n")
             _save_codex_tokens(cli_tokens)
             data = _read_codex_tokens()
         else:

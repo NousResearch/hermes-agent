@@ -26,6 +26,7 @@ class Platform(Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
+    HOMEASSISTANT = "homeassistant"
 
 
 @dataclass
@@ -378,6 +379,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             )
     
+    # Home Assistant
+    hass_token = os.getenv("HASS_TOKEN")
+    if hass_token:
+        if Platform.HOMEASSISTANT not in config.platforms:
+            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
+        config.platforms[Platform.HOMEASSISTANT].enabled = True
+        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        hass_url = os.getenv("HASS_URL")
+        if hass_url:
+            config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:

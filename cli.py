@@ -690,6 +690,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/reload-mcp": "Reload MCP servers from config.yaml",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -1770,6 +1771,8 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/reload-mcp":
+            self._reload_mcp()
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -1890,6 +1893,45 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    def _reload_mcp(self):
+        """Reload MCP servers: disconnect all, re-read config.yaml, reconnect."""
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            # Capture old server names
+            with _lock:
+                old_servers = set(_servers.keys())
+
+            print("🔄 Reloading MCP servers...")
+
+            # Shutdown existing connections
+            shutdown_mcp_servers()
+
+            # Reconnect (reads config.yaml fresh)
+            new_tools = discover_mcp_tools()
+
+            # Compute what changed
+            with _lock:
+                connected_servers = set(_servers.keys())
+
+            added = connected_servers - old_servers
+            removed = old_servers - connected_servers
+            reconnected = connected_servers & old_servers
+
+            if reconnected:
+                print(f"  ♻️  Reconnected: {', '.join(sorted(reconnected))}")
+            if added:
+                print(f"  ➕ Added: {', '.join(sorted(added))}")
+            if removed:
+                print(f"  ➖ Removed: {', '.join(sorted(removed))}")
+            if not connected_servers:
+                print("  (._.) No MCP servers connected.")
+            else:
+                print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+        except Exception as e:
+            print(f"  ❌ MCP reload failed: {e}")
 
     def _clarify_callback(self, question, choices):
         """

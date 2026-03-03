@@ -690,7 +690,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
-    "/voice": "Toggle voice mode (Ctrl+Space to record). Usage: /voice [on|off|tts|status]",
+    "/voice": "Toggle voice mode (Ctrl+R to record). Usage: /voice [on|off|tts|status]",
     "/reload-mcp": "Reload MCP servers from config.yaml",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
@@ -2008,7 +2008,7 @@ class HermesCLI:
 
         self._voice_recorder.start()
         self._voice_recording = True
-        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(Ctrl+Space to stop, Ctrl+C to cancel){_RST}")
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(Ctrl+R to stop, Ctrl+C to cancel){_RST}")
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
@@ -2042,7 +2042,6 @@ class HermesCLI:
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
-                _cprint(f"\n{_GOLD}●{_RST} {_BOLD}{transcript}{_RST}")
                 self._pending_input.put(transcript)
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -2132,7 +2131,7 @@ class HermesCLI:
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}Ctrl+Space to start/stop recording{_RST}")
+        _cprint(f"  {_DIM}Ctrl+R to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
@@ -2172,7 +2171,7 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _cprint(f"  Record key: Ctrl+Space")
+        _cprint(f"  Record key: Ctrl+R")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
@@ -2703,8 +2702,8 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
-        @kb.add('c-space')
-        def handle_ctrl_space(event):
+        @kb.add('c-r')  # Ctrl+R to toggle voice recording
+        def handle_voice_record(event):
             """Toggle voice recording when voice mode is active."""
             if not cli_ref._voice_mode:
                 return
@@ -2834,7 +2833,7 @@ class HermesCLI:
 
         def _get_placeholder():
             if cli_ref._voice_recording:
-                return "recording... Ctrl+Space to stop, Ctrl+C to cancel"
+                return "recording... Ctrl+R to stop, Ctrl+C to cancel"
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
@@ -2846,7 +2845,7 @@ class HermesCLI:
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             if cli_ref._voice_mode:
-                return "type or Ctrl+Space to record"
+                return "type or Ctrl+R to record"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))

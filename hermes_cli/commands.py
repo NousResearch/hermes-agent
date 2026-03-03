@@ -28,7 +28,7 @@ COMMANDS = {
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
-    "/voice": "Toggle voice mode (Ctrl+Space to record). Usage: /voice [on|off|tts|status]",
+    "/voice": "Toggle voice mode (Ctrl+R to record). Usage: /voice [on|off|tts|status]",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

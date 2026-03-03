@@ -2576,10 +2576,16 @@ class AIAgent:
         """
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.
-        
+
         On interrupt, closes the HTTP client to cancel the in-flight request
         (stops token generation and avoids wasting money), then rebuilds the
         client for future calls.
+
+        When ``self._stream_callback`` is set (streaming TTS mode), the call
+        uses ``stream=True`` and iterates over chunks inside the background
+        thread.  Content deltas are forwarded to the callback in real-time
+        while the full response is accumulated and returned as a
+        ``SimpleNamespace`` that mimics a normal ``ChatCompletion``.
         """
         result = {"response": None, "error": None}
 
@@ -2587,10 +2593,103 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
+                    return
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_client.messages.create(**api_kwargs)
-                else:
+                    return
+
+                cb = getattr(self, "_stream_callback", None)
+                if cb is None:
+                    # Non-streaming path (default)
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
+                    return
+
+                # --- Streaming path for TTS pipeline ---
+                stream_kwargs = {**api_kwargs, "stream": True}
+                stream = self.client.chat.completions.create(**stream_kwargs)
+
+                content_parts: list[str] = []
+                tool_calls_acc: dict[int, dict] = {}  # index -> {id, type, function:{name, arguments}}
+                finish_reason = None
+                model_name = None
+                role = "assistant"
+
+                for chunk in stream:
+                    if not chunk.choices:
+                        # Usage-only or empty chunk
+                        if hasattr(chunk, "model") and chunk.model:
+                            model_name = chunk.model
+                        continue
+
+                    delta = chunk.choices[0].delta
+                    if hasattr(chunk, "model") and chunk.model:
+                        model_name = chunk.model
+
+                    # Content delta
+                    if delta and delta.content:
+                        content_parts.append(delta.content)
+                        try:
+                            cb(delta.content)
+                        except Exception:
+                            pass
+
+                    # Tool call deltas
+                    if delta and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {
+                                    "id": tc_delta.id or "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            entry = tool_calls_acc[idx]
+                            if tc_delta.id:
+                                entry["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    entry["function"]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    entry["function"]["arguments"] += tc_delta.function.arguments
+
+                    if chunk.choices[0].finish_reason:
+                        finish_reason = chunk.choices[0].finish_reason
+
+                # Build a mock ChatCompletion matching the non-streaming interface
+                full_content = "".join(content_parts) or None
+                mock_tool_calls = None
+                if tool_calls_acc:
+                    mock_tool_calls = []
+                    for idx in sorted(tool_calls_acc):
+                        tc = tool_calls_acc[idx]
+                        mock_tool_calls.append(SimpleNamespace(
+                            id=tc["id"],
+                            type=tc["type"],
+                            function=SimpleNamespace(
+                                name=tc["function"]["name"],
+                                arguments=tc["function"]["arguments"],
+                            ),
+                        ))
+
+                mock_message = SimpleNamespace(
+                    role=role,
+                    content=full_content,
+                    tool_calls=mock_tool_calls,
+                    reasoning_content=None,
+                )
+                mock_choice = SimpleNamespace(
+                    index=0,
+                    message=mock_message,
+                    finish_reason=finish_reason or "stop",
+                )
+                mock_response = SimpleNamespace(
+                    id="stream-" + str(uuid.uuid4()),
+                    model=model_name,
+                    choices=[mock_choice],
+                    usage=None,
+                )
+                result["response"] = mock_response
+
             except Exception as e:
                 result["error"] = e
 
@@ -3915,7 +4014,8 @@ class AIAgent:
         user_message: str,
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
-        task_id: str = None
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -3925,6 +4025,9 @@ class AIAgent:
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
             task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+            stream_callback: Optional callback invoked with each text delta during streaming.
+                Used by the TTS pipeline to start audio generation before the full response.
+                When None (default), API calls use the standard non-streaming path.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -3933,6 +4036,8 @@ class AIAgent:
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
 
+        # Store stream callback for _interruptible_api_call to pick up
+        self._stream_callback = stream_callback
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
@@ -5377,20 +5482,24 @@ class AIAgent:
         
         # Clear interrupt state after handling
         self.clear_interrupt()
-        
+
+        # Clear stream callback so it doesn't leak into future calls
+        self._stream_callback = None
+
         return result
-    
-    def chat(self, message: str) -> str:
+
+    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """
         Simple chat interface that returns just the final response.
-        
+
         Args:
             message (str): User message
-            
+            stream_callback: Optional callback invoked with each text delta during streaming.
+
         Returns:
             str: Final assistant response
         """
-        result = self.run_conversation(message)
+        result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
 
 

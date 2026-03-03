@@ -4093,19 +4093,60 @@ class HermesCLI:
         try:
             # Run the conversation with interrupt monitoring
             result = None
-            
+
+            # --- Streaming TTS setup ---
+            # When ElevenLabs is the TTS provider and sounddevice is available,
+            # we stream audio sentence-by-sentence as the agent generates tokens
+            # instead of waiting for the full response.
+            use_streaming_tts = False
+            text_queue = None
+            tts_thread = None
+            stream_callback = None
+            stop_event = None
+
+            if self._voice_tts:
+                try:
+                    from tools.tts_tool import (
+                        _load_tts_config as _load_tts_cfg,
+                        _get_provider as _get_prov,
+                        _HAS_ELEVENLABS as _el_ok,
+                        _HAS_AUDIO as _audio_ok,
+                        stream_tts_to_speaker,
+                    )
+                    _tts_cfg = _load_tts_cfg()
+                    if (_get_prov(_tts_cfg) == "elevenlabs" and _el_ok and _audio_ok):
+                        use_streaming_tts = True
+                except Exception:
+                    pass
+
+            if use_streaming_tts:
+                text_queue = queue.Queue()
+                stop_event = threading.Event()
+
+                tts_thread = threading.Thread(
+                    target=stream_tts_to_speaker,
+                    args=(text_queue, stop_event, self._voice_tts_done),
+                    daemon=True,
+                )
+                tts_thread.start()
+
+                def stream_callback(delta: str):
+                    if text_queue is not None:
+                        text_queue.put(delta)
+
             def run_agent():
                 nonlocal result
                 result = self.agent.run_conversation(
                     user_message=message,
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                    stream_callback=stream_callback,
                     task_id=self.session_id,
                 )
-            
+
             # Start agent in background thread
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
-            
+
             # Monitor the dedicated interrupt queue while the agent runs.
             # _interrupt_queue is separate from _pending_input, so process_loop
             # and chat() never compete for the same queue.
@@ -4124,6 +4165,9 @@ class HermesCLI:
                             if self._clarify_state or self._clarify_freetext:
                                 continue
                             print(f"\n⚡ New message detected, interrupting...")
+                            # Signal TTS to stop on interrupt
+                            if stop_event is not None:
+                                stop_event.set()
                             self.agent.interrupt(interrupt_msg)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
@@ -4143,8 +4187,14 @@ class HermesCLI:
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
-            
+
             agent_thread.join()  # Ensure agent thread completes
+
+            # Signal end-of-text to TTS consumer and wait for it to finish
+            if use_streaming_tts and text_queue is not None:
+                text_queue.put(None)  # sentinel
+                if tts_thread is not None:
+                    tts_thread.join(timeout=120)
 
             # Drain any remaining agent output still in the StdoutProxy
             # buffer so tool/status lines render ABOVE our response box.
@@ -4156,15 +4206,15 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
-            
+
             # Get the final response
             response = result.get("final_response", "") if result else ""
-            
+
             # Handle failed results (e.g., non-retryable errors like invalid model)
             if result and result.get("failed") and not response:
                 error_detail = result.get("error", "Unknown error")
                 response = f"Error: {error_detail}"
-            
+
             # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
@@ -4172,8 +4222,9 @@ class HermesCLI:
                 # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
-            
+
             response_previewed = result.get("response_previewed", False) if result else False
+
             # Display reasoning (thinking) box if enabled and available
             if self.show_reasoning and result:
                 reasoning = result.get("last_reasoning")
@@ -4226,7 +4277,8 @@ class HermesCLI:
                 sys.stdout.flush()
 
             # Speak response aloud if voice TTS is enabled
-            if self._voice_tts and response:
+            # Skip batch TTS when streaming TTS already handled it
+            if self._voice_tts and response and not use_streaming_tts:
                 threading.Thread(
                     target=self._voice_speak_response,
                     args=(response,),

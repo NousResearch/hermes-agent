@@ -194,7 +194,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
             compressed.append(msg)
 
-        compressed.append({"role": "user", "content": summary})
+        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+        summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+        compressed.append({"role": summary_role, "content": summary})
 
         for i in range(compress_end, n_messages):
             compressed.append(messages[i].copy())

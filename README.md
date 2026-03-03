@@ -32,7 +32,7 @@ Built by [Nous Research](https://nousresearch.com). Under the hood, the same arc
 
 ## Quick Install
 
-**Linux/macOS:**
+**Linux / macOS / WSL:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
@@ -42,18 +42,25 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 ```
 
+**Windows (CMD):**
+```cmd
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+> **Windows note:** [Git for Windows](https://git-scm.com/download/win) is required. Hermes uses Git Bash internally for shell commands.
+
 The installer will:
 - Install [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
 - Install Python 3.11 via uv if not already available (no sudo needed)
 - Clone to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
 - Create a virtual environment with Python 3.11
 - Install all dependencies and submodule packages
-- Symlink `hermes` into `~/.local/bin` so it works globally (no venv activation needed)
+- Set up the `hermes` command globally (no venv activation needed)
 - Run the interactive setup wizard
 
 After installation, reload your shell and run:
 ```bash
-source ~/.bashrc   # or: source ~/.zshrc
+source ~/.bashrc   # or: source ~/.zshrc  (Windows: restart your terminal)
 hermes setup       # Configure API keys (if you skipped during install)
 hermes             # Start chatting!
 ```
@@ -271,22 +278,30 @@ SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
 
 ### WhatsApp Setup
 
-WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
+WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web.
 
-1. **Run the setup command:**
+**Two modes are supported:**
+
+| Mode | How it works | Best for |
+|------|-------------|----------|
+| **Separate bot number** (recommended) | Dedicate a phone number to the bot. People message that number directly. | Clean UX, multiple users |
+| **Personal self-chat** | Use your own WhatsApp. You message yourself to talk to the agent. | Quick setup, single user |
+
+**Setup:**
 
 ```bash
 hermes whatsapp
 ```
 
-This will:
-- Enable WhatsApp in your config
-- Ask for your phone number (for the allowlist)
-- Install bridge dependencies (Node.js required)
-- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
-- Exit automatically once paired
+The wizard will:
+1. Ask which mode you want
+2. For **bot mode**: guide you through getting a second number (WhatsApp Business app on a dual-SIM, Google Voice, or cheap prepaid SIM)
+3. Configure the allowlist
+4. Install bridge dependencies (Node.js required)
+5. Display a QR code — scan from WhatsApp (or WhatsApp Business) → Settings → Linked Devices → Link a Device
+6. Exit once paired
 
-2. **Start the gateway:**
+**Start the gateway:**
 
 ```bash
 hermes gateway            # Foreground
@@ -295,7 +310,7 @@ hermes gateway install    # Or install as a system service (Linux)
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
 
-> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" so you can distinguish them from your own messages in self-chat.
+> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" for easy identification.
 
 See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 
@@ -487,6 +502,23 @@ hermes tools
 ```
 
 **Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.
+
+### 🔌 MCP (Model Context Protocol)
+
+Connect to any MCP-compatible server to extend Hermes with external tools. Just add servers to your config:
+
+```yaml
+mcp_servers:
+  time:
+    command: uvx
+    args: ["mcp-server-time"]
+  notion:
+    url: https://mcp.notion.com/mcp
+```
+
+Supports stdio and HTTP transports, auto-reconnection, and env var filtering. See [docs/mcp.md](docs/mcp.md) for details.
+
+Install MCP support: `pip install hermes-agent[mcp]`
 
 ### 🖥️ Terminal & Process Management
 
@@ -1212,8 +1244,8 @@ brew install git
 brew install ripgrep node
 ```
 
-**Windows (WSL recommended):**
-Use the [Windows Subsystem for Linux](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu instructions above. Alternatively, use the PowerShell quick-install script at the top of this README.
+**Windows (native):**
+Hermes runs natively on Windows using [Git for Windows](https://git-scm.com/download/win) (which provides Git Bash for shell commands). Install Git for Windows first, then use the PowerShell or CMD quick-install command at the top of this README. WSL also works — follow the Ubuntu instructions above.
 
 </details>
 
@@ -1635,6 +1667,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
+| `WHATSAPP_MODE` | `bot` (separate number, recommended) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |

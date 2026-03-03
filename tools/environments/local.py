@@ -1,17 +1,57 @@
 """Local execution environment with interrupt support and non-blocking I/O."""
 
 import os
+import platform
 import shutil
 import signal
 import subprocess
 import threading
 import time
 
+_IS_WINDOWS = platform.system() == "Windows"
+
 from tools.environments.base import BaseEnvironment
 
 # Unique marker to isolate real command output from shell init/exit noise.
 # printf (no trailing newline) keeps the boundaries clean for splitting.
 _OUTPUT_FENCE = "__HERMES_FENCE_a9f7b3__"
+
+
+def _find_shell() -> str:
+    """Find the best shell for command execution.
+
+    On Unix: uses $SHELL, falls back to bash.
+    On Windows: uses Git Bash (bundled with Git for Windows).
+    Raises RuntimeError if no suitable shell is found on Windows.
+    """
+    if not _IS_WINDOWS:
+        return os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+
+    # Windows: look for Git Bash (installed with Git for Windows).
+    # Allow override via env var (same pattern as Claude Code).
+    custom = os.environ.get("HERMES_GIT_BASH_PATH")
+    if custom and os.path.isfile(custom):
+        return custom
+
+    # shutil.which finds bash.exe if Git\bin is on PATH
+    found = shutil.which("bash")
+    if found:
+        return found
+
+    # Check common Git for Windows install locations
+    for candidate in (
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+
+    raise RuntimeError(
+        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
+        "Install it from: https://git-scm.com/download/win\n"
+        "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
+    )
 
 # Noise lines emitted by interactive shells when stdin is not a terminal.
 # Used as a fallback when output fence markers are missing.
@@ -119,7 +159,7 @@ class LocalEnvironment(BaseEnvironment):
             # tools like nvm, pyenv, and cargo install their init scripts.
             # -l alone isn't enough: .profile sources .bashrc, but the guard
             # returns early because the shell isn't interactive.
-            user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+            user_shell = _find_shell()
             # Wrap with output fences so we can later extract the real
             # command output and discard shell init/exit noise.
             fenced_cmd = (
@@ -139,7 +179,7 @@ class LocalEnvironment(BaseEnvironment):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-                preexec_fn=os.setsid,
+                preexec_fn=None if _IS_WINDOWS else os.setsid,
             )
 
             if stdin_data is not None:
@@ -172,12 +212,15 @@ class LocalEnvironment(BaseEnvironment):
             while proc.poll() is None:
                 if _interrupt_event.is_set():
                     try:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                        try:
-                            proc.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(pgid, signal.SIGKILL)
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            pgid = os.getpgid(proc.pid)
+                            os.killpg(pgid, signal.SIGTERM)
+                            try:
+                                proc.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                os.killpg(pgid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
                     reader.join(timeout=2)
@@ -187,7 +230,10 @@ class LocalEnvironment(BaseEnvironment):
                     }
                 if time.monotonic() > deadline:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        if _IS_WINDOWS:
+                            proc.terminate()
+                        else:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
                         proc.kill()
                     reader.join(timeout=2)

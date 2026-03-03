@@ -21,39 +21,59 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 def find_gateway_pids() -> list:
     """Find PIDs of running gateway processes."""
     pids = []
+    patterns = [
+        "hermes_cli.main gateway",
+        "hermes gateway",
+        "gateway/run.py",
+    ]
+
     try:
-        # Look for gateway processes with multiple patterns
-        patterns = [
-            "hermes_cli.main gateway",
-            "hermes gateway",
-            "gateway/run.py",
-        ]
-        
-        result = subprocess.run(
-            ["ps", "aux"],
-            capture_output=True,
-            text=True
-        )
-        
-        for line in result.stdout.split('\n'):
-            # Skip grep and current process
-            if 'grep' in line or str(os.getpid()) in line:
-                continue
-            
-            for pattern in patterns:
-                if pattern in line:
-                    parts = line.split()
-                    if len(parts) > 1:
+        if is_windows():
+            # Windows: use wmic to search command lines
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                capture_output=True, text=True
+            )
+            # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
+            current_cmd = ""
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine="):]
+                elif line.startswith("ProcessId="):
+                    pid_str = line[len("ProcessId="):]
+                    if any(p in current_cmd for p in patterns):
                         try:
-                            pid = int(parts[1])
-                            if pid not in pids:
+                            pid = int(pid_str)
+                            if pid != os.getpid() and pid not in pids:
                                 pids.append(pid)
                         except ValueError:
-                            continue
-                    break
+                            pass
+                    current_cmd = ""
+        else:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True
+            )
+            for line in result.stdout.split('\n'):
+                # Skip grep and current process
+                if 'grep' in line or str(os.getpid()) in line:
+                    continue
+                for pattern in patterns:
+                    if pattern in line:
+                        parts = line.split()
+                        if len(parts) > 1:
+                            try:
+                                pid = int(parts[1])
+                                if pid not in pids:
+                                    pids.append(pid)
+                            except ValueError:
+                                continue
+                        break
     except Exception:
         pass
-    
+
     return pids
 
 
@@ -64,7 +84,7 @@ def kill_gateway_processes(force: bool = False) -> int:
     
     for pid in pids:
         try:
-            if force:
+            if force and not is_windows():
                 os.kill(pid, signal.SIGKILL)
             else:
                 os.kill(pid, signal.SIGTERM)
@@ -102,7 +122,10 @@ def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
 def get_python_path() -> str:
-    venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    if is_windows():
+        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
     if venv_python.exists():
         return str(venv_python)
     return sys.executable

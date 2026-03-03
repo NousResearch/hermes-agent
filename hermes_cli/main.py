@@ -168,7 +168,7 @@ def cmd_gateway(args):
 
 
 def cmd_whatsapp(args):
-    """Set up WhatsApp: enable, configure allowed users, install bridge, pair via QR."""
+    """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     import os
     import subprocess
     from pathlib import Path
@@ -177,12 +177,55 @@ def cmd_whatsapp(args):
     print()
     print("⚕ WhatsApp Setup")
     print("=" * 50)
-    print()
-    print("This will link your WhatsApp account to Hermes Agent.")
-    print("The agent will respond to messages sent to your WhatsApp number.")
-    print()
 
-    # Step 1: Enable WhatsApp
+    # ── Step 1: Choose mode ──────────────────────────────────────────────
+    current_mode = get_env_value("WHATSAPP_MODE") or ""
+    if not current_mode:
+        print()
+        print("How will you use WhatsApp with Hermes?")
+        print()
+        print("  1. Separate bot number (recommended)")
+        print("     People message the bot's number directly — cleanest experience.")
+        print("     Requires a second phone number with WhatsApp installed on a device.")
+        print()
+        print("  2. Personal number (self-chat)")
+        print("     You message yourself to talk to the agent.")
+        print("     Quick to set up, but the UX is less intuitive.")
+        print()
+        try:
+            choice = input("  Choose [1/2]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            return
+
+        if choice == "1":
+            save_env_value("WHATSAPP_MODE", "bot")
+            wa_mode = "bot"
+            print("  ✓ Mode: separate bot number")
+            print()
+            print("  ┌─────────────────────────────────────────────────┐")
+            print("  │  Getting a second number for the bot:           │")
+            print("  │                                                 │")
+            print("  │  Easiest: Install WhatsApp Business (free app)  │")
+            print("  │  on your phone with a second number:            │")
+            print("  │    • Dual-SIM: use your 2nd SIM slot            │")
+            print("  │    • Google Voice: free US number (voice.google) │")
+            print("  │    • Prepaid SIM: $3-10, verify once            │")
+            print("  │                                                 │")
+            print("  │  WhatsApp Business runs alongside your personal │")
+            print("  │  WhatsApp — no second phone needed.             │")
+            print("  └─────────────────────────────────────────────────┘")
+        else:
+            save_env_value("WHATSAPP_MODE", "self-chat")
+            wa_mode = "self-chat"
+            print("  ✓ Mode: personal number (self-chat)")
+    else:
+        wa_mode = current_mode
+        mode_label = "separate bot number" if wa_mode == "bot" else "personal number (self-chat)"
+        print(f"\n✓ Mode: {mode_label}")
+
+    # ── Step 2: Enable WhatsApp ──────────────────────────────────────────
+    print()
     current = get_env_value("WHATSAPP_ENABLED")
     if current and current.lower() == "true":
         print("✓ WhatsApp is already enabled")
@@ -190,26 +233,36 @@ def cmd_whatsapp(args):
         save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp enabled")
 
-    # Step 2: Allowed users
+    # ── Step 3: Allowed users ────────────────────────────────────────────
     current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
     if current_users:
         print(f"✓ Allowed users: {current_users}")
-        response = input("\n  Update allowed users? [y/N] ").strip()
+        try:
+            response = input("\n  Update allowed users? [y/N] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            response = "n"
         if response.lower() in ("y", "yes"):
-            phone = input("  Phone number(s) (e.g. 15551234567, comma-separated): ").strip()
+            if wa_mode == "bot":
+                phone = input("  Phone numbers that can message the bot (comma-separated): ").strip()
+            else:
+                phone = input("  Your phone number (e.g. 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
     else:
         print()
-        phone = input("  Your phone number (e.g. 15551234567): ").strip()
+        if wa_mode == "bot":
+            print("  Who should be allowed to message the bot?")
+            phone = input("  Phone numbers (comma-separated, or * for anyone): ").strip()
+        else:
+            phone = input("  Your phone number (e.g. 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
         else:
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
-    # Step 3: Install bridge deps
+    # ── Step 4: Install bridge dependencies ──────────────────────────────
     project_root = Path(__file__).resolve().parents[1]
     bridge_dir = project_root / "scripts" / "whatsapp-bridge"
     bridge_script = bridge_dir / "bridge.js"
@@ -234,13 +287,16 @@ def cmd_whatsapp(args):
     else:
         print("✓ Bridge dependencies already installed")
 
-    # Step 4: Check for existing session
+    # ── Step 5: Check for existing session ───────────────────────────────
     session_dir = Path.home() / ".hermes" / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     if (session_dir / "creds.json").exists():
         print("✓ Existing WhatsApp session found")
-        response = input("\n  Re-pair? This will clear the existing session. [y/N] ").strip()
+        try:
+            response = input("\n  Re-pair? This will clear the existing session. [y/N] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            response = "n"
         if response.lower() in ("y", "yes"):
             import shutil
             shutil.rmtree(session_dir, ignore_errors=True)
@@ -251,11 +307,16 @@ def cmd_whatsapp(args):
             print("  Start the gateway with: hermes gateway")
             return
 
-    # Step 5: Run bridge in pair-only mode (no HTTP server, exits after QR scan)
+    # ── Step 6: QR code pairing ──────────────────────────────────────────
     print()
     print("─" * 50)
-    print("📱 Scan the QR code with your phone:")
-    print("   WhatsApp → Settings → Linked Devices → Link a Device")
+    if wa_mode == "bot":
+        print("📱 Open WhatsApp (or WhatsApp Business) on the")
+        print("   phone with the BOT's number, then scan:")
+    else:
+        print("📱 Open WhatsApp on your phone, then scan:")
+    print()
+    print("   Settings → Linked Devices → Link a Device")
     print("─" * 50)
     print()
 
@@ -267,12 +328,28 @@ def cmd_whatsapp(args):
     except KeyboardInterrupt:
         pass
 
+    # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
     if (session_dir / "creds.json").exists():
         print("✓ WhatsApp paired successfully!")
         print()
-        print("Start the gateway with: hermes gateway")
-        print("Or install as a service: hermes gateway install")
+        if wa_mode == "bot":
+            print("  Next steps:")
+            print("    1. Start the gateway:  hermes gateway")
+            print("    2. Send a message to the bot's WhatsApp number")
+            print("    3. The agent will reply automatically")
+            print()
+            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+        else:
+            print("  Next steps:")
+            print("    1. Start the gateway:  hermes gateway")
+            print("    2. Open WhatsApp → Message Yourself")
+            print("    3. Type a message — the agent will reply")
+            print()
+            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  so you can tell them apart from your own messages.")
+        print()
+        print("  Or install as a service: hermes gateway install")
     else:
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
@@ -697,6 +774,96 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
+def _update_via_zip(args):
+    """Update Hermes Agent by downloading a ZIP archive.
+    
+    Used on Windows when git file I/O is broken (antivirus, NTFS filter 
+    drivers causing 'Invalid argument' errors on file creation).
+    """
+    import shutil
+    import tempfile
+    import zipfile
+    from urllib.request import urlretrieve
+    
+    branch = "main"
+    zip_url = f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+    
+    print("→ Downloading latest version...")
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        urlretrieve(zip_url, zip_path)
+        
+        print("→ Extracting...")
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(tmp_dir)
+        
+        # GitHub ZIPs extract to hermes-agent-<branch>/
+        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
+        if not os.path.isdir(extracted):
+            # Try to find it
+            for d in os.listdir(tmp_dir):
+                candidate = os.path.join(tmp_dir, d)
+                if os.path.isdir(candidate) and d != "__MACOSX":
+                    extracted = candidate
+                    break
+        
+        # Copy updated files over existing installation, preserving venv/node_modules/.git
+        preserve = {'venv', 'node_modules', '.git', '__pycache__', '.env'}
+        update_count = 0
+        for item in os.listdir(extracted):
+            if item in preserve:
+                continue
+            src = os.path.join(extracted, item)
+            dst = os.path.join(str(PROJECT_ROOT), item)
+            if os.path.isdir(src):
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+            update_count += 1
+        
+        print(f"✓ Updated {update_count} items from ZIP")
+        
+        # Cleanup
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        
+    except Exception as e:
+        print(f"✗ ZIP update failed: {e}")
+        sys.exit(1)
+    
+    # Reinstall Python dependencies
+    print("→ Updating Python dependencies...")
+    import subprocess
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        subprocess.run(
+            [uv_bin, "pip", "install", "-e", ".", "--quiet"],
+            cwd=PROJECT_ROOT, check=True,
+            env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        )
+    else:
+        venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
+        if venv_pip.exists():
+            subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+    
+    # Sync skills
+    try:
+        from tools.skills_sync import sync_skills
+        print("→ Checking for new bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
+        else:
+            print("  ✓ Skills are up to date")
+    except Exception:
+        pass
+    
+    print()
+    print("✓ Update complete!")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import subprocess
@@ -705,21 +872,44 @@ def cmd_update(args):
     print("⚕ Updating Hermes Agent...")
     print()
     
-    # Check if we're in a git repo
+    # Try git-based update first, fall back to ZIP download on Windows
+    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    use_zip_update = False
     git_dir = PROJECT_ROOT / '.git'
-    if not git_dir.exists():
-        print("✗ Not a git repository. Please reinstall:")
-        print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
-        sys.exit(1)
     
+    if not git_dir.exists():
+        if sys.platform == "win32":
+            use_zip_update = True
+        else:
+            print("✗ Not a git repository. Please reinstall:")
+            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
+            sys.exit(1)
+    
+    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
+    # due to filesystem atomicity issues. Set the recommended workaround.
+    if sys.platform == "win32" and git_dir.exists():
+        subprocess.run(
+            ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
+            cwd=PROJECT_ROOT, check=False, capture_output=True
+        )
+
+    if use_zip_update:
+        # ZIP-based update for Windows when git is broken
+        _update_via_zip(args)
+        return
+
     # Fetch and pull
     try:
         print("→ Fetching updates...")
-        subprocess.run(["git", "fetch", "origin"], cwd=PROJECT_ROOT, check=True)
+        git_cmd = ["git"]
+        if sys.platform == "win32":
+            git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        
+        subprocess.run(git_cmd + ["fetch", "origin"], cwd=PROJECT_ROOT, check=True)
         
         # Get current branch
         result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -729,7 +919,7 @@ def cmd_update(args):
         
         # Check if there are updates
         result = subprocess.run(
-            ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -743,7 +933,7 @@ def cmd_update(args):
         
         print(f"→ Found {commit_count} new commit(s)")
         print("→ Pulling updates...")
-        subprocess.run(["git", "pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+        subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
         
         # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
         print("→ Updating Python dependencies...")
@@ -755,7 +945,7 @@ def cmd_update(args):
                 env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
             )
         else:
-            venv_pip = PROJECT_ROOT / "venv" / "bin" / "pip"
+            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
             if venv_pip.exists():
                 subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
             else:
@@ -851,8 +1041,14 @@ def cmd_update(args):
         print("  hermes model              # Select provider and model")
         
     except subprocess.CalledProcessError as e:
-        print(f"✗ Update failed: {e}")
-        sys.exit(1)
+        if sys.platform == "win32":
+            print(f"⚠ Git update failed: {e}")
+            print("→ Falling back to ZIP download...")
+            print()
+            _update_via_zip(args)
+        else:
+            print(f"✗ Update failed: {e}")
+            sys.exit(1)
 
 
 def main():

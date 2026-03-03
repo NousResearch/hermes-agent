@@ -386,6 +386,11 @@ def _run_cleanup():
         _cleanup_all_browsers()
     except Exception:
         pass
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except Exception:
+        pass
 
 # ============================================================================
 # ASCII Art & Branding
@@ -685,6 +690,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/reload-mcp": "Reload MCP servers from config.yaml",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -847,7 +853,7 @@ class HermesCLI:
             or os.getenv("OPENAI_BASE_URL")
             or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
         )
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > config file > env var > default
@@ -916,6 +922,15 @@ class HermesCLI:
         
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
+        self._last_invalidate: float = 0.0  # throttle UI repaints
+
+    def _invalidate(self, min_interval: float = 0.25) -> None:
+        """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
+        import time as _time
+        now = _time.monotonic()
+        if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
+            self._last_invalidate = now
+            self._app.invalidate()
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1756,6 +1771,8 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/reload-mcp":
+            self._reload_mcp()
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -1877,6 +1894,91 @@ class HermesCLI:
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
 
+    def _reload_mcp(self):
+        """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
+
+        After reconnecting, refreshes the agent's tool list so the model
+        sees the updated tools on the next turn.
+        """
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            # Capture old server names
+            with _lock:
+                old_servers = set(_servers.keys())
+
+            print("🔄 Reloading MCP servers...")
+
+            # Shutdown existing connections
+            shutdown_mcp_servers()
+
+            # Reconnect (reads config.yaml fresh)
+            new_tools = discover_mcp_tools()
+
+            # Compute what changed
+            with _lock:
+                connected_servers = set(_servers.keys())
+
+            added = connected_servers - old_servers
+            removed = old_servers - connected_servers
+            reconnected = connected_servers & old_servers
+
+            if reconnected:
+                print(f"  ♻️  Reconnected: {', '.join(sorted(reconnected))}")
+            if added:
+                print(f"  ➕ Added: {', '.join(sorted(added))}")
+            if removed:
+                print(f"  ➖ Removed: {', '.join(sorted(removed))}")
+            if not connected_servers:
+                print("  No MCP servers connected.")
+            else:
+                print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+            # Refresh the agent's tool list so the model can call new tools
+            if self.agent is not None:
+                from model_tools import get_tool_definitions
+                self.agent.tools = get_tool_definitions(
+                    enabled_toolsets=self.agent.enabled_toolsets
+                    if hasattr(self.agent, "enabled_toolsets") else None,
+                    quiet_mode=True,
+                )
+                self.agent.valid_tool_names = {
+                    tool["function"]["name"] for tool in self.agent.tools
+                } if self.agent.tools else set()
+
+            # Inject a message at the END of conversation history so the
+            # model knows tools changed.  Appended after all existing
+            # messages to preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added servers: {', '.join(sorted(added))}")
+            if removed:
+                change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
+            if reconnected:
+                change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
+            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
+            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            self.conversation_history.append({
+                "role": "user",
+                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+            })
+
+            # Persist session immediately so the session log reflects the
+            # updated tools list (self.agent.tools was refreshed above).
+            if self.agent is not None:
+                try:
+                    self.agent._persist_session(
+                        self.conversation_history,
+                        self.conversation_history,
+                    )
+                except Exception:
+                    pass  # Best-effort
+
+            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+
+        except Exception as e:
+            print(f"  ❌ MCP reload failed: {e}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -1903,8 +2005,7 @@ class HermesCLI:
         self._clarify_freetext = is_open_ended
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         # Poll in 1-second ticks so the countdown refreshes in the UI.
         # Each tick triggers an invalidate() to repaint the hint line.
@@ -1918,15 +2019,13 @@ class HermesCLI:
                 if remaining <= 0:
                     break
                 # Repaint so the countdown updates
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
             "The user did not provide a response within the time limit. "
@@ -1951,16 +2050,14 @@ class HermesCLI:
         }
         self._sudo_deadline = _time.monotonic() + timeout
 
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         while True:
             try:
                 result = response_queue.get(timeout=1)
                 self._sudo_state = None
                 self._sudo_deadline = 0
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
                 if result:
                     _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
                 else:
@@ -1970,13 +2067,11 @@ class HermesCLI:
                 remaining = self._sudo_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         self._sudo_state = None
         self._sudo_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
@@ -2002,28 +2097,24 @@ class HermesCLI:
         }
         self._approval_deadline = _time.monotonic() + timeout
 
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
 
         while True:
             try:
                 result = response_queue.get(timeout=1)
                 self._approval_state = None
                 self._approval_deadline = 0
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
                 return result
             except queue.Empty:
                 remaining = self._approval_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                if hasattr(self, '_app') and self._app:
-                    self._app.invalidate()
+                self._invalidate()
 
         self._approval_state = None
         self._approval_deadline = 0
-        if hasattr(self, '_app') and self._app:
-            self._app.invalidate()
+        self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
         return "deny"
 

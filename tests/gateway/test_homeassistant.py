@@ -569,19 +569,19 @@ class TestToolsetIntegration:
         from toolsets import resolve_toolset
 
         tools = resolve_toolset("homeassistant")
-        assert set(tools) == {"ha_list_entities", "ha_get_state", "ha_call_service"}
+        assert set(tools) == {"ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"}
 
     def test_gateway_toolset_includes_ha_tools(self):
         from toolsets import resolve_toolset
 
         gateway_tools = resolve_toolset("hermes-gateway")
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
+        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
             assert tool in gateway_tools
 
     def test_hermes_core_tools_includes_ha(self):
         from toolsets import _HERMES_CORE_TOOLS
 
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
+        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
             assert tool in _HERMES_CORE_TOOLS
 
 

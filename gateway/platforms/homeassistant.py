@@ -28,10 +28,6 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     aiohttp = None  # type: ignore[assignment]
 
-import sys
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -72,6 +68,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         # Connection state
         self._session: Optional["aiohttp.ClientSession"] = None
         self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
+        self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._msg_id: int = 0
 
@@ -103,11 +100,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to HA WebSocket API and subscribe to events."""
         if not AIOHTTP_AVAILABLE:
-            print(f"[{self.name}] aiohttp not installed. Run: pip install aiohttp")
+            logger.warning("[%s] aiohttp not installed. Run: pip install aiohttp", self.name)
             return False
 
         if not self._hass_token:
-            print(f"[{self.name}] No HASS_TOKEN configured")
+            logger.warning("[%s] No HASS_TOKEN configured", self.name)
             return False
 
         try:
@@ -115,14 +112,17 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             if not success:
                 return False
 
+            # Dedicated REST session for send() calls
+            self._rest_session = aiohttp.ClientSession()
+
             # Start background listener
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
-            print(f"[{self.name}] Connected to {self._hass_url}")
+            logger.info("[%s] Connected to %s", self.name, self._hass_url)
             return True
 
         except Exception as e:
-            print(f"[{self.name}] Failed to connect: {e}")
+            logger.error("[%s] Failed to connect: %s", self.name, e)
             return False
 
     async def _ws_connect(self) -> bool:
@@ -191,7 +191,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._listen_task = None
 
         await self._cleanup_ws()
-        print(f"[{self.name}] Disconnected")
+        if self._rest_session and not self._rest_session.closed:
+            await self._rest_session.close()
+        self._rest_session = None
+        logger.info("[%s] Disconnected", self.name)
 
     # ------------------------------------------------------------------
     # Event listener
@@ -214,7 +217,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Reconnect with backoff
             delay = self._BACKOFF_STEPS[min(backoff_idx, len(self._BACKOFF_STEPS) - 1)]
-            print(f"[{self.name}] Reconnecting in {delay}s...")
+            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
             await asyncio.sleep(delay)
             backoff_idx += 1
 
@@ -223,7 +226,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 success = await self._ws_connect()
                 if success:
                     backoff_idx = 0  # Reset on successful reconnect
-                    print(f"[{self.name}] Reconnected")
+                    logger.info("[%s] Reconnected", self.name)
             except Exception as e:
                 logger.warning("[%s] Reconnection failed: %s", self.name, e)
 
@@ -385,8 +388,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            if self._rest_session:
+                async with self._rest_session.post(
                     url,
                     headers=headers,
                     json=payload,
@@ -397,6 +400,19 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     else:
                         body = await resp.text()
                         return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+            else:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status < 300:
+                            return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                        else:
+                            body = await resp.text()
+                            return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
 
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending notification to HA")

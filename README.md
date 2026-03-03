@@ -271,22 +271,30 @@ SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
 
 ### WhatsApp Setup
 
-WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
+WhatsApp doesn't have a simple bot API like Telegram or Discord. Hermes includes a built-in bridge using [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web.
 
-1. **Run the setup command:**
+**Two modes are supported:**
+
+| Mode | How it works | Best for |
+|------|-------------|----------|
+| **Separate bot number** (recommended) | Dedicate a phone number to the bot. People message that number directly. | Clean UX, multiple users |
+| **Personal self-chat** | Use your own WhatsApp. You message yourself to talk to the agent. | Quick setup, single user |
+
+**Setup:**
 
 ```bash
 hermes whatsapp
 ```
 
-This will:
-- Enable WhatsApp in your config
-- Ask for your phone number (for the allowlist)
-- Install bridge dependencies (Node.js required)
-- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
-- Exit automatically once paired
+The wizard will:
+1. Ask which mode you want
+2. For **bot mode**: guide you through getting a second number (WhatsApp Business app on a dual-SIM, Google Voice, or cheap prepaid SIM)
+3. Configure the allowlist
+4. Install bridge dependencies (Node.js required)
+5. Display a QR code — scan from WhatsApp (or WhatsApp Business) → Settings → Linked Devices → Link a Device
+6. Exit once paired
 
-2. **Start the gateway:**
+**Start the gateway:**
 
 ```bash
 hermes gateway            # Foreground
@@ -295,7 +303,7 @@ hermes gateway install    # Or install as a system service (Linux)
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
 
-> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" so you can distinguish them from your own messages in self-chat.
+> **Note:** WhatsApp Web sessions can disconnect if WhatsApp updates their protocol. The gateway reconnects automatically. If you see persistent failures, re-pair with `hermes whatsapp`. Agent responses are prefixed with "⚕ Hermes Agent" for easy identification.
 
 See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 
@@ -1635,6 +1643,7 @@ All variables go in `~/.hermes/.env`. Run `hermes config set VAR value` to set t
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
+| `WHATSAPP_MODE` | `bot` (separate number, recommended) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: ~) |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |

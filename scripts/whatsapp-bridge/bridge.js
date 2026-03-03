@@ -34,6 +34,7 @@ function getArg(name, defaultVal) {
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const PAIR_ONLY = args.includes('--pair-only');
+const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -110,11 +111,16 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
-      // Skip own messages UNLESS it's a self-chat ("Message Yourself")
+      // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        // Always skip in groups and status
         if (isGroup || chatId.includes('status')) continue;
-        // In DMs: only allow self-chat (remoteJid matches our own number)
+
+        if (WHATSAPP_MODE === 'bot') {
+          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
+          continue;
+        }
+
+        // Self-chat mode: only allow messages in the user's own self-chat
         const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
         const chatNumber = chatId.replace(/@.*/, '');
         const isSelfChat = myNumber && chatNumber === myNumber;
@@ -270,7 +276,7 @@ if (PAIR_ONLY) {
   startSocket();
 } else {
   app.listen(PORT, () => {
-    console.log(`🌉 WhatsApp bridge listening on port ${PORT}`);
+    console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.length > 0) {
       console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);

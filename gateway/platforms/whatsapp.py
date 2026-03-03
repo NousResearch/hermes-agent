@@ -160,12 +160,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
             
             # Start the bridge process in its own process group
+            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),
+                    "--mode", whatsapp_mode,
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -390,11 +390,17 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
     
-    # Check if this is an existing installation with config (any provider or config file)
+    # Check if this is an existing installation with a provider configured.
+    # Just having config.yaml is NOT enough — the installer creates it from
+    # a template, so it always exists after install. We need an actual
+    # inference provider to consider it "existing" (otherwise quick mode
+    # would skip provider selection, leaving hermes non-functional).
+    from hermes_cli.auth import get_active_provider
+    active_provider = get_active_provider()
     is_existing = (
         get_env_value("OPENROUTER_API_KEY") is not None
         or get_env_value("OPENAI_BASE_URL") is not None
-        or get_config_path().exists()
+        or active_provider is not None
     )
     
     # Import migration helpers

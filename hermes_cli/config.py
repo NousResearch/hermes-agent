@@ -222,6 +222,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "VOICE_TOOLS_OPENAI_BASE_URL": {
+        "description": "Optional base URL override for voice tools (Whisper/TTS). Falls back to OPENAI_BASE_URL.",
+        "prompt": "Voice tools OpenAI-compatible base URL",
+        "url": "https://platform.openai.com/docs/api-reference",
+        "tools": ["voice_transcription", "openai_tts"],
+        "password": False,
+        "category": "tool",
+    },
     "ELEVENLABS_API_KEY": {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",

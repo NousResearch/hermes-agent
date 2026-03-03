@@ -877,22 +877,6 @@ function Write-Completion {
 function Main {
     Write-Banner
     
-    # Migrate from old install location (~\.hermes) if it exists and new location doesn't
-    $oldHome = "$env:USERPROFILE\.hermes"
-    if (($HermesHome -ne $oldHome) -and (Test-Path $oldHome) -and -not (Test-Path $HermesHome)) {
-        Write-Info "Found existing installation at $oldHome"
-        Write-Info "Moving to new location: $HermesHome"
-        try {
-            # Create parent directory
-            New-Item -ItemType Directory -Force -Path (Split-Path $HermesHome) -ErrorAction SilentlyContinue | Out-Null
-            Move-Item -Path $oldHome -Destination $HermesHome -Force
-            Write-Success "Migrated $oldHome → $HermesHome"
-        } catch {
-            Write-Warn "Could not auto-migrate: $_"
-            Write-Info "You can move it manually later: Move-Item $oldHome $HermesHome"
-        }
-    }
-    
     if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
     if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
     if (-not (Test-Git)) { throw "Git not found — install from https://git-scm.com/download/win" }

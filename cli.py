@@ -1962,6 +1962,18 @@ class HermesCLI:
                 "role": "user",
                 "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
+
+            # Persist session immediately so the session log reflects the
+            # updated tools list (self.agent.tools was refreshed above).
+            if self.agent is not None:
+                try:
+                    self.agent._persist_session(
+                        self.conversation_history,
+                        self.conversation_history,
+                    )
+                except Exception:
+                    pass  # Best-effort
+
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
         except Exception as e:

@@ -3017,6 +3017,8 @@ class HermesCLI:
             self._handle_background_command(cmd_original)
         elif cmd_lower.startswith("/skin"):
             self._handle_skin_command(cmd_original)
+        elif cmd_lower.startswith("/voice"):
+            self._handle_voice_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -3511,6 +3513,201 @@ class HermesCLI:
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
 
+    # ====================================================================
+    # Voice mode methods
+    # ====================================================================
+
+    def _voice_start_recording(self):
+        """Start capturing audio from the microphone."""
+        from tools.voice_mode import AudioRecorder, check_voice_requirements
+
+        reqs = check_voice_requirements()
+        if not reqs["audio_available"]:
+            raise RuntimeError(
+                "Voice mode requires sounddevice and numpy.\n"
+                "Install with: pip install sounddevice numpy\n"
+                "Or: pip install hermes-agent[voice]"
+            )
+        if not reqs["stt_key_set"]:
+            raise RuntimeError(
+                "Voice mode requires VOICE_TOOLS_OPENAI_KEY for transcription.\n"
+                "Get one at: https://platform.openai.com/api-keys"
+            )
+
+        if self._voice_recorder is None:
+            self._voice_recorder = AudioRecorder()
+
+        self._voice_recorder.start()
+        self._voice_recording = True
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(Ctrl+Space to stop, Ctrl+C to cancel){_RST}")
+
+    def _voice_stop_and_transcribe(self):
+        """Stop recording, transcribe via STT, and queue the transcript as input."""
+        try:
+            if self._voice_recorder is None:
+                return
+
+            wav_path = self._voice_recorder.stop()
+            self._voice_recording = False
+
+            if wav_path is None:
+                _cprint(f"{_DIM}No speech detected (recording too short).{_RST}")
+                return
+
+            self._voice_processing = True
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            _cprint(f"{_DIM}Transcribing...{_RST}")
+
+            # Get STT model from config
+            stt_model = None
+            try:
+                from hermes_cli.config import load_config
+                stt_config = load_config().get("stt", {})
+                stt_model = stt_config.get("model")
+            except Exception:
+                pass
+
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(wav_path, model=stt_model)
+
+            if result.get("success") and result.get("transcript", "").strip():
+                transcript = result["transcript"].strip()
+                _cprint(f"\n{_GOLD}●{_RST} {_BOLD}{transcript}{_RST}")
+                self._pending_input.put(transcript)
+            elif result.get("success"):
+                _cprint(f"{_DIM}No speech detected.{_RST}")
+            else:
+                error = result.get("error", "Unknown error")
+                _cprint(f"\n{_DIM}Transcription failed: {error}{_RST}")
+
+        except Exception as e:
+            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+        finally:
+            self._voice_processing = False
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            # Clean up temp file
+            try:
+                if wav_path and os.path.isfile(wav_path):
+                    os.unlink(wav_path)
+            except Exception:
+                pass
+
+    def _voice_speak_response(self, text: str):
+        """Speak the agent's response aloud using TTS (runs in background thread)."""
+        if not self._voice_tts:
+            return
+        try:
+            from tools.tts_tool import text_to_speech_tool
+            from tools.voice_mode import play_audio_file
+            import json
+
+            # Truncate to TTS limit
+            tts_text = text[:4000] if len(text) > 4000 else text
+            result_json = text_to_speech_tool(text=tts_text)
+            result = json.loads(result_json)
+
+            if result.get("success") and result.get("file_path"):
+                play_audio_file(result["file_path"])
+        except Exception as e:
+            logger.debug("Voice TTS playback failed: %s", e)
+
+    def _handle_voice_command(self, command: str):
+        """Handle /voice [on|off|tts|status] command."""
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            self._enable_voice_mode()
+        elif subcommand == "off":
+            self._disable_voice_mode()
+        elif subcommand == "tts":
+            self._toggle_voice_tts()
+        elif subcommand == "status":
+            self._show_voice_status()
+        elif subcommand == "":
+            # Toggle
+            if self._voice_mode:
+                self._disable_voice_mode()
+            else:
+                self._enable_voice_mode()
+        else:
+            print(f"Unknown voice subcommand: {subcommand}")
+            print("Usage: /voice [on|off|tts|status]")
+
+    def _enable_voice_mode(self):
+        """Enable voice mode after checking requirements."""
+        from tools.voice_mode import check_voice_requirements
+
+        reqs = check_voice_requirements()
+        if not reqs["available"]:
+            _cprint(f"\n{_GOLD}Voice mode requirements not met:{_RST}")
+            for line in reqs["details"].split("\n"):
+                _cprint(f"  {_DIM}{line}{_RST}")
+            if reqs["missing_packages"]:
+                _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
+                _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
+            return
+
+        self._voice_mode = True
+
+        # Check config for auto_tts
+        try:
+            from hermes_cli.config import load_config
+            voice_config = load_config().get("voice", {})
+            if voice_config.get("auto_tts", False):
+                self._voice_tts = True
+        except Exception:
+            pass
+
+        tts_status = " (TTS enabled)" if self._voice_tts else ""
+        _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
+        _cprint(f"  {_DIM}Ctrl+Space to start/stop recording{_RST}")
+        _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
+        _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+
+    def _disable_voice_mode(self):
+        """Disable voice mode and cancel any active recording."""
+        if self._voice_recording and self._voice_recorder:
+            self._voice_recorder.cancel()
+            self._voice_recording = False
+
+        self._voice_mode = False
+        self._voice_tts = False
+        _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
+
+    def _toggle_voice_tts(self):
+        """Toggle TTS output for voice mode."""
+        if not self._voice_mode:
+            _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
+            return
+
+        self._voice_tts = not self._voice_tts
+        status = "enabled" if self._voice_tts else "disabled"
+
+        if self._voice_tts:
+            from tools.tts_tool import check_tts_requirements
+            if not check_tts_requirements():
+                _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+
+        _cprint(f"{_GOLD}Voice TTS {status}.{_RST}")
+
+    def _show_voice_status(self):
+        """Show current voice mode status."""
+        from tools.voice_mode import check_voice_requirements
+
+        reqs = check_voice_requirements()
+
+        _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
+        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
+        _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
+        _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
+        _cprint(f"  Record key: Ctrl+Space")
+        _cprint(f"\n  {_BOLD}Requirements:{_RST}")
+        for line in reqs["details"].split("\n"):
+            _cprint(f"    {line}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -3876,12 +4073,23 @@ class HermesCLI:
                     padding=(1, 2),
                 ))
 
+
+
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
-            
+
+            # Speak response aloud if voice TTS is enabled
+            if self._voice_tts and response:
+                threading.Thread(
+                    target=self._voice_speak_response,
+                    args=(response,),
+                    daemon=True,
+                ).start()
+
+
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop
             if pending_message and hasattr(self, '_pending_input'):
@@ -3964,6 +4172,10 @@ class HermesCLI:
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
+        if self._voice_recording:
+            return [("class:voice-recording", f"● {state_suffix}")]
+        if self._voice_processing:
+            return [("class:voice-processing", f"◉ {state_suffix}")]
         if self._sudo_state:
             return [("class:sudo-prompt", f"🔐 {state_suffix}")]
         if self._secret_state:
@@ -3978,6 +4190,8 @@ class HermesCLI:
             return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
         if self._agent_running:
             return [("class:prompt-working", f"⚕ {state_suffix}")]
+        if self._voice_mode:
+            return [("class:voice-prompt", f"🎤 {state_suffix}")]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -4069,6 +4283,13 @@ class HermesCLI:
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
+
+        # Voice mode state
+        self._voice_mode = False        # Whether voice mode is enabled
+        self._voice_tts = False         # Whether TTS output is enabled
+        self._voice_recorder = None     # AudioRecorder instance (lazy init)
+        self._voice_recording = False   # Whether currently recording
+        self._voice_processing = False  # Whether STT is in progress
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -4254,12 +4475,21 @@ class HermesCLI:
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
             
             Priority:
+            0. Cancel active voice recording
             1. Cancel active sudo/approval/clarify prompt
             2. Interrupt the running agent (first press)
             3. Force exit (second press within 2s, or when idle)
             """
             import time as _time
             now = _time.time()
+
+            # Cancel active voice recording
+            if cli_ref._voice_recording and cli_ref._voice_recorder:
+                cli_ref._voice_recorder.cancel()
+                cli_ref._voice_recording = False
+                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+                event.app.invalidate()
+                return
 
             # Cancel sudo prompt
             if self._sudo_state:
@@ -4367,6 +4597,30 @@ class HermesCLI:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
 
+        @kb.add('c-space')
+        def handle_ctrl_space(event):
+            """Toggle voice recording when voice mode is active."""
+            if not cli_ref._voice_mode:
+                return
+            if cli_ref._agent_running:
+                return
+            # Block recording during interactive prompts
+            if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
+                return
+            if cli_ref._voice_recording:
+                cli_ref._voice_recording = False
+                event.app.invalidate()
+                threading.Thread(
+                    target=cli_ref._voice_stop_and_transcribe,
+                    daemon=True,
+                ).start()
+            else:
+                try:
+                    cli_ref._voice_start_recording()
+                    event.app.invalidate()
+                except Exception as e:
+                    _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
@@ -4460,6 +4714,10 @@ class HermesCLI:
                 return Transformation(fragments=ti.fragments)
 
         def _get_placeholder():
+            if cli_ref._voice_recording:
+                return "recording... Ctrl+Space to stop, Ctrl+C to cancel"
+            if cli_ref._voice_processing:
+                return "transcribing..."
             if cli_ref._sudo_state:
                 return "type password (hidden), Enter to skip"
             if cli_ref._secret_state:
@@ -4476,6 +4734,8 @@ class HermesCLI:
                 return f"{frame} {status}"
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
+            if cli_ref._voice_mode:
+                return "type or Ctrl+Space to record"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -4869,6 +5129,10 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
+            # Voice mode
+            'voice-prompt': '#87CEEB',
+            'voice-recording': '#FF4444 bold',
+            'voice-processing': '#FFA500 italic',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
@@ -4993,6 +5257,18 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
+            # Cancel active voice recording
+            if hasattr(self, '_voice_recorder') and self._voice_recorder and self._voice_recording:
+                try:
+                    self._voice_recorder.cancel()
+                except Exception:
+                    pass
+            # Clean up old temp voice recordings
+            try:
+                from tools.voice_mode import cleanup_temp_recordings
+                cleanup_temp_recordings()
+            except Exception:
+                pass
             # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)

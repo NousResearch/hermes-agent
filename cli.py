@@ -3539,10 +3539,27 @@ class HermesCLI:
         if self._voice_recorder is None:
             self._voice_recorder = AudioRecorder()
 
-        self._voice_recorder.start()
+        def _on_silence():
+            """Called by AudioRecorder when silence is detected after speech."""
+            with self._voice_lock:
+                if not self._voice_recording:
+                    return
+            _cprint(f"\n{_DIM}Silence detected, auto-stopping...{_RST}")
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+            self._voice_stop_and_transcribe()
+
+        self._voice_recorder.start(on_silence_stop=_on_silence)
         with self._voice_lock:
             self._voice_recording = True
-        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(Ctrl+R to stop, Ctrl+C to cancel){_RST}")
+
+        # Audio cue: single beep on recording start
+        try:
+            from tools.voice_mode import play_beep
+            threading.Thread(target=play_beep, kwargs={"frequency": 880, "count": 1}, daemon=True).start()
+        except Exception:
+            pass
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+R to stop & exit continuous){_RST}")
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
@@ -3553,6 +3570,13 @@ class HermesCLI:
             wav_path = self._voice_recorder.stop()
             with self._voice_lock:
                 self._voice_recording = False
+
+            # Audio cue: double beep on recording stop
+            try:
+                from tools.voice_mode import play_beep
+                threading.Thread(target=play_beep, kwargs={"frequency": 660, "count": 2}, daemon=True).start()
+            except Exception:
+                pass
 
             if wav_path is None:
                 _cprint(f"{_DIM}No speech detected (recording too short).{_RST}")
@@ -3603,6 +3627,7 @@ class HermesCLI:
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
             return
+        self._voice_tts_done.clear()
         try:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
@@ -3649,6 +3674,8 @@ class HermesCLI:
         except Exception as e:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
+        finally:
+            self._voice_tts_done.set()
 
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""
@@ -3714,6 +3741,7 @@ class HermesCLI:
                 self._voice_recording = False
             self._voice_mode = False
             self._voice_tts = False
+            self._voice_continuous = False
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
     def _toggle_voice_tts(self):
@@ -4331,6 +4359,9 @@ class HermesCLI:
         self._voice_recorder = None     # AudioRecorder instance (lazy init)
         self._voice_recording = False   # Whether currently recording
         self._voice_processing = False  # Whether STT is in progress
+        self._voice_continuous = False  # Whether to auto-restart after agent responds
+        self._voice_tts_done = threading.Event()  # Signals TTS playback finished
+        self._voice_tts_done.set()  # Initially "done" (no TTS pending)
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -4650,7 +4681,10 @@ class HermesCLI:
             if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
                 return
             if cli_ref._voice_recording:
-                cli_ref._voice_recording = False
+                # Manual stop via Ctrl+R: stop continuous mode
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = False
+                    cli_ref._voice_recording = False
                 event.app.invalidate()
                 threading.Thread(
                     target=cli_ref._voice_stop_and_transcribe,
@@ -4658,6 +4692,8 @@ class HermesCLI:
                 ).start()
             else:
                 try:
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = True
                     cli_ref._voice_start_recording()
                     event.app.invalidate()
                 except Exception as e:
@@ -5267,13 +5303,25 @@ class HermesCLI:
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
-                    
+
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
                         app.invalidate()  # Refresh status line
+
+                        # Continuous voice: auto-restart recording after agent responds
+                        if self._voice_mode and self._voice_continuous and not self._voice_recording:
+                            try:
+                                # Wait for TTS to finish so we don't record the speaker
+                                if self._voice_tts:
+                                    self._voice_tts_done.wait(timeout=60)
+                                    time.sleep(0.3)  # Brief pause after TTS ends
+                                self._voice_start_recording()
+                                app.invalidate()
+                            except Exception as e:
+                                _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                     
                 except Exception as e:
                     print(f"Error: {e}")

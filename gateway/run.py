@@ -92,6 +92,11 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+        # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
+        # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
+        _tz_cfg = _cfg.get("timezone", "")
+        if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
+            os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

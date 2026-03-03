@@ -95,9 +95,6 @@ class _CodexCompletionsAdapter:
             "store": False,
         }
 
-        max_tokens = kwargs.get("max_output_tokens") or kwargs.get("max_completion_tokens") or kwargs.get("max_tokens")
-        if max_tokens is not None:
-            resp_kwargs["max_output_tokens"] = int(max_tokens)
         if temperature is not None:
             resp_kwargs["temperature"] = temperature
 
@@ -289,6 +286,9 @@ def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     Falls through OpenRouter -> Nous Portal -> custom endpoint -> Codex OAuth -> (None, None).
     """
+    global auxiliary_is_nous
+    auxiliary_is_nous = False
+
     # 1. OpenRouter
     or_key = os.getenv("OPENROUTER_API_KEY")
     if or_key:
@@ -299,7 +299,6 @@ def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     # 2. Nous Portal
     nous = _read_nous_auth()
     if nous:
-        global auxiliary_is_nous
         auxiliary_is_nous = True
         logger.debug("Auxiliary text client: Nous Portal")
         return (
@@ -382,7 +381,7 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 def get_auxiliary_extra_body() -> dict:
     """Return extra_body kwargs for auxiliary API calls.
-    
+
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
     """
@@ -391,7 +390,7 @@ def get_auxiliary_extra_body() -> dict:
 
 def auxiliary_max_tokens_param(value: int) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
-    
+
     OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
     models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
     The Codex adapter translates max_tokens internally, so we use max_tokens

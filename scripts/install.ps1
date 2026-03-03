@@ -65,6 +65,31 @@ function Write-Err {
     Write-Host "✗ $Message" -ForegroundColor Red
 }
 
+function Invoke-GitCommand {
+    param([Parameter(Mandatory = $true)][string[]]$Args)
+
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        # Clone fallback paths intentionally probe and can fail.
+        $ErrorActionPreference = "Continue"
+        $output = & git @Args 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = @($output)
+    }
+}
+
+function Test-IsHermesOriginSsh {
+    param([string]$Url)
+    if (-not $Url) { return $false }
+    return $Url -match "^(git@github\.com:NousResearch/hermes-agent(\.git)?|ssh://git@github\.com/NousResearch/hermes-agent(\.git)?)$"
+}
+
 # ============================================================================
 # Dependency checks
 # ============================================================================
@@ -145,49 +170,17 @@ function Test-Python {
     # Python not found — use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Python installed: $ver"
-                return $true
-            }
-        } else {
-            Write-Warn "uv python install output:"
-            Write-Host $uvOutput -ForegroundColor DarkGray
-        }
-    } catch {
-        Write-Warn "uv python install error: $_"
-    }
-
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
-    foreach ($fallbackVer in @("3.12", "3.13", "3.10")) {
-        try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
-                return $true
-            }
-        } catch { }
-    }
-
-    # Fallback: try system python
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $sysVer = python --version 2>$null
-        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
-            Write-Success "Using system Python: $sysVer"
+        & $UvCmd python install $PythonVersion 2>&1 | Out-Null
+        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+        if ($pythonPath) {
+            $ver = & $pythonPath --version 2>$null
+            Write-Success "Python installed: $ver"
             return $true
         }
-    }
+    } catch { }
     
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
+    Write-Info "Install Python $PythonVersion manually, then re-run this script"
     return $false
 }
 
@@ -416,7 +409,22 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git fetch origin
+
+            $originUrl = (& git remote get-url origin 2>$null)
+            $fetchResult = Invoke-GitCommand -Args @("fetch", "origin")
+            if ($fetchResult.ExitCode -ne 0 -and (Test-IsHermesOriginSsh -Url $originUrl)) {
+                Write-Warn "SSH fetch failed, switching origin remote to HTTPS..."
+                $setUrlResult = Invoke-GitCommand -Args @("remote", "set-url", "origin", $RepoUrlHttps)
+                if ($setUrlResult.ExitCode -eq 0) {
+                    $fetchResult = Invoke-GitCommand -Args @("fetch", "origin")
+                }
+            }
+            if ($fetchResult.ExitCode -ne 0) {
+                Pop-Location
+                Write-Err "Failed to fetch updates from origin"
+                exit 1
+            }
+
             git checkout $Branch
             git pull origin $Branch
             Pop-Location
@@ -426,37 +434,28 @@ function Install-Repository {
             exit 1
         }
     } else {
-        # Try SSH first (for private repo access), fall back to HTTPS.
-        # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
-        # when no key is configured (fails immediately instead of prompting).
-        #
-        # IMPORTANT: Do NOT use 2>&1 on git commands in PowerShell.
-        # With $ErrorActionPreference = "Stop", PowerShell wraps captured
-        # stderr lines in ErrorRecord objects, turning git's normal progress
-        # messages ("Cloning into ...") into terminating NativeCommandErrors.
-        # Let stderr flow to the console naturally (like OpenClaw does).
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
-            $sshExitCode = $LASTEXITCODE
-        } catch {
-            $sshExitCode = 1
-        }
-        $env:GIT_SSH_COMMAND = $null
-        
-        if ($sshExitCode -eq 0) {
-            Write-Success "Cloned via SSH"
+        # Prefer HTTPS (works without SSH keys), fall back to SSH for private access
+        Write-Info "Trying HTTPS clone..."
+        $httpsResult = Invoke-GitCommand -Args @(
+            "clone", "--branch", $Branch, "--recurse-submodules", $RepoUrlHttps, $InstallDir
+        )
+
+        if ($httpsResult.ExitCode -eq 0) {
+            Write-Success "Cloned via HTTPS"
         } else {
-            # Clean up partial SSH clone before retrying
-            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Info "SSH failed, trying HTTPS..."
-            git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "Cloned via HTTPS"
+            Write-Info "HTTPS failed, trying SSH..."
+            $sshResult = Invoke-GitCommand -Args @(
+                "clone", "--branch", $Branch, "--recurse-submodules", $RepoUrlSsh, $InstallDir
+            )
+
+            if ($sshResult.ExitCode -eq 0) {
+                Write-Success "Cloned via SSH"
             } else {
                 Write-Err "Failed to clone repository"
+                Write-Info "If this is a public install, HTTPS should work without SSH keys."
+                Write-Info "For private repo access, configure GitHub authentication:"
+                Write-Info "  gh auth login"
+                Write-Info "  # or configure SSH and test with: ssh -T git@github.com"
                 exit 1
             }
         }
@@ -810,8 +809,8 @@ function Write-Completion {
     Write-Host "View/edit configuration"
     Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
-    Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
+    Write-Host "   hermes gateway install " -NoNewline -ForegroundColor Green
+    Write-Host "Install gateway service (messaging + cron)"
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""

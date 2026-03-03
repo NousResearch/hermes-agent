@@ -636,34 +636,44 @@ def _get_browserbase_config() -> Dict[str, str]:
     }
 
 
-def _find_agent_browser() -> str:
+def _find_agent_browser() -> List[str]:
     """
     Find the agent-browser CLI executable.
     
     Checks in order: PATH, local node_modules/.bin/, npx fallback.
     
     Returns:
-        Path to agent-browser executable
+        Command prefix for invoking agent-browser (argv list)
         
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
+    is_windows = os.name == "nt"
 
     # Check if it's in PATH (global install)
-    which_result = shutil.which("agent-browser")
+    which_result = shutil.which("agent-browser.cmd" if is_windows else "agent-browser")
+    if not which_result:
+        which_result = shutil.which("agent-browser")
     if which_result:
-        return which_result
+        return [which_result]
     
     # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
-    local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
+    local_bin_dir = repo_root / "node_modules" / ".bin"
+    if is_windows:
+        local_cmd = local_bin_dir / "agent-browser.cmd"
+        if local_cmd.exists():
+            return [str(local_cmd)]
+    local_bin = local_bin_dir / "agent-browser"
     if local_bin.exists():
-        return str(local_bin)
+        return [str(local_bin)]
     
     # Check common npx locations
-    npx_path = shutil.which("npx")
+    npx_path = shutil.which("npx.cmd" if is_windows else "npx")
+    if not npx_path:
+        npx_path = shutil.which("npx")
     if npx_path:
-        return "npx agent-browser"
+        return [npx_path, "agent-browser"]
     
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: npm install -g agent-browser\n"
@@ -712,7 +722,7 @@ def _run_browser_command(
     # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
     # --session creates a local browser instance and silently ignores --cdp.
     # Per-task isolation is handled by AGENT_BROWSER_SOCKET_DIR instead.
-    cmd_parts = browser_cmd.split() + [
+    cmd_parts = browser_cmd + [
         "--cdp", session_info["cdp_url"],
         "--json",
         command
@@ -1422,7 +1432,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
-                        daemon_pid = int(open(pid_file).read().strip())
+                        daemon_pid = int(open(pid_file, encoding="utf-8").read().strip())
                         os.kill(daemon_pid, signal.SIGTERM)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):

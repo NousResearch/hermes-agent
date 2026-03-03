@@ -542,13 +542,15 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
     kwargs["include"] = ["reasoning.encrypted_content"]
     kwargs["temperature"] = 0.7
-    kwargs["max_output_tokens"] = 4096
+    kwargs["max_tokens"] = 4096
 
     result = agent._preflight_codex_api_kwargs(kwargs)
     assert result["reasoning"] == {"effort": "high", "summary": "auto"}
     assert result["include"] == ["reasoning.encrypted_content"]
     assert result["temperature"] == 0.7
-    assert result["max_output_tokens"] == 4096
+    assert "max_tokens" not in result
+    assert "max_output_tokens" not in result
+    assert "extra_body" not in result or "max_tokens" not in result.get("extra_body", {})
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

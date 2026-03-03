@@ -49,7 +49,7 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     }
 
     try:
-        with open(filename, "a", encoding="utf-8") as f:
+        with open(filename, "a", encoding="utf-8", errors="replace", newline="") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:

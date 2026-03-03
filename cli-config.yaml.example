@@ -7,7 +7,7 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
-  default: "anthropic/claude-opus-4.6"
+  default: "google/gemini-2.0-flash-001:free"
   
   # Inference provider selection:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)

@@ -317,7 +317,7 @@ class SessionStore:
         
         if sessions_file.exists():
             try:
-                with open(sessions_file, "r") as f:
+                with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         self._entries[key] = SessionEntry.from_dict(entry_data)
@@ -332,7 +332,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
         
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w") as f:
+        with open(sessions_file, "w", encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=2)
     
     def _generate_session_key(self, source: SessionSource) -> str:
@@ -569,10 +569,14 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
         
-        # Also write legacy JSONL (keeps existing tooling working during transition)
+        # Also write legacy JSONL (keeps existing tooling working during transition).
+        # Always use encoding="utf-8" and errors="replace" so we never raise on Windows
+        # (default cp1252) or on odd Unicode in tool output, and the gateway always
+        # gets to send the response to the user.
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        line = json.dumps(message, ensure_ascii=False) + "\n"
+        with open(transcript_path, "a", encoding="utf-8", errors="replace", newline="") as f:
+            f.write(line)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
@@ -598,7 +602,7 @@ class SessionStore:
         
         # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8", errors="replace", newline="") as f:
             for msg in messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
@@ -620,7 +624,7 @@ class SessionStore:
             return []
         
         messages = []
-        with open(transcript_path, "r") as f:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if line:

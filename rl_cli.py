@@ -72,7 +72,7 @@ from tools.rl_training_tool import check_rl_api_keys, get_missing_keys
 
 from hermes_constants import OPENROUTER_BASE_URL
 
-DEFAULT_MODEL = "anthropic/claude-opus-4.5"
+DEFAULT_MODEL = "google/gemini-2.0-flash-001:free"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
 
 
@@ -92,7 +92,7 @@ def load_hermes_config() -> dict:
     
     if config_path.exists():
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 file_config = yaml.safe_load(f) or {}
             
             # Get model from config

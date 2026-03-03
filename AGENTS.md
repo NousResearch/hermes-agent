@@ -2,6 +2,9 @@
 
 Instructions for AI coding assistants (GitHub Copilot, Cursor, etc.) and human developers.
 
+NEVER PUSH TO REMOTE WITHOUT THE USER ASKING!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Force encoding of things that could use another characterset to utf-8 encoding for safely running it on windows.
+
 Hermes Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
 
 ## Development Environment
@@ -21,7 +24,9 @@ hermes-agent/
 │   ├── prompt_caching.py     # Anthropic prompt caching
 │   ├── prompt_builder.py     # System prompt assembly (identity, skills index, context files)
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
-│   └── trajectory.py         # Trajectory saving helpers
+│   ├── trajectory.py        # Trajectory saving helpers
+│   ├── env_loader.py        # .env loading with encoding fallback (Windows-safe)
+│   └── text_io.py           # Safe UTF-8 text file open (Windows-safe)
 ├── hermes_cli/           # CLI implementation
 │   ├── main.py           # Entry point, command dispatcher
 │   ├── banner.py         # Welcome banner, ASCII art, skills summary
@@ -85,6 +90,24 @@ run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
 Each tool file co-locates its schema, handler, and registration. `model_tools.py` is a thin orchestration layer.
+
+---
+
+## Encoding and Windows
+
+On Windows the default text encoding is often CP1252. User content, tool output, and config files can contain UTF-8 or stray bytes, which causes `UnicodeDecodeError` / `UnicodeEncodeError` if we use the default encoding.
+
+**Rules:**
+
+1. **.env loading** — Always use `agent.env_loader.load_dotenv_with_fallback(path)` (never raw `load_dotenv(path)`). It reads bytes and tries UTF-8, UTF-8-sig, CP1252, Latin-1, then `errors="replace"`, so startup never crashes on a bad byte in `~/.hermes/.env`.
+
+2. **Text file I/O** — For config, transcripts, JSON, YAML, logs, or any text that might contain non-ASCII:
+   - **Read:** `open(path, "r", encoding="utf-8", errors="replace")` or use `agent.text_io.open_text(path, "r")`.
+   - **Write/append:** `open(path, "w"|"a", encoding="utf-8", errors="replace", newline="")` or `agent.text_io.open_text(path, "w"|"a")`.
+
+3. **Binary files** — Use `open(..., "rb")` or `"wb"`; do not pass `encoding`.
+
+4. **CLI stdout/stderr** — `hermes_cli/main.py` calls `_ensure_utf8_stdio()` so Windows consoles get UTF-8 with `errors="replace"` when possible.
 
 ---
 

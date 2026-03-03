@@ -25,8 +25,8 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Models Used (via OpenRouter):
-- Reference Models: claude-opus-4, gemini-2.5-pro, gpt-4.1, deepseek-r1
-- Aggregator Model: claude-opus-4 (highest capability for synthesis)
+- Reference Models: gemini-2.5-pro, claude-sonnet-4, gpt-4.1, deepseek-r1
+- Aggregator Model: google/gemini-2.5-pro (high capability for synthesis)
 
 Configuration:
     To customize the MoA setup, modify the configuration constants at the top of this file:
@@ -59,14 +59,14 @@ logger = logging.getLogger(__name__)
 # Configuration for MoA processing
 # Reference models - these generate diverse initial responses in parallel (OpenRouter slugs)
 REFERENCE_MODELS = [
-    "anthropic/claude-opus-4.5",
-    "google/gemini-3-pro-preview", 
+    "anthropic/claude-sonnet-4.5",
+    "google/gemini-3-pro-preview",
     "openai/gpt-5.2-pro",
     "deepseek/deepseek-v3.2"
 ]
 
 # Aggregator model - synthesizes reference responses into final output
-AGGREGATOR_MODEL = "anthropic/claude-opus-4.5"  # Use highest capability model for aggregation
+AGGREGATOR_MODEL = "google/gemini-2.5-pro-preview"  # High capability for aggregation
 
 # Temperature settings optimized for MoA performance
 REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives

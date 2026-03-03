@@ -46,9 +46,12 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+# Load environment variables (encoding-safe on Windows)
+from agent.env_loader import load_dotenv_with_fallback
+for _p in (Path.home() / ".hermes" / ".env", Path.cwd() / ".env"):
+    if _p.exists():
+        load_dotenv_with_fallback(_p)
+        break
 
 
 @dataclass
@@ -97,7 +100,7 @@ class CompressionConfig:
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "CompressionConfig":
         """Load configuration from YAML file."""
-        with open(yaml_path, 'r') as f:
+        with open(yaml_path, "r", encoding="utf-8", errors="replace") as f:
             data = yaml.safe_load(f)
         
         config = cls()
@@ -1102,7 +1105,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Save metrics
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w') as f:
+            with open(metrics_path, 'w', encoding='utf-8', newline='') as f:
                 json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
     

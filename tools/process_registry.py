@@ -42,10 +42,15 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from tools.environments.shell_utils import (
+    build_local_subprocess_invocation,
+    is_windows,
+    terminate_process_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +151,15 @@ class ProcessRegistry:
         )
 
         if use_pty:
+            if is_windows():
+                logger.warning("PTY mode is not supported on Windows local backend, falling back to pipe mode")
+                use_pty = False
+
+        if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
                 import ptyprocess
-                user_shell = _find_shell()
+                user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
                 pty_env = os.environ | (env_vars or {})
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = ptyprocess.PtyProcess.spawn(
@@ -185,25 +195,24 @@ class ProcessRegistry:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
-        # Use the user's login shell for consistency with LocalEnvironment --
-        # ensures rc files are sourced and user tools are available.
-        user_shell = _find_shell()
+        popen_args, popen_platform_kwargs, _ = build_local_subprocess_invocation(
+            command, session.cwd
+        )
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = os.environ | (env_vars or {})
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            [user_shell, "-lic", command],
+            popen_args,
             text=True,
-            cwd=session.cwd,
             env=bg_env,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            **popen_platform_kwargs,
         )
 
         session.process = proc
@@ -554,13 +563,11 @@ class ProcessRegistry:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
                 # Local process -- kill the process group
+                terminate_process_tree(session.process, force=False)
                 try:
-                    if _IS_WINDOWS:
-                        session.process.terminate()
-                    else:
-                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    session.process.kill()
+                    session.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    terminate_process_tree(session.process, force=True)
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)

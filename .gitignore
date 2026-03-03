@@ -1,4 +1,5 @@
 /venv/
+# /upstream/  # Unignored temporarily to pull and merge upstream changes
 /_pycache/
 *.pyc*
 __pycache__/

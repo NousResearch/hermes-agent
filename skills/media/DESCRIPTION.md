@@ -1,1 +1,3 @@
-Media content extraction and transformation tools — YouTube transcripts, audio, video processing.
+---
+description: Skills for fetching, downloading, and processing video and audio from YouTube and other media sources.
+---

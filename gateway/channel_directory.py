@@ -52,7 +52,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     try:
         DIRECTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(DIRECTORY_PATH, "w") as f:
+        with open(DIRECTORY_PATH, "w", encoding="utf-8", newline="") as f:
             json.dump(directory, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
@@ -115,7 +115,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
     entries = []
     try:
-        with open(sessions_path) as f:
+        with open(sessions_path, encoding="utf-8") as f:
             data = json.load(f)
 
         seen_ids = set()
@@ -147,7 +147,7 @@ def load_directory() -> Dict[str, Any]:
     if not DIRECTORY_PATH.exists():
         return {"updated_at": None, "platforms": {}}
     try:
-        with open(DIRECTORY_PATH) as f:
+        with open(DIRECTORY_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"updated_at": None, "platforms": {}}

@@ -114,6 +114,12 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Auto-compact oversized legacy files so new writes can succeed.
+        # This can happen when older installs wrote very large entries or when
+        # users imported historical notes without entry delimiters.
+        self._compact_to_limit("memory")
+        self._compact_to_limit("user")
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
@@ -169,27 +175,27 @@ class MemoryStore:
         if content in entries:
             return self._success_response(target, "Entry already exists (no duplicate added).")
 
-        # Calculate what the new total would be
-        new_entries = entries + [content]
-        new_total = len(ENTRY_DELIMITER.join(new_entries))
+        # Ensure new content itself can fit within the budget.
+        if len(content) > limit:
+            content = self._truncate_entry_to_limit(content, limit)
 
-        if new_total > limit:
-            current = self._char_count(target)
-            return {
-                "success": False,
-                "error": (
-                    f"Memory at {current:,}/{limit:,} chars. "
-                    f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                    f"Replace or remove existing entries first."
-                ),
-                "current_entries": entries,
-                "usage": f"{current:,}/{limit:,}",
-            }
+        # If over budget, automatically evict oldest entries to make room.
+        # This keeps memory useful in long-running sessions and avoids
+        # repeated model retry loops on deterministic size errors.
+        dropped = 0
+        while len(ENTRY_DELIMITER.join(entries + [content])) > limit and entries:
+            entries.pop(0)
+            dropped += 1
+        # If still too large (e.g., no entries left), force-truncate content.
+        if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+            content = self._truncate_entry_to_limit(content, limit)
 
         entries.append(content)
         self._set_entries(target, entries)
         self.save_to_disk(target)
 
+        if dropped:
+            return self._success_response(target, f"Entry added. Compacted memory by removing {dropped} oldest entr{'y' if dropped == 1 else 'ies'}.")
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -210,7 +216,7 @@ class MemoryStore:
         matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
         if len(matches) == 0:
-            return {"success": False, "error": f"No entry matched '{old_text}'."}
+            return self._success_response(target, f"No matching entry for '{old_text}' (no-op).")
 
         if len(matches) > 1:
             # If all matches are identical (exact duplicates), operate on the first one
@@ -257,7 +263,7 @@ class MemoryStore:
         matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
         if len(matches) == 0:
-            return {"success": False, "error": f"No entry matched '{old_text}'."}
+            return self._success_response(target, f"No matching entry for '{old_text}' (no-op).")
 
         if len(matches) > 1:
             # If all matches are identical (exact duplicates), remove the first one
@@ -327,6 +333,55 @@ class MemoryStore:
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
+
+    def _truncate_entry_to_limit(self, entry: str, limit: int) -> str:
+        """Ensure a single entry fits within the target char limit."""
+        if len(entry) <= limit:
+            return entry
+        marker = "[TRUNCATED TO FIT MEMORY LIMIT]\n"
+        budget = max(limit - len(marker), 0)
+        if budget <= 0:
+            return entry[-limit:]
+        return marker + entry[-budget:]
+
+    def _compact_to_limit(self, target: str) -> None:
+        """
+        Keep the newest entries that fit inside the configured char budget.
+
+        The memory log is append-oriented, so preserving the most recent entries
+        gives the best chance of retaining relevant context.
+        """
+        entries = [e.strip() for e in self._entries_for(target) if e and e.strip()]
+        limit = self._char_limit(target)
+        # Leave some headroom so the next add/replace operation can succeed
+        # instead of immediately hitting the hard cap again.
+        reserve = max(int(limit * 0.10), 120)
+        target_limit = max(limit - reserve, int(limit * 0.5))
+        if not entries:
+            self._set_entries(target, [])
+            return
+
+        total = len(ENTRY_DELIMITER.join(entries))
+        if total <= target_limit:
+            self._set_entries(target, entries)
+            return
+
+        kept_rev: List[str] = []
+        for raw_entry in reversed(entries):
+            entry = self._truncate_entry_to_limit(raw_entry, target_limit)
+            candidate = list(reversed(kept_rev + [entry]))
+            if len(ENTRY_DELIMITER.join(candidate)) <= target_limit:
+                kept_rev.append(entry)
+            elif not kept_rev:
+                # Ensure at least one newest entry is retained.
+                kept_rev.append(entry)
+                break
+            else:
+                break
+
+        compacted = list(reversed(kept_rev))
+        self._set_entries(target, compacted)
+        self.save_to_disk(target)
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:

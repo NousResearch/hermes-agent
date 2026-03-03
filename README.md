@@ -32,7 +32,7 @@ Built by [Nous Research](https://nousresearch.com). Under the hood, the same arc
 
 ## Quick Install
 
-**Linux/macOS:**
+**Linux / macOS / WSL:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
@@ -42,18 +42,25 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
 ```
 
+**Windows (CMD):**
+```cmd
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+> **Windows note:** [Git for Windows](https://git-scm.com/download/win) is required. Hermes uses Git Bash internally for shell commands.
+
 The installer will:
 - Install [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
 - Install Python 3.11 via uv if not already available (no sudo needed)
 - Clone to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
 - Create a virtual environment with Python 3.11
 - Install all dependencies and submodule packages
-- Symlink `hermes` into `~/.local/bin` so it works globally (no venv activation needed)
+- Set up the `hermes` command globally (no venv activation needed)
 - Run the interactive setup wizard
 
 After installation, reload your shell and run:
 ```bash
-source ~/.bashrc   # or: source ~/.zshrc
+source ~/.bashrc   # or: source ~/.zshrc  (Windows: restart your terminal)
 hermes setup       # Configure API keys (if you skipped during install)
 hermes             # Start chatting!
 ```
@@ -1237,8 +1244,8 @@ brew install git
 brew install ripgrep node
 ```
 
-**Windows (WSL recommended):**
-Use the [Windows Subsystem for Linux](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu instructions above. Alternatively, use the PowerShell quick-install script at the top of this README.
+**Windows (native):**
+Hermes runs natively on Windows using [Git for Windows](https://git-scm.com/download/win) (which provides Git Bash for shell commands). Install Git for Windows first, then use the PowerShell or CMD quick-install command at the top of this README. WSL also works — follow the Ubuntu instructions above.
 
 </details>
 

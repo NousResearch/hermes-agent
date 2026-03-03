@@ -154,8 +154,8 @@ class TestAudioRecorderStop:
         recorder = AudioRecorder()
         recorder.start()
 
-        # Simulate captured audio frames (1 second of silence)
-        frame = np.zeros((SAMPLE_RATE, 1), dtype="int16")
+        # Simulate captured audio frames (1 second of loud audio above RMS threshold)
+        frame = np.full((SAMPLE_RATE, 1), 1000, dtype="int16")
         recorder._frames = [frame]
 
         wav_path = recorder.stop()
@@ -184,6 +184,24 @@ class TestAudioRecorderStop:
 
         # Very short recording (100 samples = ~6ms at 16kHz)
         frame = np.zeros((100, 1), dtype="int16")
+        recorder._frames = [frame]
+
+        wav_path = recorder.stop()
+        assert wav_path is None
+
+    def test_stop_returns_none_for_silent_recording(self, mock_sd, temp_voice_dir):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+
+        recorder = AudioRecorder()
+        recorder.start()
+
+        # 1 second of near-silence (RMS well below threshold)
+        frame = np.full((SAMPLE_RATE, 1), 10, dtype="int16")
         recorder._frames = [frame]
 
         wav_path = recorder.stop()
@@ -258,6 +276,52 @@ class TestTranscribeRecording:
         assert result["success"] is True
         assert result["transcript"] == "hello world"
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+
+    def test_filters_whisper_hallucination(self):
+        mock_transcribe = MagicMock(return_value={
+            "success": True,
+            "transcript": "Thank you.",
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording("/tmp/test.wav")
+
+        assert result["success"] is True
+        assert result["transcript"] == ""
+        assert result["filtered"] is True
+
+    def test_does_not_filter_real_speech(self):
+        mock_transcribe = MagicMock(return_value={
+            "success": True,
+            "transcript": "Thank you for helping me with this code.",
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording("/tmp/test.wav")
+
+        assert result["transcript"] == "Thank you for helping me with this code."
+        assert "filtered" not in result
+
+
+class TestWhisperHallucinationFilter:
+    def test_known_hallucinations(self):
+        from tools.voice_mode import is_whisper_hallucination
+
+        assert is_whisper_hallucination("Thank you.") is True
+        assert is_whisper_hallucination("thank you") is True
+        assert is_whisper_hallucination("Thanks for watching.") is True
+        assert is_whisper_hallucination("Bye.") is True
+        assert is_whisper_hallucination("  Thank you.  ") is True  # with whitespace
+        assert is_whisper_hallucination("you") is True
+
+    def test_real_speech_not_filtered(self):
+        from tools.voice_mode import is_whisper_hallucination
+
+        assert is_whisper_hallucination("Hello, how are you?") is False
+        assert is_whisper_hallucination("Thank you for your help with the project.") is False
+        assert is_whisper_hallucination("Can you explain this code?") is False
 
 
 # ============================================================================

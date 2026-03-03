@@ -515,7 +515,14 @@ class GatewayRunner:
                 logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
             return SlackAdapter(config)
-        
+
+        elif platform == Platform.HOMEASSISTANT:
+            from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
+            if not check_ha_requirements():
+                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
+                return None
+            return HomeAssistantAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -529,6 +536,12 @@ class GatewayRunner:
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
         """
+        # Home Assistant events are system-generated (state changes), not
+        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # connection, so HA events are always authorized.
+        if source.platform == Platform.HOMEASSISTANT:
+            return True
+
         user_id = source.user_id
         if not user_id:
             return False

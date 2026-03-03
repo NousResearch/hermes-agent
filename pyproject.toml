@@ -49,6 +49,7 @@ voice = ["sounddevice>=0.4.6", "numpy>=1.24.0"]
 pty = ["ptyprocess>=0.7.0"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
+homeassistant = ["aiohttp>=3.9.0"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[messaging]",
@@ -61,6 +62,7 @@ all = [
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[voice]",
+  "hermes-agent[homeassistant]",
 ]
 
 [project.scripts]

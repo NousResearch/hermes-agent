@@ -2212,7 +2212,7 @@ class AIAgent:
                     response_item_id if isinstance(response_item_id, str) else None,
                 )
 
-                tool_calls.append({
+                tc_dict = {
                     "id": call_id,
                     "call_id": call_id,
                     "response_item_id": response_item_id,
@@ -2222,7 +2222,15 @@ class AIAgent:
                         "arguments": tool_call.function.arguments
                     },
                 }
-                )
+                # Preserve extra_content (e.g. Gemini thought_signature) so it
+                # is sent back on subsequent API calls.  Without this, Gemini 3
+                # thinking models reject the request with a 400 error.
+                extra = getattr(tool_call, "extra_content", None)
+                if extra is not None:
+                    if hasattr(extra, "model_dump"):
+                        extra = extra.model_dump()
+                    tc_dict["extra_content"] = extra
+                tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls
 
         return msg
@@ -2667,7 +2675,7 @@ class AIAgent:
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = None
+                codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
                 assistant_message, _ = self._normalize_codex_response(summary_response)
                 final_response = (assistant_message.content or "").strip() if assistant_message else ""
@@ -2713,7 +2721,7 @@ class AIAgent:
                 # Retry summary generation
                 if self.api_mode == "codex_responses":
                     codex_kwargs = self._build_api_kwargs(api_messages)
-                    codex_kwargs["tools"] = None
+                    codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""

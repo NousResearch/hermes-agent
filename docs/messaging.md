@@ -141,7 +141,12 @@ pip install discord.py>=2.0
 
 ### WhatsApp
 
-WhatsApp uses a built-in bridge powered by [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web. The agent links to your WhatsApp account and responds to incoming messages.
+WhatsApp uses a built-in bridge powered by [Baileys](https://github.com/WhiskeySockets/Baileys) that connects via WhatsApp Web.
+
+**Two modes:**
+
+- **`bot` mode (recommended):** Use a dedicated phone number for the bot. Other people message that number directly. All `fromMe` messages are treated as bot echo-backs and ignored.
+- **`self-chat` mode:** Use your own WhatsApp account. You talk to the agent by messaging yourself (WhatsApp → "Message Yourself").
 
 **Setup:**
 
@@ -149,12 +154,7 @@ WhatsApp uses a built-in bridge powered by [Baileys](https://github.com/WhiskeyS
 hermes whatsapp
 ```
 
-This will:
-- Enable WhatsApp in your `.env`
-- Ask for your phone number (for the allowlist)
-- Install bridge dependencies (Node.js required)
-- Display a QR code — scan it with your phone (WhatsApp → Settings → Linked Devices → Link a Device)
-- Exit automatically once paired
+The wizard walks you through mode selection, allowlist configuration, dependency installation, and QR code pairing. For bot mode, you'll need a second phone number with WhatsApp installed on some device (dual-SIM with WhatsApp Business app is the easiest approach).
 
 Then start the gateway:
 
@@ -162,16 +162,23 @@ Then start the gateway:
 hermes gateway
 ```
 
-The gateway starts the WhatsApp bridge automatically using the saved session credentials in `~/.hermes/whatsapp/session/`.
-
 **Environment variables:**
 
 ```bash
 WHATSAPP_ENABLED=true
-WHATSAPP_ALLOWED_USERS=15551234567    # Comma-separated phone numbers with country code
+WHATSAPP_MODE=bot                      # "bot" (separate number) or "self-chat" (message yourself)
+WHATSAPP_ALLOWED_USERS=15551234567     # Comma-separated phone numbers with country code
 ```
 
-Agent responses are prefixed with "⚕ **Hermes Agent**" so you can distinguish them from your own messages when messaging yourself.
+**Getting a second number for bot mode:**
+
+| Option | Cost | Notes |
+|--------|------|-------|
+| WhatsApp Business app + dual-SIM | Free (if you have dual-SIM) | Install alongside personal WhatsApp, no second phone needed |
+| Google Voice | Free (US only) | voice.google.com, verify WhatsApp via the Google Voice app |
+| Prepaid SIM | $3-10/month | Any carrier; verify once, phone can go in a drawer on WiFi |
+
+Agent responses are prefixed with "⚕ **Hermes Agent**" for easy identification.
 
 > **Re-pairing:** If WhatsApp Web sessions disconnect (protocol updates, phone reset), re-pair with `hermes whatsapp`.
 

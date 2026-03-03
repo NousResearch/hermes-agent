@@ -390,11 +390,17 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
     
-    # Check if this is an existing installation with config (any provider or config file)
+    # Check if this is an existing installation with a provider configured.
+    # Just having config.yaml is NOT enough — the installer creates it from
+    # a template, so it always exists after install. We need an actual
+    # inference provider to consider it "existing" (otherwise quick mode
+    # would skip provider selection, leaving hermes non-functional).
+    from hermes_cli.auth import get_active_provider
+    active_provider = get_active_provider()
     is_existing = (
         get_env_value("OPENROUTER_API_KEY") is not None
         or get_env_value("OPENAI_BASE_URL") is not None
-        or get_config_path().exists()
+        or active_provider is not None
     )
     
     # Import migration helpers
@@ -1382,21 +1388,13 @@ def run_setup_wizard(args):
     existing_whatsapp = get_env_value('WHATSAPP_ENABLED')
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
         print_info("WhatsApp connects via a built-in bridge (Baileys).")
-        print_info("Requires Node.js (already installed if you have browser tools).")
-        print_info("On first gateway start, you'll scan a QR code with your phone.")
+        print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
         print()
-        if prompt_yes_no("Enable WhatsApp?", True):
+        if prompt_yes_no("Enable WhatsApp now?", True):
             save_env_value("WHATSAPP_ENABLED", "true")
             print_success("WhatsApp enabled")
-            
-            allowed_users = prompt("  Your phone number (e.g. 15551234567, comma-separated for multiple)")
-            if allowed_users:
-                save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("WhatsApp allowlist configured")
-            else:
-                print_info("⚠️  No allowlist set — anyone who messages your WhatsApp will get a response!")
-            
-            print_info("Start the gateway with 'hermes gateway' and scan the QR code.")
+            print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
+            print_info("or personal self-chat) and pair via QR code.")
     
     # Gateway reminder
     any_messaging = (

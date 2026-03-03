@@ -45,29 +45,42 @@ def codex_auth_dir(tmp_path, monkeypatch):
 
 
 class TestReadCodexAccessToken:
-    def test_valid_auth_file(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        auth = codex_dir / "auth.json"
-        auth.write_text(json.dumps({
-            "tokens": {"access_token": "tok-123", "refresh_token": "r-456"}
+    def test_valid_auth_store(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "tok-123", "refresh_token": "r-456"},
+                },
+            },
         }))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
         assert result == "tok-123"
 
-    def test_missing_file_returns_none(self, tmp_path):
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+    def test_missing_returns_none(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
         assert result is None
 
-    def test_empty_token_returns_none(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        auth = codex_dir / "auth.json"
-        auth.write_text(json.dumps({"tokens": {"access_token": "  "}}))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+    def test_empty_token_returns_none(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "  ", "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
         assert result is None
 
     def test_malformed_json_returns_none(self, tmp_path):

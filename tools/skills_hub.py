@@ -520,8 +520,8 @@ class ClawHubSource(SkillSource):
 
         try:
             resp = httpx.get(
-                f"{self.BASE_URL}/skills/search",
-                params={"q": query, "limit": limit},
+                f"{self.BASE_URL}/skills",
+                params={"search": query, "limit": limit},
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -530,82 +530,154 @@ class ClawHubSource(SkillSource):
         except (httpx.HTTPError, json.JSONDecodeError):
             return []
 
-        skills_data = data.get("skills", data) if isinstance(data, dict) else data
+        skills_data = data.get("items", data) if isinstance(data, dict) else data
         if not isinstance(skills_data, list):
             return []
 
         results = []
         for item in skills_data[:limit]:
-            name = item.get("name", item.get("slug", ""))
-            if not name:
+            slug = item.get("slug")
+            if not slug:
                 continue
-            meta = SkillMeta(
-                name=name,
-                description=item.get("description", ""),
+            display_name = item.get("displayName") or item.get("name") or slug
+            summary = item.get("summary") or item.get("description") or ""
+            tags = item.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            results.append(SkillMeta(
+                name=display_name,
+                description=summary,
                 source="clawhub",
-                identifier=item.get("slug", name),
+                identifier=slug,
                 trust_level="community",
-                tags=item.get("tags", []),
-            )
-            results.append(meta)
+                tags=[str(t) for t in tags],
+            ))
 
         _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
         return results
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        try:
-            resp = httpx.get(
-                f"{self.BASE_URL}/skills/{identifier}/versions/latest/files",
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        slug = identifier.split("/")[-1]
+
+        skill_data = self._get_json(f"{self.BASE_URL}/skills/{slug}")
+        if not isinstance(skill_data, dict):
             return None
 
-        files: Dict[str, str] = {}
-        file_list = data.get("files", data) if isinstance(data, dict) else data
-        if isinstance(file_list, list):
-            for f in file_list:
-                fname = f.get("name", f.get("path", ""))
-                content = f.get("content", "")
-                if fname and content:
-                    files[fname] = content
-        elif isinstance(file_list, dict):
-            files = {k: v for k, v in file_list.items() if isinstance(v, str)}
+        latest_version = self._resolve_latest_version(slug, skill_data)
+        if not latest_version:
+            logger.warning("ClawHub fetch failed for %s: could not resolve latest version", slug)
+            return None
 
+        version_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}")
+        if not isinstance(version_data, dict):
+            return None
+
+        files = self._extract_files(version_data)
         if "SKILL.md" not in files:
+            logger.warning(
+                "ClawHub fetch for %s resolved version %s but no inline/raw file content was available",
+                slug,
+                latest_version,
+            )
             return None
 
         return SkillBundle(
-            name=identifier.split("/")[-1] if "/" in identifier else identifier,
+            name=slug,
             files=files,
             source="clawhub",
-            identifier=identifier,
+            identifier=slug,
             trust_level="community",
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        slug = identifier.split("/")[-1]
+        data = self._get_json(f"{self.BASE_URL}/skills/{slug}")
+        if not isinstance(data, dict):
+            return None
+
+        tags = data.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+
+        return SkillMeta(
+            name=data.get("displayName") or data.get("name") or data.get("slug") or slug,
+            description=data.get("summary") or data.get("description") or "",
+            source="clawhub",
+            identifier=data.get("slug") or slug,
+            trust_level="community",
+            tags=[str(t) for t in tags],
+        )
+
+    def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
         try:
-            resp = httpx.get(
-                f"{self.BASE_URL}/skills/{identifier}",
-                timeout=15,
-            )
+            resp = httpx.get(url, timeout=timeout)
             if resp.status_code != 200:
                 return None
-            data = resp.json()
+            return resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
             return None
 
-        return SkillMeta(
-            name=data.get("name", identifier),
-            description=data.get("description", ""),
-            source="clawhub",
-            identifier=identifier,
-            trust_level="community",
-            tags=data.get("tags", []),
-        )
+    def _resolve_latest_version(self, slug: str, skill_data: Dict[str, Any]) -> Optional[str]:
+        latest = skill_data.get("latestVersion")
+        if isinstance(latest, dict):
+            version = latest.get("version")
+            if isinstance(version, str) and version:
+                return version
+
+        tags = skill_data.get("tags")
+        if isinstance(tags, dict):
+            latest_tag = tags.get("latest")
+            if isinstance(latest_tag, str) and latest_tag:
+                return latest_tag
+
+        versions_data = self._get_json(f"{self.BASE_URL}/skills/{slug}/versions")
+        if isinstance(versions_data, list) and versions_data:
+            first = versions_data[0]
+            if isinstance(first, dict):
+                version = first.get("version")
+                if isinstance(version, str) and version:
+                    return version
+        return None
+
+    def _extract_files(self, version_data: Dict[str, Any]) -> Dict[str, str]:
+        files: Dict[str, str] = {}
+        file_list = version_data.get("files")
+
+        if isinstance(file_list, dict):
+            return {k: v for k, v in file_list.items() if isinstance(v, str)}
+
+        if not isinstance(file_list, list):
+            return files
+
+        for file_meta in file_list:
+            if not isinstance(file_meta, dict):
+                continue
+
+            fname = file_meta.get("path") or file_meta.get("name")
+            if not fname or not isinstance(fname, str):
+                continue
+
+            inline_content = file_meta.get("content")
+            if isinstance(inline_content, str):
+                files[fname] = inline_content
+                continue
+
+            raw_url = file_meta.get("rawUrl") or file_meta.get("downloadUrl") or file_meta.get("url")
+            if isinstance(raw_url, str) and raw_url.startswith("http"):
+                content = self._fetch_text(raw_url)
+                if content is not None:
+                    files[fname] = content
+
+        return files
+
+    def _fetch_text(self, url: str) -> Optional[str]:
+        try:
+            resp = httpx.get(url, timeout=20)
+            if resp.status_code == 200:
+                return resp.text
+        except httpx.HTTPError:
+            return None
+        return None
 
 
 # ---------------------------------------------------------------------------

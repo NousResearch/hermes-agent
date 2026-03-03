@@ -1,7 +1,8 @@
 """Docker execution environment wrapping mini-swe-agent's DockerEnvironment.
 
-Adds security hardening, configurable resource limits (CPU, memory, disk),
-and optional filesystem persistence via `docker commit`/`docker create --image`.
+Adds security hardening (cap-drop ALL, no-new-privileges, PID limits),
+configurable resource limits (CPU, memory, disk), and optional filesystem
+persistence via bind mounts.
 """
 
 import logging
@@ -19,13 +20,15 @@ logger = logging.getLogger(__name__)
 
 
 
-# Security flags applied to every container
+# Security flags applied to every container.
+# The container itself is the security boundary (isolated from host).
+# We drop all capabilities, block privilege escalation, and limit PIDs.
+# /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
-    "--read-only",
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
@@ -37,12 +40,13 @@ _storage_opt_ok: Optional[bool] = None  # cached result across instances
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
-    Security: read-only root, all capabilities dropped, no privilege escalation,
-    PID limits, tmpfs for writable scratch. Writable overlay for /home and cwd
-    via tmpfs or bind mounts.
+    Security: all capabilities dropped, no privilege escalation, PID limits,
+    size-limited tmpfs for scratch dirs. The container itself is the security
+    boundary — the filesystem inside is writable so agents can install packages
+    (pip, npm, apt) as needed. Writable workspace via tmpfs or bind mounts.
 
-    Persistence: when enabled, `docker commit` saves the container state on
-    cleanup, and the next creation restores from that image.
+    Persistence: when enabled, bind mounts preserve /workspace and /root
+    across container restarts.
     """
 
     def __init__(
@@ -114,9 +118,9 @@ class DockerEnvironment(BaseEnvironment):
                 "--tmpfs", "/root:rw,exec,size=1g",
             ]
 
-        # All containers get full security hardening (read-only root + writable
-        # mounts for the workspace). Persistence uses Docker volumes, not
-        # filesystem layer commits, so --read-only is always safe.
+        # All containers get security hardening (capabilities dropped, no privilege
+        # escalation, PID limits). The container filesystem is writable so agents
+        # can install packages as needed.
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
         for vol in (volumes or []):

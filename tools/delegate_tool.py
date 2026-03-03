@@ -38,7 +38,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
 
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
-DEFAULT_MAX_ITERATIONS = 25
+DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -531,8 +531,8 @@ DELEGATE_TASK_SCHEMA = {
             "max_iterations": {
                 "type": "integer",
                 "description": (
-                    "Max tool-calling turns per subagent (default: 25). "
-                    "Lower for simple tasks, higher for complex ones."
+                    "Max tool-calling turns per subagent (default: 50). "
+                    "Only set lower for simple tasks."
                 ),
             },
         },

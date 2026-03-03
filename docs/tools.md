@@ -55,6 +55,7 @@ async def web_search(query: str) -> dict:
 | **Clarify** | `clarify_tool.py` | `clarify` (interactive multiple-choice / open-ended questions, CLI-only) |
 | **Code Execution** | `code_execution_tool.py` | `execute_code` (run Python scripts that call tools via RPC sandbox) |
 | **Delegation** | `delegate_tool.py` | `delegate_task` (spawn subagents with isolated context, single + parallel batch) |
+| **MCP (External)** | `tools/mcp_tool.py` | Auto-discovered from configured MCP servers |
 
 ## Tool Registration
 
@@ -414,3 +415,20 @@ The Skills Hub enables searching, installing, and managing skills from online re
 
 **CLI:** `hermes skills search|install|inspect|list|audit|uninstall|publish|snapshot|tap`
 **Slash:** `/skills search|install|inspect|list|audit|uninstall|publish|snapshot|tap`
+
+## MCP Tools
+
+MCP (Model Context Protocol) tools are **dynamically registered** from external MCP servers configured in `cli-config.yaml`. Unlike built-in tools which are defined in Python source files, MCP tools are discovered at startup by connecting to each configured server and querying its available tools.
+
+Each MCP tool is automatically wrapped with an OpenAI-compatible schema and registered in the tool registry under the `mcp` toolset. Tool names are prefixed with the server name (e.g., `time__get_current_time`) to avoid collisions.
+
+**Key characteristics:**
+- Tools are discovered and registered at agent startup — no code changes needed
+- Supports both stdio (subprocess) and HTTP (streamable HTTP) transports
+- Auto-reconnects on connection failures with exponential backoff
+- Environment variables passed to stdio servers are filtered for security
+- Each server can have independent timeout settings
+
+**Configuration:** Add servers to `mcp_servers` in `cli-config.yaml`. See [docs/mcp.md](mcp.md) for full documentation.
+
+**Installation:** MCP support requires the optional `mcp` extra: `pip install hermes-agent[mcp]`

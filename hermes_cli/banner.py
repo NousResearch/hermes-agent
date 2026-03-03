@@ -196,6 +196,28 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
 
+    # MCP Servers section (only if configured)
+    try:
+        from tools.mcp_tool import get_mcp_status
+        mcp_status = get_mcp_status()
+    except Exception:
+        mcp_status = []
+
+    if mcp_status:
+        right_lines.append("")
+        right_lines.append("[bold #FFBF00]MCP Servers[/]")
+        for srv in mcp_status:
+            if srv["connected"]:
+                right_lines.append(
+                    f"[dim #B8860B]{srv['name']}[/] [#FFF8DC]({srv['transport']})[/] "
+                    f"[dim #B8860B]—[/] [#FFF8DC]{srv['tools']} tool(s)[/]"
+                )
+            else:
+                right_lines.append(
+                    f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[red]— failed[/]"
+                )
+
     right_lines.append("")
     right_lines.append("[bold #FFBF00]Available Skills[/]")
     skills_by_category = get_available_skills()
@@ -216,7 +238,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append("[dim #B8860B]No skills installed[/]")
 
     right_lines.append("")
-    right_lines.append(f"[dim #B8860B]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
+    mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
+    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    if mcp_connected:
+        summary_parts.append(f"{mcp_connected} MCP servers")
+    summary_parts.append("/help for commands")
+    right_lines.append(f"[dim #B8860B]{' · '.join(summary_parts)}[/]")
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

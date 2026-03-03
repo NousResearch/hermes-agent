@@ -2,11 +2,79 @@
 // Hermes Agent Landing Page — Interactions
 // =========================================================================
 
+// --- Platform install commands ---
+const PLATFORMS = {
+    linux: {
+        command: 'curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash',
+        prompt: '$',
+        note: 'Works on Linux, macOS & WSL · No prerequisites · Installs everything automatically',
+        stepNote: 'Installs uv, Python 3.11, clones the repo, sets up everything. No sudo needed.',
+    },
+    powershell: {
+        command: 'irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex',
+        prompt: 'PS>',
+        note: 'Windows PowerShell · Requires Git for Windows · Installs everything automatically',
+        stepNote: 'Requires Git for Windows. Installs uv, Python 3.11, sets up everything.',
+    },
+    cmd: {
+        command: 'curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd',
+        prompt: '>',
+        note: 'Windows CMD · Requires Git for Windows · Installs everything automatically',
+        stepNote: 'Requires Git for Windows. Downloads and runs the installer, then cleans up.',
+    },
+};
+
+function detectPlatform() {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes('win')) return 'powershell';
+    return 'linux';
+}
+
+function switchPlatform(platform) {
+    const cfg = PLATFORMS[platform];
+    if (!cfg) return;
+
+    // Update hero install widget
+    const commandEl = document.getElementById('install-command');
+    const promptEl = document.getElementById('install-prompt');
+    const noteEl = document.getElementById('install-note');
+
+    if (commandEl) commandEl.textContent = cfg.command;
+    if (promptEl) promptEl.textContent = cfg.prompt;
+    if (noteEl) noteEl.textContent = cfg.note;
+
+    // Update active tab in hero
+    document.querySelectorAll('.install-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.platform === platform);
+    });
+
+    // Sync the step section tabs too
+    switchStepPlatform(platform);
+}
+
+function switchStepPlatform(platform) {
+    const cfg = PLATFORMS[platform];
+    if (!cfg) return;
+
+    const commandEl = document.getElementById('step1-command');
+    const copyBtn = document.getElementById('step1-copy');
+    const noteEl = document.getElementById('step1-note');
+
+    if (commandEl) commandEl.textContent = cfg.command;
+    if (copyBtn) copyBtn.setAttribute('data-text', cfg.command);
+    if (noteEl) noteEl.textContent = cfg.stepNote;
+
+    // Update active tab in step section
+    document.querySelectorAll('.code-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.platform === platform);
+    });
+}
+
 // --- Copy to clipboard ---
 function copyInstall() {
     const text = document.getElementById('install-command').textContent;
     navigator.clipboard.writeText(text).then(() => {
-        const btn = document.querySelector('.hero-install .copy-btn');
+        const btn = document.querySelector('.install-widget-body .copy-btn');
         const original = btn.querySelector('.copy-text').textContent;
         btn.querySelector('.copy-text').textContent = 'Copied!';
         btn.style.color = 'var(--gold)';
@@ -243,6 +311,10 @@ class TerminalDemo {
 
 // --- Initialize ---
 document.addEventListener('DOMContentLoaded', () => {
+    // Auto-detect platform and set the right install command
+    const detectedPlatform = detectPlatform();
+    switchPlatform(detectedPlatform);
+
     initScrollAnimations();
 
     // Terminal demo - start when visible

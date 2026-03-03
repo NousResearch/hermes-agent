@@ -126,6 +126,8 @@ class AIAgent:
         providers_ignored: List[str] = None,
         providers_order: List[str] = None,
         provider_sort: str = None,
+        provider_require_parameters: bool = False,
+        provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
@@ -230,6 +232,8 @@ class AIAgent:
         self.providers_ignored = providers_ignored
         self.providers_order = providers_order
         self.provider_sort = provider_sort
+        self.provider_require_parameters = provider_require_parameters
+        self.provider_data_collection = provider_data_collection
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -1148,6 +1152,8 @@ class AIAgent:
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
                 "last_updated": datetime.now().isoformat(),
+                "system_prompt": self._cached_system_prompt or "",
+                "tools": self.tools or [],
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
@@ -1585,6 +1591,21 @@ class AIAgent:
                 )
                 continue
 
+            if item_type == "reasoning":
+                encrypted = item.get("encrypted_content")
+                if isinstance(encrypted, str) and encrypted:
+                    reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    item_id = item.get("id")
+                    if isinstance(item_id, str) and item_id:
+                        reasoning_item["id"] = item_id
+                    summary = item.get("summary")
+                    if isinstance(summary, list):
+                        reasoning_item["summary"] = summary
+                    else:
+                        reasoning_item["summary"] = []
+                    normalized.append(reasoning_item)
+                continue
+
             role = item.get("role")
             if role in {"user", "assistant"}:
                 content = item.get("content", "")
@@ -1814,6 +1835,15 @@ class AIAgent:
                     item_id = getattr(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id
+                    # Capture summary — required by the API when replaying reasoning items
+                    summary = getattr(item, "summary", None)
+                    if isinstance(summary, list):
+                        raw_summary = []
+                        for part in summary:
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str):
+                                raw_summary.append({"type": "summary_text", "text": text})
+                        raw_item["summary"] = raw_summary
                     reasoning_items_raw.append(raw_item)
             elif item_type == "function_call":
                 if item_status in {"queued", "in_progress", "incomplete"}:
@@ -2036,23 +2066,28 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
+            # Resolve reasoning effort: config > default (xhigh)
+            reasoning_effort = "xhigh"
+            reasoning_enabled = True
+            if self.reasoning_config and isinstance(self.reasoning_config, dict):
+                if self.reasoning_config.get("enabled") is False:
+                    reasoning_enabled = False
+                elif self.reasoning_config.get("effort"):
+                    reasoning_effort = self.reasoning_config["effort"]
+
             kwargs = {
                 "model": self.model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),
                 "store": False,
-                "reasoning": {"effort": "medium", "summary": "auto"},
-                "include": ["reasoning.encrypted_content"],
             }
 
-            # Apply reasoning effort from config if set
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    kwargs.pop("reasoning", None)
-                    kwargs["include"] = []
-                elif self.reasoning_config.get("effort"):
-                    kwargs["reasoning"]["effort"] = self.reasoning_config["effort"]
+            if reasoning_enabled:
+                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            else:
+                kwargs["include"] = []
 
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
@@ -2068,6 +2103,10 @@ class AIAgent:
             provider_preferences["order"] = self.providers_order
         if self.provider_sort:
             provider_preferences["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            provider_preferences["require_parameters"] = True
+        if self.provider_data_collection:
+            provider_preferences["data_collection"] = self.provider_data_collection
 
         api_kwargs = {
             "model": self.model,
@@ -2087,7 +2126,8 @@ class AIAgent:
         _is_openrouter = "openrouter" in self.base_url.lower()
         _is_nous = "nousresearch" in self.base_url.lower()
 
-        if _is_openrouter or _is_nous:
+        _is_mistral = "api.mistral.ai" in self.base_url.lower()
+        if (_is_openrouter or _is_nous) and not _is_mistral:
             if self.reasoning_config is not None:
                 extra_body["reasoning"] = self.reasoning_config
             else:
@@ -2240,6 +2280,8 @@ class AIAgent:
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
+                api_msg.pop("finish_reason", None)
+                api_msg.pop("_flush_sentinel", None)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -2408,7 +2450,7 @@ class AIAgent:
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
-                    self.tool_progress_callback(function_name, preview)
+                    self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -2644,6 +2686,20 @@ class AIAgent:
                 }
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+
+                # Include provider routing preferences
+                provider_preferences = {}
+                if self.providers_allowed:
+                    provider_preferences["only"] = self.providers_allowed
+                if self.providers_ignored:
+                    provider_preferences["ignore"] = self.providers_ignored
+                if self.providers_order:
+                    provider_preferences["order"] = self.providers_order
+                if self.provider_sort:
+                    provider_preferences["sort"] = self.provider_sort
+                if provider_preferences:
+                    summary_extra_body["provider"] = provider_preferences
+
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
@@ -2729,8 +2785,8 @@ class AIAgent:
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         
-        # Initialize conversation
-        messages = conversation_history or []
+        # Initialize conversation (copy to avoid mutating the caller's list)
+        messages = list(conversation_history) if conversation_history else []
         
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -2867,6 +2923,9 @@ class AIAgent:
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
                     api_msg.pop("reasoning")
+                # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
+                if "finish_reason" in api_msg:
+                    api_msg.pop("finish_reason")
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
@@ -3017,7 +3076,7 @@ class AIAgent:
                         print(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}")
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
-                        if retry_count > max_retries:
+                        if retry_count >= max_retries:
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3167,7 +3226,7 @@ class AIAgent:
                         if self._try_refresh_codex_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
                             continue
-                    
+
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     
@@ -3289,7 +3348,7 @@ class AIAgent:
                                 "partial": True
                             }
                     
-                    if retry_count > max_retries:
+                    if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
@@ -3391,7 +3450,7 @@ class AIAgent:
                     self._codex_incomplete_retries += 1
 
                     interim_msg = self._build_assistant_message(assistant_message, finish_reason)
-                    interim_has_content = bool(interim_msg.get("content", "").strip())
+                    interim_has_content = bool((interim_msg.get("content") or "").strip())
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
 
                     if interim_has_content or interim_has_reasoning:
@@ -3532,8 +3591,7 @@ class AIAgent:
                         if self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                preview = clean[:120] + "..." if len(clean) > 120 else clean
-                                print(f"  ┊ 💬 {preview}")
+                                print(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)

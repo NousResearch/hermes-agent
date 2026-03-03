@@ -60,7 +60,7 @@ def detect_dangerous_command(command: str) -> tuple:
     """
     command_lower = command.lower()
     for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE):
+        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
             return (True, pattern_key, description)
     return (False, None, None)

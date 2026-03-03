@@ -2667,7 +2667,7 @@ class AIAgent:
 
             if self.api_mode == "codex_responses":
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = None
+                codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
                 assistant_message, _ = self._normalize_codex_response(summary_response)
                 final_response = (assistant_message.content or "").strip() if assistant_message else ""
@@ -2713,7 +2713,7 @@ class AIAgent:
                 # Retry summary generation
                 if self.api_mode == "codex_responses":
                     codex_kwargs = self._build_api_kwargs(api_messages)
-                    codex_kwargs["tools"] = None
+                    codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
                     retry_msg, _ = self._normalize_codex_response(retry_response)
                     final_response = (retry_msg.content or "").strip() if retry_msg else ""

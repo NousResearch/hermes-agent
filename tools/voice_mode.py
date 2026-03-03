@@ -283,7 +283,9 @@ def check_voice_requirements() -> Dict[str, Any]:
         Dict with ``available``, ``audio_available``, ``stt_key_set``,
         ``missing_packages``, and ``details``.
     """
-    stt_key_set = bool(os.getenv("VOICE_TOOLS_OPENAI_KEY"))
+    openai_key = bool(os.getenv("VOICE_TOOLS_OPENAI_KEY"))
+    groq_key = bool(os.getenv("GROQ_API_KEY"))
+    stt_key_set = openai_key or groq_key
     missing: List[str] = []
 
     if not _HAS_AUDIO:
@@ -297,10 +299,12 @@ def check_voice_requirements() -> Dict[str, Any]:
     else:
         details_parts.append("Audio capture: MISSING (pip install sounddevice numpy)")
 
-    if stt_key_set:
-        details_parts.append("STT API key: OK")
+    if openai_key:
+        details_parts.append("STT API key: OK (OpenAI)")
+    elif groq_key:
+        details_parts.append("STT API key: OK (Groq)")
     else:
-        details_parts.append("STT API key: MISSING (set VOICE_TOOLS_OPENAI_KEY)")
+        details_parts.append("STT API key: MISSING (set GROQ_API_KEY or VOICE_TOOLS_OPENAI_KEY)")
 
     return {
         "available": available,

@@ -52,7 +52,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         for model in data.get("data", []):
             model_id = model.get("id", "")
             cache[model_id] = {
-                "context_length": model.get("context_length", 128000),
+                "context_length": model.get("context_length", 8192),
                 "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
                 "name": model.get("name", model_id),
                 "pricing": model.get("pricing", {}),
@@ -75,13 +75,13 @@ def get_model_context_length(model: str) -> int:
     """Get the context length for a model (API first, then fallback defaults)."""
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        return metadata[model].get("context_length", 8192)
 
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
         if default_model in model or model in default_model:
             return length
 
-    return 128000
+    return 8192
 
 
 def estimate_tokens_rough(text: str) -> int:

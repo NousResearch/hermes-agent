@@ -101,10 +101,10 @@ class TestGetModelContextLength:
         assert result == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")
-    def test_unknown_model_returns_128k(self, mock_fetch):
+    def test_unknown_model_returns_8k(self, mock_fetch):
         mock_fetch.return_value = {}
         result = get_model_context_length("unknown/never-heard-of-this")
-        assert result == 128000
+        assert result == 8192
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):

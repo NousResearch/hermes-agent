@@ -427,10 +427,17 @@ function Install-Repository {
         }
     } else {
         # Fix Windows git "copy-fd: write returned: Invalid argument" error.
-        # Must be set BEFORE clone, otherwise git fails copying hook templates.
-        # Also fixes "unable to write loose object file" for later operations.
+        # Git for Windows can fail on atomic file operations (hook templates,
+        # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
+        # Setting windows.appendAtomically=false via ENVIRONMENT bypasses the
+        # issue entirely — git reads these before touching any files, unlike
+        # --global config which itself may fail to write.
         Write-Info "Configuring git for Windows compatibility..."
-        git config --global windows.appendAtomically false
+        $env:GIT_CONFIG_COUNT = "1"
+        $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
+        $env:GIT_CONFIG_VALUE_0 = "false"
+        # Also try global config (may fail but harmless)
+        git config --global windows.appendAtomically false 2>$null
 
         # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging

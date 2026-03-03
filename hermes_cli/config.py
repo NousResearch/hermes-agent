@@ -204,7 +204,7 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
-        "record_key": "ctrl+space",
+        "record_key": "ctrl+r",
         "max_recording_seconds": 120,
         "auto_tts": False,
     },

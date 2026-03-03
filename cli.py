@@ -3540,7 +3540,8 @@ class HermesCLI:
             self._voice_recorder = AudioRecorder()
 
         self._voice_recorder.start()
-        self._voice_recording = True
+        with self._voice_lock:
+            self._voice_recording = True
         _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(Ctrl+R to stop, Ctrl+C to cancel){_RST}")
 
     def _voice_stop_and_transcribe(self):
@@ -3550,13 +3551,15 @@ class HermesCLI:
                 return
 
             wav_path = self._voice_recorder.stop()
-            self._voice_recording = False
+            with self._voice_lock:
+                self._voice_recording = False
 
             if wav_path is None:
                 _cprint(f"{_DIM}No speech detected (recording too short).{_RST}")
                 return
 
-            self._voice_processing = True
+            with self._voice_lock:
+                self._voice_processing = True
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
             _cprint(f"{_DIM}Transcribing...{_RST}")
@@ -3585,7 +3588,8 @@ class HermesCLI:
         except Exception as e:
             _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
         finally:
-            self._voice_processing = False
+            with self._voice_lock:
+                self._voice_processing = False
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
             # Clean up temp file
@@ -3605,13 +3609,21 @@ class HermesCLI:
             import json
             import re
 
-            # Strip markdown formatting for cleaner TTS
+            # Strip markdown and non-speech content for cleaner TTS
             tts_text = text[:4000] if len(text) > 4000 else text
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
             tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
             tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # code
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
             tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
             tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
+            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
+            tts_text = tts_text.strip()
+            if not tts_text:
+                return
 
             # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
             # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
@@ -3635,7 +3647,8 @@ class HermesCLI:
                 except OSError:
                     pass
         except Exception as e:
-            logger.debug("Voice TTS playback failed: %s", e)
+            logger.warning("Voice TTS playback failed: %s", e)
+            _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
 
     def _handle_voice_command(self, command: str):
         """Handle /voice [on|off|tts|status] command."""
@@ -3674,14 +3687,16 @@ class HermesCLI:
                 _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
             return
 
-        self._voice_mode = True
+        with self._voice_lock:
+            self._voice_mode = True
 
         # Check config for auto_tts
         try:
             from hermes_cli.config import load_config
             voice_config = load_config().get("voice", {})
             if voice_config.get("auto_tts", False):
-                self._voice_tts = True
+                with self._voice_lock:
+                    self._voice_tts = True
         except Exception:
             pass
 
@@ -3693,12 +3708,12 @@ class HermesCLI:
 
     def _disable_voice_mode(self):
         """Disable voice mode and cancel any active recording."""
-        if self._voice_recording and self._voice_recorder:
-            self._voice_recorder.cancel()
-            self._voice_recording = False
-
-        self._voice_mode = False
-        self._voice_tts = False
+        with self._voice_lock:
+            if self._voice_recording and self._voice_recorder:
+                self._voice_recorder.cancel()
+                self._voice_recording = False
+            self._voice_mode = False
+            self._voice_tts = False
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
     def _toggle_voice_tts(self):
@@ -3707,7 +3722,8 @@ class HermesCLI:
             _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
             return
 
-        self._voice_tts = not self._voice_tts
+        with self._voice_lock:
+            self._voice_tts = not self._voice_tts
         status = "enabled" if self._voice_tts else "disabled"
 
         if self._voice_tts:
@@ -4308,7 +4324,8 @@ class HermesCLI:
         self._attached_images: list[Path] = []
         self._image_counter = 0
 
-        # Voice mode state
+        # Voice mode state (protected by _voice_lock for cross-thread access)
+        self._voice_lock = threading.Lock()
         self._voice_mode = False        # Whether voice mode is enabled
         self._voice_tts = False         # Whether TTS output is enabled
         self._voice_recorder = None     # AudioRecorder instance (lazy init)
@@ -4508,12 +4525,13 @@ class HermesCLI:
             now = _time.time()
 
             # Cancel active voice recording
-            if cli_ref._voice_recording and cli_ref._voice_recorder:
-                cli_ref._voice_recorder.cancel()
-                cli_ref._voice_recording = False
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                event.app.invalidate()
-                return
+            with cli_ref._voice_lock:
+                if cli_ref._voice_recording and cli_ref._voice_recorder:
+                    cli_ref._voice_recorder.cancel()
+                    cli_ref._voice_recording = False
+                    _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+                    event.app.invalidate()
+                    return
 
             # Cancel sudo prompt
             if self._sudo_state:

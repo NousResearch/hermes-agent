@@ -2144,7 +2144,8 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = self.console.width
+        import shutil as _shutil
+        w = _shutil.get_terminal_size().columns
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
@@ -2220,7 +2221,7 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = self.console.width
+                w = _shutil.get_terminal_size().columns
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
                 top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
@@ -2540,7 +2541,8 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                available_width = (cli_ref.console.width or 80) - 4  # subtract prompt width
+                import shutil as _shutil
+                available_width = _shutil.get_terminal_size().columns - 4  # subtract prompt width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
@@ -2801,13 +2803,17 @@ class HermesCLI:
 
         # Horizontal rules above and below the input (bronze, 1 line each).
         # The bottom rule moves down as the TextArea grows with newlines.
+        # Using char='─' instead of hardcoded repetition so the rule
+        # always spans the full terminal width on any screen size.
         input_rule_top = Window(
-            content=FormattedTextControl([('class:input-rule', '─' * 200)]),
+            char='─',
             height=1,
+            style='class:input-rule',
         )
         input_rule_bot = Window(
-            content=FormattedTextControl([('class:input-rule', '─' * 200)]),
+            char='─',
             height=1,
+            style='class:input-rule',
         )
 
         # Layout: interactive prompt widgets + ruled input at bottom.

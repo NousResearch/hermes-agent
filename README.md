@@ -23,7 +23,7 @@ Built by [Nous Research](https://nousresearch.com). Under the hood, the same arc
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, and CLI — all from a single gateway process. Send it a voice memo from your phone, get a researched answer with citations. Cross-platform message mirroring means a conversation started on Telegram can continue on Discord.</td></tr>
 <tr><td><b>Grows the longer it runs</b></td><td>Persistent memory across sessions — the agent remembers your preferences, your projects, your environment. When it solves a hard problem, it writes a skill document for next time. Skills are searchable, shareable, and compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard. A Skills Hub lets you install community skills or publish your own.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Set up a daily AI funding report delivered to Telegram, a nightly backup verification on Discord, a weekly dependency audit that opens PRs, or a morning news briefing — all in natural language. The gateway runs them unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — each gets its own conversation and terminal. The agent can also write Python scripts that call its own tools via RPC, collapsing multi-step pipelines into a single turn with zero intermediate context cost.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — each gets its own conversation, terminal, and persona/custom instructions. The agent can also write Python scripts that call its own tools via RPC, collapsing multi-step pipelines into a single turn with zero intermediate context cost.</td></tr>
 <tr><td><b>Real sandboxing</b></td><td>Five terminal backends — local, Docker, SSH, Singularity, and Modal — with persistent workspaces, background process management, with the option to make these machines ephemeral. Run it against a remote machine so it can't modify its own code or read private API keys for added security.</td></tr>
 <tr><td><b>Research-ready</b></td><td>Batch runner for generating thousands of tool-calling trajectories in parallel. Atropos RL environments for training models with reinforcement learning on agentic tasks. Trajectory compression for fitting training data into token budgets.</td></tr>
 </table>
@@ -231,6 +231,19 @@ hermes gateway status       # Check service status
 ```
 
 The installer will offer to set this up automatically if it detects a bot token.
+
+### Running Multiple Instances
+
+If you need to run separate environments (e.g., dev/prod or a work/personal gateway), use the `HERMES_HOME` environment variable to override where Hermes looks for `~/.hermes`:
+
+```bash
+# Gateway 1 runs with standard config
+hermes gateway
+
+# Gateway 2 runs with a completely separate config, tokens, and DBs
+HERMES_HOME=~/.hermes-dev hermes gateway
+```
+
 
 ### Telegram Setup
 

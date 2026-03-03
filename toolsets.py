@@ -151,6 +151,11 @@ TOOLSETS = {
         "tools": ["text_to_speech"],
         "includes": []
     },
+    "notification": {
+        "description": "Desktop/system notifications and alert sounds. Falls back to terminal bell over SSH.",
+        "tools": ["notify", "notify_sound"],
+        "includes": []
+    },
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",

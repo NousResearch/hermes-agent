@@ -789,6 +789,14 @@ def cmd_update(args):
         print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
         sys.exit(1)
     
+    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
+    # due to filesystem atomicity issues. Set the recommended workaround.
+    if sys.platform == "win32":
+        subprocess.run(
+            ["git", "config", "windows.appendAtomically", "false"],
+            cwd=PROJECT_ROOT, check=False, capture_output=True
+        )
+
     # Fetch and pull
     try:
         print("→ Fetching updates...")
@@ -832,7 +840,7 @@ def cmd_update(args):
                 env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
             )
         else:
-            venv_pip = PROJECT_ROOT / "venv" / "bin" / "pip"
+            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
             if venv_pip.exists():
                 subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
             else:

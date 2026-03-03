@@ -462,9 +462,13 @@ function Install-Repository {
         }
     }
     
+    # Fix Windows git "unable to write loose object file" error.
+    # Must be set before any git operations that write objects.
+    Push-Location $InstallDir
+    git config windows.appendAtomically false
+
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
-    Push-Location $InstallDir
     git submodule update --init --recursive
     Pop-Location
     Write-Success "Submodules ready"

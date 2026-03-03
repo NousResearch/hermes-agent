@@ -235,6 +235,12 @@ class AudioRecorder:
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
 
+            # Skip silent recordings (RMS below threshold = no real speech)
+            rms = int(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
+            if rms < SILENCE_RMS_THRESHOLD:
+                logger.info("Recording too quiet (RMS=%d < %d), discarding", rms, SILENCE_RMS_THRESHOLD)
+                return None
+
             return self._write_wav(audio_data)
 
     def cancel(self) -> None:
@@ -277,12 +283,43 @@ class AudioRecorder:
 
 
 # ============================================================================
+# Whisper hallucination filter
+# ============================================================================
+# Whisper commonly hallucinates these phrases on silent/near-silent audio.
+WHISPER_HALLUCINATIONS = {
+    "thank you.",
+    "thank you",
+    "thanks for watching.",
+    "thanks for watching",
+    "subscribe to my channel.",
+    "subscribe to my channel",
+    "like and subscribe.",
+    "like and subscribe",
+    "please subscribe.",
+    "please subscribe",
+    "thank you for watching.",
+    "thank you for watching",
+    "bye.",
+    "bye",
+    "you",
+    "the end.",
+    "the end",
+}
+
+
+def is_whisper_hallucination(transcript: str) -> bool:
+    """Check if a transcript is a known Whisper hallucination on silence."""
+    return transcript.strip().lower() in WHISPER_HALLUCINATIONS
+
+
+# ============================================================================
 # STT dispatch
 # ============================================================================
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV recording using the existing Whisper pipeline.
 
     Delegates to ``tools.transcription_tools.transcribe_audio()``.
+    Filters out known Whisper hallucinations on silent audio.
 
     Args:
         wav_path: Path to the WAV file.
@@ -293,7 +330,14 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import transcribe_audio
 
-    return transcribe_audio(wav_path, model=model)
+    result = transcribe_audio(wav_path, model=model)
+
+    # Filter out Whisper hallucinations (common on silent/near-silent audio)
+    if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
+        logger.info("Filtered Whisper hallucination: %r", result["transcript"])
+        return {"success": True, "transcript": "", "filtered": True}
+
+    return result
 
 
 # ============================================================================

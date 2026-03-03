@@ -1,8 +1,9 @@
 """Home Assistant tool for controlling smart home devices via REST API.
 
-Registers three LLM-callable tools:
+Registers four LLM-callable tools:
 - ``ha_list_entities`` -- list/filter entities by domain or area
 - ``ha_get_state`` -- get detailed state of a single entity
+- ``ha_list_services`` -- list available services (actions) per domain
 - ``ha_call_service`` -- call a HA service (turn_on, turn_off, set_temperature, etc.)
 
 Authentication uses a Long-Lived Access Token via ``HASS_TOKEN`` env var.
@@ -22,8 +23,17 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_HASS_URL: str = os.getenv("HASS_URL", "http://homeassistant.local:8123").rstrip("/")
-_HASS_TOKEN: str = os.getenv("HASS_TOKEN", "")
+# Kept for backward compatibility (e.g. test monkeypatching); prefer _get_config().
+_HASS_URL: str = ""
+_HASS_TOKEN: str = ""
+
+
+def _get_config():
+    """Return (hass_url, hass_token) from env vars at call time."""
+    return (
+        (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/"),
+        _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
+    )
 
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
@@ -41,10 +51,12 @@ _BLOCKED_DOMAINS = frozenset({
 })
 
 
-def _get_headers() -> Dict[str, str]:
+def _get_headers(token: str = "") -> Dict[str, str]:
     """Return authorization headers for HA REST API."""
+    if not token:
+        _, token = _get_config()
     return {
-        "Authorization": f"Bearer {_HASS_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
@@ -88,9 +100,10 @@ async def _async_list_entities(
     """Fetch entity states from HA and optionally filter by domain/area."""
     import aiohttp
 
-    url = f"{_HASS_URL}/api/states"
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/states"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=_get_headers(), timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=15)) as resp:
             resp.raise_for_status()
             states = await resp.json()
 
@@ -101,9 +114,10 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
     """Fetch detailed state of a single entity."""
     import aiohttp
 
-    url = f"{_HASS_URL}/api/states/{entity_id}"
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/states/{entity_id}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=_get_headers(), timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
             data = await resp.json()
 
@@ -160,13 +174,14 @@ async def _async_call_service(
     """Call a Home Assistant service."""
     import aiohttp
 
-    url = f"{_HASS_URL}/api/services/{domain}/{service}"
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
-            headers=_get_headers(),
+            headers=_get_headers(hass_token),
             json=payload,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
@@ -251,6 +266,55 @@ def _handle_call_service(args: dict, **kw) -> str:
 
 
 # ---------------------------------------------------------------------------
+# List services
+# ---------------------------------------------------------------------------
+
+async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch available services from HA and optionally filter by domain."""
+    import aiohttp
+
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/services"
+    headers = {"Authorization": f"Bearer {hass_token}", "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            resp.raise_for_status()
+            services = await resp.json()
+
+    if domain:
+        services = [s for s in services if s.get("domain") == domain]
+
+    # Compact the output for context efficiency
+    result = []
+    for svc_domain in services:
+        d = svc_domain.get("domain", "")
+        domain_services = {}
+        for svc_name, svc_info in svc_domain.get("services", {}).items():
+            svc_entry: Dict[str, Any] = {"description": svc_info.get("description", "")}
+            fields = svc_info.get("fields", {})
+            if fields:
+                svc_entry["fields"] = {
+                    k: v.get("description", "") for k, v in fields.items()
+                    if isinstance(v, dict)
+                }
+            domain_services[svc_name] = svc_entry
+        result.append({"domain": d, "services": domain_services})
+
+    return {"count": len(result), "domains": result}
+
+
+def _handle_list_services(args: dict, **kw) -> str:
+    """Handler for ha_list_services tool."""
+    domain = args.get("domain")
+    try:
+        result = _run_async(_async_list_services(domain=domain))
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("ha_list_services error: %s", e)
+        return json.dumps({"error": f"Failed to list services: {e}"})
+
+
+# ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
 
@@ -314,12 +378,34 @@ HA_GET_STATE_SCHEMA = {
     },
 }
 
+HA_LIST_SERVICES_SCHEMA = {
+    "name": "ha_list_services",
+    "description": (
+        "List available Home Assistant services (actions) for device control. "
+        "Shows what actions can be performed on each device type and what "
+        "parameters they accept. Use this to discover how to control devices "
+        "found via ha_list_entities."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": (
+                    "Filter by domain (e.g. 'light', 'climate', 'switch'). "
+                    "Omit to list services for all domains."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
 HA_CALL_SERVICE_SCHEMA = {
     "name": "ha_call_service",
     "description": (
-        "Call a Home Assistant service to control a device. Common examples: "
-        "turn_on/turn_off lights and switches, set_temperature for climate, "
-        "open_cover/close_cover for blinds, set_volume_level for media players."
+        "Call a Home Assistant service to control a device. Use ha_list_services "
+        "to discover available services and their parameters for each domain."
     ),
     "parameters": {
         "type": "object",
@@ -380,6 +466,14 @@ registry.register(
     toolset="homeassistant",
     schema=HA_GET_STATE_SCHEMA,
     handler=_handle_get_state,
+    check_fn=_check_ha_available,
+)
+
+registry.register(
+    name="ha_list_services",
+    toolset="homeassistant",
+    schema=HA_LIST_SERVICES_SCHEMA,
+    handler=_handle_list_services,
     check_fn=_check_ha_available,
 )
 

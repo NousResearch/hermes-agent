@@ -36,6 +36,7 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "schedule, list, remove"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
+    ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
 # Platform display config
@@ -312,6 +313,8 @@ TOOLSET_ENV_REQUIREMENTS = {
     "tts":        [],  # Edge TTS is free, no key needed
     "rl":         [("TINKER_API_KEY",       "https://tinker-console.thinkingmachines.ai/keys"),
                    ("WANDB_API_KEY",        "https://wandb.ai/authorize")],
+    "homeassistant": [("HASS_TOKEN", "Home Assistant > Profile > Long-Lived Access Tokens"),
+                      ("HASS_URL",   None)],
 }
 
 

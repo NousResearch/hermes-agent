@@ -1,8 +1,8 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, test failure, or unexpected behavior. 4-phase root cause investigation process - NO fixes without understanding the problem first.
-version: 1.0.0
-author: Hermes Agent (adapted from Superpowers)
+description: Use when encountering any bug, test failure, or unexpected behavior. 4-phase root cause investigation — NO fixes without understanding the problem first.
+version: 1.1.0
+author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
 metadata:
   hermes:
@@ -48,7 +48,7 @@ Use for ANY technical issue:
 **Don't skip when:**
 - Issue seems simple (simple bugs have root causes too)
 - You're in a hurry (rushing guarantees rework)
-- Manager wants it fixed NOW (systematic is faster than thrashing)
+- Someone wants it fixed NOW (systematic is faster than thrashing)
 
 ## The Four Phases
 
@@ -67,7 +67,7 @@ You MUST complete each phase before proceeding to the next.
 - Read stack traces completely
 - Note line numbers, file paths, error codes
 
-**Action:** Copy full error message to your notes.
+**Action:** Use `read_file` on the relevant source files. Use `search_files` to find the error string in the codebase.
 
 ### 2. Reproduce Consistently
 
@@ -76,16 +76,24 @@ You MUST complete each phase before proceeding to the next.
 - Does it happen every time?
 - If not reproducible → gather more data, don't guess
 
-**Action:** Write down exact reproduction steps.
+**Action:** Use the `terminal` tool to run the failing test or trigger the bug:
+
+```bash
+# Run specific failing test
+pytest tests/test_module.py::test_name -v
+
+# Run with verbose output
+pytest tests/test_module.py -v --tb=long
+```
 
 ### 3. Check Recent Changes
 
 - What changed that could cause this?
 - Git diff, recent commits
 - New dependencies, config changes
-- Environmental differences
 
-**Commands:**
+**Action:**
+
 ```bash
 # Recent commits
 git log --oneline -10
@@ -94,59 +102,50 @@ git log --oneline -10
 git diff
 
 # Changes in specific file
-git log -p --follow src/problematic_file.py
+git log -p --follow src/problematic_file.py | head -100
 ```
 
 ### 4. Gather Evidence in Multi-Component Systems
 
-**WHEN system has multiple components (CI pipeline, API service, database layer):**
+**WHEN system has multiple components (API → service → database, CI → build → deploy):**
 
 **BEFORE proposing fixes, add diagnostic instrumentation:**
 
 For EACH component boundary:
-- Log what data enters component
-- Log what data exits component
+- Log what data enters the component
+- Log what data exits the component
 - Verify environment/config propagation
 - Check state at each layer
 
-Run once to gather evidence showing WHERE it breaks
-THEN analyze evidence to identify failing component
-THEN investigate that specific component
+Run once to gather evidence showing WHERE it breaks.
+THEN analyze evidence to identify the failing component.
+THEN investigate that specific component.
 
-**Example (multi-layer system):**
+### 5. Trace Data Flow
+
+**WHEN error is deep in the call stack:**
+
+- Where does the bad value originate?
+- What called this function with the bad value?
+- Keep tracing upstream until you find the source
+- Fix at the source, not at the symptom
+
+**Action:** Use `search_files` to trace references:
+
 ```python
-# Layer 1: Entry point
-def entry_point(input_data):
-    print(f"DEBUG: Input received: {input_data}")
-    result = process_layer1(input_data)
-    print(f"DEBUG: Layer 1 output: {result}")
-    return result
+# Find where the function is called
+search_files("function_name(", path="src/", file_glob="*.py")
 
-# Layer 2: Processing
-def process_layer1(data):
-    print(f"DEBUG: Layer 1 received: {data}")
-    # ... processing ...
-    print(f"DEBUG: Layer 1 returning: {result}")
-    return result
+# Find where the variable is set
+search_files("variable_name\\s*=", path="src/", file_glob="*.py")
 ```
-
-**Action:** Add logging, run once, analyze output.
-
-### 5. Isolate the Problem
-
-- Comment out code until problem disappears
-- Binary search through recent changes
-- Create minimal reproduction case
-- Test with fresh environment
-
-**Action:** Create minimal reproduction case.
 
 ### Phase 1 Completion Checklist
 
 - [ ] Error messages fully read and understood
 - [ ] Issue reproduced consistently
 - [ ] Recent changes identified and reviewed
-- [ ] Evidence gathered (logs, state)
+- [ ] Evidence gathered (logs, state, data flow)
 - [ ] Problem isolated to specific component/code
 - [ ] Root cause hypothesis formed
 
@@ -154,290 +153,214 @@ def process_layer1(data):
 
 ---
 
-## Phase 2: Solution Design
+## Phase 2: Pattern Analysis
 
-**Given the root cause, design the fix:**
+**Find the pattern before fixing:**
 
-### 1. Understand the Fix Area
+### 1. Find Working Examples
 
-- Read relevant code thoroughly
-- Understand data flow
-- Identify affected components
-- Check for similar issues elsewhere
+- Locate similar working code in the same codebase
+- What works that's similar to what's broken?
 
-**Action:** Read all relevant code files.
+**Action:** Use `search_files` to find comparable patterns:
 
-### 2. Design Minimal Fix
+```python
+search_files("similar_pattern", path="src/", file_glob="*.py")
+```
 
-- Smallest change that fixes root cause
-- Avoid scope creep
-- Don't refactor while fixing
-- Fix one issue at a time
+### 2. Compare Against References
 
-**Action:** Write down the exact fix before coding.
+- If implementing a pattern, read the reference implementation COMPLETELY
+- Don't skim — read every line
+- Understand the pattern fully before applying
 
-### 3. Consider Side Effects
+### 3. Identify Differences
 
-- What else could this change affect?
-- Are there dependencies?
-- Will this break other functionality?
+- What's different between working and broken?
+- List every difference, however small
+- Don't assume "that can't matter"
 
-**Action:** Identify potential side effects.
+### 4. Understand Dependencies
 
-### Phase 2 Completion Checklist
-
-- [ ] Fix area code fully understood
-- [ ] Minimal fix designed
-- [ ] Side effects identified
-- [ ] Fix approach documented
+- What other components does this need?
+- What settings, config, environment?
+- What assumptions does it make?
 
 ---
 
-## Phase 3: Implementation
+## Phase 3: Hypothesis and Testing
 
-**Make the fix:**
+**Scientific method:**
 
-### 1. Write Test First (if possible)
+### 1. Form a Single Hypothesis
 
-```python
-def test_should_handle_empty_input():
-    """Regression test for bug #123"""
-    result = process_data("")
-    assert result == expected_empty_result
-```
+- State clearly: "I think X is the root cause because Y"
+- Write it down
+- Be specific, not vague
 
-### 2. Implement Fix
+### 2. Test Minimally
 
-```python
-# Before (buggy)
-def process_data(data):
-    return data.split(",")[0]
+- Make the SMALLEST possible change to test the hypothesis
+- One variable at a time
+- Don't fix multiple things at once
 
-# After (fixed)
-def process_data(data):
-    if not data:
-        return ""
-    return data.split(",")[0]
-```
+### 3. Verify Before Continuing
+
+- Did it work? → Phase 4
+- Didn't work? → Form NEW hypothesis
+- DON'T add more fixes on top
+
+### 4. When You Don't Know
+
+- Say "I don't understand X"
+- Don't pretend to know
+- Ask the user for help
+- Research more
+
+---
+
+## Phase 4: Implementation
+
+**Fix the root cause, not the symptom:**
+
+### 1. Create Failing Test Case
+
+- Simplest possible reproduction
+- Automated test if possible
+- MUST have before fixing
+- Use the `test-driven-development` skill
+
+### 2. Implement Single Fix
+
+- Address the root cause identified
+- ONE change at a time
+- No "while I'm here" improvements
+- No bundled refactoring
 
 ### 3. Verify Fix
 
 ```bash
-# Run the specific test
-pytest tests/test_data.py::test_should_handle_empty_input -v
+# Run the specific regression test
+pytest tests/test_module.py::test_regression -v
 
-# Run all tests to check for regressions
-pytest
+# Run full suite — no regressions
+pytest tests/ -q
 ```
 
-### Phase 3 Completion Checklist
+### 4. If Fix Doesn't Work — The Rule of Three
 
-- [ ] Test written that reproduces the bug
-- [ ] Minimal fix implemented
-- [ ] Test passes
-- [ ] No regressions introduced
+- **STOP.**
+- Count: How many fixes have you tried?
+- If < 3: Return to Phase 1, re-analyze with new information
+- **If ≥ 3: STOP and question the architecture (step 5 below)**
+- DON'T attempt Fix #4 without architectural discussion
+
+### 5. If 3+ Fixes Failed: Question Architecture
+
+**Pattern indicating an architectural problem:**
+- Each fix reveals new shared state/coupling in a different place
+- Fixes require "massive refactoring" to implement
+- Each fix creates new symptoms elsewhere
+
+**STOP and question fundamentals:**
+- Is this pattern fundamentally sound?
+- Are we "sticking with it through sheer inertia"?
+- Should we refactor the architecture vs. continue fixing symptoms?
+
+**Discuss with the user before attempting more fixes.**
+
+This is NOT a failed hypothesis — this is a wrong architecture.
 
 ---
 
-## Phase 4: Verification
+## Red Flags — STOP and Follow Process
 
-**Confirm it's actually fixed:**
+If you catch yourself thinking:
+- "Quick fix for now, investigate later"
+- "Just try changing X and see if it works"
+- "Add multiple changes, run tests"
+- "Skip the test, I'll manually verify"
+- "It's probably X, let me fix that"
+- "I don't fully understand but this might work"
+- "Pattern says X but I'll adapt it differently"
+- "Here are the main problems: [lists fixes without investigation]"
+- Proposing solutions before tracing data flow
+- **"One more fix attempt" (when already tried 2+)**
+- **Each fix reveals a new problem in a different place**
 
-### 1. Reproduce Original Issue
+**ALL of these mean: STOP. Return to Phase 1.**
 
-- Follow original reproduction steps
-- Verify issue is resolved
-- Test edge cases
+**If 3+ fixes failed:** Question the architecture (Phase 4 step 5).
 
-### 2. Regression Testing
+## Common Rationalizations
 
-```bash
-# Full test suite
-pytest
+| Excuse | Reality |
+|--------|---------|
+| "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
+| "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
+| "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
+| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
+| "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
+| "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
+| "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
+| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question the pattern, don't fix again. |
 
-# Integration tests
-pytest tests/integration/
+## Quick Reference
 
-# Check related areas
-pytest -k "related_feature"
-```
+| Phase | Key Activities | Success Criteria |
+|-------|---------------|------------------|
+| **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
+| **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
+| **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
+| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
 
-### 3. Monitor After Deploy
+## Hermes Agent Integration
 
-- Watch logs for related errors
-- Check metrics
-- Verify fix in production
+### Investigation Tools
 
-### Phase 4 Completion Checklist
+Use these Hermes tools during Phase 1:
 
-- [ ] Original issue cannot be reproduced
-- [ ] All tests pass
-- [ ] No new warnings/errors
-- [ ] Fix documented (commit message, comments)
+- **`search_files`** — Find error strings, trace function calls, locate patterns
+- **`read_file`** — Read source code with line numbers for precise analysis
+- **`terminal`** — Run tests, check git history, reproduce bugs
+- **`web_search`/`web_extract`** — Research error messages, library docs
 
----
+### With delegate_task
 
-## Debugging Techniques
-
-### Root Cause Tracing
-
-Ask "why" 5 times:
-1. Why did it fail? → Null pointer
-2. Why was it null? → Function returned null
-3. Why did function return null? → Missing validation
-4. Why was validation missing? → Assumed input always valid
-5. Why was that assumption wrong? → API changed
-
-**Root cause:** API change not accounted for
-
-### Defense in Depth
-
-Don't fix just the symptom:
-
-**Bad:** Add null check at crash site
-**Good:** 
-1. Add validation at API boundary
-2. Add null check at crash site
-3. Add test for both
-4. Document API behavior
-
-### Condition-Based Waiting
-
-For timing/race conditions:
+For complex multi-component debugging, dispatch investigation subagents:
 
 ```python
-# Bad - arbitrary sleep
-import time
-time.sleep(5)  # "Should be enough"
+delegate_task(
+    goal="Investigate why [specific test/behavior] fails",
+    context="""
+    Follow systematic-debugging skill:
+    1. Read the error message carefully
+    2. Reproduce the issue
+    3. Trace the data flow to find root cause
+    4. Report findings — do NOT fix yet
 
-# Good - wait for condition
-from tenacity import retry, wait_exponential, stop_after_attempt
-
-@retry(wait=wait_exponential(multiplier=1, min=4, max=10),
-       stop=stop_after_attempt(5))
-def wait_for_service():
-    response = requests.get(health_url)
-    assert response.status_code == 200
+    Error: [paste full error]
+    File: [path to failing code]
+    Test command: [exact command]
+    """,
+    toolsets=['terminal', 'file']
+)
 ```
-
----
-
-## Common Debugging Pitfalls
-
-### Fix Without Understanding
-
-**Symptom:** "Just add a try/catch"
-**Problem:** Masks the real issue
-**Solution:** Complete Phase 1 before any fix
-
-### Shotgun Debugging
-
-**Symptom:** Change 5 things at once
-**Problem:** Don't know what fixed it
-**Solution:** One change at a time, verify each
-
-### Premature Optimization
-
-**Symptom:** Rewrite while debugging
-**Problem:** Introduces new bugs
-**Solution:** Fix first, refactor later
-
-### Assuming Environment
-
-**Symptom:** "Works on my machine"
-**Problem:** Environment differences
-**Solution:** Check environment variables, versions, configs
-
----
-
-## Language-Specific Tools
-
-### Python
-
-```python
-# Add debugger
-import pdb; pdb.set_trace()
-
-# Or use ipdb for better experience
-import ipdb; ipdb.set_trace()
-
-# Log state
-import logging
-logging.debug(f"Variable state: {variable}")
-
-# Stack trace
-import traceback
-traceback.print_exc()
-```
-
-### JavaScript/TypeScript
-
-```javascript
-// Debugger
-debugger;
-
-// Console with context
-console.log("State:", { var1, var2, var3 });
-
-// Stack trace
-console.trace("Here");
-
-// Error with context
-throw new Error(`Failed with input: ${JSON.stringify(input)}`);
-```
-
-### Go
-
-```go
-// Print state
-fmt.Printf("Debug: variable=%+v\n", variable)
-
-// Stack trace
-import "runtime/debug"
-debug.PrintStack()
-
-// Panic with context
-if err != nil {
-    panic(fmt.Sprintf("unexpected error: %v", err))
-}
-```
-
----
-
-## Integration with Other Skills
 
 ### With test-driven-development
 
-When debugging:
-1. Write test that reproduces bug
-2. Debug systematically
-3. Fix root cause
-4. Test passes
+When fixing bugs:
+1. Write a test that reproduces the bug (RED)
+2. Debug systematically to find root cause
+3. Fix the root cause (GREEN)
+4. The test proves the fix and prevents regression
 
-### With writing-plans
+## Real-World Impact
 
-Include debugging tasks in plans:
-- "Add diagnostic logging"
-- "Create reproduction test"
-- "Verify fix resolves issue"
-
-### With subagent-driven-development
-
-If subagent gets stuck:
-1. Switch to systematic debugging
-2. Analyze root cause
-3. Provide findings to subagent
-4. Resume implementation
-
----
-
-## Remember
-
-```
-PHASE 1: Investigate → Understand WHY
-PHASE 2: Design → Plan the fix
-PHASE 3: Implement → Make the fix
-PHASE 4: Verify → Confirm it's fixed
-```
+From debugging sessions:
+- Systematic approach: 15-30 minutes to fix
+- Random fixes approach: 2-3 hours of thrashing
+- First-time fix rate: 95% vs 40%
+- New bugs introduced: Near zero vs common
 
 **No shortcuts. No guessing. Systematic always wins.**

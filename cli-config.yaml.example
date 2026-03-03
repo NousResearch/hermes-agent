@@ -443,6 +443,41 @@ toolsets:
 #   - safe
 
 # =============================================================================
+# MCP (Model Context Protocol) Servers
+# =============================================================================
+# Connect to external MCP servers to add tools from the MCP ecosystem.
+# Each server's tools are automatically discovered and registered.
+# See docs/mcp.md for full documentation.
+#
+# Stdio servers (spawn a subprocess):
+#   command: the executable to run
+#   args: command-line arguments
+#   env: environment variables (only these + safe defaults passed to subprocess)
+#
+# HTTP servers (connect to a URL):
+#   url: the MCP server endpoint
+#   headers: HTTP headers (e.g., for authentication)
+#
+# Optional per-server settings:
+#   timeout: tool call timeout in seconds (default: 120)
+#   connect_timeout: initial connection timeout (default: 60)
+#
+# mcp_servers:
+#   time:
+#     command: uvx
+#     args: ["mcp-server-time"]
+#   filesystem:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+#   notion:
+#     url: https://mcp.notion.com/mcp
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.

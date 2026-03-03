@@ -85,6 +85,7 @@ def _discover_tools():
         "tools.cronjob_tools",
         "tools.rl_training_tool",
         "tools.tts_tool",
+        "tools.notification_tool",
         "tools.todo_tool",
         "tools.memory_tool",
         "tools.session_search_tool",

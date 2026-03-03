@@ -416,9 +416,12 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git fetch origin
-            git checkout $Branch
-            git pull origin $Branch
+            $savedEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            git fetch origin 2>&1 | Out-Null
+            git checkout $Branch 2>&1 | Out-Null
+            git pull origin $Branch 2>&1 | Out-Null
+            $ErrorActionPreference = $savedEAP
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
@@ -426,6 +429,13 @@ function Install-Repository {
             exit 1
         }
     } else {
+        # Git writes progress to stderr. With $ErrorActionPreference = "Stop",
+        # PowerShell treats ANY stderr output from native commands as a
+        # terminating NativeCommandError — even successful git clones.
+        # Temporarily relax this so git can run normally.
+        $savedEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+
         # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
         # when no key is configured (fails immediately instead of prompting).
@@ -446,16 +456,25 @@ function Install-Repository {
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "Cloned via HTTPS"
             } else {
+                $ErrorActionPreference = $savedEAP
                 Write-Err "Failed to clone repository"
                 exit 1
             }
         }
+
+        $ErrorActionPreference = $savedEAP
     }
     
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
     Push-Location $InstallDir
-    git submodule update --init --recursive
+
+    # Same stderr issue applies to git submodule commands
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    git submodule update --init --recursive 2>&1 | Out-Null
+    $ErrorActionPreference = $savedEAP
+
     Pop-Location
     Write-Success "Submodules ready"
     

@@ -416,9 +416,9 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git fetch origin
-            git checkout $Branch
-            git pull origin $Branch
+            git -c windows.appendAtomically=false fetch origin
+            git -c windows.appendAtomically=false checkout $Branch
+            git -c windows.appendAtomically=false pull origin $Branch
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
@@ -426,73 +426,93 @@ function Install-Repository {
             throw "Directory exists but is not a git repository: $InstallDir"
         }
     } else {
+        $cloneSuccess = $false
+
         # Fix Windows git "copy-fd: write returned: Invalid argument" error.
         # Git for Windows can fail on atomic file operations (hook templates,
         # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
-        # Setting windows.appendAtomically=false via ENVIRONMENT bypasses the
-        # issue entirely — git reads these before touching any files, unlike
-        # --global config which itself may fail to write.
+        # The -c flag injects config before any file I/O occurs.
         Write-Info "Configuring git for Windows compatibility..."
         $env:GIT_CONFIG_COUNT = "1"
         $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
         $env:GIT_CONFIG_VALUE_0 = "false"
-        # Also try global config (may fail but harmless)
         git config --global windows.appendAtomically false 2>$null
 
-        # Try SSH first (for private repo access), fall back to HTTPS.
-        # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
-        # when no key is configured (fails immediately instead of prompting).
-        #
-        # IMPORTANT: Do NOT use 2>&1 on git commands in PowerShell.
-        # With $ErrorActionPreference = "Stop", PowerShell wraps captured
-        # stderr lines in ErrorRecord objects, turning git's normal progress
-        # messages ("Cloning into ...") into terminating NativeCommandErrors.
-        # Let stderr flow to the console naturally (like OpenClaw does).
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
-            $sshExitCode = $LASTEXITCODE
-        } catch {
-            $sshExitCode = 1
-        }
+            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        } catch { }
         $env:GIT_SSH_COMMAND = $null
         
-        if ($sshExitCode -eq 0) {
-            Write-Success "Cloned via SSH"
-        } else {
-            # Clean up partial SSH clone before retrying
+        if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
-            git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "Cloned via HTTPS"
-            } else {
-                # Last resort: skip hook templates entirely (they're optional sample files)
-                if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-                Write-Warn "Standard clone failed, retrying without hook templates..."
-                git clone --branch $Branch --recurse-submodules --template="" $RepoUrlHttps $InstallDir
+            try {
+                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+        }
+
+        # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
+        if (-not $cloneSuccess) {
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            Write-Warn "Git clone failed — downloading ZIP archive instead..."
+            try {
+                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
+                $extractPath = "$env:TEMP\hermes-agent-extract"
                 
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Success "Cloned via HTTPS (no templates)"
-                } else {
-                    Write-Err "Failed to clone repository"
-                    throw "Failed to clone repository"
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+                if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+                
+                # GitHub ZIPs extract to repo-branch/ subdirectory
+                $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
+                if ($extractedDir) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
+                    Move-Item $extractedDir.FullName $InstallDir -Force
+                    Write-Success "Downloaded and extracted"
+                    
+                    # Initialize git repo so updates work later
+                    Push-Location $InstallDir
+                    git -c windows.appendAtomically=false init 2>$null
+                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+                    git remote add origin $RepoUrlHttps 2>$null
+                    Pop-Location
+                    Write-Success "Git repo initialized for future updates"
+                    
+                    $cloneSuccess = $true
                 }
+                
+                # Cleanup temp files
+                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
+            } catch {
+                Write-Err "ZIP download also failed: $_"
             }
+        }
+
+        if (-not $cloneSuccess) {
+            throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
         }
     }
     
-    # Also set per-repo (in case global wasn't persisted)
+    # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
-    git config windows.appendAtomically false
+    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
 
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
-    git submodule update --init --recursive
+    git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
+    } else {
+        Write-Success "Submodules ready"
+    }
     Pop-Location
-    Write-Success "Submodules ready"
     
     Write-Success "Repository ready"
 }

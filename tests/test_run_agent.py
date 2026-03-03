@@ -121,7 +121,7 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None,
 
 
 # ===================================================================
-# Grup 1: Pure Functions
+# Group 1: Pure Functions
 # ===================================================================
 
 
@@ -273,7 +273,7 @@ class TestMaskApiKey:
 
 
 # ===================================================================
-# Grup 2: State / Structure Methods
+# Group 2: State / Structure Methods
 # ===================================================================
 
 
@@ -569,7 +569,7 @@ class TestFormatToolsForSystemMessage:
 
 
 # ===================================================================
-# Grup 3: Conversation Loop Pieces (OpenAI mock)
+# Group 3: Conversation Loop Pieces (OpenAI mock)
 # ===================================================================
 
 

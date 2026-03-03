@@ -776,3 +776,140 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+
+
+class TestRetryExhaustion:
+    """Regression: retry_count > max_retries was dead code (off-by-one).
+
+    When retries were exhausted the condition never triggered, causing
+    the loop to exit and fall through to response.choices[0] on an
+    invalid response, raising IndexError.
+    """
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    @staticmethod
+    def _make_fast_time_mock():
+        """Return a mock time module where sleep loops exit instantly."""
+        mock_time = MagicMock()
+        _t = [1000.0]
+
+        def _advancing_time():
+            _t[0] += 500.0  # jump 500s per call so sleep_end is always in the past
+            return _t[0]
+
+        mock_time.time.side_effect = _advancing_time
+        mock_time.sleep = MagicMock()  # no-op
+        mock_time.monotonic.return_value = 12345.0
+        return mock_time
+
+    def test_invalid_response_returns_error_not_crash(self, agent):
+        """Exhausted retries on invalid (empty choices) response must not IndexError."""
+        self._setup_agent(agent)
+        # Return response with empty choices every time
+        bad_resp = SimpleNamespace(
+            choices=[],
+            model="test/model",
+            usage=None,
+        )
+        agent.client.chat.completions.create.return_value = bad_resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+        assert result.get("failed") is True or result.get("completed") is False
+
+    def test_api_error_raises_after_retries(self, agent):
+        """Exhausted retries on API errors must raise, not fall through."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            with pytest.raises(RuntimeError, match="rate limited"):
+                agent.run_conversation("hello")
+
+
+# ---------------------------------------------------------------------------
+# Flush sentinel leak
+# ---------------------------------------------------------------------------
+
+class TestFlushSentinelNotLeaked:
+    """_flush_sentinel must be stripped before sending messages to the API."""
+
+    def test_flush_sentinel_stripped_from_api_messages(self, agent_with_memory_tool):
+        """Verify _flush_sentinel is not sent to the API provider."""
+        agent = agent_with_memory_tool
+        agent._memory_store = MagicMock()
+        agent._memory_flush_min_turns = 1
+        agent._user_turn_count = 10
+        agent._cached_system_prompt = "system"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "remember this"},
+        ]
+
+        # Mock the API to return a simple response (no tool calls)
+        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
+        mock_choice = SimpleNamespace(message=mock_msg)
+        mock_response = SimpleNamespace(choices=[mock_choice])
+        agent.client.chat.completions.create.return_value = mock_response
+
+        # Bypass auxiliary client so flush uses agent.client directly
+        with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)):
+            agent.flush_memories(messages, min_turns=0)
+
+        # Check what was actually sent to the API
+        call_args = agent.client.chat.completions.create.call_args
+        assert call_args is not None, "flush_memories never called the API"
+        api_messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
+        for msg in api_messages:
+            assert "_flush_sentinel" not in msg, (
+                f"_flush_sentinel leaked to API in message: {msg}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Conversation history mutation
+# ---------------------------------------------------------------------------
+
+class TestConversationHistoryNotMutated:
+    """run_conversation must not mutate the caller's conversation_history list."""
+
+    def test_caller_list_unchanged_after_run(self, agent):
+        """Passing conversation_history should not modify the original list."""
+        history = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+        original_len = len(history)
+
+        resp = _mock_response(content="new answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("new question", conversation_history=history)
+
+        # Caller's list must be untouched
+        assert len(history) == original_len, (
+            f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
+        )
+        # Result should have more messages than the original history
+        assert len(result["messages"]) > original_len

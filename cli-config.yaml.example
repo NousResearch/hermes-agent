@@ -21,6 +21,32 @@ model:
   base_url: "https://openrouter.ai/api/v1"
 
 # =============================================================================
+# OpenRouter Provider Routing (only applies when using OpenRouter)
+# =============================================================================
+# Control how requests are routed across providers on OpenRouter.
+# See: https://openrouter.ai/docs/guides/routing/provider-selection
+#
+# provider_routing:
+#   # Sort strategy: "price" (default), "throughput", or "latency"
+#   # Append :nitro to model name for a shortcut to throughput sorting.
+#   sort: "throughput"
+#
+#   # Only allow these providers (provider slugs from OpenRouter)
+#   # only: ["anthropic", "google"]
+#
+#   # Skip these providers entirely
+#   # ignore: ["deepinfra", "fireworks"]
+#
+#   # Try providers in this order (overrides default load balancing)
+#   # order: ["anthropic", "google", "together"]
+#
+#   # Require providers to support all parameters in your request
+#   # require_parameters: true
+#
+#   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
+#   # data_collection: "deny"
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
@@ -417,6 +443,41 @@ toolsets:
 #   - safe
 
 # =============================================================================
+# MCP (Model Context Protocol) Servers
+# =============================================================================
+# Connect to external MCP servers to add tools from the MCP ecosystem.
+# Each server's tools are automatically discovered and registered.
+# See docs/mcp.md for full documentation.
+#
+# Stdio servers (spawn a subprocess):
+#   command: the executable to run
+#   args: command-line arguments
+#   env: environment variables (only these + safe defaults passed to subprocess)
+#
+# HTTP servers (connect to a URL):
+#   url: the MCP server endpoint
+#   headers: HTTP headers (e.g., for authentication)
+#
+# Optional per-server settings:
+#   timeout: tool call timeout in seconds (default: 120)
+#   connect_timeout: initial connection timeout (default: 60)
+#
+# mcp_servers:
+#   time:
+#     command: uvx
+#     args: ["mcp-server-time"]
+#   filesystem:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+#   notion:
+#     url: https://mcp.notion.com/mcp
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
@@ -464,7 +525,7 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (up to 3 parallel).
 delegation:
-  max_iterations: 50                          # Max tool-calling turns per child (default: 25)
+  max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
 
 # =============================================================================

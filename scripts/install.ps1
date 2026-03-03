@@ -16,8 +16,8 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
-    [string]$HermesHome = "$env:USERPROFILE\.hermes",
-    [string]$InstallDir = "$env:USERPROFILE\.hermes\hermes-agent"
+    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
+    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
 )
 
 $ErrorActionPreference = "Stop"
@@ -145,17 +145,49 @@ function Test-Python {
     # Python not found — use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
-        & $UvCmd python install $PythonVersion 2>&1 | Out-Null
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
-            Write-Success "Python installed: $ver"
+        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+            if ($pythonPath) {
+                $ver = & $pythonPath --version 2>$null
+                Write-Success "Python installed: $ver"
+                return $true
+            }
+        } else {
+            Write-Warn "uv python install output:"
+            Write-Host $uvOutput -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Warn "uv python install error: $_"
+    }
+
+    # Fallback: check if ANY Python 3.10+ is already available on the system
+    Write-Info "Trying to find any existing Python 3.10+..."
+    foreach ($fallbackVer in @("3.12", "3.13", "3.10")) {
+        try {
+            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
+            if ($pythonPath) {
+                $ver = & $pythonPath --version 2>$null
+                Write-Success "Found fallback: $ver"
+                $script:PythonVersion = $fallbackVer
+                return $true
+            }
+        } catch { }
+    }
+
+    # Fallback: try system python
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $sysVer = python --version 2>$null
+        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
+            Write-Success "Using system Python: $sysVer"
             return $true
         }
-    } catch { }
+    }
     
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python $PythonVersion manually, then re-run this script"
+    Write-Info "Install Python 3.11 manually, then re-run this script:"
+    Write-Info "  https://www.python.org/downloads/"
+    Write-Info "  Or: winget install Python.Python.3.11"
     return $false
 }
 
@@ -384,48 +416,103 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
-            git fetch origin
-            git checkout $Branch
-            git pull origin $Branch
+            git -c windows.appendAtomically=false fetch origin
+            git -c windows.appendAtomically=false checkout $Branch
+            git -c windows.appendAtomically=false pull origin $Branch
             Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
             Write-Info "Remove it or choose a different directory with -InstallDir"
-            exit 1
+            throw "Directory exists but is not a git repository: $InstallDir"
         }
     } else {
-        # Try SSH first (for private repo access), fall back to HTTPS.
-        # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
-        # when no key is configured (fails immediately instead of prompting).
+        $cloneSuccess = $false
+
+        # Fix Windows git "copy-fd: write returned: Invalid argument" error.
+        # Git for Windows can fail on atomic file operations (hook templates,
+        # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
+        # The -c flag injects config before any file I/O occurs.
+        Write-Info "Configuring git for Windows compatibility..."
+        $env:GIT_CONFIG_COUNT = "1"
+        $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
+        $env:GIT_CONFIG_VALUE_0 = "false"
+        git config --global windows.appendAtomically false 2>$null
+
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        $sshResult = git clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir 2>&1
-        $sshExitCode = $LASTEXITCODE
+        try {
+            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+        } catch { }
         $env:GIT_SSH_COMMAND = $null
         
-        if ($sshExitCode -eq 0) {
-            Write-Success "Cloned via SSH"
-        } else {
-            # Clean up partial SSH clone before retrying
+        if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
-            $httpsResult = git clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir 2>&1
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "Cloned via HTTPS"
-            } else {
-                Write-Err "Failed to clone repository"
-                exit 1
+            try {
+                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+        }
+
+        # Fallback: download ZIP archive (bypasses git file I/O issues entirely)
+        if (-not $cloneSuccess) {
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            Write-Warn "Git clone failed — downloading ZIP archive instead..."
+            try {
+                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
+                $extractPath = "$env:TEMP\hermes-agent-extract"
+                
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+                if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+                
+                # GitHub ZIPs extract to repo-branch/ subdirectory
+                $extractedDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
+                if ($extractedDir) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) -ErrorAction SilentlyContinue | Out-Null
+                    Move-Item $extractedDir.FullName $InstallDir -Force
+                    Write-Success "Downloaded and extracted"
+                    
+                    # Initialize git repo so updates work later
+                    Push-Location $InstallDir
+                    git -c windows.appendAtomically=false init 2>$null
+                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+                    git remote add origin $RepoUrlHttps 2>$null
+                    Pop-Location
+                    Write-Success "Git repo initialized for future updates"
+                    
+                    $cloneSuccess = $true
+                }
+                
+                # Cleanup temp files
+                Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $extractPath -ErrorAction SilentlyContinue
+            } catch {
+                Write-Err "ZIP download also failed: $_"
             }
+        }
+
+        if (-not $cloneSuccess) {
+            throw "Failed to download repository (tried git clone SSH, HTTPS, and ZIP)"
         }
     }
     
+    # Set per-repo config (harmless if it fails)
+    Push-Location $InstallDir
+    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
-    Push-Location $InstallDir
-    git submodule update --init --recursive
+    git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
+    } else {
+        Write-Success "Submodules ready"
+    }
     Pop-Location
-    Write-Success "Submodules ready"
     
     Write-Success "Repository ready"
 }
@@ -525,6 +612,16 @@ function Set-PathVariable {
     } else {
         Write-Info "PATH already configured"
     }
+    
+    # Set HERMES_HOME so the Python code finds config/data in the right place.
+    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
+    # of the Unix default ~/.hermes
+    $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
+    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
+        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
+        Write-Success "Set HERMES_HOME=$HermesHome"
+    }
+    $env:HERMES_HOME = $HermesHome
     
     # Update current session
     $env:Path = "$hermesBin;$env:Path"
@@ -744,7 +841,7 @@ function Write-Completion {
     Write-Host ""
     
     # Show file locations
-    Write-Host "📁 Your files (all in ~/.hermes/):" -ForegroundColor Cyan
+    Write-Host "📁 Your files:" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "   Config:    " -NoNewline -ForegroundColor Yellow
     Write-Host "$HermesHome\config.yaml"
@@ -800,9 +897,9 @@ function Write-Completion {
 function Main {
     Write-Banner
     
-    if (-not (Install-Uv)) { exit 1 }
-    if (-not (Test-Python)) { exit 1 }
-    if (-not (Test-Git)) { exit 1 }
+    if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
+    if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
+    if (-not (Test-Git)) { throw "Git not found — install from https://git-scm.com/download/win" }
     Test-Node              # Auto-installs if missing
     Install-SystemPackages  # ripgrep + ffmpeg in one step
     
@@ -818,4 +915,17 @@ function Main {
     Write-Completion
 }
 
-Main
+# Wrap in try/catch so errors don't kill the terminal when run via:
+#   irm https://...install.ps1 | iex
+# (exit/throw inside iex kills the entire PowerShell session)
+try {
+    Main
+} catch {
+    Write-Host ""
+    Write-Err "Installation failed: $_"
+    Write-Host ""
+    Write-Info "If the error is unclear, try downloading and running the script directly:"
+    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  .\install.ps1" -ForegroundColor Yellow
+    Write-Host ""
+}

@@ -67,9 +67,17 @@ class TestReadResult:
     def test_to_dict_omits_defaults(self):
         r = ReadResult()
         d = r.to_dict()
-        assert "content" not in d  # empty string omitted
         assert "error" not in d    # None omitted
         assert "similar_files" not in d  # empty list omitted
+
+    def test_to_dict_preserves_empty_content(self):
+        """Empty file should still have content key in the dict."""
+        r = ReadResult(content="", total_lines=0, file_size=0)
+        d = r.to_dict()
+        assert "content" in d
+        assert d["content"] == ""
+        assert d["total_lines"] == 0
+        assert d["file_size"] == 0
 
     def test_to_dict_includes_values(self):
         r = ReadResult(content="hello", total_lines=10, file_size=50, truncated=True)

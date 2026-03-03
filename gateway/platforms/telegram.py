@@ -29,7 +29,17 @@ except ImportError:
     Bot = Any
     Message = Any
     Application = Any
-    ContextTypes = Any
+    CommandHandler = Any
+    TelegramMessageHandler = Any
+    filters = None
+    ParseMode = None
+    ChatType = None
+
+    # Mock ContextTypes so type annotations using ContextTypes.DEFAULT_TYPE
+    # don't crash during class definition when the library isn't installed.
+    class _MockContextTypes:
+        DEFAULT_TYPE = Any
+    ContextTypes = _MockContextTypes
 
 import sys
 from pathlib import Path as _Path

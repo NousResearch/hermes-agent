@@ -63,33 +63,27 @@ Full Python plugin interface that goes beyond the current hook system.
 - `hermes plugin list|install|uninstall|create` CLI commands
 - Plugin discovery and validation on startup
 
-### Phase 3: MCP support (industry standard)
-- MCP client that can connect to external MCP servers (stdio, SSE, HTTP)
-- This is the big one -- Codex, Cline, and OpenCode all support MCP
-- Allows Hermes to use any MCP-compatible tool server (hundreds exist)
-- Config: `mcp_servers` list in config.yaml with connection details
-- Each MCP server's tools get registered as a new toolset
+### Phase 3: MCP support (industry standard) ✅ DONE
+- ✅ MCP client that connects to external MCP servers (stdio + HTTP/StreamableHTTP)
+- ✅ Config: `mcp_servers` in config.yaml with connection details
+- ✅ Each MCP server's tools auto-registered as a dynamic toolset
+- Future: Resources, Prompts, Progress notifications, `hermes mcp` CLI command
 
 ---
 
-## 6. MCP (Model Context Protocol) Support 🔗
+## 6. MCP (Model Context Protocol) Support 🔗 ✅ DONE
 
-**Status:** Not started
-**Priority:** High -- this is becoming an industry standard
+**Status:** Implemented (PR #301)
+**Priority:** Complete
 
-MCP is the protocol that Codex, Cline, and OpenCode all support for connecting to external tool servers. Supporting MCP would instantly give Hermes access to hundreds of community tool servers.
+Native MCP client support with stdio and HTTP/StreamableHTTP transports, auto-discovery, reconnection with exponential backoff, env var filtering, and credential stripping. See `docs/mcp.md` for full documentation.
 
-**What other agents do:**
-- **Codex**: Full MCP integration with skill dependencies
-- **Cline**: `use_mcp_tool` / `access_mcp_resource` / `load_mcp_documentation` tools
-- **OpenCode**: MCP client support (stdio, SSE, StreamableHTTP transports), OAuth auth
-
-**Our approach:**
-- Implement an MCP client that can connect to external MCP servers
-- Config: list of MCP servers in `~/.hermes/config.yaml` with transport type and connection details
-- Each MCP server's tools auto-registered as a dynamic toolset
-- Start with stdio transport (most common), then add SSE and HTTP
-- Could also be part of the Plugin system (#5, Phase 3) since MCP is essentially a plugin protocol
+**Still TODO:**
+- `hermes mcp` CLI subcommand (list/test/status)
+- `hermes tools` UI integration for MCP toolsets
+- MCP Resources and Prompts support
+- OAuth authentication for remote servers
+- Progress notifications for long-running tools
 
 ---
 
@@ -121,7 +115,7 @@ Automatic filesystem snapshots after each agent loop iteration so the user can r
 
 ### Tier 1: Next Up
 
-1. MCP Support -- #6
+1. ~~MCP Support -- #6~~ ✅ Done (PR #301)
 
 ### Tier 2: Quality of Life
 

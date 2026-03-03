@@ -164,6 +164,7 @@ class GatewayRunner:
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
+        self._provider_routing = self._load_provider_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -345,6 +346,20 @@ class GatewayRunner:
             return {"enabled": True, "effort": effort}
         logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
         return None
+
+    @staticmethod
+    def _load_provider_routing() -> dict:
+        """Load OpenRouter provider routing preferences from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("provider_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
 
     async def start(self) -> bool:
         """
@@ -643,7 +658,7 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage"}
+                          "compress", "usage", "reload-mcp"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -684,6 +699,9 @@ class GatewayRunner:
 
         if command == "usage":
             return await self._handle_usage_command(event)
+
+        if command == "reload-mcp":
+            return await self._handle_reload_mcp_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -982,13 +1000,12 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        session_key = self.session_store._generate_session_key(source)
         
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.
         try:
-            old_entry = self.session_store._sessions.get(session_key)
+            old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
@@ -1085,6 +1102,7 @@ class GatewayRunner:
             "`/sethome` — Set this chat as the home channel",
             "`/compress` — Compress conversation context",
             "`/usage` — Show token usage for this session",
+            "`/reload-mcp` — Reload MCP servers from config",
             "`/help` — Show this message",
         ]
         try:
@@ -1220,9 +1238,9 @@ class GatewayRunner:
         if not last_user_msg:
             return "No previous message to retry."
         
-        # Truncate history to before the last user message
+        # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        session_entry.conversation_history = truncated
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -1254,7 +1272,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        session_entry.conversation_history = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
@@ -1328,7 +1346,7 @@ class GatewayRunner:
                 lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
             )
 
-            session_entry.conversation_history = compressed
+            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
 
@@ -1377,6 +1395,76 @@ class GatewayRunner:
                 f"_(Detailed usage available during active conversations)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
+        """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+        loop = asyncio.get_event_loop()
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            # Capture old server names before shutdown
+            with _lock:
+                old_servers = set(_servers.keys())
+
+            # Read new config before shutting down, so we know what will be added/removed
+            new_config = _load_mcp_config()
+            new_server_names = set(new_config.keys())
+
+            # Shutdown existing connections
+            await loop.run_in_executor(None, shutdown_mcp_servers)
+
+            # Reconnect by discovering tools (reads config.yaml fresh)
+            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+
+            # Compute what changed
+            with _lock:
+                connected_servers = set(_servers.keys())
+
+            added = connected_servers - old_servers
+            removed = old_servers - connected_servers
+            reconnected = connected_servers & old_servers
+
+            lines = ["🔄 **MCP Servers Reloaded**\n"]
+            if reconnected:
+                lines.append(f"♻️ Reconnected: {', '.join(sorted(reconnected))}")
+            if added:
+                lines.append(f"➕ Added: {', '.join(sorted(added))}")
+            if removed:
+                lines.append(f"➖ Removed: {', '.join(sorted(removed))}")
+            if not connected_servers:
+                lines.append("No MCP servers connected.")
+            else:
+                lines.append(f"\n🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+            # Inject a message at the END of the session history so the
+            # model knows tools changed on its next turn.  Appended after
+            # all existing messages to preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added servers: {', '.join(sorted(added))}")
+            if removed:
+                change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
+            if reconnected:
+                change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
+            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
+            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            reload_msg = {
+                "role": "user",
+                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+            }
+            try:
+                session_entry = self.session_store.get_or_create_session(event.source)
+                self.session_store.append_to_transcript(
+                    session_entry.session_id, reload_msg
+                )
+            except Exception:
+                pass  # Best-effort; don't fail the reload over a transcript write
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("MCP reload failed: %s", e)
+            return f"❌ MCP reload failed: {e}"
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
@@ -1671,7 +1759,7 @@ class GatewayRunner:
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         
-        def progress_callback(tool_name: str, preview: str = None):
+        def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
                 return
@@ -1691,6 +1779,7 @@ class GatewayRunner:
                 "write_file": "✍️",
                 "patch": "🔧",
                 "search": "🔎",
+                "search_files": "🔎",
                 "list_directory": "📂",
                 "image_generate": "🎨",
                 "text_to_speech": "🔊",
@@ -1716,14 +1805,28 @@ class GatewayRunner:
                 "schedule_cronjob": "⏰",
                 "list_cronjobs": "⏰",
                 "remove_cronjob": "⏰",
+                "execute_code": "🐍",
+                "delegate_task": "🔀",
+                "clarify": "❓",
+                "skill_manage": "📝",
             }
             emoji = tool_emojis.get(tool_name, "⚙️")
             
+            # Verbose mode: show detailed arguments
+            if progress_mode == "verbose" and args:
+                import json as _json
+                args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                if len(args_str) > 200:
+                    args_str = args_str[:197] + "..."
+                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                progress_queue.put(msg)
+                return
+            
             if preview:
                 # Truncate preview to keep messages clean
-                if len(preview) > 40:
-                    preview = preview[:37] + "..."
-                msg = f"{emoji} {tool_name}... \"{preview}\""
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
             
@@ -1837,6 +1940,7 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            pr = self._provider_routing
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -1847,6 +1951,12 @@ class GatewayRunner:
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
                 reasoning_config=self._reasoning_config,
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
@@ -2194,7 +2304,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
-    
+
+    # Close MCP server connections
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except Exception:
+        pass
+
     return True
 
 

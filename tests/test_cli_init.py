@@ -38,14 +38,18 @@ class TestMaxTurnsResolution:
         """Env var is used when config file doesn't set max_turns."""
         monkeypatch.setenv("HERMES_MAX_ITERATIONS", "42")
         import cli as cli_module
-        original = cli_module.CLI_CONFIG["agent"].get("max_turns")
+        original_agent = cli_module.CLI_CONFIG["agent"].get("max_turns")
+        original_root = cli_module.CLI_CONFIG.get("max_turns")
         cli_module.CLI_CONFIG["agent"]["max_turns"] = None
+        cli_module.CLI_CONFIG.pop("max_turns", None)
         try:
             cli_obj = _make_cli()
             assert cli_obj.max_turns == 42
         finally:
-            if original is not None:
-                cli_module.CLI_CONFIG["agent"]["max_turns"] = original
+            if original_agent is not None:
+                cli_module.CLI_CONFIG["agent"]["max_turns"] = original_agent
+            if original_root is not None:
+                cli_module.CLI_CONFIG["max_turns"] = original_root
 
     def test_max_turns_never_none_for_agent(self):
         """The value passed to AIAgent must never be None (causes TypeError in run_conversation)."""

@@ -32,6 +32,7 @@ Usage:
 import json
 import logging
 import os
+import platform
 import shlex
 import shutil
 import signal
@@ -39,6 +40,9 @@ import subprocess
 import threading
 import time
 import uuid
+
+_IS_WINDOWS = platform.system() == "Windows"
+from tools.environments.local import _find_shell
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -145,11 +149,13 @@ class ProcessRegistry:
             # Try PTY mode for interactive CLI tools
             try:
                 import ptyprocess
-                user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+                user_shell = _find_shell()
+                pty_env = os.environ | (env_vars or {})
+                pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = ptyprocess.PtyProcess.spawn(
                     [user_shell, "-lic", command],
                     cwd=session.cwd,
-                    env=os.environ | (env_vars or {}),
+                    env=pty_env,
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
@@ -181,18 +187,23 @@ class ProcessRegistry:
         # Standard Popen path (non-PTY or PTY fallback)
         # Use the user's login shell for consistency with LocalEnvironment --
         # ensures rc files are sourced and user tools are available.
-        user_shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+        user_shell = _find_shell()
+        # Force unbuffered output for Python scripts so progress is visible
+        # during background execution (libraries like tqdm/datasets buffer when
+        # stdout is a pipe, hiding output from process(action="poll")).
+        bg_env = os.environ | (env_vars or {})
+        bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [user_shell, "-lic", command],
             text=True,
             cwd=session.cwd,
-            env=os.environ | (env_vars or {}),
+            env=bg_env,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            preexec_fn=os.setsid,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
         session.process = proc
@@ -544,7 +555,10 @@ class ProcessRegistry:
             elif session.process:
                 # Local process -- kill the process group
                 try:
-                    os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
+                    if _IS_WINDOWS:
+                        session.process.terminate()
+                    else:
+                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:

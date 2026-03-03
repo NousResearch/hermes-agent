@@ -89,6 +89,38 @@ def test_resolve_runtime_provider_auto_uses_custom_config_base_url(monkeypatch):
     assert resolved["base_url"] == "https://custom.example/v1"
 
 
+def test_openrouter_key_takes_priority_over_openai_key(monkeypatch):
+    """OPENROUTER_API_KEY should be used over OPENAI_API_KEY when both are set.
+
+    Regression test for #289: users with OPENAI_API_KEY in .bashrc had it
+    sent to OpenRouter instead of their OPENROUTER_API_KEY.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-lose")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-win")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "sk-or-should-win"
+
+
+def test_openai_key_used_when_no_openrouter_key(monkeypatch):
+    """OPENAI_API_KEY is used as fallback when OPENROUTER_API_KEY is not set."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["api_key"] == "sk-openai-fallback"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

@@ -157,6 +157,7 @@ class TestAudioRecorderStop:
         # Simulate captured audio frames (1 second of loud audio above RMS threshold)
         frame = np.full((SAMPLE_RATE, 1), 1000, dtype="int16")
         recorder._frames = [frame]
+        recorder._peak_rms = 1000  # Peak RMS above threshold
 
         wav_path = recorder.stop()
 
@@ -203,6 +204,7 @@ class TestAudioRecorderStop:
         # 1 second of near-silence (RMS well below threshold)
         frame = np.full((SAMPLE_RATE, 1), 10, dtype="int16")
         recorder._frames = [frame]
+        recorder._peak_rms = 10  # Peak RMS also below threshold
 
         wav_path = recorder.stop()
         assert wav_path is None
@@ -475,8 +477,9 @@ class TestSilenceDetection:
         from tools.voice_mode import AudioRecorder, SAMPLE_RATE
 
         recorder = AudioRecorder()
-        # Use very short silence duration for testing
+        # Use very short durations for testing
         recorder._silence_duration = 0.05
+        recorder._min_speech_duration = 0.05
 
         fired = threading.Event()
 
@@ -490,8 +493,10 @@ class TestSilenceDetection:
         if callback is None:
             callback = mock_sd.InputStream.call_args[1]["callback"]
 
-        # Simulate loud audio (speech) -- RMS well above threshold
+        # Simulate sustained speech (multiple loud chunks to exceed min_speech_duration)
         loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.06)
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True
 
@@ -534,6 +539,47 @@ class TestSilenceDetection:
             time.sleep(0.01)
 
         assert fired.wait(timeout=0.2) is False
+
+        recorder.cancel()
+
+    def test_micro_pause_tolerance_during_speech(self, mock_sd):
+        """Brief dips below threshold during speech should NOT reset speech tracking."""
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._silence_duration = 0.05
+        recorder._min_speech_duration = 0.15
+        recorder._max_dip_tolerance = 0.1
+
+        fired = threading.Event()
+        recorder.start(on_silence_stop=lambda: fired.set())
+
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        quiet_frame = np.full((1600, 1), 50, dtype="int16")
+
+        # Speech chunk 1
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.05)
+        # Brief micro-pause (dip < max_dip_tolerance)
+        callback(quiet_frame, 1600, None, None)
+        time.sleep(0.05)
+        # Speech resumes -- speech_start should NOT have been reset
+        callback(loud_frame, 1600, None, None)
+        assert recorder._speech_start > 0, "Speech start should be preserved across brief dips"
+        time.sleep(0.06)
+        # Another speech chunk to exceed min_speech_duration
+        callback(loud_frame, 1600, None, None)
+        assert recorder._has_spoken is True, "Speech should be confirmed after tolerating micro-pause"
 
         recorder.cancel()
 

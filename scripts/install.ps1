@@ -423,7 +423,7 @@ function Install-Repository {
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
             Write-Info "Remove it or choose a different directory with -InstallDir"
-            exit 1
+            throw "Directory exists but is not a git repository: $InstallDir"
         }
     } else {
         # Try SSH first (for private repo access), fall back to HTTPS.
@@ -457,7 +457,7 @@ function Install-Repository {
                 Write-Success "Cloned via HTTPS"
             } else {
                 Write-Err "Failed to clone repository"
-                exit 1
+                throw "Failed to clone repository"
             }
         }
     }
@@ -846,9 +846,9 @@ function Write-Completion {
 function Main {
     Write-Banner
     
-    if (-not (Install-Uv)) { exit 1 }
-    if (-not (Test-Python)) { exit 1 }
-    if (-not (Test-Git)) { exit 1 }
+    if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
+    if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
+    if (-not (Test-Git)) { throw "Git not found — install from https://git-scm.com/download/win" }
     Test-Node              # Auto-installs if missing
     Install-SystemPackages  # ripgrep + ffmpeg in one step
     
@@ -864,4 +864,17 @@ function Main {
     Write-Completion
 }
 
-Main
+# Wrap in try/catch so errors don't kill the terminal when run via:
+#   irm https://...install.ps1 | iex
+# (exit/throw inside iex kills the entire PowerShell session)
+try {
+    Main
+} catch {
+    Write-Host ""
+    Write-Err "Installation failed: $_"
+    Write-Host ""
+    Write-Info "If the error is unclear, try downloading and running the script directly:"
+    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  .\install.ps1" -ForegroundColor Yellow
+    Write-Host ""
+}

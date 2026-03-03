@@ -13,10 +13,13 @@ This module provides:
 """
 
 import os
+import platform
 import sys
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 import yaml
 
@@ -618,7 +621,10 @@ def load_env() -> Dict[str, str]:
     env_vars = {}
     
     if env_path.exists():
-        with open(env_path) as f:
+        # On Windows, open() defaults to the system locale (cp1252) which can
+        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
+        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+        with open(env_path, **open_kw) as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
@@ -633,10 +639,14 @@ def save_env_value(key: str, value: str):
     ensure_hermes_home()
     env_path = get_env_path()
     
-    # Load existing
+    # On Windows, open() defaults to the system locale (cp1252) which can
+    # cause OSError errno 22 on UTF-8 .env files.
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
     lines = []
     if env_path.exists():
-        with open(env_path) as f:
+        with open(env_path, **read_kw) as f:
             lines = f.readlines()
     
     # Find and update or append
@@ -653,7 +663,7 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
     
-    with open(env_path, 'w') as f:
+    with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
 
 

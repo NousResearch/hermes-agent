@@ -117,10 +117,18 @@ class AudioRecorder:
         self._start_time: float = 0.0
         # Silence detection state
         self._has_spoken = False
+        self._speech_start: float = 0.0  # When speech attempt began
+        self._dip_start: float = 0.0  # When current below-threshold dip began
+        self._min_speech_duration: float = 0.3  # Seconds of speech needed to confirm
+        self._max_dip_tolerance: float = 0.3  # Max dip duration before resetting speech
         self._silence_start: float = 0.0
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
+        # Peak RMS seen during recording (for speech presence check in stop())
+        self._peak_rms: int = 0
+        # Live audio level (read by UI for visual feedback)
+        self._current_rms: int = 0
 
     # -- public properties ---------------------------------------------------
 
@@ -133,6 +141,11 @@ class AudioRecorder:
         if not self._recording:
             return 0.0
         return time.monotonic() - self._start_time
+
+    @property
+    def current_rms(self) -> int:
+        """Current audio input RMS level (0-32767). Updated each audio chunk."""
+        return self._current_rms
 
     # -- public methods ------------------------------------------------------
 
@@ -161,7 +174,10 @@ class AudioRecorder:
             self._frames = []
             self._start_time = time.monotonic()
             self._has_spoken = False
+            self._speech_start = 0.0
+            self._dip_start = 0.0
             self._silence_start = 0.0
+            self._peak_rms = 0
             self._on_silence_stop = on_silence_stop
 
             def _callback(indata, frames, time_info, status):  # noqa: ARG001
@@ -169,15 +185,44 @@ class AudioRecorder:
                     logger.debug("sounddevice status: %s", status)
                 self._frames.append(indata.copy())
 
-                # Silence detection: compute RMS of this chunk
+                # Compute RMS for level display and silence detection
+                rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+                self._current_rms = rms
+                if rms > self._peak_rms:
+                    self._peak_rms = rms
+
+                # Silence detection
                 if self._on_silence_stop is not None and self._recording:
-                    rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
                     now = time.monotonic()
 
                     if rms > self._silence_threshold:
-                        self._has_spoken = True
+                        # Audio is above threshold -- this is speech (or noise).
+                        self._dip_start = 0.0  # Reset dip tracker
+                        if self._speech_start == 0.0:
+                            self._speech_start = now
+                        elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
+                            self._has_spoken = True
+                            logger.debug("Speech confirmed (%.2fs above threshold)",
+                                         now - self._speech_start)
                         self._silence_start = 0.0
                     elif self._has_spoken:
+                        # Speech already confirmed, let silence timer run below
+                        pass
+                    elif self._speech_start > 0:
+                        # We were in a speech attempt but RMS dipped.
+                        # Tolerate brief dips (micro-pauses between syllables).
+                        if self._dip_start == 0.0:
+                            self._dip_start = now
+                        elif now - self._dip_start >= self._max_dip_tolerance:
+                            # Dip lasted too long -- genuine silence, reset
+                            logger.debug("Speech attempt reset (dip lasted %.2fs)",
+                                         now - self._dip_start)
+                            self._speech_start = 0.0
+                            self._dip_start = 0.0
+                        # else: brief dip, keep tolerating
+                    # else: no speech attempt, just silence -- nothing to do
+
+                    if self._has_spoken and rms <= self._silence_threshold:
                         # User was speaking and now is silent
                         if self._silence_start == 0.0:
                             self._silence_start = now
@@ -235,10 +280,11 @@ class AudioRecorder:
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
 
-            # Skip silent recordings (RMS below threshold = no real speech)
-            rms = int(np.sqrt(np.mean(audio_data.astype(np.float64) ** 2)))
-            if rms < SILENCE_RMS_THRESHOLD:
-                logger.info("Recording too quiet (RMS=%d < %d), discarding", rms, SILENCE_RMS_THRESHOLD)
+            # Skip silent recordings using peak RMS (not overall average, which
+            # gets diluted by silence at the end of the recording).
+            if self._peak_rms < SILENCE_RMS_THRESHOLD:
+                logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
+                            self._peak_rms, SILENCE_RMS_THRESHOLD)
                 return None
 
             return self._write_wav(audio_data)
@@ -341,8 +387,34 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
 
 
 # ============================================================================
-# Audio playback
+# Audio playback (interruptable)
 # ============================================================================
+
+# Global reference to the active playback process so it can be interrupted.
+_active_playback: Optional[subprocess.Popen] = None
+_playback_lock = threading.Lock()
+
+
+def stop_playback() -> None:
+    """Interrupt the currently playing audio (if any)."""
+    global _active_playback
+    with _playback_lock:
+        proc = _active_playback
+        _active_playback = None
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            logger.info("Audio playback interrupted")
+        except Exception:
+            pass
+    # Also stop sounddevice playback if active
+    if _HAS_AUDIO:
+        try:
+            sd.stop()
+        except Exception:
+            pass
+
+
 def play_audio_file(file_path: str) -> bool:
     """Play an audio file through the default output device.
 
@@ -351,9 +423,13 @@ def play_audio_file(file_path: str) -> bool:
     2. System commands: ``afplay`` (macOS), ``ffplay`` (cross-platform),
        ``aplay`` (Linux ALSA).
 
+    Playback can be interrupted by calling ``stop_playback()``.
+
     Returns:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
+    global _active_playback
+
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
@@ -372,7 +448,7 @@ def play_audio_file(file_path: str) -> bool:
         except Exception as e:
             logger.debug("sounddevice playback failed: %s", e)
 
-    # Fall back to system audio players
+    # Fall back to system audio players (using Popen for interruptability)
     system = platform.system()
     players = []
 
@@ -386,10 +462,17 @@ def play_audio_file(file_path: str) -> bool:
         exe = shutil.which(cmd[0])
         if exe:
             try:
-                subprocess.run(cmd, capture_output=True, timeout=300)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with _playback_lock:
+                    _active_playback = proc
+                proc.wait(timeout=300)
+                with _playback_lock:
+                    _active_playback = None
                 return True
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
+                with _playback_lock:
+                    _active_playback = None
 
     logger.warning("No audio player available for %s", file_path)
     return False

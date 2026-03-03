@@ -1550,6 +1550,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                tool_progress_callback=self._on_tool_progress,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -3516,6 +3517,28 @@ class HermesCLI:
             print(f"  ❌ MCP reload failed: {e}")
 
     # ====================================================================
+    # Tool progress callback (audio cues for voice mode)
+    # ====================================================================
+
+    def _on_tool_progress(self, function_name: str, preview: str, function_args: dict):
+        """Called when a tool starts executing. Plays audio cue in voice mode."""
+        if not self._voice_mode:
+            return
+        # Skip internal/thinking tools
+        if function_name.startswith("_"):
+            return
+        try:
+            from tools.voice_mode import play_beep
+            # Short, subtle tick sound (higher pitch, very brief)
+            threading.Thread(
+                target=play_beep,
+                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+    # ====================================================================
     # Voice mode methods
     # ====================================================================
 
@@ -3536,8 +3559,20 @@ class HermesCLI:
                 "Get one at: https://platform.openai.com/api-keys"
             )
 
+        # Load silence detection params from config
+        voice_cfg = {}
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+        except Exception:
+            pass
+
         if self._voice_recorder is None:
             self._voice_recorder = AudioRecorder()
+
+        # Apply config-driven silence params
+        self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
+        self._voice_recorder._silence_duration = voice_cfg.get("silence_duration", 3.0)
 
         def _on_silence():
             """Called by AudioRecorder when silence is detected after speech."""
@@ -3549,17 +3584,25 @@ class HermesCLI:
                 self._app.invalidate()
             self._voice_stop_and_transcribe()
 
+        # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
+        try:
+            from tools.voice_mode import play_beep
+            play_beep(frequency=880, count=1)
+        except Exception:
+            pass
+
         self._voice_recorder.start(on_silence_stop=_on_silence)
         with self._voice_lock:
             self._voice_recording = True
-
-        # Audio cue: single beep on recording start
-        try:
-            from tools.voice_mode import play_beep
-            threading.Thread(target=play_beep, kwargs={"frequency": 880, "count": 1}, daemon=True).start()
-        except Exception:
-            pass
         _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+R to stop & exit continuous){_RST}")
+
+        # Periodically refresh prompt to update audio level indicator
+        def _refresh_level():
+            while self._voice_recording:
+                if hasattr(self, '_app') and self._app:
+                    self._app.invalidate()
+                time.sleep(0.15)
+        threading.Thread(target=_refresh_level, daemon=True).start()
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
@@ -3571,15 +3614,15 @@ class HermesCLI:
             with self._voice_lock:
                 self._voice_recording = False
 
-            # Audio cue: double beep on recording stop
+            # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             try:
                 from tools.voice_mode import play_beep
-                threading.Thread(target=play_beep, kwargs={"frequency": 660, "count": 2}, daemon=True).start()
+                play_beep(frequency=660, count=2)
             except Exception:
                 pass
 
             if wav_path is None:
-                _cprint(f"{_DIM}No speech detected (recording too short).{_RST}")
+                _cprint(f"{_DIM}No speech detected.{_RST}")
                 return
 
             with self._voice_lock:
@@ -3614,6 +3657,7 @@ class HermesCLI:
         finally:
             with self._voice_lock:
                 self._voice_processing = False
+                submitted = self._pending_input.qsize() > 0
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
             # Clean up temp file
@@ -3622,6 +3666,18 @@ class HermesCLI:
                     os.unlink(wav_path)
             except Exception:
                 pass
+
+            # If no transcript was submitted but continuous mode is active,
+            # restart recording so the user can keep talking.
+            # (When transcript IS submitted, process_loop handles restart
+            # after chat() completes.)
+            if self._voice_continuous and not submitted and not self._voice_recording:
+                try:
+                    self._voice_start_recording()
+                    if hasattr(self, '_app') and self._app:
+                        self._app.invalidate()
+                except Exception:
+                    pass
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
@@ -3727,6 +3783,16 @@ class HermesCLI:
         except Exception:
             pass
 
+        # Append voice-mode system prompt for concise, conversational responses
+        self._voice_original_prompt = self.system_prompt
+        voice_instruction = (
+            "\n\n[Voice mode active] The user is speaking via voice input. "
+            "Keep responses concise and conversational — 2-3 sentences max unless "
+            "the user asks for detail. Avoid code blocks, markdown formatting, "
+            "and long lists. Respond naturally as in a spoken conversation."
+        )
+        self.system_prompt = (self.system_prompt or "") + voice_instruction
+
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}Ctrl+R to start/stop recording{_RST}")
@@ -3742,6 +3808,10 @@ class HermesCLI:
             self._voice_mode = False
             self._voice_tts = False
             self._voice_continuous = False
+
+        # Restore original system prompt
+        if hasattr(self, '_voice_original_prompt'):
+            self.system_prompt = self._voice_original_prompt
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
     def _toggle_voice_tts(self):
@@ -4237,11 +4307,24 @@ class HermesCLI:
         # Icon-only custom prompts should still remain visible in special states.
         return symbol, symbol
 
+    def _audio_level_bar(self) -> str:
+        """Return a visual audio level indicator based on current RMS."""
+        _LEVEL_BARS = " ▁▂▃▄▅▆▇"
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is None:
+            return ""
+        rms = rec.current_rms
+        # Normalize RMS (0-32767) to 0-7 index, with log-ish scaling
+        # Typical speech RMS is 500-5000, we cap display at ~8000
+        level = min(rms, 8000) * 7 // 8000
+        return _LEVEL_BARS[level]
+
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
         if self._voice_recording:
-            return [("class:voice-recording", f"● {state_suffix}")]
+            bar = self._audio_level_bar()
+            return [("class:voice-recording", f"● {bar} {state_suffix}")]
         if self._voice_processing:
             return [("class:voice-processing", f"◉ {state_suffix}")]
         if self._sudo_state:
@@ -4692,6 +4775,14 @@ class HermesCLI:
                 ).start()
             else:
                 try:
+                    # Interrupt TTS if playing, so user can start talking
+                    if not cli_ref._voice_tts_done.is_set():
+                        try:
+                            from tools.voice_mode import stop_playback
+                            stop_playback()
+                            cli_ref._voice_tts_done.set()
+                        except Exception:
+                            pass
                     with cli_ref._voice_lock:
                         cli_ref._voice_continuous = True
                     cli_ref._voice_start_recording()

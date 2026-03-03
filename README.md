@@ -496,6 +496,23 @@ hermes tools
 
 **Available toolsets:** `web`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, and more.
 
+### 🔌 MCP (Model Context Protocol)
+
+Connect to any MCP-compatible server to extend Hermes with external tools. Just add servers to your config:
+
+```yaml
+mcp_servers:
+  time:
+    command: uvx
+    args: ["mcp-server-time"]
+  notion:
+    url: https://mcp.notion.com/mcp
+```
+
+Supports stdio and HTTP transports, auto-reconnection, and env var filtering. See [docs/mcp.md](docs/mcp.md) for details.
+
+Install MCP support: `pip install hermes-agent[mcp]`
+
 ### 🖥️ Terminal & Process Management
 
 The terminal tool can execute commands in different environments, with full background process management via the `process` tool:

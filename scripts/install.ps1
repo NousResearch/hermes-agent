@@ -426,6 +426,12 @@ function Install-Repository {
             throw "Directory exists but is not a git repository: $InstallDir"
         }
     } else {
+        # Fix Windows git "copy-fd: write returned: Invalid argument" error.
+        # Must be set BEFORE clone, otherwise git fails copying hook templates.
+        # Also fixes "unable to write loose object file" for later operations.
+        Write-Info "Configuring git for Windows compatibility..."
+        git config --global windows.appendAtomically false
+
         # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND with BatchMode=yes prevents SSH from hanging
         # when no key is configured (fails immediately instead of prompting).
@@ -456,14 +462,22 @@ function Install-Repository {
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "Cloned via HTTPS"
             } else {
-                Write-Err "Failed to clone repository"
-                throw "Failed to clone repository"
+                # Last resort: skip hook templates entirely (they're optional sample files)
+                if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+                Write-Warn "Standard clone failed, retrying without hook templates..."
+                git clone --branch $Branch --recurse-submodules --template="" $RepoUrlHttps $InstallDir
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "Cloned via HTTPS (no templates)"
+                } else {
+                    Write-Err "Failed to clone repository"
+                    throw "Failed to clone repository"
+                }
             }
         }
     }
     
-    # Fix Windows git "unable to write loose object file" error.
-    # Must be set before any git operations that write objects.
+    # Also set per-repo (in case global wasn't persisted)
     Push-Location $InstallDir
     git config windows.appendAtomically false
 

@@ -145,17 +145,49 @@ function Test-Python {
     # Python not found — use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     try {
-        & $UvCmd python install $PythonVersion 2>&1 | Out-Null
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
-            Write-Success "Python installed: $ver"
+        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $pythonPath = & $UvCmd python find $PythonVersion 2>$null
+            if ($pythonPath) {
+                $ver = & $pythonPath --version 2>$null
+                Write-Success "Python installed: $ver"
+                return $true
+            }
+        } else {
+            Write-Warn "uv python install output:"
+            Write-Host $uvOutput -ForegroundColor DarkGray
+        }
+    } catch {
+        Write-Warn "uv python install error: $_"
+    }
+
+    # Fallback: check if ANY Python 3.10+ is already available on the system
+    Write-Info "Trying to find any existing Python 3.10+..."
+    foreach ($fallbackVer in @("3.12", "3.13", "3.10")) {
+        try {
+            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
+            if ($pythonPath) {
+                $ver = & $pythonPath --version 2>$null
+                Write-Success "Found fallback: $ver"
+                $script:PythonVersion = $fallbackVer
+                return $true
+            }
+        } catch { }
+    }
+
+    # Fallback: try system python
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $sysVer = python --version 2>$null
+        if ($sysVer -match "3\.(1[0-9]|[1-9][0-9])") {
+            Write-Success "Using system Python: $sysVer"
             return $true
         }
-    } catch { }
+    }
     
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python $PythonVersion manually, then re-run this script"
+    Write-Info "Install Python 3.11 manually, then re-run this script:"
+    Write-Info "  https://www.python.org/downloads/"
+    Write-Info "  Or: winget install Python.Python.3.11"
     return $false
 }
 

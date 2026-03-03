@@ -1895,7 +1895,11 @@ class HermesCLI:
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
 
     def _reload_mcp(self):
-        """Reload MCP servers: disconnect all, re-read config.yaml, reconnect."""
+        """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
+
+        After reconnecting, refreshes the agent's tool list so the model
+        sees the updated tools on the next turn.
+        """
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
 
@@ -1926,9 +1930,39 @@ class HermesCLI:
             if removed:
                 print(f"  ➖ Removed: {', '.join(sorted(removed))}")
             if not connected_servers:
-                print("  (._.) No MCP servers connected.")
+                print("  No MCP servers connected.")
             else:
                 print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+            # Refresh the agent's tool list so the model can call new tools
+            if self.agent is not None:
+                from model_tools import get_tool_definitions
+                self.agent.tools = get_tool_definitions(
+                    enabled_toolsets=self.agent.enabled_toolsets
+                    if hasattr(self.agent, "enabled_toolsets") else None,
+                    quiet_mode=True,
+                )
+                self.agent.valid_tool_names = {
+                    tool["function"]["name"] for tool in self.agent.tools
+                } if self.agent.tools else set()
+
+            # Inject a message at the END of conversation history so the
+            # model knows tools changed.  Appended after all existing
+            # messages to preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added servers: {', '.join(sorted(added))}")
+            if removed:
+                change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
+            if reconnected:
+                change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
+            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
+            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            self.conversation_history.append({
+                "role": "user",
+                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+            })
+            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")

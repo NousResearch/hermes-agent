@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "query_user_context",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Translation (gated on deep-translator via check_fn)
+    "translate",
 ]
 
 
@@ -202,6 +204,11 @@ TOOLSETS = {
         "includes": []
     },
 
+    "translation": {
+        "description": "Multi-language text translation (100+ languages, no API key needed)",
+        "tools": ["translate"],
+        "includes": []
+    },
 
     # Scenario-specific toolsets
     

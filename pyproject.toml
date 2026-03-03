@@ -35,6 +35,8 @@ dependencies = [
   "platformdirs",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]",
+  # Translation (Google Translate, no API key needed)
+  "deep-translator",
 ]
 
 [project.optional-dependencies]

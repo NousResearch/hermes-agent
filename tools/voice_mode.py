@@ -45,8 +45,49 @@ DTYPE = "int16"  # 16-bit PCM
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
 MAX_RECORDING_SECONDS = 120  # Safety cap
 
+# Silence detection defaults
+SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
+SILENCE_DURATION_SECONDS = 3.0  # Seconds of continuous silence before auto-stop
+
 # Temp directory for voice recordings
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+
+
+# ============================================================================
+# Audio cues (beep tones)
+# ============================================================================
+def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
+    """Play a short beep tone using numpy + sounddevice.
+
+    Args:
+        frequency: Tone frequency in Hz (default 880 = A5).
+        duration: Duration of each beep in seconds.
+        count: Number of beeps to play (with short gap between).
+    """
+    if not _HAS_AUDIO:
+        return
+    try:
+        gap = 0.06  # seconds between beeps
+        samples_per_beep = int(SAMPLE_RATE * duration)
+        samples_per_gap = int(SAMPLE_RATE * gap)
+
+        parts = []
+        for i in range(count):
+            t = np.linspace(0, duration, samples_per_beep, endpoint=False)
+            # Apply fade in/out to avoid click artifacts
+            tone = np.sin(2 * np.pi * frequency * t)
+            fade_len = min(int(SAMPLE_RATE * 0.01), samples_per_beep // 4)
+            tone[:fade_len] *= np.linspace(0, 1, fade_len)
+            tone[-fade_len:] *= np.linspace(1, 0, fade_len)
+            parts.append((tone * 0.3 * 32767).astype(np.int16))
+            if i < count - 1:
+                parts.append(np.zeros(samples_per_gap, dtype=np.int16))
+
+        audio = np.concatenate(parts)
+        sd.play(audio, samplerate=SAMPLE_RATE)
+        sd.wait()
+    except Exception as e:
+        logger.debug("Beep playback failed: %s", e)
 
 
 # ============================================================================
@@ -58,11 +99,14 @@ class AudioRecorder:
     Usage::
 
         recorder = AudioRecorder()
-        recorder.start()
+        recorder.start(on_silence_stop=my_callback)
         # ... user speaks ...
         wav_path = recorder.stop()   # returns path to WAV file
         # or
         recorder.cancel()            # discard without saving
+
+    If ``on_silence_stop`` is provided, recording automatically stops when
+    the user is silent for ``silence_duration`` seconds and calls the callback.
     """
 
     def __init__(self) -> None:
@@ -71,6 +115,12 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
+        # Silence detection state
+        self._has_spoken = False
+        self._silence_start: float = 0.0
+        self._on_silence_stop = None
+        self._silence_threshold: int = SILENCE_RMS_THRESHOLD
+        self._silence_duration: float = SILENCE_DURATION_SECONDS
 
     # -- public properties ---------------------------------------------------
 
@@ -86,8 +136,13 @@ class AudioRecorder:
 
     # -- public methods ------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, on_silence_stop=None) -> None:
         """Start capturing audio from the default input device.
+
+        Args:
+            on_silence_stop: Optional callback invoked (in a daemon thread) when
+                silence is detected after speech. The callback receives no arguments.
+                Use this to auto-stop recording and trigger transcription.
 
         Raises ``RuntimeError`` if sounddevice/numpy are not installed
         or if a recording is already in progress.
@@ -105,11 +160,34 @@ class AudioRecorder:
 
             self._frames = []
             self._start_time = time.monotonic()
+            self._has_spoken = False
+            self._silence_start = 0.0
+            self._on_silence_stop = on_silence_stop
 
             def _callback(indata, frames, time_info, status):  # noqa: ARG001
                 if status:
                     logger.debug("sounddevice status: %s", status)
                 self._frames.append(indata.copy())
+
+                # Silence detection: compute RMS of this chunk
+                if self._on_silence_stop is not None and self._recording:
+                    rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+                    now = time.monotonic()
+
+                    if rms > self._silence_threshold:
+                        self._has_spoken = True
+                        self._silence_start = 0.0
+                    elif self._has_spoken:
+                        # User was speaking and now is silent
+                        if self._silence_start == 0.0:
+                            self._silence_start = now
+                        elif now - self._silence_start >= self._silence_duration:
+                            logger.info("Silence detected (%.1fs), auto-stopping",
+                                        self._silence_duration)
+                            cb = self._on_silence_stop
+                            self._on_silence_stop = None  # fire only once
+                            if cb:
+                                threading.Thread(target=cb, daemon=True).start()
 
             self._stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,

@@ -2217,7 +2217,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
-    
+
+    # Close MCP server connections
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except Exception:
+        pass
+
     return True
 
 

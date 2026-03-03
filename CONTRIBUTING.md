@@ -106,6 +106,40 @@ hermes chat -q "Hello"
 pytest tests/ -v
 ```
 
+### Code formatting
+
+We use [Ruff](https://docs.astral.sh/ruff/) for linting and formatting. Install it with the dev extras:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+Run the linter to check for issues:
+
+```bash
+ruff check .
+```
+
+Auto-fix safe issues:
+
+```bash
+ruff check --fix .
+```
+
+Format code:
+
+```bash
+ruff format .
+```
+
+**Before submitting a PR:**
+
+1. Run `ruff check .` and fix any errors
+2. Run `ruff format .` to ensure consistent formatting
+3. Both commands should report no changes needed
+
+The configuration is in `pyproject.toml`. We use a conservative rule set to avoid overwhelming diffs while catching common issues.
+
 ---
 
 ## Project Structure

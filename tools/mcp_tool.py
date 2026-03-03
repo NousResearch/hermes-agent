@@ -88,8 +88,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
-_DEFAULT_DISCOVERY_TIMEOUT = 60  # seconds for server discovery
-_DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection
+_DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
 
@@ -250,6 +249,15 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+
+        # Validate: warn if both url and command are present
+        if "url" in config and "command" in config:
+            logger.warning(
+                "MCP server '%s' has both 'url' and 'command' in config. "
+                "Using HTTP transport ('url'). Remove 'command' to silence "
+                "this warning.",
+                self.name,
+            )
         retries = 0
         backoff = 1.0
 
@@ -604,19 +612,43 @@ def discover_mcp_tools() -> List[str]:
     _ensure_mcp_loop()
 
     all_tools: List[str] = []
+    failed_count = 0
+
+    async def _discover_one(name: str, cfg: dict) -> List[str]:
+        """Connect to a single server and return its registered tool names."""
+        transport_desc = cfg.get("url", f'{cfg.get("command", "?")} {" ".join(cfg.get("args", [])[:2])}')
+        try:
+            registered = await _discover_and_register_server(name, cfg)
+            transport_type = "HTTP" if "url" in cfg else "stdio"
+            print(f"  MCP: '{name}' ({transport_type}) — {len(registered)} tool(s)")
+            return registered
+        except Exception as exc:
+            print(f"  MCP: '{name}' — FAILED: {exc}")
+            logger.warning(
+                "Failed to connect to MCP server '%s': %s",
+                name, exc,
+            )
+            return []
 
     async def _discover_all():
-        for name, cfg in new_servers.items():
-            try:
-                registered = await _discover_and_register_server(name, cfg)
-                all_tools.extend(registered)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to connect to MCP server '%s': %s",
-                    name, exc,
-                )
+        nonlocal failed_count
+        # Connect to all servers in PARALLEL
+        results = await asyncio.gather(
+            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                failed_count += 1
+                logger.warning("MCP discovery error: %s", result)
+            elif isinstance(result, list):
+                all_tools.extend(result)
+            else:
+                failed_count += 1
 
-    _run_on_mcp_loop(_discover_all(), timeout=_DEFAULT_DISCOVERY_TIMEOUT)
+    # Per-server timeouts are handled inside _discover_and_register_server.
+    # The outer timeout is generous: 120s total for parallel discovery.
+    _run_on_mcp_loop(_discover_all(), timeout=120)
 
     if all_tools:
         # Dynamically inject into all hermes-* platform toolsets
@@ -626,6 +658,15 @@ def discover_mcp_tools() -> List[str]:
                 for tool_name in all_tools:
                     if tool_name not in ts["tools"]:
                         ts["tools"].append(tool_name)
+
+    # Print summary
+    total_servers = len(new_servers)
+    ok_servers = total_servers - failed_count
+    if all_tools or failed_count:
+        summary = f"  MCP: {len(all_tools)} tool(s) from {ok_servers} server(s)"
+        if failed_count:
+            summary += f" ({failed_count} failed)"
+        print(summary)
 
     # Return ALL registered tools (existing + newly discovered)
     return _existing_tool_names()

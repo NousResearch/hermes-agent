@@ -856,6 +856,15 @@ class TestHTTPConfig:
         server._config = {"command": "npx", "args": []}
         assert server._is_http() is False
 
+    def test_conflicting_url_and_command_warns(self):
+        """Config with both url and command logs a warning and uses HTTP."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("conflict")
+        config = {"url": "https://example.com/mcp", "command": "npx", "args": []}
+        # url takes precedence
+        server._config = config
+        assert server._is_http() is True
+
     def test_http_unavailable_raises(self):
         from tools.mcp_tool import MCPServerTask
 

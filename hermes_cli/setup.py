@@ -1000,6 +1000,42 @@ def run_setup_wizard(args):
     # Map index to backend name (handles platform differences)
     selected_backend = idx_to_backend.get(terminal_idx)
     
+    # Validate that required binaries exist for the chosen backend
+    import shutil as _shutil
+    _backend_bins = {
+        'docker': ('docker', [
+            "Docker is not installed on this machine.",
+            "Install Docker Desktop: https://www.docker.com/products/docker-desktop/",
+            "On Linux: curl -fsSL https://get.docker.com | sh",
+        ]),
+        'singularity': (None, []),  # check both names
+        'ssh': ('ssh', [
+            "SSH client not found.",
+            "On Linux: sudo apt install openssh-client",
+            "On macOS: SSH should be pre-installed.",
+        ]),
+    }
+    if selected_backend == 'docker':
+        if not _shutil.which('docker'):
+            print()
+            print_warning("Docker is not installed on this machine.")
+            print_info("  Install Docker Desktop: https://www.docker.com/products/docker-desktop/")
+            print_info("  On Linux: curl -fsSL https://get.docker.com | sh")
+            print()
+            if not prompt_yes_no("  Proceed with Docker anyway? (you can install it later)", False):
+                print_info("  Falling back to local backend.")
+                selected_backend = 'local'
+    elif selected_backend == 'singularity':
+        if not _shutil.which('apptainer') and not _shutil.which('singularity'):
+            print()
+            print_warning("Neither apptainer nor singularity is installed on this machine.")
+            print_info("  Apptainer: https://apptainer.org/docs/admin/main/installation.html")
+            print_info("  This is typically only available on HPC/Linux systems.")
+            print()
+            if not prompt_yes_no("  Proceed with Singularity anyway? (you can install it later)", False):
+                print_info("  Falling back to local backend.")
+                selected_backend = 'local'
+
     if selected_backend == 'local':
         config.setdefault('terminal', {})['backend'] = 'local'
         print_info("Local Execution Configuration:")

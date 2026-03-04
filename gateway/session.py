@@ -317,7 +317,7 @@ class SessionStore:
         
         if sessions_file.exists():
             try:
-                with open(sessions_file, "r") as f:
+                with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         self._entries[key] = SessionEntry.from_dict(entry_data)
@@ -332,7 +332,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
         
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w") as f:
+        with open(sessions_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     
     def _generate_session_key(self, source: SessionSource) -> str:
@@ -571,7 +571,7 @@ class SessionStore:
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a") as f:
+        with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
@@ -598,7 +598,7 @@ class SessionStore:
         
         # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8") as f:
             for msg in messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
@@ -620,7 +620,7 @@ class SessionStore:
             return []
         
         messages = []
-        with open(transcript_path, "r") as f:
+        with open(transcript_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

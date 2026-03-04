@@ -78,9 +78,15 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     # Try to use interactive menu if available
     try:
         from simple_term_menu import TerminalMenu
+        import re
         
-        # Add visual indicators
-        menu_choices = [f"  {choice}" for choice in choices]
+        # Strip emoji characters — simple_term_menu miscalculates visual
+        # width of emojis, causing duplicated/garbled lines on redraw.
+        _emoji_re = re.compile(
+            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
+            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+", flags=re.UNICODE
+        )
+        menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
         
         terminal_menu = TerminalMenu(
             menu_choices,
@@ -383,6 +389,46 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
+def _prompt_container_resources(config: dict):
+    """Prompt for container resource settings (Docker, Singularity, Modal)."""
+    terminal = config.setdefault('terminal', {})
+
+    print()
+    print_info("Container Resource Settings:")
+
+    # Persistence
+    current_persist = terminal.get('container_persistent', True)
+    persist_label = "yes" if current_persist else "no"
+    print_info(f"  Persistent filesystem keeps files between sessions.")
+    print_info(f"  Set to 'no' for ephemeral sandboxes that reset each time.")
+    persist_str = prompt(f"  Persist filesystem across sessions? (yes/no)", persist_label)
+    terminal['container_persistent'] = persist_str.lower() in ('yes', 'true', 'y', '1')
+
+    # CPU
+    current_cpu = terminal.get('container_cpu', 1)
+    cpu_str = prompt(f"  CPU cores", str(current_cpu))
+    try:
+        terminal['container_cpu'] = float(cpu_str)
+    except ValueError:
+        pass
+
+    # Memory
+    current_mem = terminal.get('container_memory', 5120)
+    mem_str = prompt(f"  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal['container_memory'] = int(mem_str)
+    except ValueError:
+        pass
+
+    # Disk
+    current_disk = terminal.get('container_disk', 51200)
+    disk_str = prompt(f"  Disk in MB (51200 = 50GB)", str(current_disk))
+    try:
+        terminal['container_disk'] = int(disk_str)
+    except ValueError:
+        pass
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard."""
     ensure_hermes_home()
@@ -395,11 +441,14 @@ def run_setup_wizard(args):
     # a template, so it always exists after install. We need an actual
     # inference provider to consider it "existing" (otherwise quick mode
     # would skip provider selection, leaving hermes non-functional).
+    # NOTE: Use bool() not `is not None` — the .env template has empty
+    # values (e.g. OPENROUTER_API_KEY=) that load_dotenv sets to "", which
+    # passes `is not None` but isn't a real configured provider.
     from hermes_cli.auth import get_active_provider
     active_provider = get_active_provider()
     is_existing = (
-        get_env_value("OPENROUTER_API_KEY") is not None
-        or get_env_value("OPENAI_BASE_URL") is not None
+        bool(get_env_value("OPENROUTER_API_KEY"))
+        or bool(get_env_value("OPENAI_BASE_URL"))
         or active_provider is not None
     )
     
@@ -976,6 +1025,10 @@ def run_setup_wizard(args):
             cwd_expanded = cwd_input
         save_env_value("MESSAGING_CWD", cwd_expanded)
         
+        print()
+        print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
+        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
             sudo_pass = prompt("  Sudo password (leave empty to skip)", password=True)
@@ -995,6 +1048,7 @@ def run_setup_wizard(args):
             print_info("Requires Docker Desktop for Windows")
         docker_image = prompt("  Docker image", default_docker)
         config['terminal']['docker_image'] = docker_image
+        _prompt_container_resources(config)
         print_success("Terminal set to Docker")
     
     elif selected_backend == 'singularity':
@@ -1004,6 +1058,7 @@ def run_setup_wizard(args):
         print_info("Requires apptainer or singularity to be installed")
         singularity_image = prompt("  Image (docker:// prefix for Docker Hub)", default_singularity)
         config['terminal']['singularity_image'] = singularity_image
+        _prompt_container_resources(config)
         print_success("Terminal set to Singularity/Apptainer")
     
     elif selected_backend == 'modal':
@@ -1054,6 +1109,7 @@ def run_setup_wizard(args):
         if token_secret:
             save_env_value("MODAL_TOKEN_SECRET", token_secret)
         
+        _prompt_container_resources(config)
         print_success("Terminal set to Modal")
     
     elif selected_backend == 'ssh':
@@ -1083,6 +1139,9 @@ def run_setup_wizard(args):
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
         
+        print()
+        print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
+        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     
@@ -1396,7 +1455,7 @@ def run_setup_wizard(args):
             print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
             print_info("or personal self-chat) and pair via QR code.")
     
-    # Gateway reminder
+    # Gateway service setup
     any_messaging = (
         get_env_value('TELEGRAM_BOT_TOKEN')
         or get_env_value('DISCORD_BOT_TOKEN')
@@ -1407,10 +1466,7 @@ def run_setup_wizard(args):
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
-        print_info("Start the gateway after setup to bring your bots online:")
-        print_info("   hermes gateway              # Run in foreground")
-        print_info("   hermes gateway install      # Install as background service (Linux)")
-        
+
         # Check if any home channels are missing
         missing_home = []
         if get_env_value('TELEGRAM_BOT_TOKEN') and not get_env_value('TELEGRAM_HOME_CHANNEL'):
@@ -1419,16 +1475,76 @@ def run_setup_wizard(args):
             missing_home.append("Discord")
         if get_env_value('SLACK_BOT_TOKEN') and not get_env_value('SLACK_HOME_CHANNEL'):
             missing_home.append("Slack")
-        
+
         if missing_home:
             print()
-            print_info(f"⚠️  No home channel set for: {', '.join(missing_home)}")
+            print_warning(f"No home channel set for: {', '.join(missing_home)}")
             print_info("   Without a home channel, cron jobs and cross-platform")
             print_info("   messages can't be delivered to those platforms.")
             print_info("   Set one later with /set-home in your chat, or:")
             for plat in missing_home:
                 print_info(f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>")
-        
+
+        # Offer to install the gateway as a system service
+        import platform as _platform
+        _is_linux = _platform.system() == "Linux"
+        _is_macos = _platform.system() == "Darwin"
+
+        from hermes_cli.gateway import (
+            _is_service_installed, _is_service_running,
+            systemd_install, systemd_start, systemd_restart,
+            launchd_install, launchd_start, launchd_restart,
+        )
+
+        service_installed = _is_service_installed()
+        service_running = _is_service_running()
+
+        print()
+        if service_running:
+            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+                try:
+                    if _is_linux:
+                        systemd_restart()
+                    elif _is_macos:
+                        launchd_restart()
+                except Exception as e:
+                    print_error(f"  Restart failed: {e}")
+        elif service_installed:
+            if prompt_yes_no("  Start the gateway service?", True):
+                try:
+                    if _is_linux:
+                        systemd_start()
+                    elif _is_macos:
+                        launchd_start()
+                except Exception as e:
+                    print_error(f"  Start failed: {e}")
+        elif _is_linux or _is_macos:
+            svc_name = "systemd" if _is_linux else "launchd"
+            if prompt_yes_no(f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)", True):
+                try:
+                    if _is_linux:
+                        systemd_install(force=False)
+                    else:
+                        launchd_install(force=False)
+                    print()
+                    if prompt_yes_no("  Start the service now?", True):
+                        try:
+                            if _is_linux:
+                                systemd_start()
+                            elif _is_macos:
+                                launchd_start()
+                        except Exception as e:
+                            print_error(f"  Start failed: {e}")
+                except Exception as e:
+                    print_error(f"  Install failed: {e}")
+                    print_info("  You can try manually: hermes gateway install")
+            else:
+                print_info("  You can install later: hermes gateway install")
+                print_info("  Or run in foreground:  hermes gateway")
+        else:
+            print_info("Start the gateway to bring your bots online:")
+            print_info("   hermes gateway              # Run in foreground")
+
         print_info("━" * 50)
     
     # =========================================================================

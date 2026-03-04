@@ -281,6 +281,20 @@ class SessionEntry:
         )
 
 
+def build_session_key(source: SessionSource) -> str:
+    """Build a deterministic session key from a message source.
+
+    This is the single source of truth for session key construction.
+    WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+    """
+    platform = source.platform.value
+    if source.chat_type == "dm":
+        if platform == "whatsapp" and source.chat_id:
+            return f"agent:main:{platform}:dm:{source.chat_id}"
+        return f"agent:main:{platform}:dm"
+    return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -337,16 +351,7 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        platform = source.platform.value
-
-        if source.chat_type == "dm":
-            # WhatsApp DMs come from different people, each needs its own session.
-            # Other platforms (Telegram, Discord) have a single DM with the bot owner.
-            if platform == "whatsapp" and source.chat_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}"
-            return f"agent:main:{platform}:dm"
-        else:
-            return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+        return build_session_key(source)
     
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> bool:
         """
@@ -390,9 +395,25 @@ class SessionStore:
         return False
     
     def has_any_sessions(self) -> bool:
-        """Check if any sessions have ever been created (across all platforms)."""
+        """Check if any sessions have ever been created (across all platforms).
+
+        Uses the SQLite database as the source of truth because it preserves
+        historical session records (ended sessions still count).  The in-memory
+        ``_entries`` dict replaces entries on reset, so ``len(_entries)`` would
+        stay at 1 for single-platform users — which is the bug this fixes.
+
+        The current session is already in the DB by the time this is called
+        (get_or_create_session runs first), so we check ``> 1``.
+        """
+        if self._db:
+            try:
+                return self._db.session_count() > 1
+            except Exception:
+                pass  # fall through to heuristic
+        # Fallback: check if sessions.json was loaded with existing data.
+        # This covers the rare case where the DB is unavailable.
         self._ensure_loaded()
-        return len(self._entries) > 1  # >1 because the current new session is already in _entries
+        return len(self._entries) > 1
     
     def get_or_create_session(
         self, 

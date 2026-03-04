@@ -848,8 +848,11 @@ run_setup_wizard() {
         return 0
     fi
 
-    if [ "$IS_INTERACTIVE" = false ]; then
-        log_info "Setup wizard skipped (non-interactive). Run 'hermes setup' after install."
+    # The setup wizard reads from /dev/tty, so it works even when the
+    # install script itself is piped (curl | bash). Only skip if no
+    # terminal is available at all (e.g. Docker build, CI).
+    if ! [ -e /dev/tty ]; then
+        log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
         return 0
     fi
 
@@ -913,8 +916,8 @@ maybe_start_gateway() {
         fi
     fi
 
-    if [ "$IS_INTERACTIVE" = false ]; then
-        log_info "Gateway setup skipped (non-interactive). Run 'hermes gateway install' later."
+    if ! [ -e /dev/tty ]; then
+        log_info "Gateway setup skipped (no terminal available). Run 'hermes gateway install' later."
         return 0
     fi
 

@@ -4,27 +4,33 @@ Hermes Agent can connect to messaging platforms like Telegram, Discord, and What
 
 ## Quick Start
 
+The easiest way to configure messaging is the interactive wizard:
+
 ```bash
-# 1. Set your bot token(s) in ~/.hermes/.env
-echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> ~/.hermes/.env
-echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> ~/.hermes/.env
-
-# 2. Test the gateway (foreground)
-./scripts/hermes-gateway run
-
-# 3. Install as a system service (runs in background)
-./scripts/hermes-gateway install
-
-# 4. Manage the service
-./scripts/hermes-gateway start
-./scripts/hermes-gateway stop
-./scripts/hermes-gateway restart
-./scripts/hermes-gateway status
+hermes gateway setup        # Configure Telegram, Discord, Slack, WhatsApp
 ```
 
-**Quick test (without service install):**
+This walks you through each platform with arrow-key selection, handles tokens, allowlists, and home channels, and offers to start/restart the gateway when done.
+
+**Or configure manually** by editing `~/.hermes/.env`:
+
 ```bash
-python cli.py --gateway  # Runs in foreground, useful for debugging
+# Set your bot token(s)
+echo 'TELEGRAM_BOT_TOKEN="your_telegram_bot_token"' >> ~/.hermes/.env
+echo 'DISCORD_BOT_TOKEN="your_discord_bot_token"' >> ~/.hermes/.env
+```
+
+**Then start the gateway:**
+
+```bash
+hermes gateway              # Run in foreground (useful for debugging)
+hermes gateway install      # Install as a system service (runs in background)
+
+# Manage the service
+hermes gateway start
+hermes gateway stop
+hermes gateway restart
+hermes gateway status
 ```
 
 ## Architecture Overview

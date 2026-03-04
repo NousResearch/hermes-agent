@@ -589,8 +589,8 @@ def gateway_setup():
             except subprocess.CalledProcessError as e:
                 print_error(f"  Failed to start: {e}")
     else:
-        print_info("Gateway service is not installed.")
-        print_info("You can install it after configuring platforms: hermes gateway install")
+        print_info("Gateway service is not installed yet.")
+        print_info("You'll be offered to install it after configuring platforms.")
 
     # ── Platform configuration loop ──
     while True:
@@ -651,9 +651,33 @@ def gateway_setup():
                     print_error(f"  Start failed: {e}")
         else:
             print()
-            print_info("Next steps:")
-            print_info("  hermes gateway              Run in foreground")
-            print_info("  hermes gateway install      Install as background service")
+            if is_linux() or is_macos():
+                platform_name = "systemd" if is_linux() else "launchd"
+                if prompt_yes_no(f"  Install the gateway as a {platform_name} service? (runs in background, starts on boot)", True):
+                    try:
+                        force = False
+                        if is_linux():
+                            systemd_install(force)
+                        else:
+                            launchd_install(force)
+                        print()
+                        if prompt_yes_no("  Start the service now?", True):
+                            try:
+                                if is_linux():
+                                    systemd_start()
+                                else:
+                                    launchd_start()
+                            except subprocess.CalledProcessError as e:
+                                print_error(f"  Start failed: {e}")
+                    except subprocess.CalledProcessError as e:
+                        print_error(f"  Install failed: {e}")
+                        print_info("  You can try manually: hermes gateway install")
+                else:
+                    print_info("  You can install later: hermes gateway install")
+                    print_info("  Or run in foreground:  hermes gateway")
+            else:
+                print_info("  Service install not supported on this platform.")
+                print_info("  Run in foreground: hermes gateway")
     else:
         print()
         print_info("No platforms configured. Run 'hermes gateway setup' when ready.")

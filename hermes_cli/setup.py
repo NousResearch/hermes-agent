@@ -395,11 +395,14 @@ def run_setup_wizard(args):
     # a template, so it always exists after install. We need an actual
     # inference provider to consider it "existing" (otherwise quick mode
     # would skip provider selection, leaving hermes non-functional).
+    # NOTE: Use bool() not `is not None` — the .env template has empty
+    # values (e.g. OPENROUTER_API_KEY=) that load_dotenv sets to "", which
+    # passes `is not None` but isn't a real configured provider.
     from hermes_cli.auth import get_active_provider
     active_provider = get_active_provider()
     is_existing = (
-        get_env_value("OPENROUTER_API_KEY") is not None
-        or get_env_value("OPENAI_BASE_URL") is not None
+        bool(get_env_value("OPENROUTER_API_KEY"))
+        or bool(get_env_value("OPENAI_BASE_URL"))
         or active_provider is not None
     )
     

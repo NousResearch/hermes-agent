@@ -183,11 +183,13 @@ def session_search(
     role_filter: str = None,
     limit: int = 3,
     db=None,
+    current_session_id: str = None,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
 
     Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    The current session is excluded from results since the agent already has that context.
     """
     if db is None:
         return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
@@ -238,11 +240,16 @@ def session_search(
                     break
             return sid
 
-        # Group by resolved (parent) session_id, dedup
+        # Group by resolved (parent) session_id, dedup, skip current session
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
+            # Skip the current session — the agent already has that context
+            if current_session_id and resolved_sid == current_session_id:
+                continue
+            if current_session_id and raw_sid == current_session_id:
+                continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid
@@ -368,6 +375,7 @@ registry.register(
         query=args.get("query", ""),
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
-        db=kw.get("db")),
+        db=kw.get("db"),
+        current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,
 )

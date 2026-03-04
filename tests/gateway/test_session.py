@@ -314,6 +314,94 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestHasAnySessions:
+    """Regression: has_any_sessions() must detect prior sessions even for
+    single-platform users where _entries has only one key after a reset."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_fresh_install_no_sessions(self, store):
+        """Brand-new install with no entries → False."""
+        store._entries = {}
+        store._loaded_from_disk = False
+        assert store.has_any_sessions() is False
+
+    def test_single_platform_first_session(self, store):
+        """First session just created, not yet saved to disk → False."""
+        store._entries = {"agent:main:telegram:dm": MagicMock()}
+        store._loaded_from_disk = False
+        assert store.has_any_sessions() is False
+
+    def test_single_platform_after_reset(self, store):
+        """Single-platform user after session reset — sessions.json was loaded
+        from disk so we know they have used the bot before → True."""
+        store._entries = {"agent:main:telegram:dm": MagicMock()}
+        store._loaded_from_disk = True
+        assert store.has_any_sessions() is True
+
+    def test_multi_platform_always_detected(self, store):
+        """Multiple session keys → True regardless of disk state."""
+        store._entries = {
+            "agent:main:telegram:dm": MagicMock(),
+            "agent:main:discord:dm": MagicMock(),
+        }
+        store._loaded_from_disk = False
+        assert store.has_any_sessions() is True
+
+    def test_loaded_from_disk_flag_set_on_load(self, tmp_path):
+        """_ensure_loaded sets _loaded_from_disk when sessions.json exists."""
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({
+            "agent:main:telegram:dm": {
+                "session_key": "agent:main:telegram:dm",
+                "session_id": "20260304_120000_abc",
+                "created_at": "2026-03-04T12:00:00",
+                "updated_at": "2026-03-04T12:05:00",
+            }
+        }))
+        config = GatewayConfig()
+        store = SessionStore.__new__(SessionStore)
+        store.sessions_dir = tmp_path
+        store.config = config
+        store._entries = {}
+        store._loaded = False
+        store._loaded_from_disk = False
+        store._has_active_processes_fn = None
+        store._on_auto_reset = None
+        store._db = None
+
+        store._ensure_loaded()
+
+        assert store._loaded_from_disk is True
+        assert store.has_any_sessions() is True
+
+    def test_loaded_from_disk_flag_false_on_empty_file(self, tmp_path):
+        """Empty sessions.json → _loaded_from_disk stays False."""
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(json.dumps({}))
+        config = GatewayConfig()
+        store = SessionStore.__new__(SessionStore)
+        store.sessions_dir = tmp_path
+        store.config = config
+        store._entries = {}
+        store._loaded = False
+        store._loaded_from_disk = False
+        store._has_active_processes_fn = None
+        store._on_auto_reset = None
+        store._db = None
+
+        store._ensure_loaded()
+
+        assert store._loaded_from_disk is False
+
+
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""
 

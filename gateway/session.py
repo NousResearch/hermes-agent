@@ -296,6 +296,7 @@ class SessionStore:
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
+        self._loaded_from_disk = False
         self._has_active_processes_fn = has_active_processes_fn
         self._on_auto_reset = on_auto_reset  # callback(old_entry) before auto-reset
         
@@ -321,9 +322,11 @@ class SessionStore:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         self._entries[key] = SessionEntry.from_dict(entry_data)
+                    if data:
+                        self._loaded_from_disk = True
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
-        
+
         self._loaded = True
     
     def _save(self) -> None:
@@ -392,7 +395,7 @@ class SessionStore:
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms)."""
         self._ensure_loaded()
-        return len(self._entries) > 1  # >1 because the current new session is already in _entries
+        return self._loaded_from_disk or len(self._entries) > 1
     
     def get_or_create_session(
         self, 

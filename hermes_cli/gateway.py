@@ -1,7 +1,7 @@
 """
 Gateway subcommand for hermes CLI.
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall]
+Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
@@ -12,6 +12,13 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+from hermes_cli.config import get_env_value, save_env_value
+from hermes_cli.setup import (
+    print_header, print_info, print_success, print_warning, print_error,
+    prompt, prompt_choice, prompt_yes_no,
+)
+from hermes_cli.colors import Colors, color
 
 
 # =============================================================================
@@ -392,6 +399,265 @@ def run_gateway(verbose: bool = False):
 
 
 # =============================================================================
+# Gateway Setup (Interactive Messaging Platform Configuration)
+# =============================================================================
+
+# Per-platform config: each entry defines the env vars, setup instructions,
+# and prompts needed to configure a messaging platform.
+_PLATFORMS = [
+    {
+        "key": "telegram",
+        "label": "Telegram",
+        "emoji": "📱",
+        "token_var": "TELEGRAM_BOT_TOKEN",
+        "vars": [
+            {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "help": "Create a bot via @BotFather on Telegram to get a token."},
+            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty for open access)", "password": False,
+             "help": "To find your user ID: message @userinfobot on Telegram."},
+            {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
+        ],
+    },
+    {
+        "key": "discord",
+        "label": "Discord",
+        "emoji": "💬",
+        "token_var": "DISCORD_BOT_TOKEN",
+        "vars": [
+            {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "help": "Create a bot at https://discord.com/developers/applications"},
+            {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated, or empty for open access)", "password": False,
+             "help": "Enable Developer Mode in Discord settings, then right-click your name → Copy ID."},
+            {"name": "DISCORD_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Right-click a channel → Copy Channel ID (requires Developer Mode)."},
+        ],
+    },
+    {
+        "key": "slack",
+        "label": "Slack",
+        "emoji": "💼",
+        "token_var": "SLACK_BOT_TOKEN",
+        "vars": [
+            {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
+             "help": "Go to https://api.slack.com/apps → Create New App → OAuth & Permissions → Install to Workspace."},
+            {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
+             "help": "App Settings → Basic Information → App-Level Tokens → Generate (with connections:write scope)."},
+            {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty for open access)", "password": False,
+             "help": "Find Slack user IDs in your profile or via the Slack API."},
+        ],
+    },
+    {
+        "key": "whatsapp",
+        "label": "WhatsApp",
+        "emoji": "📲",
+        "token_var": "WHATSAPP_ENABLED",
+    },
+]
+
+
+def _platform_status(platform: dict) -> str:
+    """Return a short status string for a platform."""
+    token_var = platform["token_var"]
+    val = get_env_value(token_var)
+    if token_var == "WHATSAPP_ENABLED":
+        if val and val.lower() == "true":
+            session_file = Path.home() / ".hermes" / "whatsapp" / "session" / "creds.json"
+            if session_file.exists():
+                return color("configured + paired", Colors.GREEN)
+            return color("enabled, not paired", Colors.YELLOW)
+        return color("not configured", Colors.DIM)
+    if val:
+        return color("configured", Colors.GREEN)
+    return color("not configured", Colors.DIM)
+
+
+def _setup_standard_platform(platform: dict):
+    """Interactive setup for Telegram, Discord, or Slack."""
+    emoji = platform["emoji"]
+    label = platform["label"]
+    token_var = platform["token_var"]
+
+    print()
+    print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
+
+    existing_token = get_env_value(token_var)
+    if existing_token:
+        print()
+        print_success(f"{label} is already configured.")
+        if not prompt_yes_no(f"  Reconfigure {label}?", False):
+            return
+
+    for var in platform["vars"]:
+        print()
+        print_info(f"  {var['help']}")
+        existing = get_env_value(var["name"])
+        if existing and var["name"] != token_var:
+            print_info(f"  Current: {existing}")
+
+        value = prompt(f"  {var['prompt']}", password=var.get("password", False))
+        if value:
+            cleaned = value.replace(" ", "") if "user" in var["name"].lower() else value
+            save_env_value(var["name"], cleaned)
+            print_success(f"  Saved {var['name']}")
+        elif var["name"] == token_var:
+            print_warning(f"  Skipped — {label} won't work without this.")
+            return
+        else:
+            print_info(f"  Skipped (can configure later)")
+
+    # If the first allowed-user value was set and home channel wasn't,
+    # offer to reuse it (common for Telegram DMs).
+    allowed_var = f"{label.upper()}_ALLOWED_USERS"
+    home_var = f"{label.upper()}_HOME_CHANNEL"
+    allowed_val = get_env_value(allowed_var)
+    home_val = get_env_value(home_var)
+    if allowed_val and not home_val and label == "Telegram":
+        first_id = allowed_val.split(",")[0].strip()
+        if first_id and prompt_yes_no(f"  Use your user ID ({first_id}) as the home channel?", True):
+            save_env_value(home_var, first_id)
+            print_success(f"  Home channel set to {first_id}")
+
+    print()
+    print_success(f"{emoji} {label} configured!")
+
+
+def _setup_whatsapp():
+    """Delegate to the existing WhatsApp setup flow."""
+    from hermes_cli.main import cmd_whatsapp
+    import argparse
+    cmd_whatsapp(argparse.Namespace())
+
+
+def _is_service_installed() -> bool:
+    """Check if the gateway is installed as a system service."""
+    if is_linux():
+        return get_systemd_unit_path().exists()
+    elif is_macos():
+        return get_launchd_plist_path().exists()
+    return False
+
+
+def _is_service_running() -> bool:
+    """Check if the gateway service is currently running."""
+    if is_linux() and get_systemd_unit_path().exists():
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", SERVICE_NAME],
+            capture_output=True, text=True
+        )
+        return result.stdout.strip() == "active"
+    elif is_macos() and get_launchd_plist_path().exists():
+        result = subprocess.run(
+            ["launchctl", "list", "ai.hermes.gateway"],
+            capture_output=True, text=True
+        )
+        return result.returncode == 0
+    # Check for manual processes
+    return len(find_gateway_pids()) > 0
+
+
+def gateway_setup():
+    """Interactive setup for messaging platforms + gateway service."""
+
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
+    print(color("│             ⚕ Gateway Setup                            │", Colors.MAGENTA))
+    print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
+    print(color("│  Configure messaging platforms and the gateway service. │", Colors.MAGENTA))
+    print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
+
+    # ── Gateway service status ──
+    print()
+    service_installed = _is_service_installed()
+    service_running = _is_service_running()
+
+    if service_installed and service_running:
+        print_success("Gateway service is installed and running.")
+    elif service_installed:
+        print_warning("Gateway service is installed but not running.")
+        if prompt_yes_no("  Start it now?", True):
+            try:
+                if is_linux():
+                    systemd_start()
+                elif is_macos():
+                    launchd_start()
+            except subprocess.CalledProcessError as e:
+                print_error(f"  Failed to start: {e}")
+    else:
+        print_info("Gateway service is not installed.")
+        print_info("You can install it after configuring platforms: hermes gateway install")
+
+    # ── Platform configuration loop ──
+    while True:
+        print()
+        print_header("Messaging Platforms")
+
+        menu_items = []
+        for plat in _PLATFORMS:
+            status = _platform_status(plat)
+            menu_items.append(f"{plat['emoji']} {plat['label']}  ({status})")
+        menu_items.append("✓ Done")
+
+        choice = prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
+
+        if choice == len(_PLATFORMS):
+            break
+
+        platform = _PLATFORMS[choice]
+
+        if platform["key"] == "whatsapp":
+            _setup_whatsapp()
+        else:
+            _setup_standard_platform(platform)
+
+    # ── Post-setup: offer to install/restart gateway ──
+    any_configured = any(
+        bool(get_env_value(p["token_var"]))
+        for p in _PLATFORMS
+        if p["key"] != "whatsapp"
+    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+
+    if any_configured:
+        print()
+        print(color("─" * 58, Colors.DIM))
+        service_installed = _is_service_installed()
+        service_running = _is_service_running()
+
+        if service_running:
+            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+                try:
+                    if is_linux():
+                        systemd_restart()
+                    elif is_macos():
+                        launchd_restart()
+                    else:
+                        kill_gateway_processes()
+                        print_info("Start manually: hermes gateway")
+                except subprocess.CalledProcessError as e:
+                    print_error(f"  Restart failed: {e}")
+        elif service_installed:
+            if prompt_yes_no("  Start the gateway service?", True):
+                try:
+                    if is_linux():
+                        systemd_start()
+                    elif is_macos():
+                        launchd_start()
+                except subprocess.CalledProcessError as e:
+                    print_error(f"  Start failed: {e}")
+        else:
+            print()
+            print_info("Next steps:")
+            print_info("  hermes gateway              Run in foreground")
+            print_info("  hermes gateway install      Install as background service")
+    else:
+        print()
+        print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
+
+    print()
+
+
+# =============================================================================
 # Main Command Handler
 # =============================================================================
 
@@ -404,7 +670,11 @@ def gateway_command(args):
         verbose = getattr(args, 'verbose', False)
         run_gateway(verbose)
         return
-    
+
+    if subcmd == "setup":
+        gateway_setup()
+        return
+
     # Service management commands
     if subcmd == "install":
         force = getattr(args, 'force', False)

@@ -1188,7 +1188,10 @@ For more help on a command:
     
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")
-    
+
+    # gateway setup
+    gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+
     gateway_parser.set_defaults(func=cmd_gateway)
     
     # =========================================================================

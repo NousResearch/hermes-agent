@@ -118,6 +118,7 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_session_key,
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
@@ -637,12 +638,7 @@ class GatewayRunner:
         # PRIORITY: If an agent is already running for this session, interrupt it
         # immediately. This is before command parsing to minimize latency -- the
         # user's "stop" message reaches the agent as fast as possible.
-        if source.chat_type != "dm":
-            _quick_key = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
-        elif source.platform.value == "whatsapp" and source.chat_id:
-            _quick_key = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
-        else:
-            _quick_key = f"agent:main:{source.platform.value}:dm"
+        _quick_key = build_session_key(source)
         if _quick_key in self._running_agents:
             running_agent = self._running_agents[_quick_key]
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
@@ -720,12 +716,7 @@ class GatewayRunner:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
         # Check for pending exec approval responses
-        if source.chat_type != "dm":
-            session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
-        elif source.platform and source.platform.value == "whatsapp" and source.chat_id:
-            session_key_preview = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
-        else:
-            session_key_preview = f"agent:main:{source.platform.value}:dm"
+        session_key_preview = build_session_key(source)
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -1362,12 +1353,7 @@ class GatewayRunner:
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
         source = event.source
-        if source.chat_type != "dm":
-            session_key = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
-        elif source.platform.value == "whatsapp" and source.chat_id:
-            session_key = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
-        else:
-            session_key = f"agent:main:{source.platform.value}:dm"
+        session_key = build_session_key(source)
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:

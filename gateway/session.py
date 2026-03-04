@@ -281,6 +281,20 @@ class SessionEntry:
         )
 
 
+def build_session_key(source: SessionSource) -> str:
+    """Build a deterministic session key from a message source.
+
+    This is the single source of truth for session key construction.
+    WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+    """
+    platform = source.platform.value
+    if source.chat_type == "dm":
+        if platform == "whatsapp" and source.chat_id:
+            return f"agent:main:{platform}:dm:{source.chat_id}"
+        return f"agent:main:{platform}:dm"
+    return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -337,16 +351,7 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        platform = source.platform.value
-
-        if source.chat_type == "dm":
-            # WhatsApp DMs come from different people, each needs its own session.
-            # Other platforms (Telegram, Discord) have a single DM with the bot owner.
-            if platform == "whatsapp" and source.chat_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}"
-            return f"agent:main:{platform}:dm"
-        else:
-            return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+        return build_session_key(source)
     
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> bool:
         """

@@ -391,8 +391,16 @@ class SessionStore:
     
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms)."""
+        if self._db:
+            # Database tracks all sessions ever created (including ended ones).
+            # This correctly handles session resets where the in-memory _entries
+            # dict replaces the entry for the same session_key, but the DB
+            # preserves the historical record.
+            # > 1 because the current session is already created.
+            return self._db.session_count() > 1
+        # Fallback for when DB is not available (e.g., tests)
         self._ensure_loaded()
-        return len(self._entries) > 1  # >1 because the current new session is already in _entries
+        return len(self._entries) > 1
     
     def get_or_create_session(
         self, 

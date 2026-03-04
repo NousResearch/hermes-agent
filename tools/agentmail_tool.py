@@ -96,7 +96,7 @@ def _handle_agentmail(
                 return "Error: subject is required for send_email"
             if not body:
                 return "Error: body is required for send_email"
-            msg = client.messages.send(
+            msg = client.inboxes.messages.send(
                 inbox_id=inbox_id,
                 to=[{"email": to}],
                 subject=subject,
@@ -113,7 +113,7 @@ def _handle_agentmail(
         elif action == "list_messages":
             if not inbox_id:
                 return "Error: inbox_id is required for list_messages"
-            msgs = client.messages.list(inbox_id=inbox_id, limit=limit)
+            msgs = client.inboxes.messages.list(inbox_id=inbox_id, limit=limit)
             return json.dumps([
                 {
                     "message_id": m.id,
@@ -131,7 +131,7 @@ def _handle_agentmail(
                 return "Error: inbox_id is required for get_message"
             if not message_id:
                 return "Error: message_id is required for get_message"
-            msg = client.messages.get(inbox_id=inbox_id, message_id=message_id)
+            msg = client.inboxes.messages.get(inbox_id=inbox_id, message_id=message_id)
             return json.dumps({
                 "message_id": msg.id,
                 "from": msg.from_address,
@@ -148,7 +148,7 @@ def _handle_agentmail(
                 return "Error: message_id is required for reply"
             if not body:
                 return "Error: body is required for reply"
-            reply = client.messages.reply(
+            reply = client.inboxes.messages.reply(
                 inbox_id=inbox_id,
                 message_id=message_id,
                 text=body,

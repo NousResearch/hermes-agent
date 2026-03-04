@@ -916,8 +916,8 @@ maybe_start_gateway() {
         fi
     fi
 
-    if [ "$IS_INTERACTIVE" = false ]; then
-        log_info "Gateway setup skipped (non-interactive). Run 'hermes gateway install' later."
+    if ! [ -e /dev/tty ]; then
+        log_info "Gateway setup skipped (no terminal available). Run 'hermes gateway install' later."
         return 0
     fi
 

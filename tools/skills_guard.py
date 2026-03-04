@@ -650,7 +650,7 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     Returns:
         (allowed, reason) tuple
     """
-    if result.verdict == "dangerous" and not force:
+    if result.verdict == "dangerous":
         return False, f"Scan verdict is DANGEROUS ({len(result.findings)} findings). Blocked."
 
     policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])

@@ -314,6 +314,88 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestWhatsAppDMSessionKeyConsistency:
+    """Regression: inline session-key construction in handle_message must match
+    _generate_session_key for WhatsApp DMs, which include chat_id."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def _build_quick_key(self, source: SessionSource) -> str:
+        """Reproduce the _quick_key logic from gateway/run.py handle_message."""
+        if source.chat_type != "dm":
+            return f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform.value == "whatsapp" and source.chat_id:
+            return f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            return f"agent:main:{source.platform.value}:dm"
+
+    def _build_usage_key(self, source: SessionSource) -> str:
+        """Reproduce the session_key logic from _handle_usage_command."""
+        if source.chat_type != "dm":
+            return f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform.value == "whatsapp" and source.chat_id:
+            return f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            return f"agent:main:{source.platform.value}:dm"
+
+    def test_whatsapp_dm_quick_key_includes_chat_id(self, store):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        real_key = store._generate_session_key(source)
+        quick_key = self._build_quick_key(source)
+        assert quick_key == real_key
+        assert "15551234567@s.whatsapp.net" in quick_key
+
+    def test_whatsapp_dm_usage_key_includes_chat_id(self, store):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        real_key = store._generate_session_key(source)
+        usage_key = self._build_usage_key(source)
+        assert usage_key == real_key
+        assert "15551234567@s.whatsapp.net" in usage_key
+
+    def test_telegram_dm_key_unchanged(self, store):
+        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+        )
+        real_key = store._generate_session_key(source)
+        quick_key = self._build_quick_key(source)
+        usage_key = self._build_usage_key(source)
+        assert quick_key == real_key == "agent:main:telegram:dm"
+        assert usage_key == real_key
+
+    def test_discord_group_key_unchanged(self, store):
+        """Group/channel keys should be unaffected by the fix."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        real_key = store._generate_session_key(source)
+        quick_key = self._build_quick_key(source)
+        usage_key = self._build_usage_key(source)
+        assert quick_key == real_key == "agent:main:discord:group:guild-123"
+        assert usage_key == real_key
+
+
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""
 

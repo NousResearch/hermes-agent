@@ -85,6 +85,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "agentmail": {
+        "description": "Agent-owned email inboxes via AgentMail — send, receive and manage email autonomously",
+        "tools": ["agentmail"],
+        "includes": []
+    },
+    
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],

@@ -525,3 +525,235 @@ Each MCP server's tools are automatically grouped into a toolset named `mcp-{ser
 ### Thread Safety
 
 The MCP subsystem is fully thread-safe. A dedicated background event loop runs in a daemon thread, and all server state is protected by a lock. This works correctly even with Python 3.13+ free-threading builds.
+
+## Sampling (Server-Initiated LLM Requests)
+
+MCP's `sampling/createMessage` capability allows MCP servers to request LLM completions through the Hermes agent. This is a powerful feature that enables agent-in-the-loop workflows where servers can leverage the LLM for tasks like:
+
+- **Data analysis**: A database server asks the LLM to interpret query results
+- **Content generation**: A CMS server requests the LLM to generate or summarize content
+- **Decision making**: A workflow server asks the LLM to decide the next step
+- **Code review**: A code analysis server asks the LLM to review findings
+
+### How It Works
+
+```
+MCP Server --[sampling/createMessage]--> ClientSession
+  --> sampling callback (async, on MCP background loop)
+    --> asyncio.to_thread(sync LLM call)   # non-blocking
+    --> CreateMessageResult | ErrorData returned to server
+```
+
+The sampling callback:
+
+1. Validates the request against configurable rate limits
+2. Resolves the model to use (config override > server hint > default)
+3. Converts MCP messages to OpenAI-compatible format (text + images)
+4. Adds system prompt if provided by the server
+5. Offloads the LLM call to a thread via `asyncio.to_thread()` (non-blocking)
+6. Applies a configurable timeout to the LLM call
+7. Sanitizes the response (credential stripping)
+8. Returns a `CreateMessageResult` on success or `ErrorData` on failure
+
+### Configuration
+
+Sampling is **enabled by default** for all configured MCP servers. No additional setup is needed — if you have an auxiliary LLM client configured (OpenRouter, Nous Portal, or custom endpoint), sampling works automatically.
+
+#### Per-Server Sampling Config
+
+```yaml
+mcp_servers:
+  analysis_server:
+    command: "npx"
+    args: ["-y", "my-analysis-server"]
+    sampling:
+      enabled: true           # default: true
+      model: "gemini-3-flash" # override model (optional)
+      max_tokens_cap: 4096    # max tokens per request (default: 4096)
+      timeout: 30             # LLM call timeout in seconds (default: 30)
+      max_rpm: 10             # max requests per minute (default: 10)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `sampling.enabled` | bool | `true` | Enable or disable sampling for this server |
+| `sampling.model` | string | (auto) | Force a specific model for sampling requests |
+| `sampling.max_tokens_cap` | int | `4096` | Maximum tokens a server can request |
+| `sampling.timeout` | int | `30` | Timeout in seconds for each LLM call |
+| `sampling.max_rpm` | int | `10` | Maximum sampling requests per minute |
+| `sampling.allowed_models` | list | `[]` | Model whitelist (empty = allow all) |
+| `sampling.max_tool_rounds` | int | `5` | Max consecutive tool use rounds (0 = disable tool loops) |
+| `sampling.log_level` | string | `"info"` | Audit log verbosity: `"debug"`, `"info"`, or `"warning"` |
+
+#### Model Resolution
+
+The model used for sampling is resolved in this order:
+
+1. **Config override** (`sampling.model`) — always used if set
+2. **Server hint** (`modelPreferences.hints[].name`) — from the server's request
+3. **Default** — the auxiliary client's default model
+
+### Security
+
+Sampling introduces a vector where MCP servers can trigger LLM calls, so several safeguards are in place:
+
+#### Non-Blocking Execution
+
+The sync LLM client call is offloaded to a thread via `asyncio.to_thread()`. This prevents blocking the MCP background event loop, which also serves tool calls and other server connections.
+
+#### LLM Call Timeout
+
+Each LLM call has a configurable timeout (default: 30 seconds) enforced via `asyncio.wait_for()`. If the LLM provider is slow or unresponsive, the call is cancelled and an `ErrorData` is returned to the server.
+
+#### Rate Limiting
+
+Each server is limited to `max_rpm` sampling requests per minute (default: 10). Exceeding this limit returns a structured `ErrorData` to the server. This prevents a runaway or malicious server from draining LLM credits.
+
+```yaml
+# Increase rate limit for a trusted high-throughput server
+sampling:
+  max_rpm: 30
+```
+
+#### Token Cap
+
+The `max_tokens_cap` config (default: 4096) limits how many tokens a server can request per sampling call. Even if a server requests `maxTokens: 100000`, it will be capped to the configured limit.
+
+#### Credential Stripping
+
+LLM responses are sanitized through `_sanitize_error()` before being returned to the MCP server, removing any credential-like patterns (API keys, tokens, passwords) that the LLM might accidentally include.
+
+#### Typed Error Responses
+
+All error conditions (rate limit, timeout, no provider, LLM errors) return structured `ErrorData` objects per the MCP specification, rather than raw exceptions. This gives servers a predictable error format they can handle gracefully.
+
+#### Backward Compatibility
+
+Sampling types (`CreateMessageResult`, `TextContent`, `ErrorData`) are imported in a separate `try/except` block. If the installed MCP SDK version doesn't have these types, sampling is silently disabled while all other MCP features continue working normally.
+
+#### Human-in-the-Loop Considerations
+
+The MCP specification recommends that clients provide human review of sampling requests. Currently, Hermes Agent auto-approves sampling within the configured safety limits. For untrusted servers, the recommended approach is to disable sampling entirely:
+
+```yaml
+mcp_servers:
+  untrusted:
+    command: "npx"
+    args: ["-y", "untrusted-server"]
+    sampling:
+      enabled: false    # Server cannot make LLM requests
+```
+
+### Tool Use in Sampling
+
+MCP servers can include `tools` and `toolChoice` in their sampling requests, enabling multi-turn tool-augmented workflows within a single sampling session.
+
+#### How Tool Use Works
+
+1. The server sends a `sampling/createMessage` request with `tools` (tool definitions) and optionally `toolChoice` (auto/required/none)
+2. The sampling callback forwards these to the LLM as OpenAI-compatible function definitions
+3. If the LLM responds with `tool_calls`, the callback returns a `CreateMessageResult` with `stopReason: "toolUse"` and tool use content blocks
+4. The server executes the tools and sends another sampling request with the results
+5. This loop continues until the LLM returns a text response or the `max_tool_rounds` limit is reached
+
+#### Tool Loop Governance
+
+To prevent runaway tool loops (a server and LLM endlessly bouncing tool calls), the `max_tool_rounds` config limits consecutive tool use rounds per server:
+
+```yaml
+sampling:
+  max_tool_rounds: 5   # default: 5 consecutive tool rounds max
+```
+
+- **max_tool_rounds: 5** (default) — allows up to 5 consecutive rounds where the LLM requests tool use
+- **max_tool_rounds: 0** — disables tool loops entirely; tool use responses are rejected
+- The counter resets when the LLM returns a normal text response (endTurn)
+- Exceeding the limit returns an `ErrorData` to the server
+
+#### Content Block Conversion
+
+The sampling callback handles all MCP content block types:
+
+| MCP Content Block | OpenAI Format |
+|------------------|---------------|
+| `TextContent` | `{"role": "...", "content": "text"}` |
+| `ImageContent` | `{"type": "image_url", ...}` |
+| `ToolUseContent` | `{"tool_calls": [...]}` on assistant message |
+| `ToolResultContent` | `{"role": "tool", "tool_call_id": "..."}` |
+
+### Per-Server Sampling Policy
+
+Different MCP servers have different trust levels. Use per-server sampling config to enforce appropriate policies:
+
+```yaml
+mcp_servers:
+  # Trusted internal server: full access
+  internal_analytics:
+    command: "npx"
+    args: ["-y", "analytics-server"]
+    sampling:
+      enabled: true
+      max_rpm: 30
+      max_tool_rounds: 10
+      log_level: "debug"        # verbose audit trail
+
+  # Semi-trusted: restricted model access
+  community_server:
+    command: "npx"
+    args: ["-y", "community-server"]
+    sampling:
+      enabled: true
+      allowed_models: ["gemini-3-flash"]  # only cheap models
+      max_tool_rounds: 3
+      max_tokens_cap: 2048
+
+  # Untrusted: no sampling at all
+  experimental:
+    command: "npx"
+    args: ["-y", "experimental-server"]
+    sampling:
+      enabled: false
+```
+
+#### Audit Metrics
+
+Each server's sampling activity is tracked with structured metrics exposed via `get_mcp_status()`:
+
+- **requests**: total successful sampling requests
+- **errors**: total failed requests (rate limit, timeout, model blocked, etc.)
+- **tokens_used**: total tokens consumed across all sampling calls
+- **tool_use_count**: total responses where the LLM requested tool use
+
+### Troubleshooting
+
+**"No LLM provider available for sampling"**
+
+No auxiliary LLM client is configured. Set up one of:
+- `OPENROUTER_API_KEY` environment variable
+- Nous Portal authentication (`hermes auth`)
+- Custom endpoint (`OPENAI_BASE_URL` + `OPENAI_API_KEY`)
+
+**"Sampling rate limit exceeded"**
+
+The server is making too many sampling requests. Increase `max_rpm` if this is expected behavior:
+
+```yaml
+sampling:
+  max_rpm: 30   # Increase from default 10
+```
+
+**"Sampling LLM call timed out"**
+
+The LLM provider is too slow. Increase the timeout:
+
+```yaml
+sampling:
+  timeout: 60   # Increase from default 30
+```
+
+**Server receives error responses**
+
+Check the Hermes logs (`hermes --verbose`) for sampling request/response details. Common issues:
+- LLM API errors (auth, quota)
+- Invalid message format from the server
+- Model not available

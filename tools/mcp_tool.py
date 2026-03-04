@@ -58,9 +58,11 @@ Thread safety:
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_SAMPLING_TYPES = False
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -80,6 +83,13 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    # Sampling types -- separated to avoid breaking MCP support on older SDK
+    # versions that may not have these types.
+    try:
+        from mcp.types import CreateMessageResult, TextContent, ErrorData
+        _MCP_SAMPLING_TYPES = True
+    except ImportError:
+        logger.debug("MCP sampling types not available -- sampling support disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
@@ -91,6 +101,32 @@ _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_BACKOFF_SECONDS = 60
+
+# Sampling defaults
+_DEFAULT_SAMPLING_MAX_TOKENS_CAP = 4096
+_DEFAULT_SAMPLING_RATE_LIMIT = 10   # max requests per minute per server
+_DEFAULT_SAMPLING_TIMEOUT = 30      # seconds for LLM call
+_sampling_counters: Dict[str, List[float]] = {}  # server_name -> [timestamps]
+_sampling_metrics: Dict[str, Dict[str, int]] = {}  # server_name -> {requests, errors, ...}
+_tool_loop_counters: Dict[str, int] = {}  # server_name -> consecutive tool rounds
+
+
+def _safe_numeric(value, default, coerce=int, minimum=1):
+    """Coerce a config value to a numeric type, returning *default* on failure.
+
+    Handles the case where YAML/JSON config values arrive as strings (e.g.
+    ``"10"`` instead of ``10``), or are set to an entirely invalid type.
+    Values below *minimum* are clamped to *minimum* to prevent nonsensical
+    config (e.g. ``max_rpm: 0`` blocking all requests, ``timeout: 0``
+    causing instant timeouts, or ``max_tokens_cap: -1``).
+    """
+    try:
+        result = coerce(value)
+        if isinstance(result, float) and not math.isfinite(result):
+            return default
+        return max(result, minimum)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -146,6 +182,433 @@ def _sanitize_error(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sampling helpers -- server-initiated LLM requests (MCP sampling/createMessage)
+# ---------------------------------------------------------------------------
+
+def _sampling_error(message: str, code: int = -1):
+    """Return ErrorData (MCP spec) or raise Exception as fallback."""
+    if _MCP_SAMPLING_TYPES:
+        return ErrorData(code=code, message=message)
+    raise Exception(message)
+
+
+def _check_rate_limit(server_name: str, max_rpm: int) -> bool:
+    """Check if a sampling request is within the per-server rate limit.
+
+    Returns True if the request is allowed, False if rate limit exceeded.
+    Uses a sliding 60-second window with max ``max_rpm`` requests.
+    """
+    now = time.time()
+    window = now - 60
+    timestamps = _sampling_counters.setdefault(server_name, [])
+    timestamps[:] = [t for t in timestamps if t > window]
+    if len(timestamps) >= max_rpm:
+        return False
+    timestamps.append(now)
+    return True
+
+
+def _resolve_model(preferences, sampling_config: dict):
+    """Resolve the model to use for a sampling request.
+
+    Priority: config override > server hint > None (use default).
+    """
+    if sampling_config.get("model"):
+        return sampling_config["model"]
+    if preferences and hasattr(preferences, "hints") and preferences.hints:
+        for hint in preferences.hints:
+            if hasattr(hint, "name") and hint.name:
+                return hint.name
+    return None
+
+
+def _extract_tool_result_text(block) -> str:
+    """Extract text from a tool_result content block."""
+    if not hasattr(block, "content") or block.content is None:
+        return ""
+    items = block.content if isinstance(block.content, list) else [block.content]
+    return "\n".join(item.text for item in items if hasattr(item, "text"))
+
+
+def _convert_sampling_messages(params) -> List[dict]:
+    """Convert MCP SamplingMessage list to OpenAI messages format.
+
+    Supports text, image, tool_result, and tool_use content blocks.
+    """
+    messages = []
+    for msg in params.messages:
+        content = msg.content
+        # Single text content
+        if hasattr(content, "text"):
+            messages.append({"role": msg.role, "content": content.text})
+        # Single tool_result content -> OpenAI tool role
+        elif hasattr(content, "toolUseId"):
+            messages.append({
+                "role": "tool",
+                "tool_call_id": content.toolUseId,
+                "content": _extract_tool_result_text(content),
+            })
+        elif isinstance(content, list):
+            # All blocks are tool_result -> multiple tool role messages
+            if all(hasattr(b, "toolUseId") for b in content):
+                for block in content:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": block.toolUseId,
+                        "content": _extract_tool_result_text(block),
+                    })
+            # Any block has tool_use -> assistant message with tool_calls
+            elif any(
+                hasattr(b, "name") and hasattr(b, "input") for b in content
+            ):
+                tool_calls = []
+                text_parts = []
+                for block in content:
+                    if hasattr(block, "name") and hasattr(block, "input"):
+                        tool_calls.append({
+                            "id": getattr(block, "id", f"call_{len(tool_calls)}"),
+                            "type": "function",
+                            "function": {
+                                "name": block.name,
+                                "arguments": (
+                                    json.dumps(block.input)
+                                    if isinstance(block.input, dict)
+                                    else str(block.input)
+                                ),
+                            },
+                        })
+                    elif hasattr(block, "text"):
+                        text_parts.append(block.text)
+                msg_dict: dict = {"role": msg.role}
+                if text_parts:
+                    msg_dict["content"] = "\n".join(text_parts)
+                if tool_calls:
+                    msg_dict["tool_calls"] = tool_calls
+                messages.append(msg_dict)
+            # Mixed list: some blocks are tool_result, others are text/image
+            elif any(hasattr(b, "toolUseId") for b in content):
+                for block in content:
+                    if hasattr(block, "toolUseId"):
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": block.toolUseId,
+                            "content": _extract_tool_result_text(block),
+                        })
+                    elif hasattr(block, "text"):
+                        messages.append({"role": msg.role, "content": block.text})
+                    else:
+                        block_type = type(block).__name__
+                        logger.warning(
+                            "Unsupported block in mixed tool_result list: %s (skipped)",
+                            block_type,
+                        )
+            else:
+                # Text + image + unknown handling
+                parts = []
+                for block in content:
+                    if hasattr(block, "text"):
+                        parts.append({"type": "text", "text": block.text})
+                    elif hasattr(block, "data") and hasattr(block, "mimeType"):
+                        parts.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{block.mimeType};base64,{block.data}",
+                            },
+                        })
+                    else:
+                        block_type = type(block).__name__
+                        logger.warning(
+                            "Unsupported sampling content block type: %s (skipped)",
+                            block_type,
+                        )
+                messages.append({"role": msg.role, "content": parts if parts else ""})
+        else:
+            messages.append({"role": msg.role, "content": str(content)})
+    return messages
+
+
+def _map_stop_reason(finish_reason: str) -> str:
+    """Map OpenAI finish_reason to MCP stopReason."""
+    mapping = {"stop": "endTurn", "length": "maxTokens", "tool_calls": "toolUse"}
+    return mapping.get(finish_reason, "endTurn")
+
+
+def _make_sampling_callback(server_name: str, sampling_config: dict):
+    """Return an async sampling callback for MCP server-initiated LLM requests.
+
+    The callback is invoked by the MCP SDK when a server sends a
+    ``sampling/createMessage`` request. It forwards the request to the
+    agent's auxiliary LLM client and returns the response.
+
+    Requires ``_MCP_SAMPLING_TYPES`` to be True (i.e. the MCP SDK sampling
+    types must be importable). Returns ``None`` otherwise to prevent
+    NameError on the success path where ``CreateMessageResult``/``TextContent``
+    are needed.
+
+    Key design choices:
+      - LLM call is offloaded to a thread via ``asyncio.to_thread()`` to
+        prevent blocking the MCP background event loop.
+      - Errors return ``ErrorData`` (per MCP spec) instead of raising
+        exceptions, giving the server a structured error it can handle.
+      - Per-server rate limit, LLM timeout, model whitelist, tool loop
+        limit, and audit log level are configurable.
+    """
+    if not _MCP_SAMPLING_TYPES:
+        return None
+
+    max_rpm = _safe_numeric(
+        sampling_config.get("max_rpm", _DEFAULT_SAMPLING_RATE_LIMIT),
+        _DEFAULT_SAMPLING_RATE_LIMIT, int,
+    )
+    llm_timeout = _safe_numeric(
+        sampling_config.get("timeout", _DEFAULT_SAMPLING_TIMEOUT),
+        _DEFAULT_SAMPLING_TIMEOUT, float,
+    )
+    max_tokens_cap = _safe_numeric(
+        sampling_config.get("max_tokens_cap", _DEFAULT_SAMPLING_MAX_TOKENS_CAP),
+        _DEFAULT_SAMPLING_MAX_TOKENS_CAP, int,
+    )
+    allowed_models = sampling_config.get("allowed_models", [])
+    max_tool_rounds = _safe_numeric(
+        sampling_config.get("max_tool_rounds", 5), 5, int, minimum=0,
+    )
+
+    _log_levels = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+    }
+    audit_level = _log_levels.get(
+        str(sampling_config.get("log_level", "info")).lower(), logging.INFO,
+    )
+
+    async def _sampling_callback(context, params):
+        # Rate limit check
+        if not _check_rate_limit(server_name, max_rpm):
+            logger.warning(
+                "MCP server '%s' sampling rate limit exceeded (%d/min)",
+                server_name, max_rpm,
+            )
+            metrics = _sampling_metrics.setdefault(server_name, {
+                "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+            })
+            metrics["errors"] += 1
+            return _sampling_error(
+                f"Sampling rate limit exceeded for server '{server_name}' "
+                f"({max_rpm} requests/minute)"
+            )
+
+        max_tokens = min(params.maxTokens, max_tokens_cap)
+
+        model = _resolve_model(
+            getattr(params, "modelPreferences", None), sampling_config,
+        )
+
+        # Allowed models check
+        resolved_model_name = model  # will be resolved below with default
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, default_model = get_text_auxiliary_client()
+        if client is None:
+            msg = "No LLM provider available for sampling"
+            logger.error("MCP server '%s': %s", server_name, msg)
+            metrics = _sampling_metrics.setdefault(server_name, {
+                "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+            })
+            metrics["errors"] += 1
+            return _sampling_error(msg)
+
+        resolved_model_name = model or default_model
+        if allowed_models and resolved_model_name not in allowed_models:
+            logger.warning(
+                "MCP server '%s' requested model '%s' not in allowed_models",
+                server_name, resolved_model_name,
+            )
+            metrics = _sampling_metrics.setdefault(server_name, {
+                "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+            })
+            metrics["errors"] += 1
+            return _sampling_error(
+                f"Model '{resolved_model_name}' not allowed for server "
+                f"'{server_name}'. Allowed: {', '.join(allowed_models)}"
+            )
+
+        messages = _convert_sampling_messages(params)
+
+        if hasattr(params, "systemPrompt") and params.systemPrompt:
+            messages.insert(0, {"role": "system", "content": params.systemPrompt})
+
+        call_kwargs = {
+            "model": resolved_model_name,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+
+        if hasattr(params, "temperature") and params.temperature is not None:
+            call_kwargs["temperature"] = params.temperature
+
+        stop_sequences = getattr(params, "stopSequences", None)
+        if stop_sequences:
+            call_kwargs["stop"] = stop_sequences
+
+        # Forward tools/toolChoice from the server if present
+        server_tools = getattr(params, "tools", None)
+        if server_tools:
+            call_kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": getattr(t, "name", ""),
+                        "description": getattr(t, "description", "") or "",
+                        "parameters": getattr(t, "inputSchema", {}) or {},
+                    },
+                }
+                for t in server_tools
+            ]
+            tool_choice = getattr(params, "toolChoice", None)
+            if tool_choice:
+                mode = getattr(tool_choice, "mode", "auto")
+                call_kwargs["tool_choice"] = {
+                    "auto": "auto", "required": "required", "none": "none",
+                }.get(mode, "auto")
+
+        logger.log(
+            audit_level,
+            "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
+            server_name, call_kwargs["model"], max_tokens, len(messages),
+        )
+
+        # Offload sync LLM call to a thread so we don't block the MCP
+        # event loop (which also serves tool calls and other servers).
+        def _sync_llm_call():
+            return client.chat.completions.create(**call_kwargs)
+
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(_sync_llm_call),
+                timeout=llm_timeout,
+            )
+        except asyncio.TimeoutError:
+            msg = (
+                f"Sampling LLM call timed out after {llm_timeout}s "
+                f"for server '{server_name}'"
+            )
+            logger.error("MCP server '%s': %s", server_name, msg)
+            metrics = _sampling_metrics.setdefault(server_name, {
+                "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+            })
+            metrics["errors"] += 1
+            return _sampling_error(msg)
+        except Exception as exc:
+            msg = f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
+            logger.error(
+                "MCP server '%s' sampling LLM call failed: %s",
+                server_name, exc,
+            )
+            metrics = _sampling_metrics.setdefault(server_name, {
+                "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+            })
+            metrics["errors"] += 1
+            return _sampling_error(msg)
+
+        choice = response.choices[0]
+
+        # Update audit metrics
+        metrics = _sampling_metrics.setdefault(server_name, {
+            "requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0,
+        })
+        metrics["requests"] += 1
+        total_tokens = getattr(
+            getattr(response, "usage", None), "total_tokens", 0,
+        )
+        if isinstance(total_tokens, int):
+            metrics["tokens_used"] += total_tokens
+
+        # Tool use response
+        if (
+            choice.finish_reason == "tool_calls"
+            and hasattr(choice.message, "tool_calls")
+            and choice.message.tool_calls
+        ):
+            metrics["tool_use_count"] += 1
+
+            # Tool loop limit enforcement
+            if max_tool_rounds == 0:
+                _tool_loop_counters.pop(server_name, None)
+                return _sampling_error(
+                    f"Tool loops disabled for server '{server_name}' "
+                    f"(max_tool_rounds=0)"
+                )
+
+            if max_tool_rounds > 0:
+                loop_count = _tool_loop_counters.get(server_name, 0) + 1
+                _tool_loop_counters[server_name] = loop_count
+                if loop_count > max_tool_rounds:
+                    _tool_loop_counters.pop(server_name, None)
+                    return _sampling_error(
+                        f"Tool loop limit exceeded for server '{server_name}' "
+                        f"(max {max_tool_rounds} rounds)"
+                    )
+
+            content_blocks = []
+            for tc in choice.message.tool_calls:
+                args = tc.function.arguments
+                if isinstance(args, str):
+                    try:
+                        parsed_args = json.loads(args)
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(
+                            "MCP server '%s': malformed tool_calls arguments "
+                            "from LLM (using raw string): %.100s",
+                            server_name, args,
+                        )
+                        parsed_args = args
+                else:
+                    parsed_args = args
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": parsed_args,
+                })
+
+            logger.log(
+                audit_level,
+                "MCP server '%s' sampling response: model=%s, tokens=%s, tool_calls=%d",
+                server_name, response.model,
+                getattr(getattr(response, "usage", None), "total_tokens", "?"),
+                len(content_blocks),
+            )
+
+            return CreateMessageResult(
+                role="assistant",
+                content=content_blocks,
+                model=response.model,
+                stopReason="toolUse",
+            )
+
+        # Normal text response -- reset tool loop counter
+        _tool_loop_counters.pop(server_name, None)
+
+        response_text = choice.message.content or ""
+
+        logger.log(
+            audit_level,
+            "MCP server '%s' sampling response: model=%s, tokens=%s",
+            server_name, response.model,
+            getattr(getattr(response, "usage", None), "total_tokens", "?"),
+        )
+
+        return CreateMessageResult(
+            role="assistant",
+            content=TextContent(type="text", text=_sanitize_error(response_text)),
+            model=response.model,
+            stopReason=_map_stop_reason(choice.finish_reason),
+        )
+
+    return _sampling_callback
+
+
+# ---------------------------------------------------------------------------
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
@@ -162,6 +625,7 @@ class MCPServerTask:
     __slots__ = (
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
+        "_sampling_callback",
     )
 
     def __init__(self, name: str):
@@ -174,10 +638,18 @@ class MCPServerTask:
         self._tools: list = []
         self._error: Optional[Exception] = None
         self._config: dict = {}
+        self._sampling_callback = None
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
+
+    def _build_session_kwargs(self) -> dict:
+        """Build keyword arguments for ClientSession."""
+        kwargs = {}
+        if self._sampling_callback is not None:
+            kwargs["sampling_callback"] = self._sampling_callback
+        return kwargs
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
@@ -198,7 +670,9 @@ class MCPServerTask:
         )
 
         async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
+            async with ClientSession(
+                read_stream, write_stream, **self._build_session_kwargs(),
+            ) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
@@ -223,7 +697,9 @@ class MCPServerTask:
             headers=headers,
             timeout=float(connect_timeout),
         ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(read_stream, write_stream) as session:
+            async with ClientSession(
+                read_stream, write_stream, **self._build_session_kwargs(),
+            ) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
@@ -249,6 +725,15 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+
+        # Set up sampling callback if enabled and SDK types are available
+        sampling_config = config.get("sampling", {})
+        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
+            self._sampling_callback = _make_sampling_callback(
+                self.name, sampling_config,
+            )
+        else:
+            self._sampling_callback = None
 
         # Validate: warn if both url and command are present
         if "url" in config and "command" in config:
@@ -974,20 +1459,27 @@ def get_mcp_status() -> List[dict]:
     for name, cfg in configured.items():
         transport = "http" if "url" in cfg else "stdio"
         server = active_servers.get(name)
+        metrics = _sampling_metrics.get(name)
         if server and server.session is not None:
-            result.append({
+            entry = {
                 "name": name,
                 "transport": transport,
                 "tools": len(server._tools),
                 "connected": True,
-            })
+            }
+            if metrics:
+                entry["sampling"] = dict(metrics)
+            result.append(entry)
         else:
-            result.append({
+            entry = {
                 "name": name,
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
-            })
+            }
+            if metrics:
+                entry["sampling"] = dict(metrics)
+            result.append(entry)
 
     return result
 

@@ -321,6 +321,78 @@ mcp_servers:
 
 All tools from all servers are registered and available simultaneously. Each server's tools are prefixed with its name to avoid collisions.
 
+## Sampling Support (Server-Initiated LLM Requests)
+
+Hermes Agent supports MCP's `sampling/createMessage` capability, allowing MCP servers to request LLM completions through the agent. This enables agent-in-the-loop scenarios where a server can ask the LLM for help during tool execution (e.g., data analysis, content generation, decision-making).
+
+### How It Works
+
+When an MCP server sends a `sampling/createMessage` request:
+
+1. The sampling callback intercepts the request
+2. Converts MCP message format to OpenAI-compatible format
+3. Forwards to the agent's auxiliary LLM client
+4. Returns the LLM response back to the MCP server
+
+### Configuration
+
+Sampling is **enabled by default** for all MCP servers. You can customize behavior per server:
+
+```yaml
+mcp_servers:
+  my_server:
+    command: "npx"
+    args: ["-y", "my-mcp-server"]
+    sampling:
+      enabled: true           # default: true
+      model: "gemini-3-flash" # model override (optional)
+      max_tokens_cap: 4096    # max tokens per request (default: 4096)
+      timeout: 30             # LLM call timeout in seconds (default: 30)
+      max_rpm: 10             # max requests per minute (default: 10)
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable/disable sampling for this server |
+| `model` | (auto) | Override model selection (uses auxiliary client default if not set) |
+| `max_tokens_cap` | `4096` | Maximum tokens the server can request per sampling call |
+| `timeout` | `30` | Timeout in seconds for each LLM call |
+| `max_rpm` | `10` | Maximum sampling requests per minute per server |
+| `allowed_models` | `[]` | Model whitelist (empty = allow all) |
+| `max_tool_rounds` | `5` | Max consecutive tool use rounds (0 = disable tool loops) |
+| `log_level` | `"info"` | Audit log verbosity: `"debug"`, `"info"`, or `"warning"` |
+
+### Tool Use in Sampling
+
+Servers can include `tools` and `toolChoice` in sampling requests for multi-turn tool-augmented workflows. The callback converts these to OpenAI function-calling format, handles tool use responses with `stopReason: "toolUse"`, and enforces a configurable `max_tool_rounds` limit (default: 5) to prevent infinite tool loops. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked and exposed via `get_mcp_status()`.
+
+### Security
+
+- **Non-blocking execution**: LLM calls are offloaded to a separate thread via `asyncio.to_thread()` so they don't block the MCP event loop or other server operations
+- **Rate limiting**: Each server is limited to `max_rpm` sampling requests per minute (default: 10)
+- **LLM timeout**: Each LLM call has a configurable timeout (default: 30s) to prevent runaway requests
+- **Token cap**: Servers cannot request more tokens than `max_tokens_cap` (default: 4096)
+- **Model whitelist**: `allowed_models` restricts which models a server can use (empty = allow all)
+- **Tool loop limit**: `max_tool_rounds` caps consecutive tool use rounds (default: 5, 0 = disable)
+- **Credential stripping**: LLM responses are sanitized to remove credential-like patterns before returning to the server
+- **Typed errors**: Errors return structured `ErrorData` objects (per MCP spec) instead of raw exceptions
+- **Audit logging**: Configurable `log_level` controls sampling audit verbosity
+
+> **Note on human-in-the-loop**: The MCP spec recommends clients provide human review of sampling requests. Currently, Hermes Agent auto-approves sampling within the configured safety limits (rate limit, token cap, timeout). For untrusted servers, disable sampling entirely via `sampling.enabled: false`.
+
+### Disabling Sampling
+
+To disable sampling for a specific server:
+
+```yaml
+mcp_servers:
+  untrusted_server:
+    command: "npx"
+    args: ["-y", "untrusted-server"]
+    sampling:
+      enabled: false
+```
+
 ## Notes
 
 - MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop

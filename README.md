@@ -220,26 +220,36 @@ See [OpenRouter provider routing docs](https://openrouter.ai/docs/guides/routing
 
 Chat with Hermes from Telegram, Discord, Slack, or WhatsApp. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
-### Starting the Gateway
+### Setting Up Messaging Platforms
+
+The easiest way to configure messaging platforms is the interactive setup wizard:
+
+```bash
+hermes gateway setup        # Interactive setup for all messaging platforms
+```
+
+This walks you through configuring each platform with arrow-key selection, shows which platforms are already configured, and offers to start/restart the gateway service when you're done.
+
+You can also configure platforms manually by editing `~/.hermes/.env` directly (see platform-specific details below).
+
+### Gateway Commands
 
 ```bash
 hermes gateway              # Run in foreground
-hermes gateway install      # Install as systemd service (Linux)
-hermes gateway start        # Start the systemd service
-hermes gateway stop         # Stop the systemd service
+hermes gateway setup        # Configure messaging platforms interactively
+hermes gateway install      # Install as systemd service (Linux) / launchd (macOS)
+hermes gateway start        # Start the service
+hermes gateway stop         # Stop the service
 hermes gateway status       # Check service status
 ```
-
-The installer will offer to set this up automatically if it detects a bot token.
 
 ### Telegram Setup
 
 1. **Create a bot:** Message [@BotFather](https://t.me/BotFather) on Telegram, use `/newbot`
 2. **Get your user ID:** Message [@userinfobot](https://t.me/userinfobot) — it replies with your numeric ID
-3. **Configure:**
+3. **Configure:** Run `hermes gateway setup` and select Telegram, or add to `~/.hermes/.env` manually:
 
 ```bash
-# Add to ~/.hermes/.env:
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
 ```
@@ -252,10 +262,9 @@ TELEGRAM_ALLOWED_USERS=YOUR_USER_ID    # Comma-separated for multiple users
 2. **Enable intents:** Bot → Privileged Gateway Intents → enable Message Content Intent
 3. **Get your user ID:** Enable Developer Mode in Discord settings, right-click your name → Copy ID
 4. **Invite to your server:** OAuth2 → URL Generator → scopes: `bot`, `applications.commands` → permissions: Send Messages, Read Message History, Attach Files
-5. **Configure:**
+5. **Configure:** Run `hermes gateway setup` and select Discord, or add to `~/.hermes/.env` manually:
 
 ```bash
-# Add to ~/.hermes/.env:
 DISCORD_BOT_TOKEN=MTIz...
 DISCORD_ALLOWED_USERS=YOUR_USER_ID
 ```
@@ -267,10 +276,9 @@ DISCORD_ALLOWED_USERS=YOUR_USER_ID
 3. **Get tokens:**
    - Bot Token (`xoxb-...`): OAuth & Permissions → Install to Workspace
    - App Token (`xapp-...`): Basic Information → App-Level Tokens → Generate
-4. **Configure:**
+4. **Configure:** Run `hermes gateway setup` and select Slack, or add to `~/.hermes/.env` manually:
 
 ```bash
-# Add to ~/.hermes/.env:
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
@@ -423,6 +431,7 @@ hermes uninstall          # Uninstall (can keep configs for later reinstall)
 
 # Gateway (messaging + cron scheduler)
 hermes gateway            # Run gateway in foreground
+hermes gateway setup      # Configure messaging platforms interactively
 hermes gateway install    # Install as system service (messaging + cron)
 hermes gateway status     # Check service status
 hermes whatsapp           # Pair WhatsApp via QR code

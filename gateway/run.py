@@ -637,11 +637,12 @@ class GatewayRunner:
         # PRIORITY: If an agent is already running for this session, interrupt it
         # immediately. This is before command parsing to minimize latency -- the
         # user's "stop" message reaches the agent as fast as possible.
-        _quick_key = (
-            f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
-            if source.chat_type != "dm"
-            else f"agent:main:{source.platform.value}:dm"
-        )
+        if source.chat_type != "dm":
+            _quick_key = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform.value == "whatsapp" and source.chat_id:
+            _quick_key = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            _quick_key = f"agent:main:{source.platform.value}:dm"
         if _quick_key in self._running_agents:
             running_agent = self._running_agents[_quick_key]
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
@@ -1361,8 +1362,12 @@ class GatewayRunner:
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
         source = event.source
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        if source.chat_type != "dm":
+            session_key = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
+        elif source.platform.value == "whatsapp" and source.chat_id:
+            session_key = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        else:
+            session_key = f"agent:main:{source.platform.value}:dm"
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:

@@ -78,9 +78,15 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     # Try to use interactive menu if available
     try:
         from simple_term_menu import TerminalMenu
+        import re
         
-        # Add visual indicators
-        menu_choices = [f"  {choice}" for choice in choices]
+        # Strip emoji characters — simple_term_menu miscalculates visual
+        # width of emojis, causing duplicated/garbled lines on redraw.
+        _emoji_re = re.compile(
+            "[\U0001f300-\U0001f9ff\U00002600-\U000027bf\U0000fe00-\U0000fe0f"
+            "\U0001fa00-\U0001fa6f\U0001fa70-\U0001faff\u200d]+", flags=re.UNICODE
+        )
+        menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
         
         terminal_menu = TerminalMenu(
             menu_choices,

@@ -1,29 +1,25 @@
-"""Tests for the skill_view path boundary check on all platforms.
+"""Tests for the skill_view path boundary check.
 
 Regression test: the original check used a hardcoded "/" separator which
 fails on Windows where Path.resolve() returns backslash-separated paths.
-The fix uses os.sep so the check works on both Unix and Windows.
+Now uses Path.is_relative_to() which handles all platforms correctly.
 """
 
-import json
 import os
 import pytest
 from pathlib import Path
 
 
 def _path_escapes_skill_dir(resolved: Path, skill_dir_resolved: Path) -> bool:
-    """Reproduce the boundary check from tools/skills_tool.py (line 461).
+    """Reproduce the boundary check from tools/skills_tool.py.
 
     Returns True when the resolved path is OUTSIDE the skill directory.
     """
-    return (
-        not str(resolved).startswith(str(skill_dir_resolved) + os.sep)
-        and resolved != skill_dir_resolved
-    )
+    return not resolved.is_relative_to(skill_dir_resolved)
 
 
 class TestSkillViewPathBoundaryCheck:
-    """Verify the os.sep fix prevents false positives on Windows."""
+    """Verify the path boundary check works on all platforms."""
 
     def test_valid_subpath_allowed(self, tmp_path):
         """A file inside the skill directory must NOT be flagged."""
@@ -82,7 +78,7 @@ class TestSkillViewPathBoundaryCheck:
         assert _path_escapes_skill_dir(resolved, skill_dir_resolved) is True
 
     def test_skill_dir_itself_allowed(self, tmp_path):
-        """Requesting the skill directory itself must be allowed (== check)."""
+        """Requesting the skill directory itself must be allowed."""
         skill_dir = tmp_path / "skills" / "axolotl"
         skill_dir.mkdir(parents=True)
 
@@ -90,12 +86,6 @@ class TestSkillViewPathBoundaryCheck:
         skill_dir_resolved = skill_dir.resolve()
 
         assert _path_escapes_skill_dir(resolved, skill_dir_resolved) is False
-
-    def test_separator_is_os_native(self):
-        """Confirm the check uses the platform's native separator."""
-        # On Windows os.sep is '\\', on Unix '/'.
-        # The old bug hardcoded '/' which broke on Windows.
-        assert os.sep in ("\\", "/")
 
 
 class TestOldCheckWouldFail:

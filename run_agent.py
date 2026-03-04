@@ -3286,13 +3286,49 @@ class AIAgent:
                                 "partial": True
                             }
 
+                    # Check for context-length errors BEFORE generic 4xx handler.
+                    # Local backends (LM Studio, Ollama, llama.cpp) often return
+                    # HTTP 400 with messages like "Context size has been exceeded"
+                    # which must trigger compression, not an immediate abort.
+                    is_context_length_error = any(phrase in error_msg for phrase in [
+                        'context length', 'context size', 'maximum context',
+                        'token limit', 'too many tokens', 'reduce the length',
+                        'exceeds the limit', 'context window',
+                        'request entity too large',  # OpenRouter/Nous 413 safety net
+                    ])
+                    
+                    if is_context_length_error:
+                        print(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
+
+                        original_len = len(messages)
+                        messages, active_system_prompt = self._compress_context(
+                            messages, system_message, approx_tokens=approx_tokens
+                        )
+
+                        if len(messages) < original_len:
+                            print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            continue  # Retry with compressed messages
+                        else:
+                            # Can't compress further
+                            print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
+                            print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
+                            logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                                "partial": True
+                            }
+
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    # Note: 413 is excluded — it's handled above via compression.
+                    # Note: 413 and context-length errors are excluded — handled above.
                     is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
-                    is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
-                        'error code: 400', 'error code: 401', 'error code: 403',
+                    is_client_error = (is_client_status_error and not is_context_length_error) or any(phrase in error_msg for phrase in [
+                        'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
                         'is not a valid model', 'invalid model', 'model not found',
                         'invalid api key', 'invalid_api_key', 'authentication',
@@ -3315,39 +3351,7 @@ class AIAgent:
                             "failed": True,
                             "error": str(api_error),
                         }
-                    
-                    # Check for non-retryable errors (context length exceeded)
-                    is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'maximum context', 'token limit',
-                        'too many tokens', 'reduce the length', 'exceeds the limit',
-                        'request entity too large',  # OpenRouter/Nous 413 safety net
-                    ])
-                    
-                    if is_context_length_error:
-                        print(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
-                        
-                        original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message, approx_tokens=approx_tokens
-                        )
-                        
-                        if len(messages) < original_len:
-                            print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
-                            continue  # Retry with compressed messages
-                        else:
-                            # Can't compress further
-                            print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
-                            print(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
-                            logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "messages": messages,
-                                "completed": False,
-                                "api_calls": api_call_count,
-                                "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
-                                "partial": True
-                            }
-                    
+
                     if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")

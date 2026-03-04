@@ -119,3 +119,57 @@ class TestToolsetAvailability:
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
+
+
+class TestCheckFnExceptionHandling:
+    """Verify that a raising check_fn is caught rather than crashing."""
+
+    def test_is_toolset_available_catches_exception(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t",
+            toolset="broken",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: 1 / 0,  # ZeroDivisionError
+        )
+        # Should return False, not raise
+        assert reg.is_toolset_available("broken") is False
+
+    def test_check_toolset_requirements_survives_raising_check(self):
+        reg = ToolRegistry()
+        reg.register(name="a", toolset="good", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: True)
+        reg.register(name="b", toolset="bad", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: (_ for _ in ()).throw(ImportError("no module")))
+
+        reqs = reg.check_toolset_requirements()
+        assert reqs["good"] is True
+        assert reqs["bad"] is False
+
+    def test_get_definitions_skips_raising_check(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="ok_tool",
+            toolset="s",
+            schema=_make_schema("ok_tool"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="bad_tool",
+            toolset="s2",
+            schema=_make_schema("bad_tool"),
+            handler=_dummy_handler,
+            check_fn=lambda: (_ for _ in ()).throw(OSError("network down")),
+        )
+        defs = reg.get_definitions({"ok_tool", "bad_tool"})
+        assert len(defs) == 1
+        assert defs[0]["function"]["name"] == "ok_tool"
+
+    def test_check_tool_availability_survives_raising_check(self):
+        reg = ToolRegistry()
+        reg.register(name="a", toolset="works", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: True)
+        reg.register(name="b", toolset="crashes", schema=_make_schema(), handler=_dummy_handler, check_fn=lambda: 1 / 0)
+
+        available, unavailable = reg.check_tool_availability()
+        assert "works" in available
+        assert any(u["name"] == "crashes" for u in unavailable)

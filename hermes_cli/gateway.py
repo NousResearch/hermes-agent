@@ -457,19 +457,23 @@ _PLATFORMS = [
 
 
 def _platform_status(platform: dict) -> str:
-    """Return a short status string for a platform."""
+    """Return a plain-text status string for a platform.
+
+    Returns uncolored text so it can safely be embedded in
+    simple_term_menu items (ANSI codes break width calculation).
+    """
     token_var = platform["token_var"]
     val = get_env_value(token_var)
     if token_var == "WHATSAPP_ENABLED":
         if val and val.lower() == "true":
             session_file = Path.home() / ".hermes" / "whatsapp" / "session" / "creds.json"
             if session_file.exists():
-                return color("configured + paired", Colors.GREEN)
-            return color("enabled, not paired", Colors.YELLOW)
-        return color("not configured", Colors.DIM)
+                return "configured + paired"
+            return "enabled, not paired"
+        return "not configured"
     if val:
-        return color("configured", Colors.GREEN)
-    return color("not configured", Colors.DIM)
+        return "configured"
+    return "not configured"
 
 
 def _setup_standard_platform(platform: dict):
@@ -596,8 +600,8 @@ def gateway_setup():
         menu_items = []
         for plat in _PLATFORMS:
             status = _platform_status(plat)
-            menu_items.append(f"{plat['emoji']} {plat['label']}  ({status})")
-        menu_items.append("✓ Done")
+            menu_items.append(f"{plat['label']}  ({status})")
+        menu_items.append("Done")
 
         choice = prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
 

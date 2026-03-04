@@ -2862,6 +2862,51 @@ class AIAgent:
 
         active_system_prompt = self._cached_system_prompt
 
+        # ── Preflight context compression ──
+        # Before entering the main loop, check if the loaded conversation
+        # history already exceeds the model's context threshold.  This handles
+        # cases where a user switches to a model with a smaller context window
+        # while having a large existing session — compress proactively rather
+        # than waiting for an API error (which might be caught as a non-retryable
+        # 4xx and abort the request entirely).
+        if (
+            self.compression_enabled
+            and len(messages) > self.context_compressor.protect_first_n
+                                + self.context_compressor.protect_last_n + 1
+        ):
+            _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
+            _msg_tok_est = estimate_messages_tokens_rough(messages)
+            _preflight_tokens = _sys_tok_est + _msg_tok_est
+
+            if _preflight_tokens >= self.context_compressor.threshold_tokens:
+                logger.info(
+                    "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                    f"{_preflight_tokens:,}",
+                    f"{self.context_compressor.threshold_tokens:,}",
+                    self.model,
+                    f"{self.context_compressor.context_length:,}",
+                )
+                if not self.quiet_mode:
+                    print(
+                        f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
+                        f">= {self.context_compressor.threshold_tokens:,} threshold"
+                    )
+                # May need multiple passes for very large sessions with small
+                # context windows (each pass summarises the middle N turns).
+                for _pass in range(3):
+                    _orig_len = len(messages)
+                    messages, active_system_prompt = self._compress_context(
+                        messages, system_message, approx_tokens=_preflight_tokens
+                    )
+                    if len(messages) >= _orig_len:
+                        break  # Cannot compress further
+                    # Re-estimate after compression
+                    _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
+                    _msg_tok_est = estimate_messages_tokens_rough(messages)
+                    _preflight_tokens = _sys_tok_est + _msg_tok_est
+                    if _preflight_tokens < self.context_compressor.threshold_tokens:
+                        break  # Under threshold
+
         # Main conversation loop
         api_call_count = 0
         final_response = None
@@ -3287,37 +3332,10 @@ class AIAgent:
                                 "partial": True
                             }
 
-                    # Check for non-retryable client errors (4xx HTTP status codes).
-                    # These indicate a problem with the request itself (bad model ID,
-                    # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    # Note: 413 is excluded — it's handled above via compression.
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
-                    is_client_error = is_client_status_error or any(phrase in error_msg for phrase in [
-                        'error code: 400', 'error code: 401', 'error code: 403',
-                        'error code: 404', 'error code: 422',
-                        'is not a valid model', 'invalid model', 'model not found',
-                        'invalid api key', 'invalid_api_key', 'authentication',
-                        'unauthorized', 'forbidden', 'not found',
-                    ])
-
-                    if is_client_error:
-                        self._dump_api_request_debug(
-                            api_kwargs, reason="non_retryable_client_error", error=api_error,
-                        )
-                        print(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.")
-                        print(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.")
-                        logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
-                        self._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": None,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": str(api_error),
-                        }
-                    
-                    # Check for non-retryable errors (context length exceeded)
+                    # Check for context-length errors BEFORE generic 4xx handler.
+                    # OpenRouter returns 400 (not 413) for "maximum context length"
+                    # errors — if we let the generic 4xx handler catch those first,
+                    # it aborts immediately instead of attempting compression+retry.
                     is_context_length_error = any(phrase in error_msg for phrase in [
                         'context length', 'maximum context', 'token limit',
                         'too many tokens', 'reduce the length', 'exceeds the limit',
@@ -3348,6 +3366,37 @@ class AIAgent:
                                 "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
                                 "partial": True
                             }
+
+                    # Check for non-retryable client errors (4xx HTTP status codes).
+                    # These indicate a problem with the request itself (bad model ID,
+                    # invalid API key, forbidden, etc.) and will never succeed on retry.
+                    # Note: 413 and context-length errors are excluded — handled above
+                    # via compression.
+                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code != 413
+                    is_client_error = (is_client_status_error or any(phrase in error_msg for phrase in [
+                        'error code: 400', 'error code: 401', 'error code: 403',
+                        'error code: 404', 'error code: 422',
+                        'is not a valid model', 'invalid model', 'model not found',
+                        'invalid api key', 'invalid_api_key', 'authentication',
+                        'unauthorized', 'forbidden', 'not found',
+                    ])) and not is_context_length_error
+
+                    if is_client_error:
+                        self._dump_api_request_debug(
+                            api_kwargs, reason="non_retryable_client_error", error=api_error,
+                        )
+                        print(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.")
+                        print(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.")
+                        logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": str(api_error),
+                        }
                     
                     if retry_count >= max_retries:
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")

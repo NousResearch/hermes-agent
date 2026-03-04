@@ -458,7 +458,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             try:
                 resolved = target_file.resolve()
                 skill_dir_resolved = skill_dir.resolve()
-                if not str(resolved).startswith(str(skill_dir_resolved) + "/") and resolved != skill_dir_resolved:
+                if not str(resolved).startswith(str(skill_dir_resolved) + os.sep) and resolved != skill_dir_resolved:
                     return json.dumps({
                         "success": False,
                         "error": "Path escapes skill directory boundary.",

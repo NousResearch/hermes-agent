@@ -413,7 +413,8 @@ _PLATFORMS = [
         "vars": [
             {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
              "help": "Create a bot via @BotFather on Telegram to get a token."},
-            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty for open access)", "password": False,
+            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
              "help": "To find your user ID: message @userinfobot on Telegram."},
             {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
@@ -427,7 +428,8 @@ _PLATFORMS = [
         "vars": [
             {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
              "help": "Create a bot at https://discord.com/developers/applications"},
-            {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated, or empty for open access)", "password": False,
+            {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated)", "password": False,
+             "is_allowlist": True,
              "help": "Enable Developer Mode in Discord settings, then right-click your name → Copy ID."},
             {"name": "DISCORD_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "Right-click a channel → Copy Channel ID (requires Developer Mode)."},
@@ -443,7 +445,8 @@ _PLATFORMS = [
              "help": "Go to https://api.slack.com/apps → Create New App → OAuth & Permissions → Install to Workspace."},
             {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
              "help": "App Settings → Basic Information → App-Level Tokens → Generate (with connections:write scope)."},
-            {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty for open access)", "password": False,
+            {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
              "help": "Find Slack user IDs in your profile or via the Slack API."},
         ],
     },
@@ -492,6 +495,8 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
+    allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
+
     for var in platform["vars"]:
         print()
         print_info(f"  {var['help']}")
@@ -499,10 +504,39 @@ def _setup_standard_platform(platform: dict):
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
 
+        # Allowlist fields get special handling for the deny-by-default security model
+        if var.get("is_allowlist"):
+            print_info(f"  The gateway DENIES all users by default for security.")
+            print_info(f"  Enter user IDs to create an allowlist, or leave empty")
+            print_info(f"  and you'll be asked about open access next.")
+            value = prompt(f"  {var['prompt']}", password=False)
+            if value:
+                cleaned = value.replace(" ", "")
+                save_env_value(var["name"], cleaned)
+                print_success(f"  Saved — only these users can interact with the bot.")
+                allowed_val_set = cleaned
+            else:
+                # No allowlist — ask about open access vs DM pairing
+                print()
+                access_choices = [
+                    "Enable open access (anyone can message the bot)",
+                    "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+                    "Skip for now (bot will deny all users until configured)",
+                ]
+                access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+                if access_idx == 0:
+                    save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+                    print_warning("  Open access enabled — anyone can use your bot!")
+                elif access_idx == 1:
+                    print_success("  DM pairing mode — users will receive a code to request access.")
+                    print_info("  Approve with: hermes pairing approve {platform} {code}")
+                else:
+                    print_info("  Skipped — configure later with 'hermes gateway setup'")
+            continue
+
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
         if value:
-            cleaned = value.replace(" ", "") if "user" in var["name"].lower() else value
-            save_env_value(var["name"], cleaned)
+            save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
         elif var["name"] == token_var:
             print_warning(f"  Skipped — {label} won't work without this.")
@@ -510,14 +544,12 @@ def _setup_standard_platform(platform: dict):
         else:
             print_info(f"  Skipped (can configure later)")
 
-    # If the first allowed-user value was set and home channel wasn't,
-    # offer to reuse it (common for Telegram DMs).
-    allowed_var = f"{label.upper()}_ALLOWED_USERS"
+    # If an allowlist was set and home channel wasn't, offer to reuse
+    # the first user ID (common for Telegram DMs).
     home_var = f"{label.upper()}_HOME_CHANNEL"
-    allowed_val = get_env_value(allowed_var)
     home_val = get_env_value(home_var)
-    if allowed_val and not home_val and label == "Telegram":
-        first_id = allowed_val.split(",")[0].strip()
+    if allowed_val_set and not home_val and label == "Telegram":
+        first_id = allowed_val_set.split(",")[0].strip()
         if first_id and prompt_yes_no(f"  Use your user ID ({first_id}) as the home channel?", True):
             save_env_value(home_var, first_id)
             print_success(f"  Home channel set to {first_id}")

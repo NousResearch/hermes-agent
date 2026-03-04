@@ -410,12 +410,18 @@ _PLATFORMS = [
         "label": "Telegram",
         "emoji": "📱",
         "token_var": "TELEGRAM_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Open Telegram and message @BotFather",
+            "2. Send /newbot and follow the prompts to create your bot",
+            "3. Copy the bot token BotFather gives you",
+            "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
+        ],
         "vars": [
             {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Create a bot via @BotFather on Telegram to get a token."},
+             "help": "Paste the token from @BotFather (step 3 above)."},
             {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
              "is_allowlist": True,
-             "help": "To find your user ID: message @userinfobot on Telegram."},
+             "help": "Paste your user ID from step 4 above."},
             {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
         ],
@@ -425,12 +431,25 @@ _PLATFORMS = [
         "label": "Discord",
         "emoji": "💬",
         "token_var": "DISCORD_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Go to https://discord.com/developers/applications → New Application",
+            "2. Go to Bot → Reset Token → copy the bot token",
+            "3. Enable: Bot → Privileged Gateway Intents → Message Content Intent",
+            "4. Invite the bot to your server:",
+            "   OAuth2 → URL Generator → check BOTH scopes:",
+            "     - bot",
+            "     - applications.commands  (required for slash commands!)",
+            "   Bot Permissions: Send Messages, Read Message History, Attach Files",
+            "   Copy the URL and open it in your browser to invite.",
+            "5. Get your user ID: enable Developer Mode in Discord settings,",
+            "   then right-click your name → Copy ID",
+        ],
         "vars": [
             {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Create a bot at https://discord.com/developers/applications"},
+             "help": "Paste the token from step 2 above."},
             {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated)", "password": False,
              "is_allowlist": True,
-             "help": "Enable Developer Mode in Discord settings, then right-click your name → Copy ID."},
+             "help": "Paste your user ID from step 5 above."},
             {"name": "DISCORD_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "Right-click a channel → Copy Channel ID (requires Developer Mode)."},
         ],
@@ -440,14 +459,25 @@ _PLATFORMS = [
         "label": "Slack",
         "emoji": "💼",
         "token_var": "SLACK_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Go to https://api.slack.com/apps → Create New App → From Scratch",
+            "2. Enable Socket Mode: App Settings → Socket Mode → Enable",
+            "3. Get Bot Token: OAuth & Permissions → Install to Workspace → copy xoxb-... token",
+            "4. Get App Token: Basic Information → App-Level Tokens → Generate",
+            "   Name it anything, add scope: connections:write → copy xapp-... token",
+            "5. Add bot scopes: OAuth & Permissions → Scopes → chat:write, im:history,",
+            "   im:read, im:write, channels:history, channels:read",
+            "6. Reinstall the app to your workspace after adding scopes",
+            "7. Find your user ID: click your profile → three dots → Copy member ID",
+        ],
         "vars": [
             {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
-             "help": "Go to https://api.slack.com/apps → Create New App → OAuth & Permissions → Install to Workspace."},
+             "help": "Paste the bot token from step 3 above."},
             {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
-             "help": "App Settings → Basic Information → App-Level Tokens → Generate (with connections:write scope)."},
+             "help": "Paste the app-level token from step 4 above."},
             {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
              "is_allowlist": True,
-             "help": "Find Slack user IDs in your profile or via the Slack API."},
+             "help": "Paste your member ID from step 7 above."},
         ],
     },
     {
@@ -487,6 +517,13 @@ def _setup_standard_platform(platform: dict):
 
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
+
+    # Show step-by-step setup instructions if this platform has them
+    instructions = platform.get("setup_instructions")
+    if instructions:
+        print()
+        for line in instructions:
+            print_info(f"  {line}")
 
     existing_token = get_env_value(token_var)
     if existing_token:

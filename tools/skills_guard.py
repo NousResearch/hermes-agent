@@ -172,7 +172,7 @@ THREAT_PATTERNS = [
     (r'pretend\s+(you\s+are|to\s+be)\s+',
      "role_pretend", "high", "injection",
      "attempts to make the agent assume a different identity"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)',
+    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection",
      "instructs agent to disregard its rules"),
     (r'output\s+the\s+(system|initial)\s+prompt',

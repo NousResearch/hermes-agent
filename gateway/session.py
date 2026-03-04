@@ -395,15 +395,23 @@ class SessionStore:
         return False
     
     def has_any_sessions(self) -> bool:
-        """Check if any sessions have ever been created (across all platforms)."""
+        """Check if any sessions have ever been created (across all platforms).
+
+        Uses the SQLite database as the source of truth because it preserves
+        historical session records (ended sessions still count).  The in-memory
+        ``_entries`` dict replaces entries on reset, so ``len(_entries)`` would
+        stay at 1 for single-platform users — which is the bug this fixes.
+
+        The current session is already in the DB by the time this is called
+        (get_or_create_session runs first), so we check ``> 1``.
+        """
         if self._db:
-            # Database tracks all sessions ever created (including ended ones).
-            # This correctly handles session resets where the in-memory _entries
-            # dict replaces the entry for the same session_key, but the DB
-            # preserves the historical record.
-            # > 1 because the current session is already created.
-            return self._db.session_count() > 1
-        # Fallback for when DB is not available (e.g., tests)
+            try:
+                return self._db.session_count() > 1
+            except Exception:
+                pass  # fall through to heuristic
+        # Fallback: check if sessions.json was loaded with existing data.
+        # This covers the rare case where the DB is unavailable.
         self._ensure_loaded()
         return len(self._entries) > 1
     

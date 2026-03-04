@@ -1405,7 +1405,7 @@ def run_setup_wizard(args):
             print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
             print_info("or personal self-chat) and pair via QR code.")
     
-    # Gateway reminder
+    # Gateway service setup
     any_messaging = (
         get_env_value('TELEGRAM_BOT_TOKEN')
         or get_env_value('DISCORD_BOT_TOKEN')
@@ -1416,10 +1416,7 @@ def run_setup_wizard(args):
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
-        print_info("Start the gateway after setup to bring your bots online:")
-        print_info("   hermes gateway              # Run in foreground")
-        print_info("   hermes gateway install      # Install as background service (Linux)")
-        
+
         # Check if any home channels are missing
         missing_home = []
         if get_env_value('TELEGRAM_BOT_TOKEN') and not get_env_value('TELEGRAM_HOME_CHANNEL'):
@@ -1428,16 +1425,76 @@ def run_setup_wizard(args):
             missing_home.append("Discord")
         if get_env_value('SLACK_BOT_TOKEN') and not get_env_value('SLACK_HOME_CHANNEL'):
             missing_home.append("Slack")
-        
+
         if missing_home:
             print()
-            print_info(f"⚠️  No home channel set for: {', '.join(missing_home)}")
+            print_warning(f"No home channel set for: {', '.join(missing_home)}")
             print_info("   Without a home channel, cron jobs and cross-platform")
             print_info("   messages can't be delivered to those platforms.")
             print_info("   Set one later with /set-home in your chat, or:")
             for plat in missing_home:
                 print_info(f"     hermes config set {plat.upper()}_HOME_CHANNEL <channel_id>")
-        
+
+        # Offer to install the gateway as a system service
+        import platform as _platform
+        _is_linux = _platform.system() == "Linux"
+        _is_macos = _platform.system() == "Darwin"
+
+        from hermes_cli.gateway import (
+            _is_service_installed, _is_service_running,
+            systemd_install, systemd_start, systemd_restart,
+            launchd_install, launchd_start, launchd_restart,
+        )
+
+        service_installed = _is_service_installed()
+        service_running = _is_service_running()
+
+        print()
+        if service_running:
+            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+                try:
+                    if _is_linux:
+                        systemd_restart()
+                    elif _is_macos:
+                        launchd_restart()
+                except Exception as e:
+                    print_error(f"  Restart failed: {e}")
+        elif service_installed:
+            if prompt_yes_no("  Start the gateway service?", True):
+                try:
+                    if _is_linux:
+                        systemd_start()
+                    elif _is_macos:
+                        launchd_start()
+                except Exception as e:
+                    print_error(f"  Start failed: {e}")
+        elif _is_linux or _is_macos:
+            svc_name = "systemd" if _is_linux else "launchd"
+            if prompt_yes_no(f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)", True):
+                try:
+                    if _is_linux:
+                        systemd_install(force=False)
+                    else:
+                        launchd_install(force=False)
+                    print()
+                    if prompt_yes_no("  Start the service now?", True):
+                        try:
+                            if _is_linux:
+                                systemd_start()
+                            elif _is_macos:
+                                launchd_start()
+                        except Exception as e:
+                            print_error(f"  Start failed: {e}")
+                except Exception as e:
+                    print_error(f"  Install failed: {e}")
+                    print_info("  You can try manually: hermes gateway install")
+            else:
+                print_info("  You can install later: hermes gateway install")
+                print_info("  Or run in foreground:  hermes gateway")
+        else:
+            print_info("Start the gateway to bring your bots online:")
+            print_info("   hermes gateway              # Run in foreground")
+
         print_info("━" * 50)
     
     # =========================================================================

@@ -389,6 +389,46 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
+def _prompt_container_resources(config: dict):
+    """Prompt for container resource settings (Docker, Singularity, Modal)."""
+    terminal = config.setdefault('terminal', {})
+
+    print()
+    print_info("Container Resource Settings:")
+
+    # Persistence
+    current_persist = terminal.get('container_persistent', True)
+    persist_label = "yes" if current_persist else "no"
+    print_info(f"  Persistent filesystem keeps files between sessions.")
+    print_info(f"  Set to 'no' for ephemeral sandboxes that reset each time.")
+    persist_str = prompt(f"  Persist filesystem across sessions? (yes/no)", persist_label)
+    terminal['container_persistent'] = persist_str.lower() in ('yes', 'true', 'y', '1')
+
+    # CPU
+    current_cpu = terminal.get('container_cpu', 1)
+    cpu_str = prompt(f"  CPU cores", str(current_cpu))
+    try:
+        terminal['container_cpu'] = float(cpu_str)
+    except ValueError:
+        pass
+
+    # Memory
+    current_mem = terminal.get('container_memory', 5120)
+    mem_str = prompt(f"  Memory in MB (5120 = 5GB)", str(current_mem))
+    try:
+        terminal['container_memory'] = int(mem_str)
+    except ValueError:
+        pass
+
+    # Disk
+    current_disk = terminal.get('container_disk', 51200)
+    disk_str = prompt(f"  Disk in MB (51200 = 50GB)", str(current_disk))
+    try:
+        terminal['container_disk'] = int(disk_str)
+    except ValueError:
+        pass
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard."""
     ensure_hermes_home()
@@ -985,6 +1025,10 @@ def run_setup_wizard(args):
             cwd_expanded = cwd_input
         save_env_value("MESSAGING_CWD", cwd_expanded)
         
+        print()
+        print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
+        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
             sudo_pass = prompt("  Sudo password (leave empty to skip)", password=True)
@@ -1004,6 +1048,7 @@ def run_setup_wizard(args):
             print_info("Requires Docker Desktop for Windows")
         docker_image = prompt("  Docker image", default_docker)
         config['terminal']['docker_image'] = docker_image
+        _prompt_container_resources(config)
         print_success("Terminal set to Docker")
     
     elif selected_backend == 'singularity':
@@ -1013,6 +1058,7 @@ def run_setup_wizard(args):
         print_info("Requires apptainer or singularity to be installed")
         singularity_image = prompt("  Image (docker:// prefix for Docker Hub)", default_singularity)
         config['terminal']['singularity_image'] = singularity_image
+        _prompt_container_resources(config)
         print_success("Terminal set to Singularity/Apptainer")
     
     elif selected_backend == 'modal':
@@ -1063,6 +1109,7 @@ def run_setup_wizard(args):
         if token_secret:
             save_env_value("MODAL_TOKEN_SECRET", token_secret)
         
+        _prompt_container_resources(config)
         print_success("Terminal set to Modal")
     
     elif selected_backend == 'ssh':
@@ -1092,6 +1139,9 @@ def run_setup_wizard(args):
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
         
+        print()
+        print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
+        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     

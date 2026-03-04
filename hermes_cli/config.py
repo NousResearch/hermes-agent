@@ -71,6 +71,11 @@ DEFAULT_CONFIG = {
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Container resource limits (docker, singularity, modal — ignored for local/ssh)
+        "container_cpu": 1,
+        "container_memory": 5120,       # MB (default 5GB)
+        "container_disk": 51200,        # MB (default 50GB)
+        "container_persistent": True,   # Persist filesystem across sessions
     },
     
     "browser": {
@@ -139,7 +144,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 4,
+    "_config_version": 5,
 }
 
 # =============================================================================

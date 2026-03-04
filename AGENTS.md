@@ -235,6 +235,7 @@ The unified `hermes` command provides all functionality:
 | `hermes update` | Update to latest (checks for new config) |
 | `hermes uninstall` | Uninstall (can keep configs for reinstall) |
 | `hermes gateway` | Start gateway (messaging + cron scheduler) |
+| `hermes gateway setup` | Configure messaging platforms interactively |
 | `hermes gateway install` | Install gateway as system service |
 | `hermes cron list` | View scheduled jobs |
 | `hermes cron status` | Check if cron scheduler is running |
@@ -245,7 +246,19 @@ The unified `hermes` command provides all functionality:
 
 ## Messaging Gateway
 
-The gateway connects Hermes to Telegram, Discord, and WhatsApp.
+The gateway connects Hermes to Telegram, Discord, Slack, and WhatsApp.
+
+### Setup
+
+The interactive setup wizard handles platform configuration:
+
+```bash
+hermes gateway setup      # Arrow-key menu of all platforms, configure tokens/allowlists/home channels
+```
+
+This is the recommended way to configure messaging. It shows which platforms are already set up, walks through each one interactively, and offers to start/restart the gateway service at the end.
+
+Platforms can also be configured manually in `~/.hermes/.env`:
 
 ### Configuration (in `~/.hermes/.env`):
 

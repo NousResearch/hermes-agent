@@ -2476,6 +2476,7 @@ class AIAgent:
                         role_filter=function_args.get("role_filter"),
                         limit=function_args.get("limit", 3),
                         db=self._session_db,
+                        current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:

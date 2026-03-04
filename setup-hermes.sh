@@ -215,17 +215,28 @@ mkdir -p "$HOME/.local/bin"
 ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
 echo -e "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
 
-# Ensure ~/.local/bin is on PATH in shell config
+# Determine the appropriate shell config file
 SHELL_CONFIG=""
-if [ -f "$HOME/.zshrc" ]; then
+if [[ "$SHELL" == *"zsh"* ]]; then
     SHELL_CONFIG="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
+elif [[ "$SHELL" == *"bash"* ]]; then
     SHELL_CONFIG="$HOME/.bashrc"
-elif [ -f "$HOME/.bash_profile" ]; then
-    SHELL_CONFIG="$HOME/.bash_profile"
+    [ ! -f "$SHELL_CONFIG" ] && SHELL_CONFIG="$HOME/.bash_profile"
+else
+    # Fallback to checking existing files
+    if [ -f "$HOME/.zshrc" ]; then
+        SHELL_CONFIG="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        SHELL_CONFIG="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+        SHELL_CONFIG="$HOME/.bash_profile"
+    fi
 fi
 
 if [ -n "$SHELL_CONFIG" ]; then
+    # Touch the file just in case it doesn't exist yet but was selected
+    touch "$SHELL_CONFIG" 2>/dev/null || true
+    
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
         if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
             echo "" >> "$SHELL_CONFIG"

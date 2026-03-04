@@ -10,6 +10,7 @@ from gateway.session import (
     SessionStore,
     build_session_context,
     build_session_context_prompt,
+    build_session_key,
 )
 
 
@@ -314,6 +315,60 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestWhatsAppDMSessionKeyConsistency:
+    """Regression: all session-key construction must go through build_session_key
+    so WhatsApp DMs include chat_id while other DMs do not."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_whatsapp_dm_includes_chat_id(self):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
+
+    def test_store_delegates_to_build_session_key(self, store):
+        """SessionStore._generate_session_key must produce the same result."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        assert store._generate_session_key(source) == build_session_key(source)
+
+    def test_telegram_dm_omits_chat_id(self):
+        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm"
+
+    def test_discord_group_includes_chat_id(self):
+        """Group/channel keys include chat_type and chat_id."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:discord:group:guild-123"
+
+
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""
 
@@ -324,3 +379,53 @@ class TestSessionStoreEntriesAttribute:
         store._loaded = True
         assert hasattr(store, "_entries")
         assert not hasattr(store, "_sessions")
+
+
+class TestHasAnySessions:
+    """Tests for has_any_sessions() fix (issue #351)."""
+
+    @pytest.fixture
+    def store_with_mock_db(self, tmp_path):
+        """SessionStore with a mocked database."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._loaded = True
+        s._entries = {}
+        s._db = MagicMock()
+        return s
+
+    def test_uses_database_count_when_available(self, store_with_mock_db):
+        """has_any_sessions should use database session_count, not len(_entries)."""
+        store = store_with_mock_db
+        # Simulate single-platform user with only 1 entry in memory
+        store._entries = {"telegram:12345": MagicMock()}
+        # But database has 3 sessions (current + 2 previous resets)
+        store._db.session_count.return_value = 3
+
+        assert store.has_any_sessions() is True
+        store._db.session_count.assert_called_once()
+
+    def test_first_session_ever_returns_false(self, store_with_mock_db):
+        """First session ever should return False (only current session in DB)."""
+        store = store_with_mock_db
+        store._entries = {"telegram:12345": MagicMock()}
+        # Database has exactly 1 session (the current one just created)
+        store._db.session_count.return_value = 1
+
+        assert store.has_any_sessions() is False
+
+    def test_fallback_without_database(self, tmp_path):
+        """Should fall back to len(_entries) when DB is not available."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._entries = {"key1": MagicMock(), "key2": MagicMock()}
+
+        # > 1 entries means has sessions
+        assert store.has_any_sessions() is True
+
+        store._entries = {"key1": MagicMock()}
+        assert store.has_any_sessions() is False

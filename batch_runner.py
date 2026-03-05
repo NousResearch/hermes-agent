@@ -914,6 +914,9 @@ class BatchRunner:
                     for result in pool.imap_unordered(_process_batch_worker, tasks):
                         results.append(result)
                         progress.update(task, advance=1)
+                except Exception as e:
+                    logger.error("Batch worker failed: %s", e, exc_info=True)
+                    raise
                 finally:
                     root_logger.setLevel(original_level)
         

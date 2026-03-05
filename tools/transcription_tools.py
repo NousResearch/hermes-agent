@@ -61,7 +61,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return {
             "success": False,
             "transcript": "",
-            "error": "VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY not set",
+            "error": "VOICE_TOOLS_OPENAI_KEY not set",
         }
 
     audio_path = Path(file_path)
@@ -86,7 +86,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return {
             "success": False,
             "transcript": "",
-            "error": f"Unsupported file format: {audio_path.suffix}. Supported formats: {', '.join(SUPPORTED_FORMATS)}",
+            "error": f"Unsupported file format: {audio_path.suffix}. Supported formats: {', '.join(sorted(SUPPORTED_FORMATS))}",
         }
     
     # Validate file size
@@ -111,8 +111,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model = DEFAULT_STT_MODEL
 
     try:
-        from openai import OpenAI
-        from openai import APIError, APIConnectionError, APITimeoutError
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 
         client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
 
@@ -133,13 +132,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "transcript": transcript_text,
         }
 
-    except FileNotFoundError:
-        logger.error("Audio file not found: %s", file_path, exc_info=True)
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Audio file not found: {file_path}",
-        }
     except PermissionError:
         logger.error("Permission denied accessing file: %s", file_path, exc_info=True)
         return {

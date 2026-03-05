@@ -848,8 +848,8 @@ class ShellFileOperations(FileOperations):
         
         result = self._exec(cmd, timeout=60)
         
-        if result.exit_code != 0 and not result.stdout.strip():
-            # Try without -printf (BSD find compatibility)
+        if not result.stdout.strip():
+            # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
             result = self._exec(cmd_simple, timeout=60)

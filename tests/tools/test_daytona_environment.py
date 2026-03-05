@@ -115,15 +115,15 @@ class TestCwdResolution:
         env = make_env(cwd="/workspace", home_dir="/root")
         assert env.cwd == "/workspace"
 
-    def test_home_detection_failure_falls_back_to_root(self, make_env):
+    def test_home_detection_failure_keeps_default_cwd(self, make_env):
         sb = _make_sandbox()
         sb.process.exec.side_effect = RuntimeError("exec failed")
         env = make_env(sandbox=sb)
-        assert env.cwd == "/root"
+        assert env.cwd == "/home/daytona"  # keeps constructor default
 
-    def test_empty_home_falls_back_to_root(self, make_env):
+    def test_empty_home_keeps_default_cwd(self, make_env):
         env = make_env(home_dir="")
-        assert env.cwd == "/root"
+        assert env.cwd == "/home/daytona"  # keeps constructor default
 
 
 # ---------------------------------------------------------------------------

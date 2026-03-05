@@ -98,9 +98,10 @@ class DaytonaEnvironment(BaseEnvironment):
         if self._requested_cwd in ("~", "/home/daytona"):
             try:
                 home = self._sandbox.process.exec("echo $HOME").result.strip()
-                self.cwd = home or "/root"
+                if home:
+                    self.cwd = home
             except Exception:
-                self.cwd = "/root"
+                pass  # leave cwd as-is; sandbox will use its own default
             logger.info("Daytona: resolved cwd to %s", self.cwd)
 
     def _ensure_sandbox_ready(self):

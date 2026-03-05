@@ -13,7 +13,7 @@ Thank you for contributing to Hermes Agent! This guide covers setting up your de
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss
-2. **Cross-platform compatibility** — Windows, macOS, different Linux distros
+2. **Cross-platform compatibility** — macOS, different Linux distros, WSL2
 3. **Security hardening** — shell injection, prompt injection, path traversal
 4. **Performance and robustness** — retry logic, error handling, graceful degradation
 5. **New skills** — broadly useful ones (see [Creating Skills](creating-skills.md))
@@ -88,7 +88,7 @@ pytest tests/ -v
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and Windows. Critical rules:
+Hermes officially supports Linux, macOS, and WSL2. Native Windows is **not supported**, but the codebase includes some defensive coding patterns to avoid hard crashes in edge cases. Key rules:
 
 ### 1. `termios` and `fcntl` are Unix-only
 
@@ -100,7 +100,7 @@ try:
     menu = TerminalMenu(options)
     idx = menu.show()
 except (ImportError, NotImplementedError):
-    # Fallback: numbered menu for Windows
+    # Fallback: numbered menu
     for i, opt in enumerate(options):
         print(f"  {i+1}. {opt}")
     idx = int(input("Choice: ")) - 1
@@ -108,7 +108,7 @@ except (ImportError, NotImplementedError):
 
 ### 2. File encoding
 
-Windows may save `.env` files in `cp1252`:
+Some environments may save `.env` files in non-UTF-8 encodings:
 
 ```python
 try:
@@ -119,7 +119,7 @@ except UnicodeDecodeError:
 
 ### 3. Process management
 
-`os.setsid()`, `os.killpg()`, and signal handling differ on Windows:
+`os.setsid()`, `os.killpg()`, and signal handling differ across platforms:
 
 ```python
 import platform
@@ -130,10 +130,6 @@ if platform.system() != "Windows":
 ### 4. Path separators
 
 Use `pathlib.Path` instead of string concatenation with `/`.
-
-### 5. Shell commands in installers
-
-If you change `scripts/install.sh`, check if the equivalent change is needed in `scripts/install.ps1`.
 
 ## Security Considerations
 
@@ -175,7 +171,7 @@ refactor/description   # Code restructuring
 
 1. **Run tests**: `pytest tests/ -v`
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: Consider Windows and macOS
+3. **Check cross-platform impact**: Consider macOS and different Linux distros
 4. **Keep PRs focused**: One logical change per PR
 
 ### PR Description

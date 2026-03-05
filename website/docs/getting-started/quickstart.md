@@ -13,14 +13,13 @@ This guide walks you through installing Hermes Agent, setting up a provider, and
 Run the one-line installer:
 
 ```bash
-# Linux / macOS / WSL
+# Linux / macOS / WSL2
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
-```
+:::tip Windows Users
+Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.
+:::
 
 After it finishes, reload your shell:
 

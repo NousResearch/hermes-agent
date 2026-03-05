@@ -31,7 +31,7 @@ try:
     import numpy as np
 
     _HAS_AUDIO = True
-except ImportError:
+except (ImportError, OSError):
     sd = None  # type: ignore[assignment]
     np = None  # type: ignore[assignment]
     _HAS_AUDIO = False

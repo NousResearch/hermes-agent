@@ -2649,7 +2649,15 @@ class AIAgent:
         messages.append({"role": "user", "content": summary_request})
 
         try:
-            api_messages = messages.copy()
+            # Build API messages, stripping internal-only fields
+            # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+            api_messages = []
+            for msg in messages:
+                api_msg = msg.copy()
+                for internal_field in ("reasoning", "finish_reason"):
+                    api_msg.pop(internal_field, None)
+                api_messages.append(api_msg)
+
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()

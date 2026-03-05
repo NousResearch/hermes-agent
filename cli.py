@@ -2490,8 +2490,13 @@ class HermesCLI:
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
-                self._should_exit = True
-                event.app.exit()
+                # If there's text in the input buffer, clear it (like bash).
+                # If the buffer is already empty, exit.
+                if event.app.current_buffer.text:
+                    event.app.current_buffer.reset()
+                else:
+                    self._should_exit = True
+                    event.app.exit()
         
         @kb.add('c-d')
         def handle_ctrl_d(event):

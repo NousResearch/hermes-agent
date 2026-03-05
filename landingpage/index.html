@@ -36,6 +36,7 @@
             <div class="nav-links">
                 <a href="#features">Features</a>
                 <a href="#install">Install</a>
+                <a href="/docs/">Docs</a>
                 <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener">
                     GitHub
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" class="external-icon"><path d="M3.5 1.5H10.5V8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 1.5L1.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -79,15 +80,7 @@
                         <div class="install-tabs">
                             <button class="install-tab active" data-platform="linux" onclick="switchPlatform('linux')">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.7"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.368 1.884 1.43.39.03.8-.066 1.109-.199.69-.3 1.286-1.006 1.652-1.963.086-.235.188-.479.152-.88-.064-.406-.358-.597-.548-.899-.19-.301-.2-.335-.2-.68 0-.348.076-.664.152-.901.1-.256.233-.478.21-.783l-.003-.003c-.091-.472-.279-.861-.607-1.144-.327-.283-.762-.409-1.032-.433-.18-.04-.33-.063-.44-.143-.12-.09-.21-.29-.19-.543 .029-.272.089-.549.178-.822.188-.57.456-1.128.748-1.633.02-.044.04-.09.06-.133a.205.205 0 00.015-.04c.413-.916.64-1.866.64-2.699 0-1.039-.258-1.904-.608-2.572-.11-.188-.208-.368-.32-.527a.604.604 0 00-.038-.06c-.725-1.05-1.735-1.572-2.74-1.795a6.986 6.986 0 00-1.18-.133h-.005c-.163 0-.32.01-.478.025z"/></svg>
-                                Linux / macOS
-                            </button>
-                            <button class="install-tab" data-platform="powershell" onclick="switchPlatform('powershell')">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.7"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
-                                PowerShell
-                            </button>
-                            <button class="install-tab" data-platform="cmd" onclick="switchPlatform('cmd')">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.7"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
-                                CMD
+                                Linux / macOS / WSL
                             </button>
                         </div>
                     </div>
@@ -100,7 +93,7 @@
                         </button>
                     </div>
                 </div>
-                <p class="install-note" id="install-note">Works on Linux, macOS & WSL · No prerequisites · Installs everything automatically</p>
+                <p class="install-note" id="install-note">Works on Linux, macOS & WSL2 · No prerequisites · Installs everything automatically</p>
             </div>
 
             <div class="hero-links">
@@ -355,9 +348,7 @@
                         <div class="code-block">
                             <div class="code-header">
                                 <div class="code-tabs">
-                                    <button class="code-tab active" data-platform="linux" onclick="switchStepPlatform('linux')">Linux / macOS</button>
-                                    <button class="code-tab" data-platform="powershell" onclick="switchStepPlatform('powershell')">PowerShell</button>
-                                    <button class="code-tab" data-platform="cmd" onclick="switchStepPlatform('cmd')">CMD</button>
+                                    <button class="code-tab active" data-platform="linux" onclick="switchStepPlatform('linux')">Linux / macOS / WSL</button>
                                 </div>
                                 <button class="copy-btn" id="step1-copy" onclick="copyText(this)" data-text="curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash">Copy</button>
                             </div>
@@ -422,7 +413,7 @@ hermes gateway install</code></pre>
             </div>
 
             <div class="install-windows">
-                <p>🪟 Windows requires <a href="https://git-scm.com/download/win" target="_blank" rel="noopener">Git for Windows</a> — Hermes uses Git Bash internally for shell commands.</p>
+                <p>🪟 Native Windows support is extremely experimental and unsupported. Please install <a href="https://learn.microsoft.com/en-us/windows/wsl/install" target="_blank" rel="noopener">WSL2</a> and run Hermes Agent from there.</p>
             </div>
         </div>
     </section>

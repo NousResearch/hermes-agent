@@ -7,26 +7,12 @@ const PLATFORMS = {
     linux: {
         command: 'curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash',
         prompt: '$',
-        note: 'Works on Linux, macOS & WSL · No prerequisites · Installs everything automatically',
+        note: 'Works on Linux, macOS & WSL2 · No prerequisites · Installs everything automatically',
         stepNote: 'Installs uv, Python 3.11, clones the repo, sets up everything. No sudo needed.',
-    },
-    powershell: {
-        command: 'irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex',
-        prompt: 'PS>',
-        note: 'Windows PowerShell · Requires Git for Windows · Installs everything automatically',
-        stepNote: 'Requires Git for Windows. Installs uv, Python 3.11, sets up everything.',
-    },
-    cmd: {
-        command: 'curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd',
-        prompt: '>',
-        note: 'Windows CMD · Requires Git for Windows · Installs everything automatically',
-        stepNote: 'Requires Git for Windows. Downloads and runs the installer, then cleans up.',
     },
 };
 
 function detectPlatform() {
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.includes('win')) return 'powershell';
     return 'linux';
 }
 

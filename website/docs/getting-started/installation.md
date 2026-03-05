@@ -22,21 +22,7 @@ Native Windows is **not supported**. Please install [WSL2](https://learn.microso
 
 ### What the Installer Does
 
-The installer handles everything automatically:
-
-- Installs [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
-- Installs Python 3.11 via uv if not already available (no sudo needed)
-- Installs Node.js v22 if not present (needed for browser automation and WhatsApp bridge)
-- Installs ripgrep if not present (fast file search)
-- Installs ffmpeg if not present (audio format conversion for TTS)
-- Clones to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
-- Creates a virtual environment with Python 3.11
-- Installs all dependencies and submodule packages
-- Installs WhatsApp bridge npm dependencies
-- Seeds bundled skills into `~/.hermes/skills/`
-- Creates a default `SOUL.md` personality file
-- Sets up the `hermes` command globally (no venv activation needed)
-- Runs the interactive setup wizard
+The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, and global `hermes` command setup. It finishes by running the interactive setup wizard to configure your LLM provider.
 
 ### After Installation
 

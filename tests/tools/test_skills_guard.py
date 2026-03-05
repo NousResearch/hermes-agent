@@ -132,6 +132,23 @@ class TestShouldAllowInstall:
         allowed, _ = should_allow_install(self._result("community", "dangerous", f), force=False)
         assert allowed is False
 
+    def test_force_never_overrides_dangerous(self):
+        """--force must not bypass dangerous verdict (regression test)."""
+        f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
+        allowed, reason = should_allow_install(
+            self._result("community", "dangerous", f), force=True
+        )
+        assert allowed is False
+        assert "DANGEROUS" in reason
+
+    def test_force_never_overrides_dangerous_trusted(self):
+        """--force must not bypass dangerous even for trusted sources."""
+        f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
+        allowed, _ = should_allow_install(
+            self._result("trusted", "dangerous", f), force=True
+        )
+        assert allowed is False
+
 
 # ---------------------------------------------------------------------------
 # scan_file — pattern detection

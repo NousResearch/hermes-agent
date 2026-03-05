@@ -33,15 +33,10 @@ MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
 
-def _format_timestamp(ts: Optional[Any]) -> str:
-    """
-    Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
-    
-    Args:
-        ts: Unix timestamp (int/float), ISO string, or None
-        
-    Returns:
-        Human-readable date string or "unknown" if conversion fails
+def _format_timestamp(ts: Union[int, float, str, None]) -> str:
+    """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
+
+    Returns "unknown" for None, str(ts) if conversion fails.
     """
     if ts is None:
         return "unknown"
@@ -236,16 +231,8 @@ def session_search(
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> Optional[str]:
-            """
-            Resolve a session ID to its parent session ID, handling delegation chains.
-            
-            Args:
-                session_id: The session ID to resolve
-                
-            Returns:
-                Parent session ID or None if resolution fails
-            """
+        def _resolve_to_parent(session_id: str) -> str:
+            """Walk delegation chain to find the root parent session ID."""
             visited = set()
             sid = session_id
             while sid and sid not in visited:

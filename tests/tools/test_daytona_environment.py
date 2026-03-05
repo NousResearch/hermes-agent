@@ -200,6 +200,36 @@ class TestExecute:
         assert result["output"] == "hello"
         assert result["returncode"] == 0
 
+    def test_command_wrapped_with_shell_timeout(self, make_env):
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="ok", exit_code=0),
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb, timeout=42)
+
+        env.execute("echo hello")
+        # The command sent to exec should be wrapped with `timeout N sh -c '...'`
+        call_args = sb.process.exec.call_args_list[-1]
+        cmd = call_args[0][0]
+        assert cmd.startswith("timeout 42 sh -c ")
+        # SDK timeout param should NOT be passed
+        assert "timeout" not in call_args[1]
+
+    def test_timeout_returns_exit_code_124(self, make_env):
+        """Shell timeout utility returns exit code 124."""
+        sb = _make_sandbox()
+        sb.process.exec.side_effect = [
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=124),
+        ]
+        sb.state = "started"
+        env = make_env(sandbox=sb)
+
+        result = env.execute("sleep 300", timeout=5)
+        assert result["returncode"] == 124
+
     def test_nonzero_exit_code(self, make_env):
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
@@ -223,10 +253,12 @@ class TestExecute:
 
         env.execute("python3", stdin_data="print('hi')")
         # Check that the command passed to exec contains heredoc markers
+        # (single quotes get shell-escaped by shlex.quote, so check components)
         call_args = sb.process.exec.call_args_list[-1]
         cmd = call_args[0][0]
         assert "HERMES_EOF_" in cmd
-        assert "print('hi')" in cmd
+        assert "print" in cmd
+        assert "hi" in cmd
 
     def test_custom_cwd_passed_through(self, make_env):
         sb = _make_sandbox()

@@ -1253,8 +1253,7 @@ class GatewayRunner:
         )
         
         # Let the normal message handler process it
-        await self._handle_message(retry_event)
-        return None  # Response sent through normal flow
+        return await self._handle_message(retry_event)
     
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""

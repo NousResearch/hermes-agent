@@ -32,7 +32,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +469,7 @@ def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
     tts_done_event: threading.Event,
+    display_callback: Optional[Callable[[str], None]] = None,
 ):
     """Consume text deltas from *text_queue*, buffer them into sentences,
     and stream each sentence through ElevenLabs TTS to the speaker in
@@ -484,34 +485,38 @@ def stream_tts_to_speaker(
     tts_done_event.clear()
 
     try:
+        # --- TTS client setup (optional -- display_callback works without it) ---
+        client = None
+        output_stream = None
+        voice_id = DEFAULT_ELEVENLABS_VOICE_ID
+        model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
+
         tts_config = _load_tts_config()
         el_config = tts_config.get("elevenlabs", {})
-        voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
+        voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
-                                 el_config.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID))
+                                 el_config.get("model_id", model_id))
 
         api_key = os.getenv("ELEVENLABS_API_KEY", "")
         if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS disabled")
-            return
+            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
+        elif _HAS_ELEVENLABS:
+            client = ElevenLabs(api_key=api_key)
 
-        client = ElevenLabs(api_key=api_key)
-
-        # Open a single sounddevice output stream for the lifetime of
-        # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-        # little-endian mono PCM at 24 kHz.
-        use_sd = _HAS_AUDIO and sd is not None
-        output_stream = None
-        if use_sd:
-            try:
-                import numpy as _np
-                output_stream = sd.OutputStream(
-                    samplerate=24000, channels=1, dtype="int16",
-                )
-                output_stream.start()
-            except Exception as exc:
-                logger.warning("sounddevice OutputStream failed: %s", exc)
-                output_stream = None
+            # Open a single sounddevice output stream for the lifetime of
+            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
+            # little-endian mono PCM at 24 kHz.
+            use_sd = _HAS_AUDIO and sd is not None
+            if use_sd:
+                try:
+                    import numpy as _np
+                    output_stream = sd.OutputStream(
+                        samplerate=24000, channels=1, dtype="int16",
+                    )
+                    output_stream.start()
+                except Exception as exc:
+                    logger.warning("sounddevice OutputStream failed: %s", exc)
+                    output_stream = None
 
         sentence_buf = ""
         in_think = False  # track <think>...</think> blocks
@@ -520,11 +525,17 @@ def stream_tts_to_speaker(
         queue_timeout = 0.5
 
         def _speak_sentence(sentence: str):
-            """Generate and play audio for a single sentence."""
+            """Display sentence and optionally generate + play audio."""
             if stop_event.is_set():
                 return
             cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
+                return
+            # Display raw sentence on screen before TTS processing
+            if display_callback is not None:
+                display_callback(sentence)
+            # Skip audio generation if no TTS client available
+            if client is None:
                 return
             # Truncate very long sentences
             if len(cleaned) > MAX_TEXT_LENGTH:

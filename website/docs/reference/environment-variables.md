@@ -37,6 +37,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `FIRECRAWL_API_KEY` | Web scraping ([firecrawl.dev](https://firecrawl.dev/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
+| `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `ELEVENLABS_API_KEY` | Premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
@@ -96,6 +97,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: `~`) |
+| `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |
 
 ## Agent Behavior
@@ -108,6 +110,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_HUMAN_DELAY_MODE` | Response pacing: `off`/`natural`/`custom` |
 | `HERMES_HUMAN_DELAY_MIN_MS` | Custom delay range minimum (ms) |
 | `HERMES_HUMAN_DELAY_MAX_MS` | Custom delay range maximum (ms) |
+| `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
+| `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
 
 ## Session Settings
 

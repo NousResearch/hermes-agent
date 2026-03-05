@@ -29,7 +29,7 @@ These are commands you run from your shell.
 |---------|-------------|
 | `hermes model` | Switch provider and model interactively |
 | `hermes login` | OAuth login to a provider (use `--provider` to specify) |
-| `hermes logout` | Clear stored OAuth credentials |
+| `hermes logout` | Clear provider authentication |
 
 ### Configuration
 

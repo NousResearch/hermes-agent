@@ -159,6 +159,10 @@ mcp_{server_name}_{tool_name}
 
 Tools appear alongside built-in tools — the agent calls them like any other tool.
 
+:::info
+In addition to the server's own tools, each MCP server also gets 4 utility tools auto-registered: `list_resources`, `read_resource`, `list_prompts`, and `get_prompt`. These allow the agent to discover and use MCP resources and prompts exposed by the server.
+:::
+
 ### Reconnection
 
 If an MCP server disconnects, Hermes automatically reconnects with exponential backoff (1s, 2s, 4s, 8s, 16s — max 5 attempts). Initial connection failures are reported immediately.

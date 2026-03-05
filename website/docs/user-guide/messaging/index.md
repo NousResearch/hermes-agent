@@ -113,6 +113,9 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 TELEGRAM_ALLOWED_USERS=123456789,987654321
 DISCORD_ALLOWED_USERS=123456789012345678
 
+# Or allow specific users across all platforms (comma-separated user IDs):
+GATEWAY_ALLOWED_USERS=123456789,987654321
+
 # Or explicitly allow all users (NOT recommended for bots with terminal access):
 GATEWAY_ALLOW_ALL_USERS=true
 ```

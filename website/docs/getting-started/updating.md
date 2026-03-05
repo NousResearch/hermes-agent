@@ -17,7 +17,7 @@ hermes update
 This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
 
 :::tip
-After updating, run `hermes config check` to see if there are new configuration options available, then `hermes config migrate` to interactively add any missing ones.
+`hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
 ### Updating from Messaging Platforms

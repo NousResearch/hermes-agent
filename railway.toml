@@ -1,0 +1,97 @@
+# ──────────────────────────────────────────────
+# Hermes Agent – Railway Template Configuration
+# ──────────────────────────────────────────────
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m gateway.run"
+restartPolicyType = "always"
+sleepApplication = false
+
+# ── Environment variable definitions ─────────
+# These appear as prompts in the Railway template UI.
+# Required vars are marked; optional ones have defaults.
+
+[[deploy.envVars]]
+name = "LLM_MODEL"
+description = "Default LLM model via OpenRouter (e.g. anthropic/claude-opus-4-6, openai/gpt-4o)"
+defaultValue = "anthropic/claude-opus-4-6"
+
+[[deploy.envVars]]
+name = "OPENROUTER_API_KEY"
+description = "OpenRouter API key – required for the agent to call any LLM. Get one at openrouter.ai"
+
+[[deploy.envVars]]
+name = "TERMINAL_ENV"
+description = "Terminal backend: local | docker | ssh | modal | singularity"
+defaultValue = "local"
+
+# ── Telegram ─────────────────────────────────
+[[deploy.envVars]]
+name = "TELEGRAM_BOT_TOKEN"
+description = "Telegram bot token from @BotFather (leave empty to disable Telegram)"
+
+[[deploy.envVars]]
+name = "TELEGRAM_HOME_CHANNEL"
+description = "Your Telegram chat/channel ID where Hermes sends notifications"
+
+# ── Discord ───────────────────────────────────
+[[deploy.envVars]]
+name = "DISCORD_BOT_TOKEN"
+description = "Discord bot token from discord.com/developers (leave empty to disable Discord)"
+
+[[deploy.envVars]]
+name = "DISCORD_HOME_CHANNEL"
+description = "Discord channel ID for Hermes notifications"
+
+# ── Slack ─────────────────────────────────────
+[[deploy.envVars]]
+name = "SLACK_BOT_TOKEN"
+description = "Slack Bot User OAuth Token (xoxb-...) – leave empty to disable Slack"
+
+[[deploy.envVars]]
+name = "SLACK_APP_TOKEN"
+description = "Slack App-Level Token for Socket Mode (xapp-...) – required when Slack is enabled"
+
+# ── Tool API keys (all optional) ──────────────
+[[deploy.envVars]]
+name = "FIRECRAWL_API_KEY"
+description = "Firecrawl API key for web scraping & search (firecrawl.dev)"
+
+[[deploy.envVars]]
+name = "NOUS_API_KEY"
+description = "Nous Portal API key for vision & multi-model reasoning"
+
+[[deploy.envVars]]
+name = "FAL_KEY"
+description = "fal.ai API key for image generation"
+
+[[deploy.envVars]]
+name = "GITHUB_TOKEN"
+description = "GitHub Personal Access Token for the Skills Hub feature"
+
+[[deploy.envVars]]
+name = "BROWSERBASE_API_KEY"
+description = "Browserbase API key for cloud browser execution (optional)"
+
+[[deploy.envVars]]
+name = "BROWSERBASE_PROJECT_ID"
+description = "Browserbase project ID (required when Browserbase is enabled)"
+
+[[deploy.envVars]]
+name = "GATEWAY_ALLOW_ALL_USERS"
+description = "Set to true to allow any user to chat with Hermes (default: false – allowlist only)"
+defaultValue = "false"
+
+[[deploy.envVars]]
+name = "CONTEXT_COMPRESSION_ENABLED"
+description = "Auto-compress long conversations to save context (true/false)"
+defaultValue = "true"
+
+[[deploy.envVars]]
+name = "HERMES_HUMAN_DELAY_MODE"
+description = "Response pacing style: off | natural | custom"
+defaultValue = "off"

@@ -174,7 +174,7 @@ For models that support chain-of-thought reasoning:
 The interactive CLI uses:
 - **Rich** - For the welcome banner and styled panels
 - **prompt_toolkit** - For fixed input area with history, `patch_stdout`, slash command autocomplete, and floating completion menus
-- **KawaiiSpinner** (in run_agent.py) - Animated kawaii faces during API calls; clean `┊` activity feed for tool execution results
+- **KawaiiSpinner** (in agent/display.py) - Animated kawaii faces during API calls; clean `┊` activity feed for tool execution results
 
 Key components:
 - `HermesCLI` class - Main CLI controller with commands and conversation loop

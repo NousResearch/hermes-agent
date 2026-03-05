@@ -72,12 +72,24 @@ def _resolve_openrouter_runtime(
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
-    api_key = (
-        explicit_api_key
-        or os.getenv("OPENROUTER_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or ""
-    )
+    # When base_url points to a non-OpenRouter endpoint (e.g. Z.ai, local LLM),
+    # prefer OPENAI_API_KEY so the correct credentials reach the correct provider.
+    # This allows OPENROUTER_API_KEY to coexist for auxiliary tasks (compression
+    # summaries, vision, session search) without hijacking main inference.
+    if base_url and "openrouter" not in base_url.lower():
+        api_key = (
+            explicit_api_key
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+            or ""
+        )
+    else:
+        api_key = (
+            explicit_api_key
+            or os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
+        )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 

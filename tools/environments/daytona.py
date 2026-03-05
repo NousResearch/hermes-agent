@@ -9,6 +9,7 @@ import logging
 import math
 import threading
 import uuid
+import warnings
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment
@@ -43,10 +44,12 @@ class DaytonaEnvironment(BaseEnvironment):
             CreateSandboxFromImageParams,
             DaytonaError,
             Resources,
+            SandboxState,
         )
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
+        self._SandboxState = SandboxState
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()
@@ -54,7 +57,11 @@ class DaytonaEnvironment(BaseEnvironment):
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
         if disk_gib > 10:
-            logger.warning("Daytona: capping disk from %dGB to 10GB (platform limit)", disk_gib)
+            warnings.warn(
+                f"Daytona: requested disk ({disk_gib}GB) exceeds platform limit (10GB). "
+                f"Capping to 10GB. Set container_disk: 10240 in config to silence this.",
+                stacklevel=2,
+            )
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
@@ -99,7 +106,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _ensure_sandbox_ready(self):
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
-        if self._sandbox.state in ("stopped", "archived"):
+        if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 

@@ -27,11 +27,20 @@ def _patch_daytona_imports(monkeypatch):
     """Patch the daytona SDK so DaytonaEnvironment can be imported without it."""
     import types as _types
 
+    import enum
+
+    class _SandboxState(str, enum.Enum):
+        STARTED = "started"
+        STOPPED = "stopped"
+        ARCHIVED = "archived"
+        ERROR = "error"
+
     daytona_mod = _types.ModuleType("daytona")
     daytona_mod.Daytona = MagicMock
     daytona_mod.CreateSandboxFromImageParams = MagicMock
     daytona_mod.DaytonaError = type("DaytonaError", (Exception,), {})
     daytona_mod.Resources = MagicMock(name="Resources")
+    daytona_mod.SandboxState = _SandboxState
 
     monkeypatch.setitem(__import__("sys").modules, "daytona", daytona_mod)
     return daytona_mod

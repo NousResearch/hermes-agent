@@ -399,15 +399,33 @@ hermes model</code></pre>
                         <div class="code-block">
                             <div class="code-header">
                                 <span>bash</span>
-                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes gateway">Copy</button>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes gateway setup">Copy</button>
                             </div>
-                            <pre><code><span class="code-comment"># Start the messaging gateway</span>
+                            <pre><code><span class="code-comment"># Interactive gateway setup wizard</span>
+hermes gateway setup
+
+<span class="code-comment"># Start the messaging gateway</span>
 hermes gateway
 
 <span class="code-comment"># Install as a system service</span>
 hermes gateway install</code></pre>
                         </div>
-                        <p class="step-note">Connect Telegram, Discord, Slack, or WhatsApp. Runs as a systemd service.</p>
+                        <p class="step-note">Walk through connecting Telegram, Discord, Slack, or WhatsApp. Runs as a systemd service.</p>
+                    </div>
+                </div>
+
+                <div class="install-step">
+                    <div class="step-number">5</div>
+                    <div class="step-content">
+                        <h4>Keep it up to date</h4>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span>bash</span>
+                                <button class="copy-btn" onclick="copyText(this)" data-text="hermes update">Copy</button>
+                            </div>
+                            <pre><code>hermes update</code></pre>
+                        </div>
+                        <p class="step-note">Pulls the latest changes and reinstalls dependencies. Run anytime to get new features and fixes.</p>
                     </div>
                 </div>
             </div>

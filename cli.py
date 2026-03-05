@@ -2157,6 +2157,7 @@ class HermesCLI:
                 result = self.agent.run_conversation(
                     user_message=message,
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                    task_id=self.session_id,
                 )
             
             # Start agent in background thread

@@ -42,7 +42,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 - **Grows the longer it runs** — Persistent memory and self-created skills
 - **Scheduled automations** — Built-in cron with delivery to any platform
 - **Delegates & parallelizes** — Spawn isolated subagents for parallel workstreams
-- **Real sandboxing** — 5 terminal backends: local, Docker, SSH, Singularity, Modal
+- **Real sandboxing** — 6 terminal backends: local, Docker, SSH, Singularity, Modal, Daytona
 - **Full web control** — Search, extract, browse, vision, image generation, TTS
 - **MCP support** — Connect to any MCP server for extended tool capabilities
 - **Research-ready** — Batch processing, trajectory export, RL training integration

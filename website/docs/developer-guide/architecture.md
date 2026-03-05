@@ -55,7 +55,7 @@ hermes-agent/
 │   ├── skill_manager_tool.py      # Skill management
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py
+│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
 │   ├── run.py                    # GatewayRunner — platform lifecycle, message routing

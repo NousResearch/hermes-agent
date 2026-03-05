@@ -913,3 +913,31 @@ class TestConversationHistoryNotMutated:
         )
         # Result should have more messages than the original history
         assert len(result["messages"]) > original_len
+
+
+# ---------------------------------------------------------------------------
+# _max_tokens_param consistency
+# ---------------------------------------------------------------------------
+
+class TestMaxTokensParam:
+    """Verify _max_tokens_param returns the correct key for each provider."""
+
+    def test_returns_max_completion_tokens_for_direct_openai(self, agent):
+        agent.base_url = "https://api.openai.com/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_tokens_for_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
+
+    def test_returns_max_tokens_for_local(self, agent):
+        agent.base_url = "http://localhost:11434/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
+
+    def test_not_tricked_by_openai_in_openrouter_url(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1/api.openai.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}

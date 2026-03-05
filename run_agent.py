@@ -2754,7 +2754,10 @@ class AIAgent:
                 if final_response:
                     if "<think>" in final_response:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
-                    messages.append({"role": "assistant", "content": final_response})
+                    if final_response:
+                        messages.append({"role": "assistant", "content": final_response})
+                    else:
+                        final_response = "I reached the iteration limit and couldn't generate a summary."
                 else:
                     final_response = "I reached the iteration limit and couldn't generate a summary."
 

@@ -61,7 +61,7 @@ except ImportError:
 try:
     import sounddevice as sd
     _HAS_AUDIO = True
-except ImportError:
+except (ImportError, OSError):
     sd = None  # type: ignore[assignment]
     _HAS_AUDIO = False
 

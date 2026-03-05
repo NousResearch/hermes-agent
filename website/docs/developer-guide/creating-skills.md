@@ -95,7 +95,7 @@ For XML/JSON parsing or complex logic, include helper scripts in `scripts/` — 
 Run the skill and verify the agent follows the instructions correctly:
 
 ```bash
-hermes --toolsets skills -q "Use the X skill to do Y"
+hermes chat --toolsets skills -q "Use the X skill to do Y"
 ```
 
 ## Should the Skill Be Bundled?

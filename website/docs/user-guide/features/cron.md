@@ -65,8 +65,9 @@ The agent knows your connected platforms and home channels — it'll choose sens
 ## Schedule Formats
 
 - **Relative:** `30m`, `2h`, `1d`
-- **Human-readable:** `"every 2 hours"`, `"daily at 9am"`
+- **Interval:** `"every 30m"`, `"every 2h"`
 - **Cron expressions:** `"0 9 * * *"` (standard 5-field cron syntax)
+- **ISO timestamps:** `"2026-03-15T09:00:00"` (one-time scheduled execution)
 
 ## Managing Jobs
 

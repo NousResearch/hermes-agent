@@ -18,21 +18,21 @@ hermes
 hermes chat -q "Hello"
 
 # With a specific model
-hermes --model "anthropic/claude-sonnet-4"
+hermes chat --model "anthropic/claude-sonnet-4"
 
 # With a specific provider
-hermes --provider nous        # Use Nous Portal
-hermes --provider openrouter  # Force OpenRouter
+hermes chat --provider nous        # Use Nous Portal
+hermes chat --provider openrouter  # Force OpenRouter
 
 # With specific toolsets
-hermes --toolsets "web,terminal,skills"
+hermes chat --toolsets "web,terminal,skills"
 
 # Resume previous sessions
 hermes --continue             # Resume the most recent CLI session (-c)
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
 # Verbose mode (debug output)
-hermes --verbose
+hermes chat --verbose
 ```
 
 ## Interface Layout
@@ -264,5 +264,5 @@ By default, the CLI runs in quiet mode which:
 
 For debug output:
 ```bash
-hermes --verbose
+hermes chat --verbose
 ```

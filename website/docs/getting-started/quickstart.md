@@ -40,6 +40,7 @@ This walks you through selecting an inference provider:
 | Provider | What it is | How to set up |
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
+| **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
 | **OpenRouter** | 200+ models, pay-per-use | Enter your API key |
 | **Custom Endpoint** | VLLM, SGLang, any OpenAI-compatible API | Set base URL + API key |
 
@@ -161,7 +162,7 @@ mcp_servers:
 | `hermes` | Start chatting |
 | `hermes setup` | Configure providers and settings |
 | `hermes model` | Switch provider or model |
-| `hermes tools` | See all available tools |
+| `hermes tools` | Configure which tools are enabled per platform |
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest version |
 | `hermes gateway` | Start the messaging gateway |

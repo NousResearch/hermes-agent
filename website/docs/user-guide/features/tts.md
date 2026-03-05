@@ -25,7 +25,7 @@ Convert text to speech with three providers:
 | Telegram | Voice bubble (plays inline) | Opus `.ogg` |
 | Discord | Audio file attachment | MP3 |
 | WhatsApp | Audio file attachment | MP3 |
-| CLI | Saved to `~/voice-memos/` | MP3 |
+| CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
 ### Configuration
 

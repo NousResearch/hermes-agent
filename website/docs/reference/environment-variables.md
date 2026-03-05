@@ -15,6 +15,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
+| `HERMES_MODEL` | Preferred model name (checked before `LLM_MODEL`, used by gateway) |
 | `LLM_MODEL` | Default model name (fallback when not set in config.yaml) |
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI key for TTS and voice transcription (separate from custom endpoint) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`) |
@@ -47,9 +48,12 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | Variable | Description |
 |----------|-------------|
 | `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal` |
-| `TERMINAL_DOCKER_IMAGE` | Docker image (default: `python:3.11-slim`) |
+| `TERMINAL_DOCKER_IMAGE` | Docker image (default: `python:3.11`) |
+| `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
+| `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
+| `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for all terminal sessions |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 

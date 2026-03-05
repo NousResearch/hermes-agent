@@ -50,7 +50,8 @@ hermes-agent/
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
 │   ├── session_search_tool.py    # Search past conversations
 │   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
+│   ├── skills_tool.py             # Skill search and load
+│   ├── skill_manager_tool.py      # Skill management
 │   └── environments/             # Terminal execution backends
 │       ├── base.py                   # BaseEnvironment ABC
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py
@@ -114,7 +115,7 @@ while turns < max_turns:
 class AIAgent:
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4",
+        model: str = "anthropic/claude-opus-4.6",
         api_key: str = None,
         base_url: str = "https://openrouter.ai/api/v1",
         max_iterations: int = 60,
@@ -126,7 +127,7 @@ class AIAgent:
     ):
         ...
 
-    def chat(self, user_message: str, task_id: str = None) -> str:
+    def chat(self, message: str) -> str:
         # Main entry point - runs the agent loop
         ...
 ```

@@ -41,7 +41,8 @@ The agent uses the `memory` tool with these actions:
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content
 - **remove** — Remove an entry that's no longer relevant
-- **read** — Read current memory contents
+
+Memory content is automatically injected into the system prompt at session start — there is no `read` action. The agent sees its memories as part of the conversation context.
 
 ## Session Search
 

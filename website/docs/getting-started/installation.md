@@ -26,9 +26,15 @@ The installer handles everything automatically:
 
 - Installs [uv](https://docs.astral.sh/uv/) (fast Python package manager) if not present
 - Installs Python 3.11 via uv if not already available (no sudo needed)
+- Installs Node.js v22 if not present (needed for browser automation and WhatsApp bridge)
+- Installs ripgrep if not present (fast file search)
+- Installs ffmpeg if not present (audio format conversion for TTS)
 - Clones to `~/.hermes/hermes-agent` (with submodules: mini-swe-agent, tinker-atropos)
 - Creates a virtual environment with Python 3.11
 - Installs all dependencies and submodule packages
+- Installs WhatsApp bridge npm dependencies
+- Seeds bundled skills into `~/.hermes/skills/`
+- Creates a default `SOUL.md` personality file
 - Sets up the `hermes` command globally (no venv activation needed)
 - Runs the interactive setup wizard
 
@@ -46,37 +52,17 @@ hermes             # Start chatting!
 
 ## Prerequisites
 
-| Requirement | Minimum Version | Check Command | Notes |
-|-------------|----------------|---------------|-------|
-| **Git** | Any recent | `git --version` | Required |
-| **Node.js** | 18+ | `node --version` | Optional — needed for browser automation and WhatsApp bridge |
-| **ripgrep** | Any | `rg --version` | Optional — faster file search (falls back to grep) |
+The only prerequisite is **Git**. The installer automatically handles everything else:
+
+- **uv** (fast Python package manager)
+- **Python 3.11** (via uv, no sudo needed)
+- **Node.js v22** (for browser automation and WhatsApp bridge)
+- **ripgrep** (fast file search)
+- **ffmpeg** (audio format conversion for TTS)
 
 :::info
-Python and pip are **not** prerequisites. The installer uses [uv](https://docs.astral.sh/uv/) to provision Python 3.11 automatically (no sudo needed). If you already have Python 3.11+ installed, uv will use it.
+You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`).
 :::
-
-<details>
-<summary><strong>Installing prerequisites by platform</strong></summary>
-
-**Ubuntu / Debian:**
-```bash
-sudo apt update && sudo apt install git
-# Optional:
-sudo apt install ripgrep nodejs npm
-```
-
-**macOS (Homebrew):**
-```bash
-brew install git
-# Optional:
-brew install ripgrep node
-```
-
-**Windows:**
-Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu/Debian instructions above.
-
-</details>
 
 ---
 
@@ -137,6 +123,12 @@ uv pip install -e "."
 | `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
 | `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
 | `modal` | Modal cloud execution backend | `uv pip install -e ".[modal]"` |
+| `tts-premium` | ElevenLabs premium voices | `uv pip install -e ".[tts-premium]"` |
+| `pty` | PTY terminal support | `uv pip install -e ".[pty]"` |
+| `honcho` | AI-native memory (Honcho integration) | `uv pip install -e ".[honcho]"` |
+| `mcp` | Model Context Protocol support | `uv pip install -e ".[mcp]"` |
+| `homeassistant` | Home Assistant integration | `uv pip install -e ".[homeassistant]"` |
+| `slack` | Slack messaging | `uv pip install -e ".[slack]"` |
 | `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
 
 You can combine extras: `uv pip install -e ".[messaging,cron]"`
@@ -157,7 +149,7 @@ Both are optional — if you skip them, the corresponding toolsets simply won't 
 
 ### Step 5: Install Node.js Dependencies (Optional)
 
-Only needed for **browser automation** (Browserbase-powered):
+Only needed for **browser automation** (Browserbase-powered) and **WhatsApp bridge**:
 
 ```bash
 npm install
@@ -167,7 +159,7 @@ npm install
 
 ```bash
 # Create the directory structure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
 
 # Copy the example config file
 cp cli-config.yaml.example ~/.hermes/config.yaml
@@ -251,10 +243,10 @@ export VIRTUAL_ENV="$(pwd)/venv"
 uv pip install -e ".[all]"
 uv pip install -e "./mini-swe-agent"
 uv pip install -e "./tinker-atropos"
-npm install  # optional, for browser tools
+npm install  # optional, for browser tools and WhatsApp
 
 # Configure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
 cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env

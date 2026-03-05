@@ -16,18 +16,19 @@ These are commands you run from your shell.
 |---------|-------------|
 | `hermes` | Start interactive chat (default) |
 | `hermes chat -q "Hello"` | Single query mode (non-interactive) |
-| `hermes --continue` / `-c` | Resume the most recent session |
-| `hermes --resume <id>` / `-r <id>` | Resume a specific session |
-| `hermes --model <name>` | Use a specific model |
-| `hermes --provider <name>` | Force a provider (`nous`, `openrouter`) |
-| `hermes --toolsets "web,terminal"` | Use specific toolsets |
-| `hermes --verbose` | Enable verbose/debug output |
+| `hermes chat --continue` / `-c` | Resume the most recent session |
+| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session |
+| `hermes chat --model <name>` | Use a specific model |
+| `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`) |
+| `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
+| `hermes chat --verbose` | Enable verbose/debug output |
 
 ### Provider & Model Management
 
 | Command | Description |
 |---------|-------------|
 | `hermes model` | Switch provider and model interactively |
+| `hermes login` | OAuth login to a provider (use `--provider` to specify) |
 | `hermes logout` | Clear stored OAuth credentials |
 
 ### Configuration
@@ -40,6 +41,7 @@ These are commands you run from your shell.
 | `hermes config set KEY VAL` | Set a specific value |
 | `hermes config check` | Check for missing config (useful after updates) |
 | `hermes config migrate` | Interactively add missing options |
+| `hermes tools` | Interactive tool configuration per platform |
 | `hermes status` | Show configuration status (including auth) |
 | `hermes doctor` | Diagnose issues |
 
@@ -62,6 +64,7 @@ These are commands you run from your shell.
 | `hermes gateway stop` | Stop the service |
 | `hermes gateway restart` | Restart the service |
 | `hermes gateway status` | Check service status |
+| `hermes gateway uninstall` | Uninstall the system service |
 | `hermes whatsapp` | Pair WhatsApp via QR code |
 
 ### Skills
@@ -88,15 +91,21 @@ These are commands you run from your shell.
 |---------|-------------|
 | `hermes cron list` | View scheduled jobs |
 | `hermes cron status` | Check if cron scheduler is running |
+| `hermes cron tick` | Manually trigger a cron tick |
 | `hermes pairing list` | View pending + approved users |
 | `hermes pairing approve <platform> <code>` | Approve a pairing code |
 | `hermes pairing revoke <platform> <user_id>` | Remove user access |
+| `hermes pairing clear-pending` | Clear all pending pairing requests |
 
 ### Sessions
 
 | Command | Description |
 |---------|-------------|
 | `hermes sessions list` | Browse past sessions |
+| `hermes sessions export <id>` | Export a session |
+| `hermes sessions delete <id>` | Delete a specific session |
+| `hermes sessions prune` | Remove old sessions |
+| `hermes sessions stats` | Show session statistics |
 
 ---
 

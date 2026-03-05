@@ -12,9 +12,9 @@ Tools are functions that extend the agent's capabilities. They're organized into
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Web** | `web_search`, `web_extract`, `web_crawl` | Search the web, extract page content, crawl sites |
-| **Terminal** | `terminal` | Execute commands (local/docker/singularity/modal/ssh backends) |
-| **File** | `read_file`, `write_file`, `patch`, `search` | Read, write, edit, and search files |
+| **Web** | `web_search`, `web_extract` | Search the web, extract page content |
+| **Terminal** | `terminal`, `process` | Execute commands (local/docker/singularity/modal/ssh backends), manage background processes |
+| **File** | `read_file`, `write_file`, `patch`, `search_files` | Read, write, edit, and search files |
 | **Browser** | `browser_navigate`, `browser_click`, `browser_type`, etc. | Full browser automation via Browserbase |
 | **Vision** | `vision_analyze` | Image analysis via multimodal models |
 | **Image Gen** | `image_generate` | Generate images (FLUX via FAL) |
@@ -27,14 +27,14 @@ Tools are functions that extend the agent's capabilities. They're organized into
 | **Cronjob** | `schedule_cronjob`, `list_cronjobs`, `remove_cronjob` | Scheduled task management |
 | **Code Execution** | `execute_code` | Run Python scripts that call tools via RPC sandbox |
 | **Delegation** | `delegate_task` | Spawn subagents with isolated context |
-| **Clarify** | `clarify` | Ask the user multiple-choice or open-ended questions (CLI-only) |
+| **Clarify** | `clarify` | Ask the user multiple-choice or open-ended questions |
 | **MCP** | Auto-discovered | External tools from MCP servers |
 
 ## Using Toolsets
 
 ```bash
 # Use specific toolsets
-hermes --toolsets "web,terminal"
+hermes chat --toolsets "web,terminal"
 
 # See all available tools
 hermes tools

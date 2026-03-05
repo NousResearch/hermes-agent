@@ -33,7 +33,7 @@ delegate_task(tasks=[
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)
-- **Depth limit of 2** — no grandchildren
+- **No nested delegation** — children cannot delegate further (no grandchildren)
 - Subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code`
 - **Interrupt propagation** — interrupting the parent interrupts all active children
 - Only the final summary enters the parent's context, keeping token usage efficient

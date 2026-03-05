@@ -27,8 +27,8 @@ Every installed skill is automatically available as a slash command:
 You can also interact with skills through natural conversation:
 
 ```bash
-hermes --toolsets skills -q "What skills do you have?"
-hermes --toolsets skills -q "Show me the axolotl skill"
+hermes chat --toolsets skills -q "What skills do you have?"
+hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
 
 ## Progressive Disclosure
@@ -36,10 +36,9 @@ hermes --toolsets skills -q "Show me the axolotl skill"
 Skills use a token-efficient loading pattern:
 
 ```
-Level 0: skills_categories()     → ["mlops", "devops"]           (~50 tokens)
-Level 1: skills_list(category)   → [{name, description}, ...]   (~3k tokens)
-Level 2: skill_view(name)        → Full content + metadata       (varies)
-Level 3: skill_view(name, path)  → Specific reference file       (varies)
+Level 0: skills_list()           → [{name, description}, ...]   (~3k tokens)
+Level 1: skill_view(name)        → Full content + metadata       (varies)
+Level 2: skill_view(name, path)  → Specific reference file       (varies)
 ```
 
 The agent only loads the full skill content when it actually needs it.

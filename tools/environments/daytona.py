@@ -32,7 +32,7 @@ class DaytonaEnvironment(BaseEnvironment):
         timeout: int = 60,
         cpu: int = 1,
         memory: int = 5120,       # MB (hermes convention)
-        disk: int = 51200,        # MB (hermes convention)
+        disk: int = 10240,        # MB (Daytona platform max is 10GB)
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):

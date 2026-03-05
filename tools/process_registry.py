@@ -148,11 +148,14 @@ class ProcessRegistry:
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
-                import ptyprocess
+                if _IS_WINDOWS:
+                    from winpty import PtyProcess as _PtyProcessCls
+                else:
+                    from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
                 pty_env = os.environ | (env_vars or {})
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_proc = ptyprocess.PtyProcess.spawn(
+                pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", command],
                     cwd=session.cwd,
                     env=pty_env,

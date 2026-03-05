@@ -1,7 +1,7 @@
 ---
 name: ascii-art
-description: Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii conversion, and asciiart.eu search (11,000+ artworks). Falls back to LLM-generated art using Unicode characters.
-version: 3.0.0
+description: Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii conversion, and search curated art from emojicombos.com and asciiart.eu (11,000+ artworks). Falls back to LLM-generated art.
+version: 3.1.0
 author: 0xbyt4, Hermes Agent
 license: MIT
 dependencies: []
@@ -190,39 +190,61 @@ jp2a --width=80 image.jpg
 jp2a --colors image.jpg              # Colorized
 ```
 
-## Tool 6: Search Pre-Made ASCII Art (asciiart.eu)
+## Tool 6: Search Pre-Made ASCII Art (Web APIs)
 
-The ASCII Art Archive has 11,000+ artworks organized by category. Use `web_extract` to fetch them.
+Search curated ASCII art databases via `web_extract`. No API keys needed.
 
-### Browse by category
+### Source A: emojicombos.com (recommended first)
 
-Common categories (use as URL paths):
+Huge collection of ASCII art, dot art, kaomoji, and emoji combos. Modern, meme-aware, user-submitted content. Great for pop culture, animals, objects, aesthetics.
+
+**URL pattern:** `https://emojicombos.com/{term}-ascii-art`
+
+```
+web_extract(urls=["https://emojicombos.com/cat-ascii-art"])
+web_extract(urls=["https://emojicombos.com/rocket-ascii-art"])
+web_extract(urls=["https://emojicombos.com/dragon-ascii-art"])
+web_extract(urls=["https://emojicombos.com/skull-ascii-art"])
+web_extract(urls=["https://emojicombos.com/heart-ascii-art"])
+```
+
+**Tips:**
+- Use hyphenated search terms: `hello-kitty-ascii-art`, `star-wars-ascii-art`
+- Returns a mix of classic ASCII, Braille dot art, and kaomoji — pick the best style for the user
+- Includes modern meme art and pop culture references
+- Great for kaomoji/emoticons too: `https://emojicombos.com/cat-kaomoji`
+
+### Source B: asciiart.eu (classic archive)
+
+11,000+ classic ASCII artworks organized by category. More traditional/vintage art.
+
+**Browse by category** (use as URL paths):
 - `animals/cats`, `animals/dogs`, `animals/birds`, `animals/horses`
 - `animals/dolphins`, `animals/dragons`, `animals/insects`
 - `space/rockets`, `space/stars`, `space/planets`
 - `vehicles/cars`, `vehicles/ships`, `vehicles/airplanes`
 - `food-and-drinks/coffee`, `food-and-drinks/beer`
 - `computers/computers`, `electronics/robots`
-- `people/faces`, `people/body-parts/hands`
 - `art-and-design/hearts`, `art-and-design/skulls`
 - `plants/flowers`, `plants/trees`
 - `mythology/dragons`, `mythology/unicorns`
 
 ```
 web_extract(urls=["https://www.asciiart.eu/animals/cats"])
-```
-
-### Search by keyword
-
-```
 web_extract(urls=["https://www.asciiart.eu/search?q=rocket"])
 ```
 
-### Tips
-
-- The extracted content includes multiple art pieces — pick the best one
+**Tips:**
 - Preserve artist initials/signatures (e.g., `jgs`, `hjw`) — this is important etiquette
-- If search returns nothing good, fall back to LLM generation
+- Better for classic/vintage ASCII art style
+
+### Source C: GitHub Octocat API (fun easter egg)
+
+Returns a random GitHub Octocat with a quote. No auth needed.
+
+```bash
+curl -s https://api.github.com/octocat
+```
 
 ## Tool 7: LLM-Generated Custom Art (Fallback)
 
@@ -262,7 +284,8 @@ telnet towel.blinkenlights.nl
 1. **Text as a banner** → pyfiglet (or toilet for colored output)
 2. **Wrap a message in fun character art** → cowsay
 3. **Add decorative border/frame** → boxes (can combine with pyfiglet)
-4. **Art of a thing** (cat, rocket, dragon) → asciiart.eu search
-5. **Convert an image to ASCII** → ascii-image-converter or jp2a
-6. **Something custom/creative** → LLM generation with Unicode palette
-7. **Any tool not installed** → install it, or fall back to next option
+4. **Art of a thing** (cat, rocket, dragon) → emojicombos.com first, then asciiart.eu
+5. **Kaomoji / emoticons** → emojicombos.com (`{term}-kaomoji`)
+6. **Convert an image to ASCII** → ascii-image-converter or jp2a
+7. **Something custom/creative** → LLM generation with Unicode palette
+8. **Any tool not installed** → install it, or fall back to next option

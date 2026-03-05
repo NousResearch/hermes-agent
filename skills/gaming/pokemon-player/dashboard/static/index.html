@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Plays Pokémon</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="logo">🎮 Hermes Plays Pokémon</div>
+  <div class="header-right">
+    <div class="stat-pills">
+      <div class="stat-pill">Turn <span id="turnCount">0</span></div>
+      <div class="stat-pill">Badges <span id="badgeCount">—</span></div>
+      <div class="stat-pill">⏱ <span id="playTime">0m</span></div>
+      <div class="stat-pill">💰 <span id="money">—</span></div>
+    </div>
+    <div class="input-history" id="inputHistory"></div>
+    <div class="ws-indicator">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsLabel">CONNECTING</span>
+    </div>
+  </div>
+</header>
+<div class="main">
+  <div class="ai-panel">
+    <div class="panel-header">
+      <div class="panel-header-dot"></div>
+      AI Thought Process &amp; Action Log
+    </div>
+    <div class="log-scroll" id="logScroll"></div>
+  </div>
+  <div class="game-panel">
+    <div class="game-label">Live Frame</div>
+    <div class="game-frame-wrapper">
+      <div class="game-screen">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+        <img id="gameImg" src="/screenshot" alt="Game Frame">
+      </div>
+    </div>
+    <div class="turn-badge">Turn <span id="turnBadge">0</span></div>
+  </div>
+</div>
+<div class="team-bar">
+  <div class="team-label">Current Team</div>
+  <div class="team-cards" id="teamCards">
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+    <div class="pokemon-card empty"><div class="empty-circle"></div><div class="empty-label">Empty</div></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -196,8 +196,7 @@ def _find_all_skills() -> List[Dict[str, Any]]:
         return skills
     
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        path_str = str(skill_md)
-        if '/.git/' in path_str or '/.github/' in path_str or '/.hub/' in path_str:
+        if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
             continue
             
         skill_dir = skill_md.parent

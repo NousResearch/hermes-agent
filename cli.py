@@ -4099,6 +4099,7 @@ class HermesCLI:
             # we stream audio sentence-by-sentence as the agent generates tokens
             # instead of waiting for the full response.
             use_streaming_tts = False
+            _streaming_box_opened = False
             text_queue = None
             tts_thread = None
             stream_callback = None
@@ -4123,9 +4124,21 @@ class HermesCLI:
                 text_queue = queue.Queue()
                 stop_event = threading.Event()
 
+                def display_callback(sentence: str):
+                    """Called by TTS consumer when a sentence is ready to display + speak."""
+                    nonlocal _streaming_box_opened
+                    if not _streaming_box_opened:
+                        _streaming_box_opened = True
+                        w = self.console.width
+                        label = " ⚕ Hermes "
+                        fill = w - 2 - len(label)
+                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                    _cprint(sentence.rstrip())
+
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
                     args=(text_queue, stop_event, self._voice_tts_done),
+                    kwargs={"display_callback": display_callback},
                     daemon=True,
                 )
                 tts_thread.start()
@@ -4244,8 +4257,7 @@ class HermesCLI:
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
             if response and not response_previewed:
-                # Use a Rich Panel for the response box — adapts to terminal
-                # width at render time instead of hard-coding border length.
+                # Use skin engine for label/color with fallback
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
@@ -4257,17 +4269,22 @@ class HermesCLI:
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
-                _chat_console = ChatConsole()
-                _chat_console.print(Panel(
-                    _rich_text_from_ansi(response),
-                    title=f"[{_resp_color} bold]{label}[/]",
-                    title_align="left",
-                    border_style=_resp_color,
-                    style=_resp_text,
-                    box=rich_box.HORIZONTALS,
-                    padding=(1, 2),
-                ))
-
+                is_error_response = result and (result.get("failed") or result.get("partial"))
+                if use_streaming_tts and _streaming_box_opened and not is_error_response:
+                    # Text was already printed sentence-by-sentence; just close the box
+                    w = shutil.get_terminal_size().columns
+                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                else:
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        _rich_text_from_ansi(response),
+                        title=f"[{_resp_color} bold]{label}[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
 
 
             # Play terminal bell when agent finishes (if enabled).

@@ -7,6 +7,7 @@ and resumed on next creation, preserving the filesystem across sessions.
 
 import logging
 import math
+import shlex
 import threading
 import uuid
 import warnings
@@ -112,13 +113,24 @@ class DaytonaEnvironment(BaseEnvironment):
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
     def _exec_in_thread(self, exec_command: str, cwd: Optional[str], timeout: int) -> dict:
-        """Run exec in a background thread with interrupt polling."""
+        """Run exec in a background thread with interrupt polling.
+
+        The Daytona SDK's exec(timeout=...) parameter is unreliable (the
+        server-side timeout is not enforced and the SDK has no client-side
+        fallback), so we wrap the command with the shell ``timeout`` utility
+        which reliably kills the process and returns exit code 124.
+        """
+        # Wrap with shell `timeout` to enforce the deadline reliably.
+        # Add a small buffer so the shell timeout fires before any SDK-level
+        # timeout would, giving us a clean exit code 124.
+        timed_command = f"timeout {timeout} sh -c {shlex.quote(exec_command)}"
+
         result_holder: dict = {"value": None, "error": None}
 
         def _run():
             try:
                 response = self._sandbox.process.exec(
-                    exec_command, cwd=cwd, timeout=timeout,
+                    timed_command, cwd=cwd,
                 )
                 result_holder["value"] = {
                     "output": response.result or "",
@@ -129,8 +141,11 @@ class DaytonaEnvironment(BaseEnvironment):
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+        # Wait for timeout + generous buffer for network/SDK overhead
+        deadline = timeout + 10
         while t.is_alive():
             t.join(timeout=0.2)
+            deadline -= 0.2
             if is_interrupted():
                 with self._lock:
                     try:
@@ -141,6 +156,14 @@ class DaytonaEnvironment(BaseEnvironment):
                     "output": "[Command interrupted - Daytona sandbox stopped]",
                     "returncode": 130,
                 }
+            if deadline <= 0:
+                # Shell timeout didn't fire and SDK is hung — force stop
+                with self._lock:
+                    try:
+                        self._sandbox.stop()
+                    except Exception:
+                        pass
+                return self._timeout_result(timeout)
 
         if result_holder["error"]:
             return {"error": result_holder["error"]}

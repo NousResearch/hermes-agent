@@ -112,7 +112,7 @@ def format_report(
         _header("Wallet Risk Analyzer"),
         f"Wallet: {wallet_short}",
         f"Risk Score: {clr}{risk_score}{reset}",
-        f"- Past tx count: {risk_result['past_tx_count']}",
+        f"- Past tx count: {'1000+' if risk_result['past_tx_count'] >= 1000 else risk_result['past_tx_count']}",
         f"- Mint-dump pattern: {yes_no(risk_result['mint_dump_pattern'])}",
         f"- Wash trading signals: {risk_result['wash_trading_signals']}",
         f"- Fast flips in same collection: {yes_no(risk_result['fast_flips'])}",

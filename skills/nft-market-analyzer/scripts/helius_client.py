@@ -272,11 +272,12 @@ class HeliusClient:
 # TensorClient
 # ─────────────────────────────────────────────────────────────────────────────
 
-TENSOR_URL = "https://api.tensor.so/graphql"
+
+TENSOR_REST_URL = "https://api.mainnet.tensordev.io/api/v1/user/transactions"
 
 class TensorClient:
     """
-    Read-only Tensor Trade API wrapper.
+    Read-only Tensor Trade REST API wrapper.
     Fetches real NFT buy/sell history for accurate ROI calculation.
     """
 
@@ -288,47 +289,37 @@ class TensorClient:
 
     def get_wallet_transactions(self, wallet: str) -> list:
         """
-        Fetch NFT transaction history for a wallet from Tensor.
+        Fetch NFT transaction history for a wallet from Tensor REST API.
         Returns a list of buy/sell events with real prices.
         """
-        query = """
-        query WalletTxs($wallet: String!) {
-          userTxs(wallet: $wallet, limit: 100) {
-            txs {
-              tx {
-                txType
-                grossAmount
-                mint { onchainId }
-                buyer { address }
-                seller { address }
-                txAt
-              }
-            }
-          }
-        }
-        """
-        payload = {
-            "query": query,
-            "variables": {"wallet": wallet}
-        }
-        data = json.dumps(payload).encode("utf-8")
         try:
+            url = f"{TENSOR_REST_URL}?wallets={wallet}&limit=100"
             if self.verbose:
-                print(f"  [TENSOR] {TENSOR_URL}", file=sys.stderr)
+                print(f"  [TENSOR] {url}", file=sys.stderr)
             req = urllib.request.Request(
-                TENSOR_URL,
-                data=data,
+                url,
                 headers={
-                    "Content-Type": "application/json",
                     "X-TENSOR-API-KEY": self.api_key,
                     "User-Agent": "Mozilla/5.0",
                 },
-                method="POST",
+                method="GET",
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                txs = result.get("data", {}).get("userTxs", {}).get("txs", [])
-                return [t["tx"] for t in txs if t.get("tx")]
+                txs = result.get("txs", [])
+                # Normalize to match profiler expectations
+                normalized = []
+                for tx in txs:
+                    normalized.append({
+                        "txType": tx.get("txType", ""),
+                        "grossAmount": int(tx.get("grossAmount") or 0),
+                        "mint": {"onchainId": tx.get("mintOnchainId", "")},
+                        "buyer": {"address": tx.get("buyerId") or ""},
+                        "seller": {"address": tx.get("sellerId") or ""},
+                        "txAt": tx.get("txAt", ""),
+                    })
+                return normalized
         except Exception as exc:
             print(f"  [WARN] Tensor API error: {exc}", file=sys.stderr)
             return []
+

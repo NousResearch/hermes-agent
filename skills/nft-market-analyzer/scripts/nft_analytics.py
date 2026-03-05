@@ -184,6 +184,7 @@ def run_analysis(
     # ── Run analyzers (all return spec-canonical keys) ────────────────────────
     risk_result        = WalletRiskAnalyzer(wallet, transactions).analyze()
     smart_money_result = SmartMoneyTracker(wallet, transactions).analyze()
+    _smart_roi_fallback = smart_money_result["avg_roi"] == 0
     # Tensor'dan gerçek fiyatları çek
     tensor_txs = []
     if tensor_key:
@@ -197,6 +198,9 @@ def run_analysis(
             print(f"  [WARN] Tensor skipped: {e}", file=sys.stderr)
 
     profiler_result    = WalletProfiler(wallet, transactions, owned_assets, tensor_txs=tensor_txs).analyze()
+    if _smart_roi_fallback and profiler_result["net_roi"] != 0:
+        smart_money_result["avg_roi"] = profiler_result["net_roi"]
+        smart_money_result["smart_entry"] = profiler_result["net_roi"] >= 8 and smart_money_result["active_months"] >= 3
 
     # ── Format ────────────────────────────────────────────────────────────────
     if json_output:

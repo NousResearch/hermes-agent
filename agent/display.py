@@ -22,6 +22,8 @@ _RESET = "\033[0m"
 
 def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
     """Build a short preview of a tool call's primary argument for display."""
+    if not args:
+        return None
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",

@@ -8,6 +8,7 @@
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
+ *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
@@ -211,6 +212,27 @@ app.post('/send', async (req, res) => {
     const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
     const sent = await sock.sendMessage(chatId, { text: prefixed });
     res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edit a previously sent message
+app.post('/edit', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, message } = req.body;
+  if (!chatId || !messageId || !message) {
+    return res.status(400).json({ error: 'chatId, messageId, and message are required' });
+  }
+
+  try {
+    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
+    const key = { id: messageId, fromMe: true, remoteJid: chatId };
+    await sock.sendMessage(chatId, { text: prefixed, edit: key });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

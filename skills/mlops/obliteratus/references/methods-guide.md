@@ -1,5 +1,10 @@
 # OBLITERATUS Methods — Detailed Guide
 
+> **Important:** The CLI (`obliteratus obliterate --method`) accepts 9 methods:
+> basic, advanced, aggressive, spectral_cascade, informed, surgical, optimized,
+> inverted, nuclear. Four additional methods (failspy, gabliteration, heretic, rdo)
+> are available only via the Python API and will be rejected by argparse if used on CLI.
+
 ## How Abliteration Works (Theory)
 
 When a model is trained with RLHF/DPO/CAI, it learns to represent "should I refuse?"
@@ -84,11 +89,13 @@ The informed pipeline runs these analysis modules during abliteration:
 **Best for:** When you want the model to be maximally helpful
 **Warning:** Can make the model too eager; may reduce safety-adjacent reasoning
 
-### failspy / gabliteration / heretic / rdo
+### failspy / gabliteration / heretic / rdo (PYTHON API ONLY)
 **Technique:** Faithful reproductions of prior community/academic work
 **Speed:** Varies
 **Quality:** Known baselines
 **Best for:** Reproducing published results, comparing methods
+**⚠️ NOT available via CLI** — these methods are only accessible via the Python API.
+Do not use `--method failspy` etc. in CLI commands; argparse will reject them.
 
 ## Method Selection Flowchart
 

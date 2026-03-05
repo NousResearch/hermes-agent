@@ -1,7 +1,11 @@
 # OBLITERATUS Analysis Modules — Reference
 
-27 analysis modules for mechanistic interpretability of refusal in LLMs.
+15 analysis modules for mechanistic interpretability of refusal in LLMs.
 These help you understand HOW a model refuses before you decide to remove it.
+
+> **Note:** The `analysis/` directory contains additional utility files (utils.py,
+> visualization.py, etc.) and helper functions beyond the 15 core analysis modules
+> listed below. The module count matches the README's "15 deep analysis modules."
 
 ## Core Analysis (Run These First)
 

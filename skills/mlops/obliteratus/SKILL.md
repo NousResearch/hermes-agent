@@ -1,6 +1,6 @@
 ---
 name: obliteratus
-description: Remove refusal behaviors from open-weight LLMs using OBLITERATUS — SVD-based weight projection that excises guardrails while preserving reasoning. Supports 13 methods, 27 analysis modules, 116 model presets across 5 compute tiers. Use when a user wants to uncensor, abliterate, or remove refusal from an LLM.
+description: Remove refusal behaviors from open-weight LLMs using OBLITERATUS — mechanistic interpretability techniques (diff-in-means, SVD, whitened SVD, SAE decomposition, etc.) to excise guardrails while preserving reasoning. 9 CLI methods (+ 4 Python-API-only), 15 analysis modules, 116 model presets across 5 compute tiers. Use when a user wants to uncensor, abliterate, or remove refusal from an LLM.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -13,7 +13,7 @@ metadata:
 
 # OBLITERATUS Skill
 
-Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses SVD-based weight projection to surgically excise refusal directions from model weights while preserving reasoning capabilities.
+Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
 **License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
 
@@ -100,24 +100,30 @@ obliteratus info meta-llama/Llama-3.1-8B-Instruct
 | Reasoning model (R1 distills)     | `surgical`         | CoT-aware, preserves chain-of-thought    |
 | Stubborn refusals persist         | `aggressive`       | Whitened SVD + head surgery + jailbreak   |
 | Want reversible changes           | Use steering vectors (see Analysis section) |
-| Reproducing prior work            | `failspy`, `gabliteration`, `heretic`, `rdo` |
 | Maximum quality, time no object   | `optimized`        | Bayesian search for best parameters      |
 
-### All 13 Methods
+### 9 CLI Methods
+
+These can be passed to `--method` on the command line:
 
 - **basic** — Single refusal direction via diff-in-means. Fastest, simplest. (Arditi et al. 2024)
-- **failspy** — FailSpy/abliterator reproduction
-- **gabliteration** — Gabliteration reproduction
-- **heretic** — Heretic/p-e-w reproduction
-- **rdo** — Refusal Direction Optimization (ICML 2025)
 - **advanced** — Multiple SVD directions, norm-preserving projection. Good default.
-- **inverted** — Flips the refusal direction (model becomes eager to help, not just neutral)
 - **aggressive** — Whitened SVD + jailbreak contrast + attention head surgery
 - **spectral_cascade** — DCT frequency-domain decomposition
 - **informed** — Runs analysis DURING abliteration to auto-configure. Detects DPO/RLHF/CAI, maps refusal geometry, compensates for self-repair. Best quality.
 - **surgical** — SAE features + neuron masking + head surgery + per-expert. Maximum precision.
 - **optimized** — Bayesian hyperparameter search (Optuna TPE). Slowest but optimal.
+- **inverted** — Flips the refusal direction (model becomes eager to help, not just neutral)
 - **nuclear** — Maximum force combo for stubborn MoE models.
+
+### 4 Python-API-Only Methods
+
+These reproduce prior community/academic work but are NOT available via CLI — only via the Python API (`from obliteratus.abliterate import AbliterationPipeline`). **Do not use these in CLI commands.**
+
+- **failspy** — FailSpy/abliterator reproduction
+- **gabliteration** — Gabliteration reproduction
+- **heretic** — Heretic/p-e-w reproduction
+- **rdo** — Refusal Direction Optimization (ICML 2025)
 
 ## Step 5: Run Abliteration
 
@@ -226,7 +232,7 @@ huggingface-cli upload your-username/model-name-abliterated ./abliterated-models
 vllm serve ./abliterated-models/model-name --port 8000
 ```
 
-## Analysis Modules (Pre-Abliteration, Optional)
+## Analysis Modules (15 Modules, Pre-Abliteration, Optional)
 
 For understanding refusal geometry before committing to abliteration.
 
@@ -275,9 +281,9 @@ obliteratus run my_study.yaml
 
 ## Telemetry Notice
 
-- **Local installs**: Telemetry OFF by default. Opt-in via `OBLITERATUS_TELEMETRY=1`
-- **HuggingFace Spaces**: Telemetry ON by default
-- Collected: model ID, method, scores, hardware, timing (anonymous)
+- **CLI usage (local installs)**: Telemetry is OFF by default. Must explicitly opt in via `OBLITERATUS_TELEMETRY=1` env var or `--contribute` flag.
+- **HuggingFace Spaces**: Telemetry is ON by default (auto-enabled when `SPACE_ID` env var is detected).
+- Collected: model ID, method, benchmark scores, hardware info, timing (anonymous)
 - NOT collected: IP addresses, user identity, prompt content
 - Force off: `export OBLITERATUS_TELEMETRY=0`
 

@@ -79,6 +79,7 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 | Feature | Provider | Env Variable |
 |---------|----------|--------------|
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY` |
+| Web scraping (self-hosted) | Firecrawl | `FIRECRAWL_API_URL` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |

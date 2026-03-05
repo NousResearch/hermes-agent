@@ -526,7 +526,63 @@ class BasePlatformAdapter(ABC):
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
-    
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a video natively via the platform API.
+
+        Override in subclasses to send videos as inline playable media.
+        Default falls back to sending the file path as text.
+        """
+        text = f"🎬 Video: {video_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a document/file natively via the platform API.
+
+        Override in subclasses to send files as downloadable attachments.
+        Default falls back to sending the file path as text.
+        """
+        text = f"📎 File: {file_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a local image file natively via the platform API.
+
+        Unlike send_image() which takes a URL, this takes a local file path.
+        Override in subclasses for native photo attachments.
+        Default falls back to sending the file path as text.
+        """
+        text = f"🖼️ Image: {image_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
@@ -693,19 +749,41 @@ class BasePlatformAdapter(ABC):
                     except Exception as img_err:
                         print(f"[{self.name}] Error sending image: {img_err}")
                 
-                # Send extracted audio/voice files as native attachments
-                for audio_path, is_voice in media_files:
+                # Send extracted media files — route by file type
+                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+                for media_path, is_voice in media_files:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        voice_result = await self.send_voice(
-                            chat_id=event.source.chat_id,
-                            audio_path=audio_path,
-                        )
-                        if not voice_result.success:
-                            print(f"[{self.name}] Failed to send voice: {voice_result.error}")
-                    except Exception as voice_err:
-                        print(f"[{self.name}] Error sending voice: {voice_err}")
+                        ext = Path(media_path).suffix.lower()
+                        if ext in _AUDIO_EXTS:
+                            media_result = await self.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=media_path,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            media_result = await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=media_path,
+                            )
+                        elif ext in _IMAGE_EXTS:
+                            media_result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=media_path,
+                            )
+                        else:
+                            media_result = await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                            )
+
+                        if not media_result.success:
+                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                    except Exception as media_err:
+                        print(f"[{self.name}] Error sending media: {media_err}")
             
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:

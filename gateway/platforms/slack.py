@@ -156,6 +156,25 @@ class SlackAdapter(BasePlatformAdapter):
             print(f"[Slack] Send error: {e}")
             return SendResult(success=False, error=str(e))
 
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a previously sent Slack message."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._app.client.chat_update(
+                channel=chat_id,
+                ts=message_id,
+                text=content,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_typing(self, chat_id: str) -> None:
         """Slack doesn't have a direct typing indicator API for bots."""
         pass

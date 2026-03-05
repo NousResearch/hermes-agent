@@ -1950,30 +1950,36 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
+            can_edit = True          # False once an edit fails (platform doesn't support it)
 
             while True:
                 try:
                     msg = progress_queue.get_nowait()
                     progress_lines.append(msg)
-                    full_text = "\n".join(progress_lines)
 
-                    if progress_msg_id is None:
-                        # First tool: send as new message
-                        result = await adapter.send(chat_id=source.chat_id, content=full_text)
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
-                    else:
-                        # Subsequent tools: try to edit, fall back to new message
+                    if can_edit and progress_msg_id is not None:
+                        # Try to edit the existing progress message
+                        full_text = "\n".join(progress_lines)
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
                             content=full_text,
                         )
                         if not result.success:
-                            # Edit failed — send as new message and track it
+                            # Platform doesn't support editing — stop trying,
+                            # send just this new line as a separate message
+                            can_edit = False
+                            await adapter.send(chat_id=source.chat_id, content=msg)
+                    else:
+                        if can_edit:
+                            # First tool: send all accumulated text as new message
+                            full_text = "\n".join(progress_lines)
                             result = await adapter.send(chat_id=source.chat_id, content=full_text)
-                            if result.success and result.message_id:
-                                progress_msg_id = result.message_id
+                        else:
+                            # Editing unsupported: send just this line
+                            result = await adapter.send(chat_id=source.chat_id, content=msg)
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
@@ -1989,8 +1995,8 @@ class GatewayRunner:
                             progress_lines.append(msg)
                         except Exception:
                             break
-                    # Final edit with all remaining tools
-                    if progress_lines and progress_msg_id:
+                    # Final edit with all remaining tools (only if editing works)
+                    if can_edit and progress_lines and progress_msg_id:
                         full_text = "\n".join(progress_lines)
                         try:
                             await adapter.edit_message(

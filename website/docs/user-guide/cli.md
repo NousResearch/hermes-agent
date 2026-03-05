@@ -171,7 +171,7 @@ There are two ways to enter multi-line messages:
 ```
 
 :::info
-Pasting 5+ lines of text automatically saves to `~/.hermes/pastes/` and collapses to a reference, keeping your prompt clean.
+Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert newlines, or simply paste content directly.
 :::
 
 ## Interrupting the Agent
@@ -251,6 +251,7 @@ Long conversations are automatically summarized when approaching context limits:
 compression:
   enabled: true
   threshold: 0.85    # Compress at 85% of context limit
+  summary_model: "google/gemini-3-flash-preview"  # Model used for summarization
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 4 turns are always preserved.

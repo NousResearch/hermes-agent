@@ -139,10 +139,10 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: "xhigh"   # xhigh (max), high, medium, low, minimal, none
+  reasoning_effort: ""   # empty = use model default. Options: xhigh (max), high, medium, low, minimal, none
 ```
 
-Higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset (default), the model's own default reasoning level is used. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
 ## TTS Configuration
 
@@ -164,6 +164,8 @@ tts:
 ```yaml
 display:
   tool_progress: all    # off | new | all | verbose
+  personality: "kawaii"  # Default personality for the CLI
+  compact: false         # Compact output mode (less whitespace)
 ```
 
 | Mode | What you see |
@@ -172,6 +174,58 @@ display:
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
 | `verbose` | Full args, results, and debug logs |
+
+## Speech-to-Text (STT)
+
+```yaml
+stt:
+  provider: "openai"           # STT provider
+```
+
+Requires `VOICE_TOOLS_OPENAI_KEY` in `.env` for OpenAI STT.
+
+## Human Delay
+
+Simulate human-like response pacing in messaging platforms:
+
+```yaml
+human_delay:
+  mode: "off"                  # off | natural | custom
+  min_ms: 500                  # Minimum delay (custom mode)
+  max_ms: 2000                 # Maximum delay (custom mode)
+```
+
+## Code Execution
+
+Configure the sandboxed Python code execution tool:
+
+```yaml
+code_execution:
+  timeout: 300                 # Max execution time in seconds
+  max_tool_calls: 50           # Max tool calls within code execution
+```
+
+## Delegation
+
+Configure subagent behavior for the delegate tool:
+
+```yaml
+delegation:
+  max_iterations: 50           # Max iterations per subagent
+  default_toolsets:             # Toolsets available to subagents
+    - terminal
+    - file
+    - web
+```
+
+## Clarify
+
+Configure the clarification prompt behavior:
+
+```yaml
+clarify:
+  timeout: 120                 # Seconds to wait for user clarification response
+```
 
 ## Context Files (SOUL.md, AGENTS.md)
 

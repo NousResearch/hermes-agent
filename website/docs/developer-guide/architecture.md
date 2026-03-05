@@ -43,7 +43,8 @@ hermes-agent/
 │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
 │   ├── approval.py               # Dangerous command detection + per-session approval
 │   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-│   ├── file_operations.py        # read_file, write_file, search, patch
+│   ├── file_operations.py        # File tool implementations (read, write, search, patch)
+│   ├── file_tools.py             # File tool registration
 │   ├── web_tools.py              # web_search, web_extract
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
@@ -102,7 +103,7 @@ while turns < max_turns:
 
     if response.tool_calls:
         for tool_call in response.tool_calls:
-            result = await execute_tool(tool_call)
+            result = execute_tool(tool_call)
             messages.append(tool_result_message(result))
         turns += 1
     else:
@@ -117,7 +118,7 @@ class AIAgent:
         self,
         model: str = "anthropic/claude-opus-4.6",
         api_key: str = None,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: str = None,  # Resolved internally based on provider
         max_iterations: int = 60,
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
@@ -195,7 +196,7 @@ Key UX behaviors:
 - Thinking spinner shows animated kawaii face + verb (`(⌐■_■) deliberating...`)
 - Tool execution results appear as `┊ {emoji} {verb} {detail} {duration}`
 - Prompt shows `⚕ ❯` when working, `❯` when idle
-- Pasting 5+ lines auto-saves to `~/.hermes/pastes/` and collapses
+- Multi-line paste support with automatic formatting
 
 ## Messaging Gateway Architecture
 

@@ -35,9 +35,7 @@ class DaytonaEnvironment(BaseEnvironment):
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
-        # Resolve ~ to Daytona's default user home (matches Docker's ~ -> /root pattern)
-        if cwd == "~":
-            cwd = "/home/daytona"
+        self._requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
         from daytona import (
@@ -85,6 +83,15 @@ class DaytonaEnvironment(BaseEnvironment):
             )
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
+
+        # Resolve cwd: detect actual home dir inside the sandbox
+        if self._requested_cwd in ("~", "/home/daytona"):
+            try:
+                home = self._sandbox.process.exec("echo $HOME").result.strip()
+                self.cwd = home or "/root"
+            except Exception:
+                self.cwd = "/root"
+            logger.info("Daytona: resolved cwd to %s", self.cwd)
 
     def _ensure_sandbox_ready(self):
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""

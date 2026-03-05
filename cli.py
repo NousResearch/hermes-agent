@@ -4242,6 +4242,11 @@ class HermesCLI:
             if result and result.get("failed") and not response:
                 error_detail = result.get("error", "Unknown error")
                 response = f"Error: {error_detail}"
+                # Stop continuous voice mode on persistent errors (e.g. 429 rate limit)
+                # to avoid an infinite error → record → error loop
+                if self._voice_continuous:
+                    self._voice_continuous = False
+                    _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
 
             # Handle interrupt - check if we were interrupted
             pending_message = None

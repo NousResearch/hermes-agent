@@ -12,6 +12,7 @@ Dependencies (optional):
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -350,12 +351,37 @@ WHISPER_HALLUCINATIONS = {
     "you",
     "the end.",
     "the end",
+    # Non-English hallucinations (common on silence)
+    "продолжение следует",
+    "продолжение следует...",
+    "sous-titres",
+    "sous-titres réalisés par la communauté d'amara.org",
+    "sottotitoli creati dalla comunità amara.org",
+    "untertitel von stephanie geiges",
+    "amara.org",
+    "www.mooji.org",
+    "ご視聴ありがとうございました",
 }
+
+# Regex patterns for repetitive hallucinations (e.g. "Thank you. Thank you. Thank you.")
+_HALLUCINATION_REPEAT_RE = re.compile(
+    r'^(?:thank you|thanks|bye|you|ok|okay|the end|\.|\s|,|!)+$',
+    flags=re.IGNORECASE,
+)
 
 
 def is_whisper_hallucination(transcript: str) -> bool:
     """Check if a transcript is a known Whisper hallucination on silence."""
-    return transcript.strip().lower() in WHISPER_HALLUCINATIONS
+    cleaned = transcript.strip().lower()
+    if not cleaned:
+        return True
+    # Exact match against known phrases
+    if cleaned.rstrip('.!') in WHISPER_HALLUCINATIONS or cleaned in WHISPER_HALLUCINATIONS:
+        return True
+    # Repetitive patterns (e.g. "Thank you. Thank you. Thank you. you")
+    if _HALLUCINATION_REPEAT_RE.match(cleaned):
+        return True
+    return False
 
 
 # ============================================================================

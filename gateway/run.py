@@ -48,7 +48,7 @@ _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
-        with open(_config_path) as _f:
+        with open(_config_path, encoding="utf-8") as _f:
             _cfg = _yaml.safe_load(_f) or {}
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
@@ -273,7 +273,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     file_path = cfg.get("prefill_messages_file", "")
             except Exception:
@@ -311,7 +311,7 @@ class GatewayRunner:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
         except Exception:
@@ -332,7 +332,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
             except Exception:
@@ -355,7 +355,7 @@ class GatewayRunner:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("provider_routing", {}) or {}
         except Exception:
@@ -1130,7 +1130,7 @@ class GatewayRunner:
         current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
         try:
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, str):
@@ -1156,12 +1156,12 @@ class GatewayRunner:
         try:
             user_config = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             if "model" not in user_config or not isinstance(user_config["model"], dict):
                 user_config["model"] = {}
             user_config["model"]["default"] = args
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding="utf-8") as f:
                 yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
         except Exception as e:
             return f"⚠️ Failed to save model change: {e}"
@@ -1180,7 +1180,7 @@ class GatewayRunner:
 
         try:
             if config_path.exists():
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding="utf-8") as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
@@ -1209,7 +1209,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w') as f:
+                with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
@@ -1294,10 +1294,10 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             user_config = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding="utf-8") as f:
                 yaml.dump(user_config, f, default_flow_style=False)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
@@ -1819,7 +1819,7 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 import yaml
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
         except Exception as e:
@@ -1849,7 +1849,7 @@ class GatewayRunner:
             _tp_cfg_path = _hermes_home / "config.yaml"
             if _tp_cfg_path.exists():
                 import yaml as _tp_yaml
-                with open(_tp_cfg_path) as _tp_f:
+                with open(_tp_cfg_path, encoding="utf-8") as _tp_f:
                     _tp_data = _tp_yaml.safe_load(_tp_f) or {}
                 _progress_cfg = _tp_data.get("display", {})
         except Exception:
@@ -2067,7 +2067,7 @@ class GatewayRunner:
                 import yaml as _y
                 _cfg_path = _hermes_home / "config.yaml"
                 if _cfg_path.exists():
-                    with open(_cfg_path) as _f:
+                    with open(_cfg_path, encoding="utf-8") as _f:
                         _cfg = _y.safe_load(_f) or {}
                     _model_cfg = _cfg.get("model", {})
                     if isinstance(_model_cfg, str):
@@ -2477,7 +2477,7 @@ def main():
     config = None
     if args.config:
         import json
-        with open(args.config) as f:
+        with open(args.config, encoding="utf-8") as f:
             data = json.load(f)
             config = GatewayConfig.from_dict(data)
     

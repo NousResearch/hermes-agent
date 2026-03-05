@@ -260,7 +260,7 @@ def load_gateway_config() -> GatewayConfig:
     gateway_config_path = Path.home() / ".hermes" / "gateway.json"
     if gateway_config_path.exists():
         try:
-            with open(gateway_config_path, "r") as f:
+            with open(gateway_config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 config = GatewayConfig.from_dict(data)
         except Exception as e:
@@ -273,7 +273,7 @@ def load_gateway_config() -> GatewayConfig:
         import yaml
         config_yaml_path = Path.home() / ".hermes" / "config.yaml"
         if config_yaml_path.exists():
-            with open(config_yaml_path) as f:
+            with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
@@ -411,5 +411,5 @@ def save_gateway_config(config: GatewayConfig) -> None:
     gateway_config_path = Path.home() / ".hermes" / "gateway.json"
     gateway_config_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with open(gateway_config_path, "w") as f:
+    with open(gateway_config_path, "w", encoding="utf-8") as f:
         json.dump(config.to_dict(), f, indent=2)

@@ -125,10 +125,11 @@ terminal:
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "daytona"
-#   cwd: "/home/daytona"
+#   cwd: "~"
 #   timeout: 180
 #   lifetime_seconds: 300
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
 # --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---

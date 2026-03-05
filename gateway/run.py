@@ -2031,6 +2031,7 @@ class GatewayRunner:
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered

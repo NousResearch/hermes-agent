@@ -74,10 +74,16 @@ if _config_path.exists():
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
-                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
+                    _val = _terminal_cfg[_cfg_key]
+                    if isinstance(_val, list):
+                        import json as _json
+                        os.environ[_env_var] = _json.dumps(_val)
+                    else:
+                        os.environ[_env_var] = str(_val)
         _compression_cfg = _cfg.get("compression", {})
         if _compression_cfg and isinstance(_compression_cfg, dict):
             _compression_env_map = {

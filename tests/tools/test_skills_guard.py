@@ -1,8 +1,25 @@
-"""Tests for tools/skills_guard.py — security scanner for skills."""
+"""Tests for tools/skills_guard.py - security scanner for skills."""
 
 import os
 import stat
+import tempfile
 from pathlib import Path
+
+import pytest
+
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
 
 from tools.skills_guard import (
     Finding,
@@ -263,6 +280,45 @@ class TestCheckStructure:
         findings = _check_structure(tmp_path / "skill")
         assert any(fi.pattern_id == "symlink_escape" for fi in findings)
 
+    @pytest.mark.skipif(
+        not _can_symlink(), reason="Symlinks need elevated privileges"
+    )
+    def test_symlink_prefix_confusion_blocked(self, tmp_path):
+        """A symlink resolving to a sibling dir with a shared prefix must be caught.
+
+        Regression: startswith('axolotl') matches 'axolotl-backdoor'.
+        is_relative_to() correctly rejects this.
+        """
+        skills = tmp_path / "skills"
+        skill_dir = skills / "axolotl"
+        sibling_dir = skills / "axolotl-backdoor"
+        skill_dir.mkdir(parents=True)
+        sibling_dir.mkdir(parents=True)
+
+        malicious = sibling_dir / "malicious.py"
+        malicious.write_text("evil code")
+
+        link = skill_dir / "helper.py"
+        link.symlink_to(malicious)
+
+        findings = _check_structure(skill_dir)
+        assert any(fi.pattern_id == "symlink_escape" for fi in findings)
+
+    @pytest.mark.skipif(
+        not _can_symlink(), reason="Symlinks need elevated privileges"
+    )
+    def test_symlink_within_skill_dir_allowed(self, tmp_path):
+        """A symlink that stays within the skill directory is fine."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        real_file = skill_dir / "real.py"
+        real_file.write_text("print('ok')")
+        link = skill_dir / "alias.py"
+        link.symlink_to(real_file)
+
+        findings = _check_structure(skill_dir)
+        assert not any(fi.pattern_id == "symlink_escape" for fi in findings)
+
     def test_clean_structure(self, tmp_path):
         (tmp_path / "SKILL.md").write_text("# Skill\n")
         (tmp_path / "main.py").write_text("print(1)\n")
@@ -339,3 +395,65 @@ class TestUnicodeCharName:
     def test_unknown_char(self):
         result = _unicode_char_name("\u0041")  # 'A'
         assert "U+" in result
+
+
+# ---------------------------------------------------------------------------
+# Regression: symlink prefix confusion (Bug fix)
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkPrefixConfusionRegression:
+    """Demonstrate the old startswith() bug vs the is_relative_to() fix.
+
+    The old symlink boundary check used:
+        str(resolved).startswith(str(skill_dir.resolve()))
+    without a trailing separator. A path like 'axolotl-backdoor/file'
+    starts with the string 'axolotl', so it was silently allowed.
+    """
+
+    def test_old_startswith_misses_prefix_confusion(self, tmp_path):
+        """Old check fails: sibling dir with shared prefix passes startswith."""
+        skill_dir = tmp_path / "skills" / "axolotl"
+        sibling_file = tmp_path / "skills" / "axolotl-backdoor" / "evil.py"
+        skill_dir.mkdir(parents=True)
+        sibling_file.parent.mkdir(parents=True)
+        sibling_file.write_text("evil")
+
+        resolved = sibling_file.resolve()
+        skill_dir_resolved = skill_dir.resolve()
+
+        # Old check: startswith without trailing separator - WRONG
+        old_escapes = not str(resolved).startswith(str(skill_dir_resolved))
+        assert old_escapes is False  # Bug: old check thinks it's inside
+
+    def test_is_relative_to_catches_prefix_confusion(self, tmp_path):
+        """New check catches: is_relative_to correctly rejects sibling dir."""
+        skill_dir = tmp_path / "skills" / "axolotl"
+        sibling_file = tmp_path / "skills" / "axolotl-backdoor" / "evil.py"
+        skill_dir.mkdir(parents=True)
+        sibling_file.parent.mkdir(parents=True)
+        sibling_file.write_text("evil")
+
+        resolved = sibling_file.resolve()
+        skill_dir_resolved = skill_dir.resolve()
+
+        # New check: is_relative_to - correctly detects escape
+        new_escapes = not resolved.is_relative_to(skill_dir_resolved)
+        assert new_escapes is True  # Fixed: correctly flags as outside
+
+    def test_legitimate_subpath_passes_both(self, tmp_path):
+        """Both old and new checks correctly allow real subpaths."""
+        skill_dir = tmp_path / "skills" / "axolotl"
+        sub_file = skill_dir / "utils" / "helper.py"
+        skill_dir.mkdir(parents=True)
+        sub_file.parent.mkdir(parents=True)
+        sub_file.write_text("ok")
+
+        resolved = sub_file.resolve()
+        skill_dir_resolved = skill_dir.resolve()
+
+        # Both checks agree this is inside
+        old_escapes = not str(resolved).startswith(str(skill_dir_resolved))
+        new_escapes = not resolved.is_relative_to(skill_dir_resolved)
+        assert old_escapes is False
+        assert new_escapes is False

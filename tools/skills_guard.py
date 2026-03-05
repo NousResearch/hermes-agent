@@ -743,7 +743,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
         if f.is_symlink():
             try:
                 resolved = f.resolve()
-                if not str(resolved).startswith(str(skill_dir.resolve())):
+                if not resolved.is_relative_to(skill_dir.resolve()):
                     findings.append(Finding(
                         pattern_id="symlink_escape",
                         severity="critical",

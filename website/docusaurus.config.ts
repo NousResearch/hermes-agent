@@ -85,7 +85,7 @@ const config: Config = {
         {
           title: 'Docs',
           items: [
-            { label: 'Getting Started', to: '/getting-started/installation' },
+            { label: 'Getting Started', to: '/getting-started/quickstart' },
             { label: 'User Guide', to: '/user-guide/cli' },
             { label: 'Developer Guide', to: '/developer-guide/architecture' },
             { label: 'Reference', to: '/reference/cli-commands' },

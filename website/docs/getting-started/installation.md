@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, Windows, or WSL"
+description: "Install Hermes Agent on Linux, macOS, or WSL2"
 ---
 
 # Installation
@@ -10,26 +10,14 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### Linux / macOS / WSL
+### Linux / macOS / WSL2
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
-```
-
-### Windows (CMD)
-
-```cmd
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.cmd -o install.cmd && install.cmd && del install.cmd
-```
-
-:::warning Windows Note
-[Git for Windows](https://git-scm.com/download/win) is required. Hermes uses Git Bash internally for shell commands.
+:::warning Windows
+Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
 :::
 
 ### What the Installer Does
@@ -49,7 +37,7 @@ The installer handles everything automatically:
 Reload your shell and start chatting:
 
 ```bash
-source ~/.bashrc   # or: source ~/.zshrc  (Windows: restart your terminal)
+source ~/.bashrc   # or: source ~/.zshrc
 hermes setup       # Configure API keys (if you skipped during install)
 hermes             # Start chatting!
 ```
@@ -85,8 +73,8 @@ brew install git
 brew install ripgrep node
 ```
 
-**Windows (native):**
-Hermes runs natively on Windows using [Git for Windows](https://git-scm.com/download/win) (which provides Git Bash for shell commands). Install Git for Windows first, then use the PowerShell or CMD quick-install command above. WSL also works — follow the Ubuntu instructions.
+**Windows:**
+Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and follow the Ubuntu/Debian instructions above.
 
 </details>
 

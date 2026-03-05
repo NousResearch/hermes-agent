@@ -41,6 +41,20 @@ Quick reference for all CLI slash commands in Hermes Agent.
 | `/skills` | Search, install, or manage skills |
 | `/platforms` | Show gateway/messaging platform status |
 
+## Gateway Only
+
+These commands are available in messaging platforms (Telegram, Discord, etc.) but not the interactive CLI:
+
+| Command | Description |
+|---------|-------------|
+| `/stop` | Stop the running agent |
+| `/sethome` | Set this chat as the home channel |
+| `/compress` | Manually compress conversation context |
+| `/usage` | Show token usage for the current session |
+| `/reload-mcp` | Reload MCP servers from config |
+| `/update` | Update Hermes Agent to the latest version |
+| `/status` | Show session info |
+
 ## Examples
 
 ### Changing Models

@@ -336,6 +336,8 @@ See [docs/messaging.md](docs/messaging.md) for advanced WhatsApp configuration.
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/reload-mcp` | Reload MCP servers from config |
+| `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |
 

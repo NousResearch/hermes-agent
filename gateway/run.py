@@ -455,6 +455,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
+        # Check if we're restarting after a /update command
+        await self._send_update_notification()
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -655,7 +658,7 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "reload-mcp"}
+                          "compress", "usage", "reload-mcp", "update"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -699,6 +702,9 @@ class GatewayRunner:
 
         if command == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
+
+        if command == "update":
+            return await self._handle_update_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1098,6 +1104,7 @@ class GatewayRunner:
             "`/compress` — Compress conversation context",
             "`/usage` — Show token usage for this session",
             "`/reload-mcp` — Reload MCP servers from config",
+            "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
         ]
         try:
@@ -1459,6 +1466,111 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
+
+    async def _handle_update_command(self, event: MessageEvent) -> str:
+        """Handle /update command — update Hermes Agent to the latest version.
+
+        Spawns ``hermes update`` in a separate systemd scope so it survives the
+        gateway restart that ``hermes update`` triggers at the end.  A marker
+        file is written so the *new* gateway process can notify the user of the
+        result on startup.
+        """
+        import json
+        import shutil
+        import subprocess
+        from datetime import datetime
+
+        project_root = Path(__file__).parent.parent.resolve()
+        git_dir = project_root / '.git'
+
+        if not git_dir.exists():
+            return "✗ Not a git repository — cannot update."
+
+        hermes_bin = shutil.which("hermes")
+        if not hermes_bin:
+            return "✗ `hermes` command not found on PATH."
+
+        # Write marker so the restarted gateway can notify this chat
+        pending_path = _hermes_home / ".update_pending.json"
+        output_path = _hermes_home / ".update_output.txt"
+        pending = {
+            "platform": event.source.platform.value,
+            "chat_id": event.source.chat_id,
+            "user_id": event.source.user_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+        pending_path.write_text(json.dumps(pending))
+
+        # Spawn `hermes update` in a separate cgroup so it survives gateway
+        # restart.  systemd-run --user --scope creates a transient scope unit.
+        update_cmd = f"{hermes_bin} update > {output_path} 2>&1"
+        try:
+            systemd_run = shutil.which("systemd-run")
+            if systemd_run:
+                subprocess.Popen(
+                    [systemd_run, "--user", "--scope",
+                     "--unit=hermes-update", "--",
+                     "bash", "-c", update_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            else:
+                # Fallback: best-effort detach with start_new_session
+                subprocess.Popen(
+                    ["bash", "-c", f"nohup {update_cmd} &"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except Exception as e:
+            pending_path.unlink(missing_ok=True)
+            return f"✗ Failed to start update: {e}"
+
+        return "⚕ Starting Hermes update… I'll notify you when it's done."
+
+    async def _send_update_notification(self) -> None:
+        """If the gateway is starting after a ``/update``, notify the user."""
+        import json
+        import re as _re
+
+        pending_path = _hermes_home / ".update_pending.json"
+        output_path = _hermes_home / ".update_output.txt"
+
+        if not pending_path.exists():
+            return
+
+        try:
+            pending = json.loads(pending_path.read_text())
+            platform_str = pending.get("platform")
+            chat_id = pending.get("chat_id")
+
+            # Read the captured update output
+            output = ""
+            if output_path.exists():
+                output = output_path.read_text()
+
+            # Resolve adapter
+            platform = Platform(platform_str)
+            adapter = self.adapters.get(platform)
+
+            if adapter and chat_id:
+                # Strip ANSI escape codes for clean display
+                output = _re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+                if output:
+                    # Truncate if too long for a single message
+                    if len(output) > 3500:
+                        output = "…" + output[-3500:]
+                    msg = f"✅ Hermes update finished — gateway restarted.\n\n```\n{output}\n```"
+                else:
+                    msg = "✅ Hermes update finished — gateway restarted successfully."
+                await adapter.send(chat_id, msg)
+                logger.info("Sent post-update notification to %s:%s", platform_str, chat_id)
+        except Exception as e:
+            logger.warning("Post-update notification failed: %s", e)
+        finally:
+            pending_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
 
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""

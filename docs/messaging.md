@@ -86,6 +86,8 @@ Send `/new` or `/reset` as a message to start fresh.
 |---------|-------------|
 | `/compress` | Manually compress conversation context (saves memories, then summarizes) |
 | `/usage` | Show token usage and context window status for the current session |
+| `/update` | Update Hermes Agent to the latest version (pulls code, updates deps, restarts gateway) |
+| `/reload-mcp` | Disconnect and reconnect all MCP servers from config |
 
 ### Per-Platform Overrides
 

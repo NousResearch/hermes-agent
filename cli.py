@@ -14,6 +14,7 @@ Usage:
 
 import logging
 import os
+import shutil
 import sys
 import json
 import atexit
@@ -2144,8 +2145,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        import shutil as _shutil
-        w = _shutil.get_terminal_size().columns
+        w = shutil.get_terminal_size().columns
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
@@ -2221,7 +2221,7 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = _shutil.get_terminal_size().columns
+                w = shutil.get_terminal_size().columns
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
                 top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
@@ -2541,8 +2541,7 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                import shutil as _shutil
-                available_width = _shutil.get_terminal_size().columns - 4  # subtract prompt width
+                available_width = shutil.get_terminal_size().columns - 4  # subtract prompt width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0

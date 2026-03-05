@@ -1,5 +1,5 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 title: "Installation"
 description: "Install Hermes Agent on Linux, macOS, or WSL2"
 ---

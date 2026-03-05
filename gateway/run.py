@@ -2131,7 +2131,7 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
-            result = agent.run_conversation(message, conversation_history=agent_history)
+            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             result_holder[0] = result
             
             # Return final response, or a message if something went wrong

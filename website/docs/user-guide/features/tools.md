@@ -62,7 +62,7 @@ The terminal tool can execute commands in different environments:
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal
+  backend: local    # or: docker, ssh, singularity, modal, daytona
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```

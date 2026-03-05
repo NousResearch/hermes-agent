@@ -31,6 +31,8 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 | 🧠 **[Memory System](/docs/user-guide/features/memory)** | Persistent memory that grows across sessions |
 | 📚 **[Skills System](/docs/user-guide/features/skills)** | Procedural memory the agent creates and reuses |
 | 🔌 **[MCP Integration](/docs/user-guide/features/mcp)** | Connect to any MCP server for extended capabilities |
+| 📄 **[Context Files](/docs/user-guide/features/context-files)** | Project context files that shape every conversation |
+| 🔒 **[Security](/docs/user-guide/security)** | Command approval, authorization, container isolation |
 | 🏗️ **[Architecture](/docs/developer-guide/architecture)** | How it works under the hood |
 | 🤝 **[Contributing](/docs/developer-guide/contributing)** | Development setup and PR process |
 

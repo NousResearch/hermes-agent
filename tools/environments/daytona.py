@@ -53,6 +53,9 @@ class DaytonaEnvironment(BaseEnvironment):
 
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
+        if disk_gib > 10:
+            logger.warning("Daytona: capping disk from %dGB to 10GB (platform limit)", disk_gib)
+            disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
         labels = {"hermes_task_id": task_id}

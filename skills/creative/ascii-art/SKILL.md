@@ -1,152 +1,140 @@
 ---
 name: ascii-art
-description: Generate creative ASCII art banners, logos, and text art using Unicode box-drawing and block characters. Supports multiple styles and custom text.
-version: 1.0.0
-author: Hermes Agent
+description: Generate ASCII art text banners via pyfiglet (571 fonts) and search 11,000+ pre-made ASCII artworks from asciiart.eu. Falls back to LLM-generated art using Unicode characters.
+version: 2.0.0
+author: 0xbyt4, Hermes Agent
 license: MIT
 dependencies: []
 metadata:
   hermes:
-    tags: [ASCII, Art, Banners, Creative, Unicode, Text-Art]
+    tags: [ASCII, Art, Banners, Creative, Unicode, Text-Art, pyfiglet, figlet]
     related_skills: [excalidraw]
 
 ---
 
-# ASCII Art Generator
+# ASCII Art Skill
 
-Generate creative ASCII art banners, logos, and decorative text using Unicode characters. No external tools needed -- pure text output.
+Three modes: text banners via pyfiglet, searching pre-made art from asciiart.eu, and LLM-generated custom art.
 
-## Capabilities
+## Mode 1: Text Banners (pyfiglet)
 
-- **Text Banners**: Large stylized text using block characters
-- **Decorative Borders**: Frames and boxes around content
-- **Mini Logos**: Compact symbolic art (icons, emblems)
-- **Scene Art**: Small ASCII scenes and illustrations
+Use pyfiglet to render text as large ASCII art banners. 571 fonts available, no API key needed.
 
-## Character Palette
+### Setup (one-time)
 
-Use these Unicode characters for rich output:
+```bash
+pip install pyfiglet --break-system-packages -q
+```
 
-### Box Drawing
+### Generate a banner
+
+```bash
+python3 -m pyfiglet "YOUR TEXT" -f slant
+```
+
+### List all available fonts
+
+```bash
+python3 -m pyfiglet --list_fonts
+```
+
+### Recommended fonts by style
+
+| Style | Font | Best for |
+|-------|------|----------|
+| Clean & modern | `slant` | Project names, headers |
+| Bold & blocky | `doom` | Titles, logos |
+| Big & readable | `big` | Banners |
+| Classic banner | `banner3` | Wide displays |
+| Compact | `small` | Subtitles |
+| Cyberpunk | `cyberlarge` | Tech themes |
+| 3D effect | `3-d` | Splash screens |
+| Rounded | `rounded` | Friendly text |
+| Gothic | `gothic` | Dramatic text |
+| Lean italic | `lean` | Stylish headers |
+
+### Tips
+
+- Preview 2-3 fonts and let the user pick their favorite
+- Short text (1-8 chars) works best with detailed fonts like `doom` or `block`
+- Long text works better with compact fonts like `small` or `mini`
+- Use `python3 -m pyfiglet "TEXT" -f font_name -w 80` to set output width
+
+## Mode 2: Search Pre-Made ASCII Art (asciiart.eu)
+
+The ASCII Art Archive at asciiart.eu has 11,000+ artworks organized by category. Use `web_extract` to fetch them.
+
+### Browse by category
+
+Common categories (use as URL paths):
+- `animals/cats`, `animals/dogs`, `animals/birds`, `animals/horses`
+- `animals/dolphins`, `animals/dragons`, `animals/insects`
+- `space/rockets`, `space/stars`, `space/planets`
+- `vehicles/cars`, `vehicles/ships`, `vehicles/airplanes`
+- `food-and-drinks/coffee`, `food-and-drinks/beer`
+- `computers/computers`, `electronics/robots`
+- `people/faces`, `people/body-parts/hands`
+- `art-and-design/hearts`, `art-and-design/skulls`
+- `plants/flowers`, `plants/trees`
+- `mythology/dragons`, `mythology/unicorns`
+
+```
+web_extract(urls=["https://www.asciiart.eu/animals/cats"])
+```
+
+### Search by keyword
+
+```
+web_extract(urls=["https://www.asciiart.eu/search?q=rocket"])
+```
+
+### Tips
+
+- The extracted content includes multiple art pieces — pick the best one for the user
+- Preserve artist initials/signatures (e.g., `jgs`, `hjw`) — this is important etiquette
+- If search returns nothing good, fall back to Mode 3 (LLM generation)
+
+## Mode 3: LLM-Generated Custom Art (Fallback)
+
+When pyfiglet and asciiart.eu don't have what's needed, generate ASCII art directly using these Unicode characters:
+
+### Character Palette
+
+**Box Drawing:**
 ```
 ╔ ╗ ╚ ╝ ║ ═ ╠ ╣ ╦ ╩ ╬
 ┌ ┐ └ ┘ │ ─ ├ ┤ ┬ ┴ ┼
+╭ ╮ ╰ ╯
 ```
 
-### Block Elements
+**Block Elements:**
 ```
 ░ ▒ ▓ █ ▄ ▀ ▌ ▐ ▖ ▗ ▘ ▝ ▚ ▞
 ```
 
-### Geometric & Symbols
+**Geometric & Symbols:**
 ```
 ◆ ◇ ◈ ● ○ ◉ ■ □ ▲ △ ▼ ▽ ★ ☆ ✦ ✧
 ◀ ▶ ◁ ▷ ⬡ ⬢ ⟐ ⌂ ⎔ ⏣
 ```
 
-### Decorative
-```
-╭ ╮ ╰ ╯ ─ ═ ⟨ ⟩ « » ‹ › ∙ • ·
-```
+### Style Guide
 
-## Style Guide
+1. **Block Banner**: Use `█` and `╗╔╝╚` for large letter forms
+2. **Shadow**: Add depth with `▄ ▀` half-blocks
+3. **Gradient**: Use block density `░▒▓█` for effects
+4. **Decorative Frame**: Combine box-drawing with symbols
 
-### 1. Block Banner Style
-Best for short text (1-8 characters). Use full block characters (`█`) to form letters:
+### Rules
 
-```
-██╗  ██╗██╗
-██║  ██║██║
-███████║██║
-██╔══██║██║
-██║  ██║██║
-╚═╝  ╚═╝╚═╝
-```
+- Max width: 60 characters per line (terminal-safe)
+- Max height: 15 lines for banners, 25 for scenes
+- Monospace only: output must render correctly in fixed-width fonts
+- Center-align banners by default
 
-### 2. Shadow Style
-Add depth with half-blocks (`▄ ▀`) below or beside letters:
+## Decision Flow
 
-```
- ▄▄▄▄▄  ▄▄▄▄▄
-█     █ █     █
-█  ▀▀▀  █  ▀▀▀
-█  ▄▄▄  █  ▄▄▄
-█     █ █     █
- ▀▀▀▀▀   ▀▀▀▀▀
-```
-
-### 3. Outlined Style
-Use box-drawing for clean outlines:
-
-```
-╔═══════════════════════╗
-║   YOUR TEXT HERE      ║
-╚═══════════════════════╝
-```
-
-### 4. Gradient Style
-Use block density for gradient effects:
-
-```
-░░▒▒▓▓██ TEXT ██▓▓▒▒░░
-```
-
-### 5. Decorative Frame Style
-Combine multiple character sets:
-
-```
-╭─────────────────────╮
-│  ★  YOUR TEXT  ★    │
-│  ◆ subtitle here ◆  │
-╰─────────────────────╯
-```
-
-## Rules
-
-1. **Max width**: 60 characters per line (terminal-safe)
-2. **Max height**: 15 lines for banners, 25 for scenes
-3. **Monospace only**: Output must look correct in monospace fonts
-4. **No external tools**: Generate everything inline as text
-5. **Alignment**: Center-align banners by default
-6. **Creativity**: Mix styles freely, add decorative elements
-
-## Examples
-
-**User**: "Make a banner for my project called NOVA"
-
-**Response**:
-```
-╔══════════════════════════════════════╗
-║                                      ║
-║   ███╗   ██╗ ██████╗ ██╗   ██╗ █████╗  ║
-║   ████╗  ██║██╔═══██╗██║   ██║██╔══██╗ ║
-║   ██╔██╗ ██║██║   ██║██║   ██║███████║ ║
-║   ██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║ ║
-║   ██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║ ║
-║   ╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝ ║
-║                                      ║
-║       ★ The Future is Bright ★       ║
-╚══════════════════════════════════════╝
-```
-
-**User**: "Draw a small rocket"
-
-**Response**:
-```
-      ▲
-     ╱ ╲
-    ╱   ╲
-   │  ◉  │
-   │     │
-   │  H  │
-   │  E  │
-   │  R  │
-  ╱│  M  │╲
- ╱ │  E  │ ╲
-╱  │  S  │  ╲
-▔▔▔╘═════╛▔▔▔
-   ╱ ▓▓▓ ╲
-  ╱ ░▓▓▓░ ╲
-     ░▓░
-      ░
-```
+1. **User wants text as a banner** → Mode 1 (pyfiglet)
+2. **User wants art of a thing** (cat, rocket, dragon) → Mode 2 (asciiart.eu search)
+3. **User wants something custom/creative** → Mode 3 (LLM generation)
+4. **Mode 2 returns nothing good** → Fall back to Mode 3

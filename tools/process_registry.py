@@ -823,7 +823,8 @@ def _handle_process(args, **kw):
     import json as _json
     task_id = kw.get("task_id")
     action = args.get("action", "")
-    session_id = args.get("session_id", "")
+    # Coerce to string — some models send session_id as an integer
+    session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":
         return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
@@ -840,9 +841,9 @@ def _handle_process(args, **kw):
         elif action == "kill":
             return _json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
         elif action == "write":
-            return _json.dumps(process_registry.write_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+            return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":
-            return _json.dumps(process_registry.submit_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+            return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
     return _json.dumps({"error": f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit"}, ensure_ascii=False)
 
 

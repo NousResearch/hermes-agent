@@ -29,6 +29,7 @@ Usage:
 import json
 import logging
 import os
+import platform
 import signal
 import sys
 import time
@@ -192,39 +193,48 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     result = {"password": None, "done": False}
     
     def read_password_thread():
-        """Read password from /dev/tty with echo disabled."""
-        tty_fd = None
-        old_attrs = None
+        """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
         try:
-            import termios
-            tty_fd = os.open("/dev/tty", os.O_RDONLY)
-            old_attrs = termios.tcgetattr(tty_fd)
-            new_attrs = termios.tcgetattr(tty_fd)
-            new_attrs[3] = new_attrs[3] & ~termios.ECHO
-            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-            chars = []
-            while True:
-                b = os.read(tty_fd, 1)
-                if not b or b in (b"\n", b"\r"):
-                    break
-                chars.append(b)
-            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+            if platform.system() == "Windows":
+                import msvcrt
+                chars = []
+                while True:
+                    c = msvcrt.getwch()
+                    if c in ("\r", "\n"):
+                        break
+                    if c == "\x03":
+                        raise KeyboardInterrupt
+                    chars.append(c)
+                result["password"] = "".join(chars)
+            else:
+                import termios
+                tty_fd = os.open("/dev/tty", os.O_RDONLY)
+                old_attrs = termios.tcgetattr(tty_fd)
+                new_attrs = termios.tcgetattr(tty_fd)
+                new_attrs[3] = new_attrs[3] & ~termios.ECHO
+                termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
+                try:
+                    chars = []
+                    while True:
+                        b = os.read(tty_fd, 1)
+                        if not b or b in (b"\n", b"\r"):
+                            break
+                        chars.append(b)
+                    result["password"] = b"".join(chars).decode("utf-8", errors="replace")
+                finally:
+                    try:
+                        termios.tcsetattr(tty_fd, termios.TCSAFLUSH, old_attrs)
+                    except Exception:
+                        pass
+                    try:
+                        os.close(tty_fd)
+                    except Exception:
+                        pass
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
             result["password"] = ""
         finally:
-            if tty_fd is not None and old_attrs is not None:
-                try:
-                    import termios as _termios
-                    _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
-                except Exception:
-                    pass
-            if tty_fd is not None:
-                try:
-                    os.close(tty_fd)
-                except Exception:
-                    pass
             result["done"] = True
     
     try:

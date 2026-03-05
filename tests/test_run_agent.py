@@ -913,3 +913,68 @@ class TestConversationHistoryNotMutated:
         )
         # Result should have more messages than the original history
         assert len(result["messages"]) > original_len
+
+
+# ---------------------------------------------------------------------------
+# Iteration budget pressure warnings
+# ---------------------------------------------------------------------------
+
+class TestBudgetPressure:
+    """Budget pressure warning system tests (issue #414)."""
+
+    def test_no_warning_below_caution_threshold(self, agent):
+        """No warning should be returned below 70% of max_iterations."""
+        agent.max_iterations = 60
+        # At 50% (30/60), no warning
+        msg = agent._get_budget_warning_message(30)
+        assert msg is None
+
+    def test_caution_tier_at_70_percent(self, agent):
+        """Caution message at 70% of max_iterations."""
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning_message(42)  # 70% of 60
+        assert msg is not None
+        assert msg["role"] == "system"
+        assert "[BUDGET:" in msg["content"]
+        assert "18 iterations left" in msg["content"]
+        assert "Start consolidating" in msg["content"]
+
+    def test_warning_tier_at_90_percent(self, agent):
+        """Urgent warning at 90% of max_iterations."""
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning_message(54)  # 90% of 60
+        assert msg is not None
+        assert "[BUDGET WARNING:" in msg["content"]
+        assert "MUST provide your final response NOW" in msg["content"]
+
+    def test_warning_at_last_iteration(self, agent):
+        """Warning should fire on the last iteration."""
+        agent.max_iterations = 60
+        msg = agent._get_budget_warning_message(59)
+        assert msg is not None
+        assert "[BUDGET WARNING:" in msg["content"]
+        assert "1 iteration(s) left" in msg["content"]
+
+    def test_disabled_budget_pressure_returns_none(self, agent):
+        """When budget pressure is disabled, no warnings are returned."""
+        agent.max_iterations = 60
+        agent._budget_pressure_enabled = False
+        msg = agent._get_budget_warning_message(55)
+        assert msg is None
+
+    def test_zero_max_iterations_returns_none(self, agent):
+        """Edge case: max_iterations=0 should not cause division by zero."""
+        agent.max_iterations = 0
+        msg = agent._get_budget_warning_message(0)
+        assert msg is None
+
+    def test_small_max_iterations(self, agent):
+        """Budget pressure should work with small max_iterations values."""
+        agent.max_iterations = 10
+        # At 70% (7/10), expect caution
+        msg = agent._get_budget_warning_message(7)
+        assert msg is not None
+        assert "[BUDGET:" in msg["content"]
+        # At 90% (9/10), expect warning
+        msg = agent._get_budget_warning_message(9)
+        assert "[BUDGET WARNING:" in msg["content"]

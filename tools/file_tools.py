@@ -95,6 +95,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 cwd=cwd,
                 timeout=config["timeout"],
                 container_config=container_config,
+                task_id=task_id,
             )
 
             with _env_lock:

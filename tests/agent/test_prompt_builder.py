@@ -171,7 +171,8 @@ class TestBuildSkillsSystemPrompt:
 # =========================================================================
 
 class TestBuildContextFilesPrompt:
-    def test_empty_dir_returns_empty(self, tmp_path):
+    def test_empty_dir_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 

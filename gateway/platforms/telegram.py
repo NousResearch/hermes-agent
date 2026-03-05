@@ -117,6 +117,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_command
             ))
             self._app.add_handler(TelegramMessageHandler(
+                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                self._handle_location_message
+            ))
+            self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
@@ -440,6 +444,64 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
     
+
+    async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        '''Handle incoming location/venue messages.'''
+        if not update.message:
+            return
+
+        msg = update.message
+        event = self._build_message_event(msg, MessageType.LOCATION)
+
+        venue = getattr(msg, "venue", None)
+        if venue and getattr(venue, "location", None):
+            vloc = venue.location
+            title = getattr(venue, "title", None)
+            address = getattr(venue, "address", None)
+            lines = [
+                "[The user shared a venue via Telegram.]",
+                "Ask what they'd like you to do near this venue (e.g., restaurants/cafes, directions, hours) and any constraints like distance/open-now. For map links, prefer a coordinate-anchored Google Maps link (search centered at these coordinates, or directions using exact coordinates). Avoid name-only searches and avoid rounding/truncation.",
+                f"title: {title}" if title else "",
+                f"address: {address}" if address else "",
+                f"latitude: {getattr(vloc, 'latitude', None)}",
+                f"longitude: {getattr(vloc, 'longitude', None)}",
+            ]
+            fsq_id = getattr(venue, "foursquare_id", None)
+            if fsq_id:
+                lines.append(f"foursquare_id: {fsq_id}")
+            fsq_type = getattr(venue, "foursquare_type", None)
+            if fsq_type:
+                lines.append(f"foursquare_type: {fsq_type}")
+            event.text = "\n".join([ln for ln in lines if ln])
+            await self.handle_message(event)
+            return
+
+        loc = getattr(msg, "location", None)
+        if not loc:
+            return
+
+        lines = [
+            "[The user shared a location pin via Telegram.]",
+            "Ask what they'd like you to find near this location (e.g., restaurants) and any constraints like distance/open-now. For map links, prefer a coordinate-anchored Google Maps link (search centered at these coordinates, or directions using exact coordinates). Avoid name-only searches and avoid rounding/truncation.",
+            f"latitude: {getattr(loc, 'latitude', None)}",
+            f"longitude: {getattr(loc, 'longitude', None)}",
+        ]
+        ha = getattr(loc, "horizontal_accuracy", None)
+        if ha is not None:
+            lines.append(f"horizontal_accuracy_m: {ha}")
+        live = getattr(loc, "live_period", None)
+        if live is not None:
+            lines.append(f"live_period_s: {live}")
+        heading = getattr(loc, "heading", None)
+        if heading is not None:
+            lines.append(f"heading_deg: {heading}")
+        prox = getattr(loc, "proximity_alert_radius", None)
+        if prox is not None:
+            lines.append(f"proximity_alert_radius_m: {prox}")
+
+        event.text = "\n".join(lines)
+        await self.handle_message(event)
+
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:

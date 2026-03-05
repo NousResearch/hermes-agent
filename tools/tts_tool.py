@@ -519,10 +519,11 @@ def stream_tts_to_speaker(
                     output_stream = None
 
         sentence_buf = ""
-        in_think = False  # track <think>...</think> blocks
         min_sentence_len = 20
         long_flush_len = 100
         queue_timeout = 0.5
+        # Regex to strip complete <think>...</think> blocks from buffer
+        _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
             """Display sentence and optionally generate + play audio."""
@@ -562,6 +563,7 @@ def stream_tts_to_speaker(
 
         def _play_via_tempfile(audio_iter, stop_evt):
             """Write PCM chunks to a temp WAV file and play it."""
+            tmp_path = None
             try:
                 import wave
                 tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -576,9 +578,14 @@ def stream_tts_to_speaker(
                         wf.writeframes(chunk)
                 from tools.voice_mode import play_audio_file
                 play_audio_file(tmp_path)
-                os.unlink(tmp_path)
             except Exception as exc:
                 logger.warning("Temp-file TTS fallback failed: %s", exc)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
 
         while not stop_event.is_set():
             # Read next delta from queue
@@ -592,40 +599,23 @@ def stream_tts_to_speaker(
                 continue
 
             if delta is None:
-                # End-of-text sentinel: flush remaining buffer
+                # End-of-text sentinel: strip any remaining think blocks, flush
+                sentence_buf = _think_block_re.sub('', sentence_buf)
                 if sentence_buf.strip():
                     _speak_sentence(sentence_buf)
                 break
 
+            sentence_buf += delta
+
             # --- Think block filtering ---
-            # Process delta character by character for think tags
-            i = 0
-            filtered_delta = []
-            while i < len(delta):
-                # Check for opening <think tag
-                if delta[i:].startswith("<think"):
-                    in_think = True
-                    # Skip past the tag
-                    end = delta.find(">", i)
-                    if end != -1:
-                        i = end + 1
-                    else:
-                        i = len(delta)
-                    continue
-                # Check for closing </think> tag
-                if delta[i:].startswith("</think>"):
-                    in_think = False
-                    i += len("</think>")
-                    continue
-                if not in_think:
-                    filtered_delta.append(delta[i])
-                i += 1
+            # Strip complete <think>...</think> blocks from buffer.
+            # Works correctly even when tags span multiple deltas.
+            sentence_buf = _think_block_re.sub('', sentence_buf)
 
-            text = "".join(filtered_delta)
-            if not text:
+            # If an incomplete <think tag is at the end, wait for more data
+            # before extracting sentences (the closing tag may arrive next).
+            if '<think' in sentence_buf and '</think>' not in sentence_buf:
                 continue
-
-            sentence_buf += text
 
             # Check for sentence boundaries
             while True:

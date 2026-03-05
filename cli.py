@@ -3544,10 +3544,6 @@ class HermesCLI:
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
-        # Prevent double-start from concurrent threads
-        if self._voice_recording:
-            return
-
         from tools.voice_mode import AudioRecorder, check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -3559,9 +3555,17 @@ class HermesCLI:
             )
         if not reqs["stt_key_set"]:
             raise RuntimeError(
-                "Voice mode requires VOICE_TOOLS_OPENAI_KEY for transcription.\n"
-                "Get one at: https://platform.openai.com/api-keys"
+                "Voice mode requires an STT API key for transcription.\n"
+                "Set GROQ_API_KEY (free) or VOICE_TOOLS_OPENAI_KEY.\n"
+                "Groq: https://console.groq.com/keys\n"
+                "OpenAI: https://platform.openai.com/api-keys"
             )
+
+        # Prevent double-start from concurrent threads (atomic check-and-set)
+        with self._voice_lock:
+            if self._voice_recording:
+                return
+            self._voice_recording = True
 
         # Load silence detection params from config
         voice_cfg = {}
@@ -3595,9 +3599,12 @@ class HermesCLI:
         except Exception:
             pass
 
-        self._voice_recorder.start(on_silence_stop=_on_silence)
-        with self._voice_lock:
-            self._voice_recording = True
+        try:
+            self._voice_recorder.start(on_silence_stop=_on_silence)
+        except Exception:
+            with self._voice_lock:
+                self._voice_recording = False
+            raise
         _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+R to stop & exit continuous){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
@@ -3610,6 +3617,12 @@ class HermesCLI:
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
+        # Atomic guard: only one thread can enter stop-and-transcribe
+        with self._voice_lock:
+            if not self._voice_recording:
+                return
+            self._voice_recording = False
+
         submitted = False
         wav_path = None
         try:
@@ -3617,8 +3630,6 @@ class HermesCLI:
                 return
 
             wav_path = self._voice_recorder.stop()
-            with self._voice_lock:
-                self._voice_recording = False
 
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             try:
@@ -3764,6 +3775,10 @@ class HermesCLI:
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
+        if self._voice_mode:
+            _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
+            return
+
         from tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -4838,7 +4853,7 @@ class HermesCLI:
                 # Manual stop via Ctrl+R: stop continuous mode
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = False
-                    cli_ref._voice_recording = False
+                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
                 event.app.invalidate()
                 threading.Thread(
                     target=cli_ref._voice_stop_and_transcribe,

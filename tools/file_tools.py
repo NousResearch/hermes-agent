@@ -7,6 +7,7 @@ import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
+        if result.content:
+            result.content = redact_sensitive_text(result.content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -178,6 +181,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        if hasattr(result, 'matches'):
+            for m in result.matches:
+                if hasattr(m, 'content') and m.content:
+                    m.content = redact_sensitive_text(m.content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

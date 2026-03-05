@@ -36,7 +36,7 @@ hermes chat --toolsets skills -q "Show me the axolotl skill"
 Skills use a token-efficient loading pattern:
 
 ```
-Level 0: skills_list()           → [{name, description}, ...]   (~3k tokens)
+Level 0: skills_list()           → [{name, description, category}, ...]   (~3k tokens)
 Level 1: skill_view(name)        → Full content + metadata       (varies)
 Level 2: skill_view(name, path)  → Specific reference file       (varies)
 ```

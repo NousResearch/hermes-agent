@@ -206,7 +206,29 @@ class DiscordAdapter(BasePlatformAdapter):
             
         except Exception as e:
             return SendResult(success=False, error=str(e))
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a previously sent Discord message."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            formatted = self.format_message(content)
+            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+            await msg.edit(content=formatted)
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,

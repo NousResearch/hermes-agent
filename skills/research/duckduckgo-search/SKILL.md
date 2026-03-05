@@ -1,133 +1,111 @@
 ---
 name: duckduckgo-search
-description: Get web search results from DuckDuckGo. Use as fallback when Firecrawl unavailable. No API key needed.
-version: 1.0.0
-author: Hermes Agent
+description: Free web search via DuckDuckGo when Firecrawl is unavailable. No API key needed. Use ddgs CLI or Python library to find URLs, then web_extract for content.
+version: 1.1.0
+author: gamedevCloudy
 license: MIT
 metadata:
   hermes:
-    tags: [Search, DuckDuckGo, Web Search, API, Free]
-    related_skills: [arxiv, ocr-and-documents]
+    tags: [search, duckduckgo, web-search, free, fallback]
+    related_skills: [arxiv]
 ---
 
-# DuckDuckGo Search
+# DuckDuckGo Search (Firecrawl Fallback)
 
-Fast, free web search. No API key required. Use when Firecrawl is unavailable.
+Free web search using DuckDuckGo. **No API key required.**
 
-## Quick Reference
+## When to Use This
 
-| Action | Command |
-|--------|---------|
-| Web search | `ddgs text "python async" -k 5` |
-| Images | `ddgs images "cat"` |
-| News | `ddgs news "AI"` |
-| Videos | `ddgs videos "tutorial"` |
-| **Curl fallback** | `curl "https://api.duckduckgo.com/?q=QUERY&format=json"` |
+Use this skill ONLY when the `web_search` tool is not available (i.e., `FIRECRAWL_API_KEY` is not set). If `web_search` works, prefer it — it returns richer results with built-in content extraction.
 
-## Prerequisites
+Signs you need this fallback:
+- `web_search` tool is not listed in your available tools
+- `web_search` returns an error about missing FIRECRAWL_API_KEY
 
-### Option 1: Python Library (Recommended)
+## Setup
 
 ```bash
+# Install the ddgs package (one-time)
 pip install ddgs
-ddgs --help
 ```
 
-### Option 2: Curl Only (No Dependencies)
+## Web Search (Primary Use Case)
+
+### Via Terminal (ddgs CLI)
 
 ```bash
-# Verify curl is available
-curl --version
-```
-
-No installation needed — curl is standard on all platforms.
-
-## Web Search
-
-### Library (ddgs)
-
-```bash
-# Basic search
-ddgs text "python async programming" -k 5
+# Basic search — returns titles, URLs, and snippets
+ddgs text -k "python async programming" -m 5
 
 # With region filter
-ddgs text "best restaurants Tokyo" -k 3 -r jp-jp
+ddgs text -k "best restaurants" -m 5 -r us-en
 
-# Safe search
-ddgs text "medical advice" -k 5 -s off
+# Recent results only (d=day, w=week, m=month, y=year)
+ddgs text -k "latest AI news" -m 5 -t w
+
+# JSON output for parsing
+ddgs text -k "fastapi tutorial" -m 5 -o json
 ```
 
-### Parameters
+### Via Python (in execute_code)
+
+```python
+from hermes_tools import terminal
+
+# Search and get results
+result = terminal("ddgs text -k 'python web framework comparison' -m 5")
+print(result["output"])
+```
+
+### CLI Flags
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `-k` | Max results | `-k 5` |
+| `-k` | Keywords (query) — **required** | `-k "search terms"` |
+| `-m` | Max results | `-m 5` |
 | `-r` | Region | `-r us-en` |
+| `-t` | Time limit | `-t w` (week) |
 | `-s` | Safe search | `-s off` |
-
-### Curl Fallback
-
-```bash
-# Basic search
-curl -s "https://api.duckduckgo.com/?q=python+async&format=json&limit=5"
-
-# Parse results
-curl -s "..." | jq -r '.RelatedTopics[] | "\(.Text) - \(.FirstURL)"'
-```
+| `-o` | Output format | `-o json` |
 
 ## Other Search Types
 
 ```bash
-# Images
-ddgs images "landscape" -k 10
+# Image search
+ddgs images -k "landscape photography" -m 10
 
-# News
-ddgs news "artificial intelligence" -k 5
+# News search
+ddgs news -k "artificial intelligence" -m 5
 
-# Videos  
-ddgs videos "python tutorial" -k 5
+# Video search
+ddgs videos -k "python tutorial" -m 5
 ```
 
-## Integration
+## Workflow: Search → Extract
 
-After finding URLs, retrieve full content with `web_extract`:
+DuckDuckGo finds URLs. To get full page content, follow up with `web_extract`:
+
+1. **Search** with ddgs to find relevant URLs
+2. **Extract** content using the `web_extract` tool (if available) or curl
 
 ```bash
-# Find with DDG, then extract
-ddgs text "fastapi tutorial" -k 3
-# Copy URL from output
-web_extract(urls=["https://fastapi.tiangolo.com/tutorial/"])
+# Step 1: Find URLs
+ddgs text -k "fastapi tutorial" -m 3
+
+# Step 2: Extract full content from a result URL
+# (use web_extract tool if available, otherwise curl)
+curl -s "https://example.com/article" | head -200
 ```
 
-This is the standard pattern:
-1. **DuckDuckGo** → finds URLs
-2. **web_extract** → retrieves full content
+## Limitations
 
-## Use Cases
+- **Rate limiting**: DuckDuckGo may throttle after many rapid requests. Add `sleep 1` between searches if needed.
+- **No content extraction**: ddgs only returns titles, URLs, and snippets — not full page content. Use `web_extract` or curl for that.
+- **Results quality**: Generally good but less configurable than Firecrawl's search.
+- **Availability**: DuckDuckGo may block requests from some cloud IPs. If searches return empty, try different keywords or add a short delay.
 
-| Scenario | Tool | Reason |
-|----------|------|--------|
-| "Find tutorials on X" | `ddgs text` + `web_extract` | Need full content |
-| Firecrawl unavailable | `ddgs text` | Free fallback |
-| Quick image search | `ddgs images` | Find images |
-| Latest news | `ddgs news` | News results |
+## Pitfalls
 
-## Error Handling
-
-```bash
-# Check if library installed
-ddgs --help 2>/dev/null || echo "Using curl fallback"
-
-# Rate limiting - add delay
-sleep 1
-
-# No results - try different query
-ddgs text "different keywords" -k 5
-```
-
-## Notes
-
-- **No API key required** — completely free
-- **Rate limit**: ~1 request/second recommended
-- **Always follow up** with `web_extract` for full content
-- Curl fallback has limited results (DDG API restrictions)
+- **Don't confuse `-k` and `-m`**: `-k` is for keywords (the query), `-m` is for max results count.
+- **Package name**: The package is `ddgs` (was previously `duckduckgo-search`). Install with `pip install ddgs`.
+- **Empty results**: If ddgs returns nothing, it may be rate-limited. Wait a few seconds and retry.

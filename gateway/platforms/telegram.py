@@ -460,7 +460,8 @@ class TelegramAdapter(BasePlatformAdapter):
             address = getattr(venue, "address", None)
             lines = [
                 "[The user shared a venue via Telegram.]",
-                "Ask what they'd like you to do near this venue (e.g., restaurants/cafes, directions, hours) and any constraints like distance/open-now. For map links, prefer a coordinate-anchored Google Maps link (search centered at these coordinates, or directions using exact coordinates). Avoid name-only searches and avoid rounding/truncation.",
+                "Ask what they'd like you to do near this venue (e.g., restaurants/cafes, directions, hours) and any constraints like distance/open-now.",
+                "Map links: use coordinate-anchored Google Maps URLs with exact coordinates. Pin: https://www.google.com/maps/search/?api=1&query=<LAT>,<LON> . Directions: https://www.google.com/maps/dir/?api=1&origin=<LAT>,<LON>&destination=<LAT>,<LON> . Avoid name-only searches; never swap/round/truncate coordinates.",
                 f"title: {title}" if title else "",
                 f"address: {address}" if address else "",
                 f"latitude: {getattr(vloc, 'latitude', None)}",
@@ -482,7 +483,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         lines = [
             "[The user shared a location pin via Telegram.]",
-            "Ask what they'd like you to find near this location (e.g., restaurants) and any constraints like distance/open-now. For map links, prefer a coordinate-anchored Google Maps link (search centered at these coordinates, or directions using exact coordinates). Avoid name-only searches and avoid rounding/truncation.",
+            "Ask what they'd like you to find near this location (e.g., restaurants) and any constraints like distance/open-now.",
+            "Map links: use coordinate-anchored Google Maps URLs with exact coordinates. Pin: https://www.google.com/maps/search/?api=1&query=<LAT>,<LON> . Directions: https://www.google.com/maps/dir/?api=1&origin=<LAT>,<LON>&destination=<LAT>,<LON> . Avoid name-only searches; never swap/round/truncate coordinates.",
             f"latitude: {getattr(loc, 'latitude', None)}",
             f"longitude: {getattr(loc, 'longitude', None)}",
         ]

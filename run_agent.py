@@ -2743,7 +2743,7 @@ class AIAgent:
                         "messages": api_messages,
                     }
                     if self.max_tokens is not None:
-                        summary_kwargs["max_tokens"] = self.max_tokens
+                        summary_kwargs.update(self._max_tokens_param(self.max_tokens))
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 

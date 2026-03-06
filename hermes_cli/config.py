@@ -14,8 +14,9 @@ This module provides:
 
 import os
 import platform
-import sys
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -679,6 +680,13 @@ def save_env_value(key: str, value: str):
     
     with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
+
+    # Restrict .env permissions to owner-only (contains API keys)
+    if not _IS_WINDOWS:
+        try:
+            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
 
 
 def get_env_value(key: str) -> Optional[str]:

@@ -133,7 +133,7 @@ Configure which environment the agent uses for terminal commands:
 
 ```yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal
+  backend: local    # or: docker, ssh, singularity, modal, daytona
   cwd: "."          # Working directory ("." = current dir)
   timeout: 180      # Command timeout in seconds
 ```

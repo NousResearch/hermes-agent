@@ -355,6 +355,21 @@ def run_doctor(args):
             check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
             issues.append("Set TERMINAL_SSH_HOST in .env")
     
+    # Daytona (if using daytona backend)
+    if terminal_env == "daytona":
+        daytona_key = os.getenv("DAYTONA_API_KEY")
+        if daytona_key:
+            check_ok("Daytona API key", "(configured)")
+        else:
+            check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
+            issues.append("Set DAYTONA_API_KEY environment variable")
+        try:
+            from daytona import Daytona
+            check_ok("daytona SDK", "(installed)")
+        except ImportError:
+            check_fail("daytona SDK not installed", "(pip install daytona)")
+            issues.append("Install daytona SDK: pip install daytona")
+
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
         check_ok("Node.js")

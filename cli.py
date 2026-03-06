@@ -158,6 +158,7 @@ def load_cli_config() -> Dict[str, Any]:
             "docker_image": "python:3.11",
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
+            "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
@@ -284,12 +285,13 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
@@ -1300,7 +1302,8 @@ class HermesCLI:
                 _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}\n")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -3256,6 +3259,22 @@ metadata:
             """
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
+
+        @kb.add('escape', 'v')
+        def handle_alt_v(event):
+            """Alt+V — paste image from clipboard.
+
+            Alt key combos pass through all terminal emulators (sent as
+            ESC + key), unlike Ctrl+V which terminals intercept for text
+            paste.  This is the reliable way to attach clipboard images
+            on WSL2, VSCode, and any terminal over SSH where Ctrl+V
+            can't reach the application for image-only clipboard.
+            """
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
+            else:
+                # No image found — show a hint
+                pass  # silent when no image (avoid noise on accidental press)
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.

@@ -28,6 +28,41 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
+
+def _kill_port_process(port: int) -> None:
+    """Kill any process listening on the given TCP port."""
+    try:
+        if _IS_WINDOWS:
+            # Use netstat to find the PID bound to this port, then taskkill
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[3] == "LISTENING":
+                    local_addr = parts[1]
+                    if local_addr.endswith(f":{port}"):
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/PID", parts[4], "/F"],
+                                capture_output=True, timeout=5,
+                            )
+                        except subprocess.SubprocessError:
+                            pass
+        else:
+            result = subprocess.run(
+                ["fuser", f"{port}/tcp"],
+                capture_output=True, timeout=5,
+            )
+            if result.returncode == 0:
+                subprocess.run(
+                    ["fuser", "-k", f"{port}/tcp"],
+                    capture_output=True, timeout=5,
+                )
+    except Exception:
+        pass
+
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -145,21 +180,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._session_path.mkdir(parents=True, exist_ok=True)
             
             # Kill any orphaned bridge from a previous gateway run
-            try:
-                result = subprocess.run(
-                    ["fuser", f"{self._bridge_port}/tcp"],
-                    capture_output=True, timeout=5,
-                )
-                if result.returncode == 0:
-                    # Port is in use — kill the process
-                    subprocess.run(
-                        ["fuser", "-k", f"{self._bridge_port}/tcp"],
-                        capture_output=True, timeout=5,
-                    )
-                    import time
-                    time.sleep(2)
-            except Exception:
-                pass
+            _kill_port_process(self._bridge_port)
+            import time
+            time.sleep(1)
             
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
@@ -293,13 +316,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] Error stopping bridge: {e}")
         
         # Also kill any orphaned bridge processes on our port
-        try:
-            subprocess.run(
-                ["fuser", "-k", f"{self._bridge_port}/tcp"],
-                capture_output=True, timeout=5,
-            )
-        except Exception:
-            pass
+        _kill_port_process(self._bridge_port)
         
         self._running = False
         self._bridge_process = None

@@ -95,15 +95,15 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "grep", path: str = ".", file_glob: str = None, limit: int = 50',
-        '"""Search file contents (target="grep") or find files by name (target="find"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit}',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
     ),
     "patch": (
         "patch",
-        "path: str, old_string: str, new_string: str, replace_all: bool = False",
-        '"""Replace old_string with new_string in a file. Returns dict with status."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all}',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
     ),
     "terminal": (
         "terminal",
@@ -137,9 +137,44 @@ def generate_hermes_tools_module(enabled_tools: List[str]) -> str:
 
     header = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket
+import json, os, socket, shlex, time
 
 _sock = None
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers (avoid common scripting pitfalls)
+# ---------------------------------------------------------------------------
+
+def json_parse(text: str):
+    """Parse JSON tolerant of control characters (strict=False).
+    Use this instead of json.loads() when parsing output from terminal()
+    or web_extract() that may contain raw tabs/newlines in strings."""
+    return json.loads(text, strict=False)
+
+
+def shell_quote(s: str) -> str:
+    """Shell-escape a string for safe interpolation into commands.
+    Use this when inserting dynamic content into terminal() commands:
+        terminal(f"echo {shell_quote(user_input)}")
+    """
+    return shlex.quote(s)
+
+
+def retry(fn, max_attempts=3, delay=2):
+    """Retry a function up to max_attempts times with exponential backoff.
+    Use for transient failures (network errors, API rate limits):
+        result = retry(lambda: terminal("gh issue list ..."))
+    """
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                time.sleep(delay * (2 ** attempt))
+    raise last_err
 
 def _connect():
     global _sock
@@ -586,7 +621,11 @@ EXECUTE_CODE_SCHEMA = {
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
-        "datetime, collections, etc.) for processing between tool calls."
+        "datetime, collections, etc.) for processing between tool calls.\n\n"
+        "Also available (no import needed — built into hermes_tools):\n"
+        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
+        "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
+        "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
     ),
     "parameters": {
         "type": "object",

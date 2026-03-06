@@ -194,6 +194,12 @@ class KawaiiSpinner:
             return
         self.running = True
         self.start_time = time.time()
+        # Hide cursor while spinner runs to prevent blink-sync flashing
+        try:
+            sys.stdout.write("[?25l")
+            sys.stdout.flush()
+        except (ValueError, OSError):
+            pass
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
 
@@ -226,6 +232,12 @@ class KawaiiSpinner:
         # garbled escape codes when prompt_toolkit's patch_stdout is active.
         blanks = ' ' * max(self.last_line_len + 5, 40)
         self._write(f"\r{blanks}\r", end='', flush=True)
+        # Restore cursor visibility
+        try:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+        except (ValueError, OSError):
+            pass
         if final_message:
             self._write(f"  {final_message}", flush=True)
 

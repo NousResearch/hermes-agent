@@ -44,6 +44,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
+| `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
 
 ## Terminal Backend
 
@@ -54,6 +55,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
+| `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for all terminal sessions |
@@ -68,7 +70,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `TERMINAL_SSH_PORT` | SSH port (default: 22) |
 | `TERMINAL_SSH_KEY` | Path to private key |
 
-## Container Resources (Docker, Singularity, Modal)
+## Container Resources (Docker, Singularity, Modal, Daytona)
 
 | Variable | Description |
 |----------|-------------|

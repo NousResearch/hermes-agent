@@ -394,7 +394,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
     terminal = config.setdefault('terminal', {})
 
     print()

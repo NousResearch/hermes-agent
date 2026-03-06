@@ -13,7 +13,7 @@ Tools are functions that extend the agent's capabilities. They're organized into
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Web** | `web_search`, `web_extract` | Search the web, extract page content |
-| **Terminal** | `terminal`, `process` | Execute commands (local/docker/singularity/modal/ssh backends), manage background processes |
+| **Terminal** | `terminal`, `process` | Execute commands (local/docker/singularity/modal/daytona/ssh backends), manage background processes |
 | **File** | `read_file`, `write_file`, `patch`, `search_files` | Read, write, edit, and search files |
 | **Browser** | `browser_navigate`, `browser_click`, `browser_type`, etc. | Full browser automation via Browserbase |
 | **Vision** | `vision_analyze` | Image analysis via multimodal models |
@@ -115,7 +115,7 @@ Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal
+  backend: docker  # or singularity, modal, daytona
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)

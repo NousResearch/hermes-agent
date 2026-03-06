@@ -8,6 +8,8 @@
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
+ *   POST /edit           - Edit a sent message { chatId, messageId, message }
+ *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
@@ -21,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync } from 'fs';
 import qrcode from 'qrcode-terminal';
 
 // Parse CLI args
@@ -34,6 +36,7 @@ function getArg(name, defaultVal) {
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const PAIR_ONLY = args.includes('--pair-only');
+const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -110,11 +113,21 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
-      // Skip own messages UNLESS it's a self-chat ("Message Yourself")
-      // Self-chat JID ends with the user's own number
-      if (msg.key.fromMe && !chatId.includes('status') && isGroup) continue;
-      // In non-group chats, fromMe means we sent it — skip unless allowed user sent to themselves
-      if (msg.key.fromMe && !isGroup && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) continue;
+      // Handle fromMe messages based on mode
+      if (msg.key.fromMe) {
+        if (isGroup || chatId.includes('status')) continue;
+
+        if (WHATSAPP_MODE === 'bot') {
+          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
+          continue;
+        }
+
+        // Self-chat mode: only allow messages in the user's own self-chat
+        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const chatNumber = chatId.replace(/@.*/, '');
+        const isSelfChat = myNumber && chatNumber === myNumber;
+        if (!isSelfChat) continue;
+      }
 
       // Check allowlist for messages from others
       if (!msg.key.fromMe && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) {
@@ -205,6 +218,97 @@ app.post('/send', async (req, res) => {
   }
 });
 
+// Edit a previously sent message
+app.post('/edit', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, message } = req.body;
+  if (!chatId || !messageId || !message) {
+    return res.status(400).json({ error: 'chatId, messageId, and message are required' });
+  }
+
+  try {
+    const prefixed = `⚕ *Hermes Agent*\n────────────\n${message}`;
+    const key = { id: messageId, fromMe: true, remoteJid: chatId };
+    await sock.sendMessage(chatId, { text: prefixed, edit: key });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// MIME type map and media type inference for /send-media
+const MIME_MAP = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+  webp: 'image/webp', gif: 'image/gif',
+  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska', '3gp': 'video/3gpp',
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+function inferMediaType(ext) {
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+  if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
+  if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
+  return 'document';
+}
+
+// Send media (image, video, document) natively
+app.post('/send-media', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, filePath, mediaType, caption, fileName } = req.body;
+  if (!chatId || !filePath) {
+    return res.status(400).json({ error: 'chatId and filePath are required' });
+  }
+
+  try {
+    if (!existsSync(filePath)) {
+      return res.status(404).json({ error: `File not found: ${filePath}` });
+    }
+
+    const buffer = readFileSync(filePath);
+    const ext = filePath.toLowerCase().split('.').pop();
+    const type = mediaType || inferMediaType(ext);
+    let msgPayload;
+
+    switch (type) {
+      case 'image':
+        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        break;
+      case 'video':
+        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        break;
+      case 'audio': {
+        const audioMime = (ext === 'ogg' || ext === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
+        msgPayload = { audio: buffer, mimetype: audioMime, ptt: ext === 'ogg' || ext === 'opus' };
+        break;
+      }
+      case 'document':
+      default:
+        msgPayload = {
+          document: buffer,
+          fileName: fileName || path.basename(filePath),
+          caption: caption || undefined,
+          mimetype: MIME_MAP[ext] || 'application/octet-stream',
+        };
+        break;
+    }
+
+    const sent = await sock.sendMessage(chatId, msgPayload);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Typing indicator
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -265,7 +369,7 @@ if (PAIR_ONLY) {
   startSocket();
 } else {
   app.listen(PORT, () => {
-    console.log(`🌉 WhatsApp bridge listening on port ${PORT}`);
+    console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.length > 0) {
       console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);

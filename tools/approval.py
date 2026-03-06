@@ -42,8 +42,10 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh)\s+-c\s+', "shell command via -c flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.hermes/\.env)', "overwrite system file via tee"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
-    (r'\bfind\b.*-exec\s+rm\b', "find -exec rm"),
+    (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
 ]
 
@@ -60,7 +62,7 @@ def detect_dangerous_command(command: str) -> tuple:
     """
     command_lower = command.lower()
     for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE):
+        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
             return (True, pattern_key, description)
     return (False, None, None)
@@ -245,7 +247,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal"):
+    if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)

@@ -206,7 +206,29 @@ class DiscordAdapter(BasePlatformAdapter):
             
         except Exception as e:
             return SendResult(success=False, error=str(e))
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a previously sent Discord message."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            formatted = self.format_message(content)
+            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+            await msg.edit(content=formatted)
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,
@@ -533,6 +555,16 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+        @tree.command(name="update", description="Update Hermes Agent to the latest version")
+        async def slash_update(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/update")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Update initiated~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -542,6 +574,9 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name = interaction.channel.name
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+        
+        # Get channel topic (if available)
+        chat_topic = getattr(interaction.channel, "topic", None)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -549,6 +584,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
+            chat_topic=chat_topic,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -661,6 +697,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(message.channel, discord.Thread):
             thread_id = str(message.channel.id)
         
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
+        chat_topic = getattr(message.channel, "topic", None)
+        
         # Build source
         source = self.build_source(
             chat_id=str(message.channel.id),
@@ -669,6 +708,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(message.author.id),
             user_name=message.author.display_name,
             thread_id=thread_id,
+            chat_topic=chat_topic,
         )
         
         # Build media URLs -- download image attachments to local cache so the

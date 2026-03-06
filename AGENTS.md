@@ -2,7 +2,7 @@
 
 Instructions for AI coding assistants (GitHub Copilot, Cursor, etc.) and human developers.
 
-Hermes-Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
+Hermes Agent is an AI agent harness with tool-calling capabilities, interactive CLI, messaging integrations, and scheduled tasks.
 
 ## Development Environment
 
@@ -44,7 +44,8 @@ hermes-agent/
 │   │   ├── docker.py          # Docker container execution
 │   │   ├── ssh.py             # SSH remote execution
 │   │   ├── singularity.py     # Singularity/Apptainer + SIF management
-│   │   └── modal.py           # Modal cloud execution
+│   │   ├── modal.py           # Modal cloud execution
+│   │   └── daytona.py         # Daytona cloud sandboxes
 │   ├── terminal_tool.py       # Terminal orchestration (sudo, lifecycle, factory)
 │   ├── todo_tool.py           # Planning & task management
 │   ├── process_registry.py    # Background process management
@@ -55,6 +56,7 @@ hermes-agent/
 ├── cron/                 # Scheduler implementation
 ├── environments/         # RL training environments (Atropos integration)
 ├── skills/               # Bundled skill sources
+├── optional-skills/      # Official optional skills (not activated by default)
 ├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
 ├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
@@ -179,6 +181,7 @@ The interactive CLI uses:
 Key components:
 - `HermesCLI` class - Main CLI controller with commands and conversation loop
 - `SlashCommandCompleter` - Autocomplete dropdown for `/commands` (type `/` to see all)
+- `agent/skill_commands.py` - Scans skills and builds invocation messages (shared with gateway)
 - `load_cli_config()` - Loads config, sets environment variables for terminal
 - `build_welcome_banner()` - Displays ASCII art logo, tools, and skills summary
 
@@ -191,8 +194,21 @@ CLI UX notes:
 - Pasting 5+ lines auto-saves to `~/.hermes/pastes/` and collapses to a reference
 - Multi-line input via Alt+Enter or Ctrl+J
 - `/commands` - Process user commands like `/help`, `/clear`, `/personality`, etc.
+- `/skill-name` - Invoke installed skills directly (e.g., `/axolotl`, `/gif-search`)
 
 CLI uses `quiet_mode=True` when creating AIAgent to suppress verbose logging.
+
+### Skill Slash Commands
+
+Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command.
+The skill name (from frontmatter or folder name) becomes the command: `axolotl` → `/axolotl`.
+
+Implementation (`agent/skill_commands.py`, shared between CLI and gateway):
+1. `scan_skill_commands()` scans all SKILL.md files at startup
+2. `build_skill_invocation_message()` loads the SKILL.md content and builds a user-turn message
+3. The message includes the full skill content, a list of supporting files (not loaded), and the user's instruction
+4. Supporting files can be loaded on demand via the `skill_view` tool
+5. Injected as a **user message** (not system prompt) to preserve prompt caching
 
 ### Adding CLI Commands
 
@@ -221,6 +237,7 @@ The unified `hermes` command provides all functionality:
 | `hermes update` | Update to latest (checks for new config) |
 | `hermes uninstall` | Uninstall (can keep configs for reinstall) |
 | `hermes gateway` | Start gateway (messaging + cron scheduler) |
+| `hermes gateway setup` | Configure messaging platforms interactively |
 | `hermes gateway install` | Install gateway as system service |
 | `hermes cron list` | View scheduled jobs |
 | `hermes cron status` | Check if cron scheduler is running |
@@ -231,7 +248,19 @@ The unified `hermes` command provides all functionality:
 
 ## Messaging Gateway
 
-The gateway connects Hermes to Telegram, Discord, and WhatsApp.
+The gateway connects Hermes to Telegram, Discord, Slack, and WhatsApp.
+
+### Setup
+
+The interactive setup wizard handles platform configuration:
+
+```bash
+hermes gateway setup      # Arrow-key menu of all platforms, configure tokens/allowlists/home channels
+```
+
+This is the recommended way to configure messaging. It shows which platforms are already set up, walks through each one interactively, and offers to start/restart the gateway service at the end.
+
+Platforms can also be configured manually in `~/.hermes/.env`:
 
 ### Configuration (in `~/.hermes/.env`):
 
@@ -248,9 +277,7 @@ DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
 HERMES_MAX_ITERATIONS=60                  # Max tool-calling iterations
 MESSAGING_CWD=/home/myuser                # Terminal working directory for messaging
 
-# Tool Progress (optional)
-HERMES_TOOL_PROGRESS=true                 # Send progress messages
-HERMES_TOOL_PROGRESS_MODE=new             # "new" or "all"
+# Tool progress is configured in config.yaml (display.tool_progress: off|new|all|verbose)
 ```
 
 ### Working Directory Behavior
@@ -301,7 +328,7 @@ Files: `gateway/hooks.py`
 
 ### Tool Progress Notifications
 
-When `HERMES_TOOL_PROGRESS=true`, the bot sends status messages as it works:
+When `tool_progress` is enabled in `config.yaml`, the bot sends status messages as it works:
 - `💻 \`ls -la\`...` (terminal commands show the actual command)
 - `🔍 web_search...`
 - `📄 web_extract...`
@@ -396,23 +423,25 @@ The system uses `_config_version` to detect outdated configs:
 API keys are loaded from `~/.hermes/.env`:
 - `OPENROUTER_API_KEY` - Main LLM API access (primary provider)
 - `FIRECRAWL_API_KEY` - Web search/extract tools
+- `FIRECRAWL_API_URL` - Self-hosted Firecrawl endpoint (optional)
 - `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
 - `FAL_KEY` - Image generation (FLUX model)
 - `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
-- `terminal.backend` - Backend: local, docker, singularity, modal, or ssh
+- `terminal.backend` - Backend: local, docker, singularity, modal, daytona, or ssh
 - `terminal.cwd` - Working directory ("." = host CWD for local only; for remote backends set an absolute path inside the target, or omit to use the backend's default)
 - `terminal.docker_image` - Image for Docker backend
 - `terminal.singularity_image` - Image for Singularity backend
 - `terminal.modal_image` - Image for Modal backend
+- `terminal.daytona_image` - Image for Daytona backend
+- `DAYTONA_API_KEY` - API key for Daytona backend (in .env)
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
 
 Agent behavior (in `~/.hermes/.env`):
 - `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 60)
 - `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
-- `HERMES_TOOL_PROGRESS` - Enable tool progress messages (`true`/`false`)
-- `HERMES_TOOL_PROGRESS_MODE` - Progress mode: `new` (tool changes) or `all`
+- `display.tool_progress` in config.yaml - Tool progress: `off`, `new`, `all`, `verbose`
 - `OPENAI_API_KEY` - Voice transcription (Whisper STT)
 - `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` - Slack integration (Socket Mode)
 - `SLACK_ALLOWED_USERS` - Comma-separated Slack user IDs
@@ -470,7 +499,7 @@ terminal(command="pytest -v tests/", background=true)
 - `process(action="submit", session_id="proc_abc123", data="yes")` -- send + Enter
 
 **Key behaviors:**
-- Background processes execute through the configured terminal backend (local/Docker/Modal/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
+- Background processes execute through the configured terminal backend (local/Docker/Modal/Daytona/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
 - The `wait` action blocks the tool call until the process finishes, times out, or is interrupted by a new user message
 - PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex, Claude Code)
 - In RL training, background processes are auto-killed when the episode ends (`tool_context.cleanup()`)
@@ -636,12 +665,12 @@ metadata:
 # Skill Content...
 ```
 
-**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub, Claude marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
+**Skills Hub** — user-driven skill search/install from online registries and official optional skills. Sources: official optional skills (shipped with repo, labeled "official"), GitHub (openai/skills, anthropics/skills, custom taps), ClawHub, Claude marketplace, LobeHub. Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills browse/search/install` CLI commands or the `/skills` slash command in chat.
 
 Key files:
 - `tools/skills_tool.py` — Agent-facing skill list/view (progressive disclosure)
 - `tools/skills_guard.py` — Security scanner (regex + LLM audit, trust-aware install policy)
-- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
+- `tools/skills_hub.py` — Source adapters (OptionalSkillSource, GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
 - `hermes_cli/skills_hub.py` — CLI subcommands + `/skills` slash command handler
 
 ---

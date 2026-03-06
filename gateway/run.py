@@ -43,16 +43,56 @@ if _env_path.exists():
 load_dotenv()
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# Values already set in the environment (from .env or shell) take precedence.
+# config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
         with open(_config_path) as _f:
             _cfg = _yaml.safe_load(_f) or {}
+        # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
                 os.environ[_key] = str(_val)
+        # Terminal config is nested — bridge to TERMINAL_* env vars.
+        # config.yaml overrides .env for these since it's the documented config path.
+        _terminal_cfg = _cfg.get("terminal", {})
+        if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            _terminal_env_map = {
+                "backend": "TERMINAL_ENV",
+                "cwd": "TERMINAL_CWD",
+                "timeout": "TERMINAL_TIMEOUT",
+                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+                "docker_image": "TERMINAL_DOCKER_IMAGE",
+                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+                "modal_image": "TERMINAL_MODAL_IMAGE",
+                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+                "ssh_host": "TERMINAL_SSH_HOST",
+                "ssh_user": "TERMINAL_SSH_USER",
+                "ssh_port": "TERMINAL_SSH_PORT",
+                "ssh_key": "TERMINAL_SSH_KEY",
+                "container_cpu": "TERMINAL_CONTAINER_CPU",
+                "container_memory": "TERMINAL_CONTAINER_MEMORY",
+                "container_disk": "TERMINAL_CONTAINER_DISK",
+                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            }
+            for _cfg_key, _env_var in _terminal_env_map.items():
+                if _cfg_key in _terminal_cfg:
+                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
+        _compression_cfg = _cfg.get("compression", {})
+        if _compression_cfg and isinstance(_compression_cfg, dict):
+            _compression_env_map = {
+                "enabled": "CONTEXT_COMPRESSION_ENABLED",
+                "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
+                "summary_model": "CONTEXT_COMPRESSION_MODEL",
+            }
+            for _cfg_key, _env_var in _compression_env_map.items():
+                if _cfg_key in _compression_cfg:
+                    os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        _agent_cfg = _cfg.get("agent", {})
+        if _agent_cfg and isinstance(_agent_cfg, dict):
+            if "max_turns" in _agent_cfg:
+                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -79,11 +119,34 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
+    build_session_key,
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_runtime_agent_kwargs() -> dict:
+    """Resolve provider credentials for gateway-created AIAgent instances."""
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+        )
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+    }
 
 
 class GatewayRunner:
@@ -103,12 +166,14 @@ class GatewayRunner:
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
+        self._provider_routing = self._load_provider_routing()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+            on_auto_reset=self._flush_memories_before_reset,
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
@@ -123,6 +188,14 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
         
+        # Initialize session database for session_search tool support
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception as e:
+            logger.debug("SQLite session store not available: %s", e)
+        
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
@@ -130,6 +203,61 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+    
+    def _flush_memories_before_reset(self, old_entry):
+        """Prompt the agent to save memories/skills before an auto-reset.
+        
+        Called synchronously by SessionStore before destroying an expired session.
+        Loads the transcript, gives the agent a real turn with memory + skills
+        tools, and explicitly asks it to preserve anything worth keeping.
+        """
+        try:
+            history = self.session_store.load_transcript(old_entry.session_id)
+            if not history or len(history) < 4:
+                return
+
+            from run_agent import AIAgent
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if not runtime_kwargs.get("api_key"):
+                return
+
+            tmp_agent = AIAgent(
+                **runtime_kwargs,
+                max_iterations=8,
+                quiet_mode=True,
+                enabled_toolsets=["memory", "skills"],
+                session_id=old_entry.session_id,
+            )
+
+            # Build conversation history from transcript
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+
+            # Give the agent a real turn to think about what to save
+            flush_prompt = (
+                "[System: This session is about to be automatically reset due to "
+                "inactivity or a scheduled daily reset. The conversation context "
+                "will be cleared after this turn.\n\n"
+                "Review the conversation above and:\n"
+                "1. Save any important facts, preferences, or decisions to memory "
+                "(user profile or your notes) that would be useful in future sessions.\n"
+                "2. If you discovered a reusable workflow or solved a non-trivial "
+                "problem, consider saving it as a skill.\n"
+                "3. If nothing is worth saving, that's fine — just skip.\n\n"
+                "Do NOT respond to the user. Just use the memory and skill_manage "
+                "tools if needed, then stop.]"
+            )
+
+            tmp_agent.run_conversation(
+                user_message=flush_prompt,
+                conversation_history=msgs,
+            )
+            logger.info("Pre-reset save completed for session %s", old_entry.session_id)
+        except Exception as e:
+            logger.debug("Pre-reset save failed for session %s: %s", old_entry.session_id, e)
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -220,6 +348,20 @@ class GatewayRunner:
             return {"enabled": True, "effort": effort}
         logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
         return None
+
+    @staticmethod
+    def _load_provider_routing() -> dict:
+        """Load OpenRouter provider routing preferences from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("provider_routing", {}) or {}
+        except Exception:
+            pass
+        return {}
 
     async def start(self) -> bool:
         """
@@ -314,6 +456,9 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
+        # Check if we're restarting after a /update command
+        await self._send_update_notification()
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -375,7 +520,14 @@ class GatewayRunner:
                 logger.warning("Slack: slack-bolt not installed. Run: pip install 'hermes-agent[slack]'")
                 return None
             return SlackAdapter(config)
-        
+
+        elif platform == Platform.HOMEASSISTANT:
+            from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
+            if not check_ha_requirements():
+                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
+                return None
+            return HomeAssistantAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -389,6 +541,12 @@ class GatewayRunner:
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
         """
+        # Home Assistant events are system-generated (state changes), not
+        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # connection, so HA events are always authorized.
+        if source.platform == Platform.HOMEASSISTANT:
+            return True
+
         user_id = source.user_id
         if not user_id:
             return False
@@ -484,11 +642,7 @@ class GatewayRunner:
         # PRIORITY: If an agent is already running for this session, interrupt it
         # immediately. This is before command parsing to minimize latency -- the
         # user's "stop" message reaches the agent as fast as possible.
-        _quick_key = (
-            f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}"
-            if source.chat_type != "dm"
-            else f"agent:main:{source.platform.value}:dm"
-        )
+        _quick_key = build_session_key(source)
         if _quick_key in self._running_agents:
             running_agent = self._running_agents[_quick_key]
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
@@ -501,6 +655,19 @@ class GatewayRunner:
         
         # Check for commands
         command = event.get_command()
+        
+        # Emit command:* hook for any recognized slash command
+        _known_commands = {"new", "reset", "help", "status", "stop", "model",
+                          "personality", "retry", "undo", "sethome", "set-home",
+                          "compress", "usage", "reload-mcp", "update"}
+        if command and command in _known_commands:
+            await self.hooks.emit(f"command:{command}", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
+        
         if command in ["new", "reset"]:
             return await self._handle_reset_command(event)
         
@@ -527,9 +694,36 @@ class GatewayRunner:
         
         if command in ["sethome", "set-home"]:
             return await self._handle_set_home_command(event)
+
+        if command == "compress":
+            return await self._handle_compress_command(event)
+
+        if command == "usage":
+            return await self._handle_usage_command(event)
+
+        if command == "reload-mcp":
+            return await self._handle_reload_mcp_command(event)
+
+        if command == "update":
+            return await self._handle_update_command(event)
+        
+        # Skill slash commands: /skill-name loads the skill and sends to agent
+        if command:
+            try:
+                from agent.skill_commands import get_skill_commands, build_skill_invocation_message
+                skill_cmds = get_skill_commands()
+                cmd_key = f"/{command}"
+                if cmd_key in skill_cmds:
+                    user_instruction = event.get_command_args().strip()
+                    msg = build_skill_invocation_message(cmd_key, user_instruction)
+                    if msg:
+                        event.text = msg
+                        # Fall through to normal message processing with skill content
+            except Exception as e:
+                logger.debug("Skill command check failed (non-fatal): %s", e)
         
         # Check for pending exec approval responses
-        session_key_preview = f"agent:main:{source.platform.value}:{source.chat_type}:{source.chat_id}" if source.chat_type != "dm" else f"agent:main:{source.platform.value}:dm"
+        session_key_preview = build_session_key(source)
         if session_key_preview in self._pending_approvals:
             user_text = event.text.strip().lower()
             if user_text in ("yes", "y", "approve", "ok", "go", "do it"):
@@ -550,6 +744,19 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        
+        # Emit session:start for new or auto-reset sessions
+        _is_new_session = (
+            session_entry.created_at == session_entry.updated_at
+            or getattr(session_entry, "was_auto_reset", False)
+        )
+        if _is_new_session:
+            await self.hooks.emit("session:start", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "session_key": session_key,
+            })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -643,7 +850,39 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text, audio_paths
                 )
-        
+
+        # -----------------------------------------------------------------
+        # Enrich document messages with context notes for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                if not (mtype.startswith("application/") or mtype.startswith("text/")):
+                    continue
+                # Extract display filename by stripping the doc_{uuid12}_ prefix
+                import os as _os
+                basename = _os.path.basename(path)
+                # Format: doc_<12hex>_<original_filename>
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
+                message_text = f"{context_note}\n\n{message_text}"
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -713,9 +952,12 @@ class GatewayRunner:
                     }
                 )
             
-            # Find only the NEW messages from this turn (skip history we loaded)
-            history_len = len(history)
-            new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else agent_messages
+            # Find only the NEW messages from this turn (skip history we loaded).
+            # Use the filtered history length (history_offset) that was actually
+            # passed to the agent, not len(history) which includes session_meta
+            # entries that were stripped before the agent saw them.
+            history_len = agent_result.get("history_offset", len(history))
+            new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
             
             # If no new messages found (edge case), fall back to simple user/assistant
             if not new_messages:
@@ -760,27 +1002,21 @@ class GatewayRunner:
         source = event.source
         
         # Get existing session key
-        session_key = f"agent:main:{source.platform.value}:" + \
-                      (f"dm" if source.chat_type == "dm" else f"{source.chat_type}:{source.chat_id}")
+        session_key = self.session_store._generate_session_key(source)
         
         # Memory flush before reset: load the old transcript and let a
         # temporary agent save memories before the session is wiped.
         try:
-            old_entry = self.session_store._sessions.get(session_key)
+            old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 old_history = self.session_store.load_transcript(old_entry.session_id)
                 if old_history:
                     from run_agent import AIAgent
                     loop = asyncio.get_event_loop()
-                    # Resolve credentials so the flush agent can reach the LLM
-                    _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-                    _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+                    _flush_kwargs = _resolve_runtime_agent_kwargs()
                     def _do_flush():
                         tmp_agent = AIAgent(
-                            model=_flush_model,
-                            api_key=_flush_api_key,
-                            base_url=_flush_base_url,
+                            **_flush_kwargs,
                             max_iterations=5,
                             quiet_mode=True,
                             enabled_toolsets=["memory"],
@@ -855,51 +1091,109 @@ class GatewayRunner:
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        return (
-            "📖 **Hermes Commands**\n"
-            "\n"
-            "`/new` — Start a new conversation\n"
-            "`/reset` — Reset conversation history\n"
-            "`/status` — Show session info\n"
-            "`/stop` — Interrupt the running agent\n"
-            "`/model [name]` — Show or change the model\n"
-            "`/personality [name]` — Set a personality\n"
-            "`/retry` — Retry your last message\n"
-            "`/undo` — Remove the last exchange\n"
-            "`/sethome` — Set this chat as the home channel\n"
-            "`/help` — Show this message"
-        )
+        lines = [
+            "📖 **Hermes Commands**\n",
+            "`/new` — Start a new conversation",
+            "`/reset` — Reset conversation history",
+            "`/status` — Show session info",
+            "`/stop` — Interrupt the running agent",
+            "`/model [name]` — Show or change the model",
+            "`/personality [name]` — Set a personality",
+            "`/retry` — Retry your last message",
+            "`/undo` — Remove the last exchange",
+            "`/sethome` — Set this chat as the home channel",
+            "`/compress` — Compress conversation context",
+            "`/usage` — Show token usage for this session",
+            "`/reload-mcp` — Reload MCP servers from config",
+            "`/update` — Update Hermes Agent to the latest version",
+            "`/help` — Show this message",
+        ]
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+            if skill_cmds:
+                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} installed):")
+                for cmd in sorted(skill_cmds):
+                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+        except Exception:
+            pass
+        return "\n".join(lines)
     
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
+        import yaml
+
         args = event.get_command_args().strip()
-        current = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
-        
+        config_path = _hermes_home / 'config.yaml'
+
+        # Resolve current model the same way the agent init does:
+        # env vars first, then config.yaml always overrides.
+        current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        try:
+            if config_path.exists():
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, str):
+                    current = model_cfg
+                elif isinstance(model_cfg, dict):
+                    current = model_cfg.get("default", current)
+        except Exception:
+            pass
+
         if not args:
             return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
-        
+
+        if "/" not in args:
+            return (
+                f"🤖 Invalid model format: `{args}`\n\n"
+                f"Use `provider/model-name` format, e.g.:\n"
+                f"• `anthropic/claude-sonnet-4`\n"
+                f"• `google/gemini-2.5-pro`\n"
+                f"• `openai/gpt-4o`"
+            )
+
+        # Write to config.yaml (source of truth), same pattern as CLI save_config_value.
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path) as f:
+                    user_config = yaml.safe_load(f) or {}
+            if "model" not in user_config or not isinstance(user_config["model"], dict):
+                user_config["model"] = {}
+            user_config["model"]["default"] = args
+            with open(config_path, 'w') as f:
+                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            return f"⚠️ Failed to save model change: {e}"
+
+        # Also set env var so code reading it before the next agent init sees the update.
         os.environ["HERMES_MODEL"] = args
+
         return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
+        import yaml
+
         args = event.get_command_args().strip().lower()
-        
+        config_path = _hermes_home / 'config.yaml'
+
         try:
-            import yaml
-            config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
+                config = {}
                 personalities = {}
         except Exception:
+            config = {}
             personalities = {}
-        
+
         if not personalities:
             return "No personalities configured in `~/.hermes/config.yaml`"
-        
+
         if not args:
             lines = ["🎭 **Available Personalities**\n"]
             for name, prompt in personalities.items():
@@ -907,11 +1201,25 @@ class GatewayRunner:
                 lines.append(f"• `{name}` — {preview}")
             lines.append(f"\nUsage: `/personality <name>`")
             return "\n".join(lines)
-        
+
         if args in personalities:
-            os.environ["HERMES_PERSONALITY"] = personalities[args]
+            new_prompt = personalities[args]
+
+            # Write to config.yaml, same pattern as CLI save_config_value.
+            try:
+                if "agent" not in config or not isinstance(config.get("agent"), dict):
+                    config["agent"] = {}
+                config["agent"]["system_prompt"] = new_prompt
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return f"⚠️ Failed to save personality change: {e}"
+
+            # Update in-memory so it takes effect on the very next message.
+            self._ephemeral_system_prompt = new_prompt
+
             return f"🎭 Personality set to **{args}**\n_(takes effect on next message)_"
-        
+
         available = ", ".join(f"`{n}`" for n in personalities.keys())
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
     
@@ -933,9 +1241,9 @@ class GatewayRunner:
         if not last_user_msg:
             return "No previous message to retry."
         
-        # Truncate history to before the last user message
+        # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        session_entry.conversation_history = truncated
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
@@ -967,7 +1275,7 @@ class GatewayRunner:
         
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
-        session_entry.conversation_history = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
@@ -1002,6 +1310,269 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    async def _handle_compress_command(self, event: MessageEvent) -> str:
+        """Handle /compress command -- manually compress conversation context."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        if not history or len(history) < 4:
+            return "Not enough conversation to compress (need at least 4 messages)."
+
+        try:
+            from run_agent import AIAgent
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            if not runtime_kwargs.get("api_key"):
+                return "No provider configured -- cannot compress."
+
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            original_count = len(msgs)
+            approx_tokens = estimate_messages_tokens_rough(msgs)
+
+            tmp_agent = AIAgent(
+                **runtime_kwargs,
+                max_iterations=4,
+                quiet_mode=True,
+                enabled_toolsets=["memory"],
+                session_id=session_entry.session_id,
+            )
+
+            loop = asyncio.get_event_loop()
+            compressed, _ = await loop.run_in_executor(
+                None,
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+            )
+
+            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
+            new_count = len(compressed)
+            new_tokens = estimate_messages_tokens_rough(compressed)
+
+            return (
+                f"🗜️ Compressed: {original_count} → {new_count} messages\n"
+                f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
+            )
+        except Exception as e:
+            logger.warning("Manual compress failed: %s", e)
+            return f"Compression failed: {e}"
+
+    async def _handle_usage_command(self, event: MessageEvent) -> str:
+        """Handle /usage command -- show token usage for the session's last agent run."""
+        source = event.source
+        session_key = build_session_key(source)
+
+        agent = self._running_agents.get(session_key)
+        if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
+            lines = [
+                "📊 **Session Token Usage**",
+                f"Prompt (input): {agent.session_prompt_tokens:,}",
+                f"Completion (output): {agent.session_completion_tokens:,}",
+                f"Total: {agent.session_total_tokens:,}",
+                f"API calls: {agent.session_api_calls}",
+            ]
+            ctx = agent.context_compressor
+            if ctx.last_prompt_tokens:
+                pct = ctx.last_prompt_tokens / ctx.context_length * 100 if ctx.context_length else 0
+                lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
+            if ctx.compression_count:
+                lines.append(f"Compressions: {ctx.compression_count}")
+            return "\n".join(lines)
+
+        # No running agent -- check session history for a rough count
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        if history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
+            approx = estimate_messages_tokens_rough(msgs)
+            return (
+                f"📊 **Session Info**\n"
+                f"Messages: {len(msgs)}\n"
+                f"Estimated context: ~{approx:,} tokens\n"
+                f"_(Detailed usage available during active conversations)_"
+            )
+        return "No usage data available for this session."
+
+    async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
+        """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+        loop = asyncio.get_event_loop()
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+
+            # Capture old server names before shutdown
+            with _lock:
+                old_servers = set(_servers.keys())
+
+            # Read new config before shutting down, so we know what will be added/removed
+            new_config = _load_mcp_config()
+            new_server_names = set(new_config.keys())
+
+            # Shutdown existing connections
+            await loop.run_in_executor(None, shutdown_mcp_servers)
+
+            # Reconnect by discovering tools (reads config.yaml fresh)
+            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+
+            # Compute what changed
+            with _lock:
+                connected_servers = set(_servers.keys())
+
+            added = connected_servers - old_servers
+            removed = old_servers - connected_servers
+            reconnected = connected_servers & old_servers
+
+            lines = ["🔄 **MCP Servers Reloaded**\n"]
+            if reconnected:
+                lines.append(f"♻️ Reconnected: {', '.join(sorted(reconnected))}")
+            if added:
+                lines.append(f"➕ Added: {', '.join(sorted(added))}")
+            if removed:
+                lines.append(f"➖ Removed: {', '.join(sorted(removed))}")
+            if not connected_servers:
+                lines.append("No MCP servers connected.")
+            else:
+                lines.append(f"\n🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
+
+            # Inject a message at the END of the session history so the
+            # model knows tools changed on its next turn.  Appended after
+            # all existing messages to preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added servers: {', '.join(sorted(added))}")
+            if removed:
+                change_parts.append(f"Removed servers: {', '.join(sorted(removed))}")
+            if reconnected:
+                change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
+            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
+            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            reload_msg = {
+                "role": "user",
+                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+            }
+            try:
+                session_entry = self.session_store.get_or_create_session(event.source)
+                self.session_store.append_to_transcript(
+                    session_entry.session_id, reload_msg
+                )
+            except Exception:
+                pass  # Best-effort; don't fail the reload over a transcript write
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("MCP reload failed: %s", e)
+            return f"❌ MCP reload failed: {e}"
+
+    async def _handle_update_command(self, event: MessageEvent) -> str:
+        """Handle /update command — update Hermes Agent to the latest version.
+
+        Spawns ``hermes update`` in a separate systemd scope so it survives the
+        gateway restart that ``hermes update`` triggers at the end.  A marker
+        file is written so the *new* gateway process can notify the user of the
+        result on startup.
+        """
+        import json
+        import shutil
+        import subprocess
+        from datetime import datetime
+
+        project_root = Path(__file__).parent.parent.resolve()
+        git_dir = project_root / '.git'
+
+        if not git_dir.exists():
+            return "✗ Not a git repository — cannot update."
+
+        hermes_bin = shutil.which("hermes")
+        if not hermes_bin:
+            return "✗ `hermes` command not found on PATH."
+
+        # Write marker so the restarted gateway can notify this chat
+        pending_path = _hermes_home / ".update_pending.json"
+        output_path = _hermes_home / ".update_output.txt"
+        pending = {
+            "platform": event.source.platform.value,
+            "chat_id": event.source.chat_id,
+            "user_id": event.source.user_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+        pending_path.write_text(json.dumps(pending))
+
+        # Spawn `hermes update` in a separate cgroup so it survives gateway
+        # restart.  systemd-run --user --scope creates a transient scope unit.
+        update_cmd = f"{hermes_bin} update > {output_path} 2>&1"
+        try:
+            systemd_run = shutil.which("systemd-run")
+            if systemd_run:
+                subprocess.Popen(
+                    [systemd_run, "--user", "--scope",
+                     "--unit=hermes-update", "--",
+                     "bash", "-c", update_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            else:
+                # Fallback: best-effort detach with start_new_session
+                subprocess.Popen(
+                    ["bash", "-c", f"nohup {update_cmd} &"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except Exception as e:
+            pending_path.unlink(missing_ok=True)
+            return f"✗ Failed to start update: {e}"
+
+        return "⚕ Starting Hermes update… I'll notify you when it's done."
+
+    async def _send_update_notification(self) -> None:
+        """If the gateway is starting after a ``/update``, notify the user."""
+        import json
+        import re as _re
+
+        pending_path = _hermes_home / ".update_pending.json"
+        output_path = _hermes_home / ".update_output.txt"
+
+        if not pending_path.exists():
+            return
+
+        try:
+            pending = json.loads(pending_path.read_text())
+            platform_str = pending.get("platform")
+            chat_id = pending.get("chat_id")
+
+            # Read the captured update output
+            output = ""
+            if output_path.exists():
+                output = output_path.read_text()
+
+            # Resolve adapter
+            platform = Platform(platform_str)
+            adapter = self.adapters.get(platform)
+
+            if adapter and chat_id:
+                # Strip ANSI escape codes for clean display
+                output = _re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+                if output:
+                    # Truncate if too long for a single message
+                    if len(output) > 3500:
+                        output = "…" + output[-3500:]
+                    msg = f"✅ Hermes update finished — gateway restarted.\n\n```\n{output}\n```"
+                else:
+                    msg = "✅ Hermes update finished — gateway restarted successfully."
+                await adapter.send(chat_id, msg)
+                logger.info("Sent post-update notification to %s:%s", platform_str, chat_id)
+        except Exception as e:
+            logger.warning("Post-update notification failed: %s", e)
+        finally:
+            pending_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
     def _set_session_env(self, context: SessionContext) -> None:
         """Set environment variables for the current session."""
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
@@ -1272,15 +1843,30 @@ class GatewayRunner:
             default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
             enabled_toolsets = [default_toolset]
         
-        # Check if tool progress notifications are enabled
-        tool_progress_enabled = os.getenv("HERMES_TOOL_PROGRESS", "true").lower() in ("1", "true", "yes")
-        progress_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE", "all")  # "all" or "new" (only new tools)
+        # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
+        # Falls back to env vars for backward compatibility
+        _progress_cfg = {}
+        try:
+            _tp_cfg_path = _hermes_home / "config.yaml"
+            if _tp_cfg_path.exists():
+                import yaml as _tp_yaml
+                with open(_tp_cfg_path) as _tp_f:
+                    _tp_data = _tp_yaml.safe_load(_tp_f) or {}
+                _progress_cfg = _tp_data.get("display", {})
+        except Exception:
+            pass
+        progress_mode = (
+            _progress_cfg.get("tool_progress")
+            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
+            or "all"
+        )
+        tool_progress_enabled = progress_mode != "off"
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         
-        def progress_callback(tool_name: str, preview: str = None):
+        def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
                 return
@@ -1300,6 +1886,7 @@ class GatewayRunner:
                 "write_file": "✍️",
                 "patch": "🔧",
                 "search": "🔎",
+                "search_files": "🔎",
                 "list_directory": "📂",
                 "image_generate": "🎨",
                 "text_to_speech": "🔊",
@@ -1325,46 +1912,101 @@ class GatewayRunner:
                 "schedule_cronjob": "⏰",
                 "list_cronjobs": "⏰",
                 "remove_cronjob": "⏰",
+                "execute_code": "🐍",
+                "delegate_task": "🔀",
+                "clarify": "❓",
+                "skill_manage": "📝",
             }
             emoji = tool_emojis.get(tool_name, "⚙️")
             
+            # Verbose mode: show detailed arguments
+            if progress_mode == "verbose" and args:
+                import json as _json
+                args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                if len(args_str) > 200:
+                    args_str = args_str[:197] + "..."
+                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                progress_queue.put(msg)
+                return
+            
             if preview:
                 # Truncate preview to keep messages clean
-                if len(preview) > 40:
-                    preview = preview[:37] + "..."
-                msg = f"{emoji} {tool_name}... \"{preview}\""
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
             
             progress_queue.put(msg)
         
         # Background task to send progress messages
+        # Accumulates tool lines into a single message that gets edited
         async def send_progress_messages():
             if not progress_queue:
                 return
-            
+
             adapter = self.adapters.get(source.platform)
             if not adapter:
                 return
-            
+
+            progress_lines = []      # Accumulated tool lines
+            progress_msg_id = None   # ID of the progress message to edit
+            can_edit = True          # False once an edit fails (platform doesn't support it)
+
             while True:
                 try:
-                    # Non-blocking check with small timeout
                     msg = progress_queue.get_nowait()
-                    await adapter.send(chat_id=source.chat_id, content=msg)
-                    # Restore typing indicator after sending progress message
+                    progress_lines.append(msg)
+
+                    if can_edit and progress_msg_id is not None:
+                        # Try to edit the existing progress message
+                        full_text = "\n".join(progress_lines)
+                        result = await adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=progress_msg_id,
+                            content=full_text,
+                        )
+                        if not result.success:
+                            # Platform doesn't support editing — stop trying,
+                            # send just this new line as a separate message
+                            can_edit = False
+                            await adapter.send(chat_id=source.chat_id, content=msg)
+                    else:
+                        if can_edit:
+                            # First tool: send all accumulated text as new message
+                            full_text = "\n".join(progress_lines)
+                            result = await adapter.send(chat_id=source.chat_id, content=full_text)
+                        else:
+                            # Editing unsupported: send just this line
+                            result = await adapter.send(chat_id=source.chat_id, content=msg)
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+
+                    # Restore typing indicator
                     await asyncio.sleep(0.3)
                     await adapter.send_typing(source.chat_id)
+
                 except queue.Empty:
-                    await asyncio.sleep(0.3)  # Check again soon
+                    await asyncio.sleep(0.3)
                 except asyncio.CancelledError:
-                    # Drain remaining messages
+                    # Drain remaining queued messages
                     while not progress_queue.empty():
                         try:
                             msg = progress_queue.get_nowait()
-                            await adapter.send(chat_id=source.chat_id, content=msg)
+                            progress_lines.append(msg)
                         except Exception:
                             break
+                    # Final edit with all remaining tools (only if editing works)
+                    if can_edit and progress_lines and progress_msg_id:
+                        full_text = "\n".join(progress_lines)
+                        try:
+                            await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_msg_id,
+                                content=full_text,
+                            )
+                        except Exception:
+                            pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -1375,6 +2017,25 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         
+        # Bridge sync step_callback → async hooks.emit for agent:step events
+        _loop_for_step = asyncio.get_event_loop()
+        _hooks_ref = self.hooks
+
+        def _step_callback_sync(iteration: int, tool_names: list) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _hooks_ref.emit("agent:step", {
+                        "platform": source.platform.value if source.platform else "",
+                        "user_id": source.user_id,
+                        "session_id": session_id,
+                        "iteration": iteration,
+                        "tool_names": tool_names,
+                    }),
+                    _loop_for_step,
+                )
+            except Exception as _e:
+                logger.debug("agent:step hook error: %s", _e)
+
         def run_sync():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -1391,7 +2052,7 @@ class GatewayRunner:
             combined_ephemeral = context_prompt or ""
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-            
+
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
             try:
@@ -1401,9 +2062,6 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
             model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
 
             try:
@@ -1417,33 +2075,42 @@ class GatewayRunner:
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
-                        base_url = _model_cfg.get("base_url", base_url)
-                    # Check if provider is nous — resolve OAuth credentials
-                    provider = _model_cfg.get("provider", "") if isinstance(_model_cfg, dict) else ""
-                    if provider == "nous":
-                        try:
-                            from hermes_cli.auth import resolve_nous_runtime_credentials
-                            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-                            api_key = creds.get("api_key", api_key)
-                            base_url = creds.get("base_url", base_url)
-                        except Exception as nous_err:
-                            logger.warning("Nous Portal credential resolution failed: %s", nous_err)
             except Exception:
                 pass
 
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except Exception as exc:
+                return {
+                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                }
+
+            pr = self._provider_routing
             agent = AIAgent(
                 model=model,
-                api_key=api_key,
-                base_url=base_url,
+                **runtime_kwargs,
                 max_iterations=max_iterations,
                 quiet_mode=True,
+                verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
                 reasoning_config=self._reasoning_config,
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
+                honcho_session_key=session_key,
+                session_db=self._session_db,
             )
             
             # Store agent reference for interrupt support
@@ -1493,7 +2160,20 @@ class GatewayRunner:
                             content = f"[Delivered from {mirror_src}] {content}"
                         agent_history.append({"role": role, "content": content})
             
-            result = agent.run_conversation(message, conversation_history=agent_history)
+            # Collect MEDIA paths already in history so we can exclude them
+            # from the current turn's extraction. This is compression-safe:
+            # even if the message list shrinks, we know which paths are old.
+            _history_media_paths: set = set()
+            for _hm in agent_history:
+                if _hm.get("role") in ("tool", "function"):
+                    _hc = _hm.get("content", "")
+                    if "MEDIA:" in _hc:
+                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
+                            _p = _match.group(1).strip().rstrip('",}')
+                            if _p:
+                                _history_media_paths.add(_p)
+            
+            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             result_holder[0] = result
             
             # Return final response, or a message if something went wrong
@@ -1505,6 +2185,7 @@ class GatewayRunner:
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -1513,22 +2194,25 @@ class GatewayRunner:
             # doesn't include them.  We collect unique tags from tool results and
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
+            #
+            # Uses path-based deduplication against _history_media_paths (collected
+            # before run_conversation) instead of index slicing. This is safe even
+            # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
-                    if msg.get("role") == "tool" or msg.get("role") == "function":
+                    if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')
-                                if path:
+                                if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
                 
                 if media_tags:
-                    # Deduplicate while preserving order
                     seen = set()
                     unique_tags = []
                     for tag in media_tags:
@@ -1544,6 +2228,7 @@ class GatewayRunner:
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "tools": tools_holder[0] or [],
+                "history_offset": len(agent_history),
             }
         
         # Start progress message sender if enabled
@@ -1654,10 +2339,10 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     needing a separate `hermes cron daemon` or system cron entry.
 
     Also refreshes the channel directory every 5 minutes and prunes the
-    image/audio cache once per hour.
+    image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -1686,6 +2371,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
                     logger.info("Image cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Image cache cleanup error: %s", e)
+            try:
+                removed = cleanup_document_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Document cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Document cache cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
@@ -1699,6 +2390,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
+    # ── Duplicate-instance guard ──────────────────────────────────────
+    # Prevent two gateways from running under the same HERMES_HOME.
+    # The PID file is scoped to HERMES_HOME, so future multi-profile
+    # setups (each profile using a distinct HERMES_HOME) will naturally
+    # allow concurrent instances without tripping this guard.
+    from gateway.status import get_running_pid
+    existing_pid = get_running_pid()
+    if existing_pid is not None and existing_pid != os.getpid():
+        hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+        logger.error(
+            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+            existing_pid, hermes_home,
+        )
+        print(
+            f"\n❌ Gateway already running (PID {existing_pid}).\n"
+            f"   Use 'hermes gateway restart' to replace it,\n"
+            f"   or 'hermes gateway stop' to kill it first.\n"
+        )
+        return False
+
     # Configure rotating file log so gateway output is persisted for debugging
     log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1707,9 +2419,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
     )
-    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    from agent.redact import RedactingFormatter
+    file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.INFO)
+
+    # Separate errors-only log for easy debugging
+    error_handler = RotatingFileHandler(
+        log_dir / 'errors.log',
+        maxBytes=2 * 1024 * 1024,
+        backupCount=2,
+    )
+    error_handler.setLevel(logging.WARNING)
+    error_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    logging.getLogger().addHandler(error_handler)
 
     runner = GatewayRunner(config)
     
@@ -1752,7 +2475,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
-    
+
+    # Close MCP server connections
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers
+        shutdown_mcp_servers()
+    except Exception:
+        pass
+
     return True
 
 

@@ -176,6 +176,36 @@ def run_doctor(args):
                 check_warn("config.yaml not found", "(using defaults)")
     
     # =========================================================================
+    # Check: Auth providers
+    # =========================================================================
+    print()
+    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+
+        nous_status = get_nous_auth_status()
+        if nous_status.get("logged_in"):
+            check_ok("Nous Portal auth", "(logged in)")
+        else:
+            check_warn("Nous Portal auth", "(not logged in)")
+
+        codex_status = get_codex_auth_status()
+        if codex_status.get("logged_in"):
+            check_ok("OpenAI Codex auth", "(logged in)")
+        else:
+            check_warn("OpenAI Codex auth", "(not logged in)")
+            if codex_status.get("error"):
+                check_info(codex_status["error"])
+    except Exception as e:
+        check_warn("Auth provider status", f"(could not check: {e})")
+
+    if shutil.which("codex"):
+        check_ok("codex CLI")
+    else:
+        check_warn("codex CLI not found", "(required for openai-codex login)")
+
+    # =========================================================================
     # Check: Directory structure
     # =========================================================================
     print()
@@ -325,6 +355,21 @@ def run_doctor(args):
             check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
             issues.append("Set TERMINAL_SSH_HOST in .env")
     
+    # Daytona (if using daytona backend)
+    if terminal_env == "daytona":
+        daytona_key = os.getenv("DAYTONA_API_KEY")
+        if daytona_key:
+            check_ok("Daytona API key", "(configured)")
+        else:
+            check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
+            issues.append("Set DAYTONA_API_KEY environment variable")
+        try:
+            from daytona import Daytona
+            check_ok("daytona SDK", "(installed)")
+        except ImportError:
+            check_fail("daytona SDK not installed", "(pip install daytona)")
+            issues.append("Install daytona SDK: pip install daytona")
+
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
         check_ok("Node.js")

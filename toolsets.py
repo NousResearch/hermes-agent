@@ -60,6 +60,10 @@ _HERMES_CORE_TOOLS = [
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Honcho user context (gated on honcho being active via check_fn)
+    "query_user_context",
+    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
 
 
@@ -185,8 +189,20 @@ TOOLSETS = {
         "tools": ["delegate_task"],
         "includes": []
     },
-    
-    
+
+    "honcho": {
+        "description": "Honcho AI-native memory for persistent cross-session user modeling",
+        "tools": ["query_user_context"],
+        "includes": []
+    },
+
+    "homeassistant": {
+        "description": "Home Assistant smart home control and monitoring",
+        "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+
     # Scenario-specific toolsets
     
     "debugging": {
@@ -239,10 +255,16 @@ TOOLSETS = {
         "includes": []
     },
     
+    "hermes-homeassistant": {
+        "description": "Home Assistant bot toolset - smart home event monitoring and control",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-homeassistant"]
     }
 }
 

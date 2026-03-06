@@ -319,7 +319,9 @@ def _transform_sudo_command(command: str) -> str:
         # Replace 'sudo' with password-piped version
         # The -S flag makes sudo read password from stdin
         # The -p '' suppresses the password prompt
-        return f"echo '{sudo_password}' | sudo -S -p ''"
+        # Use shlex.quote() to prevent shell injection via password content
+        import shlex
+        return f"echo {shlex.quote(sudo_password)} | sudo -S -p ''"
     
     # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
     # This handles: sudo, sudo -flag, etc.
@@ -344,7 +346,9 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
-Background processes: Set background=true to get a session_id, then use the 'process' tool to poll/wait/kill/write.
+Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for everything that finishes.
+Background: ONLY for long-running servers, watchers, or processes that never exit. Set background=true to get a session_id, then use process(action="wait") to block until done — it returns instantly on completion, same as foreground. Use process(action="poll") only when you need a progress check without blocking.
+Do NOT use background for scripts, builds, or installs — foreground with a generous timeout is always better (fewer tool calls, instant results).
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
@@ -419,7 +423,7 @@ def _get_env_config() -> Dict[str, Any]:
     # catches the case where cli.py (or .env) leaked the host's CWD.
     # SSH is excluded since /home/ paths are valid on remote machines.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    if env_type in ("modal", "docker", "singularity") and cwd:
+    if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
         host_prefixes = ("/Users/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
@@ -432,19 +436,21 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
-        "timeout": int(os.getenv("TERMINAL_TIMEOUT", "60")),
+        "timeout": int(os.getenv("TERMINAL_TIMEOUT", "180")),
         "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": int(os.getenv("TERMINAL_SSH_PORT", "22")),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
-        # Container resource config (applies to docker, singularity, modal -- ignored for local/ssh)
+        # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": float(os.getenv("TERMINAL_CONTAINER_CPU", "1")),
         "container_memory": int(os.getenv("TERMINAL_CONTAINER_MEMORY", "5120")),     # MB (default 5GB)
         "container_disk": int(os.getenv("TERMINAL_CONTAINER_DISK", "51200")),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
+        "docker_volumes": json.loads(os.getenv("TERMINAL_DOCKER_VOLUMES", "[]")),
     }
 
 
@@ -455,7 +461,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment from mini-swe-agent.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal", "ssh"
+        env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -471,6 +477,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
+    volumes = cc.get("docker_volumes", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -480,6 +487,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
+            volumes=volumes,
         )
     
     elif env_type == "singularity":
@@ -504,6 +512,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
     
+    elif env_type == "daytona":
+        # Lazy import so daytona SDK is only required when backend is selected.
+        from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
+        return _DaytonaEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=int(cpu), memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -515,9 +532,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cwd=cwd,
             timeout=timeout,
         )
-    
+
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', or 'ssh'")
+        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -593,7 +610,7 @@ def _cleanup_thread_worker():
             config = _get_env_config()
             _cleanup_inactive_envs(config["lifetime_seconds"])
         except Exception as e:
-            logger.warning("Error in cleanup thread: %s", e)
+            logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
         for _ in range(60):
             if not _cleanup_running:
@@ -617,7 +634,10 @@ def _stop_cleanup_thread():
     global _cleanup_running
     _cleanup_running = False
     if _cleanup_thread is not None:
-        _cleanup_thread.join(timeout=5)
+        try:
+            _cleanup_thread.join(timeout=5)
+        except (SystemExit, KeyboardInterrupt):
+            pass
 
 
 def get_active_environments_info() -> Dict[str, Any]:
@@ -628,19 +648,18 @@ def get_active_environments_info() -> Dict[str, Any]:
         "workdirs": {},
     }
     
-    # Calculate total disk usage
+    # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
     for task_id in _active_environments.keys():
-        # Check sandbox and workdir sizes
         scratch_dir = _get_scratch_dir()
-        for pattern in [f"hermes-*{task_id[:8]}*"]:
-            import glob
-            for path in glob.glob(str(scratch_dir / "hermes-*")):
-                try:
-                    size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
-                    total_size += size
-                except OSError:
-                    pass
+        pattern = f"hermes-*{task_id[:8]}*"
+        import glob
+        for path in glob.glob(str(scratch_dir / pattern)):
+            try:
+                size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
+                total_size += size
+            except OSError:
+                pass
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
@@ -658,7 +677,7 @@ def cleanup_all_environments():
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
-            logger.error("Error cleaning %s: %s", task_id, e)
+            logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
     
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()
@@ -790,9 +809,11 @@ def terminal_tool(
             image = overrides.get("singularity_image") or config["singularity_image"]
         elif env_type == "modal":
             image = overrides.get("modal_image") or config["modal_image"]
+        elif env_type == "daytona":
+            image = overrides.get("daytona_image") or config["daytona_image"]
         else:
             image = ""
-        
+
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
@@ -842,12 +863,13 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal"):
+                        if env_type in ("docker", "singularity", "modal", "daytona"):
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "docker_volumes": config.get("docker_volumes", []),
                             }
 
                         new_env = _create_environment(
@@ -1028,8 +1050,12 @@ def terminal_tool(
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
+            # Redact secrets from command output (catches env/printenv leaking keys)
+            from agent.redact import redact_sensitive_text
+            output = redact_sensitive_text(output.strip()) if output else ""
+
             return json.dumps({
-                "output": output.strip() if output else "",
+                "output": output,
                 "exit_code": returncode,
                 "error": None
             }, ensure_ascii=False)
@@ -1068,10 +1094,17 @@ def check_terminal_requirements() -> bool:
                 result = subprocess.run([executable, "--version"], capture_output=True, timeout=5)
                 return result.returncode == 0
             return False
+        elif env_type == "ssh":
+            from tools.environments.ssh import SSHEnvironment
+            # Check that host and user are configured
+            return bool(config.get("ssh_host")) and bool(config.get("ssh_user"))
         elif env_type == "modal":
             from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
             # Check for modal token
             return os.getenv("MODAL_TOKEN_ID") is not None or Path.home().joinpath(".modal.toml").exists()
+        elif env_type == "daytona":
+            from daytona import Daytona
+            return os.getenv("DAYTONA_API_KEY") is not None
         else:
             return False
     except Exception as e:
@@ -1110,10 +1143,11 @@ if __name__ == "__main__":
 
     print("\nEnvironment Variables:")
     default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
-    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/ssh)")
+    print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/singularity/modal/daytona/ssh)")
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
+    print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
@@ -1137,12 +1171,12 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Whether to run the command in the background (default: false)",
+                "description": "ONLY for servers/watchers that never exit. For scripts, builds, installs — use foreground with timeout instead (it returns instantly when done).",
                 "default": False
             },
             "timeout": {
                 "type": "integer",
-                "description": "Command timeout in seconds (optional)",
+                "description": "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
                 "minimum": 1
             },
             "workdir": {

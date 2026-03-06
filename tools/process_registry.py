@@ -11,7 +11,7 @@ Tracks processes spawned via terminal(background=true), providing:
 
 Background processes execute THROUGH the environment interface -- nothing
 runs on the host machine unless TERMINAL_ENV=local. For Docker, Singularity,
-Modal, and SSH backends, the command runs inside the sandbox.
+Modal, Daytona, and SSH backends, the command runs inside the sandbox.
 
 Usage:
     from tools.process_registry import process_registry
@@ -32,11 +32,17 @@ Usage:
 import json
 import logging
 import os
+import platform
+import shlex
+import shutil
 import signal
 import subprocess
 import threading
 import time
 import uuid
+
+_IS_WINDOWS = platform.system() == "Windows"
+from tools.environments.local import _find_shell
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -85,6 +91,14 @@ class ProcessRegistry:
       - Cleanup thread (sandbox reaping coordination)
     """
 
+    _SHELL_NOISE_SUBSTRINGS = (
+        "bash: cannot set terminal process group",
+        "bash: no job control in this shell",
+        "no job control in this shell",
+        "cannot set terminal process group",
+        "tcsetattr: Inappropriate ioctl for device",
+    )
+
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
@@ -92,6 +106,14 @@ class ProcessRegistry:
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _clean_shell_noise(text: str) -> str:
+        """Strip shell startup warnings from the beginning of output."""
+        lines = text.split("\n")
+        while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
+            lines.pop(0)
+        return "\n".join(lines)
 
     # ----- Spawn -----
 
@@ -127,10 +149,13 @@ class ProcessRegistry:
             # Try PTY mode for interactive CLI tools
             try:
                 import ptyprocess
+                user_shell = _find_shell()
+                pty_env = os.environ | (env_vars or {})
+                pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = ptyprocess.PtyProcess.spawn(
-                    ["bash", "-c", command],
+                    [user_shell, "-lic", command],
                     cwd=session.cwd,
-                    env=os.environ | (env_vars or {}),
+                    env=pty_env,
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
@@ -160,18 +185,25 @@ class ProcessRegistry:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
+        # Use the user's login shell for consistency with LocalEnvironment --
+        # ensures rc files are sourced and user tools are available.
+        user_shell = _find_shell()
+        # Force unbuffered output for Python scripts so progress is visible
+        # during background execution (libraries like tqdm/datasets buffer when
+        # stdout is a pipe, hiding output from process(action="poll")).
+        bg_env = os.environ | (env_vars or {})
+        bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            command,
-            shell=True,
+            [user_shell, "-lic", command],
             text=True,
             cwd=session.cwd,
-            env=os.environ | (env_vars or {}),
+            env=bg_env,
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
-            preexec_fn=os.setsid,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
         session.process = proc
@@ -206,7 +238,7 @@ class ProcessRegistry:
         """
         Spawn a background process through a non-local environment backend.
 
-        For Docker/Singularity/Modal/SSH: runs the command inside the sandbox
+        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
         using the environment's execute() interface. We wrap the command to
         capture the in-sandbox PID and redirect output to a log file inside
         the sandbox, then poll the log via subsequent execute() calls.
@@ -227,8 +259,9 @@ class ProcessRegistry:
         # Run the command in the sandbox with output capture
         log_path = f"/tmp/hermes_bg_{session.id}.log"
         pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        quoted_command = shlex.quote(command)
         bg_command = (
-            f"nohup bash -c '{command}' > {log_path} 2>&1 & "
+            f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
             f"echo $! > {pid_path} && cat {pid_path}"
         )
 
@@ -268,11 +301,15 @@ class ProcessRegistry:
 
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
+        first_chunk = True
         try:
             while True:
                 chunk = session.process.stdout.read(4096)
                 if not chunk:
                     break
+                if first_chunk:
+                    chunk = self._clean_shell_noise(chunk)
+                    first_chunk = False
                 with session._lock:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:
@@ -518,7 +555,10 @@ class ProcessRegistry:
             elif session.process:
                 # Local process -- kill the process group
                 try:
-                    os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
+                    if _IS_WINDOWS:
+                        session.process.terminate()
+                    else:
+                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
@@ -783,7 +823,8 @@ def _handle_process(args, **kw):
     import json as _json
     task_id = kw.get("task_id")
     action = args.get("action", "")
-    session_id = args.get("session_id", "")
+    # Coerce to string — some models send session_id as an integer
+    session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":
         return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
@@ -800,9 +841,9 @@ def _handle_process(args, **kw):
         elif action == "kill":
             return _json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
         elif action == "write":
-            return _json.dumps(process_registry.write_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+            return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":
-            return _json.dumps(process_registry.submit_stdin(session_id, args.get("data", "")), ensure_ascii=False)
+            return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
     return _json.dumps({"error": f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit"}, ensure_ascii=False)
 
 

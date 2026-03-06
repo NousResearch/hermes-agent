@@ -26,6 +26,7 @@ class Platform(Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
+    HOMEASSISTANT = "homeassistant"
 
 
 @dataclass
@@ -65,8 +66,9 @@ class SessionResetPolicy:
     - "daily": Reset at a specific hour each day
     - "idle": Reset after N minutes of inactivity
     - "both": Whichever triggers first (daily boundary OR idle timeout)
+    - "none": Never auto-reset (context managed only by compression)
     """
-    mode: str = "both"  # "daily", "idle", or "both"
+    mode: str = "both"  # "daily", "idle", "both", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     
@@ -264,6 +266,21 @@ def load_gateway_config() -> GatewayConfig:
         except Exception as e:
             print(f"[gateway] Warning: Failed to load {gateway_config_path}: {e}")
     
+    # Bridge session_reset from config.yaml (the user-facing config file)
+    # into the gateway config. config.yaml takes precedence over gateway.json
+    # for session reset policy since that's where hermes setup writes it.
+    try:
+        import yaml
+        config_yaml_path = Path.home() / ".hermes" / "config.yaml"
+        if config_yaml_path.exists():
+            with open(config_yaml_path) as f:
+                yaml_cfg = yaml.safe_load(f) or {}
+            sr = yaml_cfg.get("session_reset")
+            if sr and isinstance(sr, dict):
+                config.default_reset_policy = SessionResetPolicy.from_dict(sr)
+    except Exception:
+        pass
+
     # Override with environment variables
     _apply_env_overrides(config)
     
@@ -362,6 +379,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             )
     
+    # Home Assistant
+    hass_token = os.getenv("HASS_TOKEN")
+    if hass_token:
+        if Platform.HOMEASSISTANT not in config.platforms:
+            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
+        config.platforms[Platform.HOMEASSISTANT].enabled = True
+        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        hass_url = os.getenv("HASS_URL")
+        if hass_url:
+            config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:

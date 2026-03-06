@@ -171,6 +171,84 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
         return cache_audio_from_bytes(response.content, ext)
 
 
+# ---------------------------------------------------------------------------
+# Document cache utilities
+#
+# Same pattern as image/audio cache -- documents from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+DOCUMENT_CACHE_DIR = Path(os.path.expanduser("~/.hermes/document_cache"))
+
+SUPPORTED_DOCUMENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+
+
+def get_document_cache_dir() -> Path:
+    """Return the document cache directory, creating it if it doesn't exist."""
+    DOCUMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return DOCUMENT_CACHE_DIR
+
+
+def cache_document_from_bytes(data: bytes, filename: str) -> str:
+    """
+    Save raw document bytes to the cache and return the absolute file path.
+
+    The cached filename preserves the original human-readable name with a
+    unique prefix: ``doc_{uuid12}_{original_filename}``.
+
+    Args:
+        data: Raw document bytes.
+        filename: Original filename (e.g. "report.pdf").
+
+    Returns:
+        Absolute path to the cached document file as a string.
+
+    Raises:
+        ValueError: If the sanitized path escapes the cache directory.
+    """
+    cache_dir = get_document_cache_dir()
+    # Sanitize: strip directory components, null bytes, and control characters
+    safe_name = Path(filename).name if filename else "document"
+    safe_name = safe_name.replace("\x00", "").strip()
+    if not safe_name or safe_name in (".", ".."):
+        safe_name = "document"
+    cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+    filepath = cache_dir / cached_name
+    # Final safety check: ensure path stays inside cache dir
+    if not filepath.resolve().is_relative_to(cache_dir.resolve()):
+        raise ValueError(f"Path traversal rejected: {filename!r}")
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+def cleanup_document_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached documents older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_document_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -320,7 +398,20 @@ class BasePlatformAdapter(ABC):
             SendResult with success status and message ID
         """
         pass
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """
+        Edit a previously sent message. Optional — platforms that don't
+        support editing return success=False and callers fall back to
+        sending a new message.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_typing(self, chat_id: str) -> None:
         """
         Send a typing indicator.
@@ -347,6 +438,28 @@ class BasePlatformAdapter(ABC):
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
     
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send an animated GIF natively via the platform API.
+        
+        Override in subclasses to send GIFs as proper animations
+        (e.g., Telegram send_animation) so they auto-play inline.
+        Default falls back to send_image.
+        """
+        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to)
+    
+    @staticmethod
+    def _is_animation_url(url: str) -> bool:
+        """Check if a URL points to an animated GIF (vs a static image)."""
+        lower = url.lower().split('?')[0]  # Strip query params
+        return lower.endswith('.gif')
+
     @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
@@ -382,10 +495,14 @@ class BasePlatformAdapter(ABC):
             url = match.group(1)
             images.append((url, ""))
         
-        # Remove matched image tags from content if we found images
+        # Remove only the matched image tags from content (not all markdown images)
         if images:
-            cleaned = re.sub(md_pattern, '', cleaned)
-            cleaned = re.sub(html_pattern, '', cleaned)
+            extracted_urls = {url for url, _ in images}
+            def _remove_if_extracted(match):
+                url = match.group(2) if match.lastindex >= 2 else match.group(1)
+                return '' if url in extracted_urls else match.group(0)
+            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
+            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -409,7 +526,63 @@ class BasePlatformAdapter(ABC):
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
-    
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a video natively via the platform API.
+
+        Override in subclasses to send videos as inline playable media.
+        Default falls back to sending the file path as text.
+        """
+        text = f"🎬 Video: {video_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a document/file natively via the platform API.
+
+        Override in subclasses to send files as downloadable attachments.
+        Default falls back to sending the file path as text.
+        """
+        text = f"📎 File: {file_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """
+        Send a local image file natively via the platform API.
+
+        Unlike send_image() which takes a URL, this takes a local file path.
+        Override in subclasses for native photo attachments.
+        Default falls back to sending the file path as text.
+        """
+        text = f"🖼️ Image: {image_path}"
+        if caption:
+            text = f"{caption}\n{text}"
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
@@ -558,29 +731,59 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        img_result = await self.send_image(
-                            chat_id=event.source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text if alt_text else None,
-                        )
+                        # Route animated GIFs through send_animation for proper playback
+                        if self._is_animation_url(image_url):
+                            img_result = await self.send_animation(
+                                chat_id=event.source.chat_id,
+                                animation_url=image_url,
+                                caption=alt_text if alt_text else None,
+                            )
+                        else:
+                            img_result = await self.send_image(
+                                chat_id=event.source.chat_id,
+                                image_url=image_url,
+                                caption=alt_text if alt_text else None,
+                            )
                         if not img_result.success:
                             print(f"[{self.name}] Failed to send image: {img_result.error}")
                     except Exception as img_err:
                         print(f"[{self.name}] Error sending image: {img_err}")
                 
-                # Send extracted audio/voice files as native attachments
-                for audio_path, is_voice in media_files:
+                # Send extracted media files — route by file type
+                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+                for media_path, is_voice in media_files:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        voice_result = await self.send_voice(
-                            chat_id=event.source.chat_id,
-                            audio_path=audio_path,
-                        )
-                        if not voice_result.success:
-                            print(f"[{self.name}] Failed to send voice: {voice_result.error}")
-                    except Exception as voice_err:
-                        print(f"[{self.name}] Error sending voice: {voice_err}")
+                        ext = Path(media_path).suffix.lower()
+                        if ext in _AUDIO_EXTS:
+                            media_result = await self.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=media_path,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            media_result = await self.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=media_path,
+                            )
+                        elif ext in _IMAGE_EXTS:
+                            media_result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=media_path,
+                            )
+                        else:
+                            media_result = await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                            )
+
+                        if not media_result.success:
+                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                    except Exception as media_err:
+                        print(f"[{self.name}] Error sending media: {media_err}")
             
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
@@ -628,9 +831,13 @@ class BasePlatformAdapter(ABC):
         chat_type: str = "dm",
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
-        thread_id: Optional[str] = None
+        thread_id: Optional[str] = None,
+        chat_topic: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
+        # Normalize empty topic to None
+        if chat_topic is not None and not chat_topic.strip():
+            chat_topic = None
         return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
@@ -639,6 +846,7 @@ class BasePlatformAdapter(ABC):
             user_id=str(user_id) if user_id else None,
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
+            chat_topic=chat_topic.strip() if chat_topic else None,
         )
     
     @abstractmethod
@@ -720,11 +928,11 @@ class BasePlatformAdapter(ABC):
 
             full_chunk = prefix + chunk_body
 
-            # Walk the chunk line-by-line to determine whether we end
-            # inside an open code block.
+            # Walk only the chunk_body (not the prefix we prepended) to
+            # determine whether we end inside an open code block.
             in_code = carry_lang is not None
             lang = carry_lang or ""
-            for line in full_chunk.split("\n"):
+            for line in chunk_body.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:

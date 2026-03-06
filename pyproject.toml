@@ -7,7 +7,7 @@ name = "hermes-agent"
 version = "0.1.0"
 description = "AI agent with advanced tool-calling and toolsets"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
@@ -39,6 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
+daytona = ["daytona>=0.148.0"]
 dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
@@ -46,8 +47,12 @@ slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
 pty = ["ptyprocess>=0.7.0"]
+honcho = ["honcho-ai>=2.0.1"]
+mcp = ["mcp>=1.2.0"]
+homeassistant = ["aiohttp>=3.9.0"]
 all = [
   "hermes-agent[modal]",
+  "hermes-agent[daytona]",
   "hermes-agent[messaging]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
@@ -55,6 +60,9 @@ all = [
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[honcho]",
+  "hermes-agent[mcp]",
+  "hermes-agent[homeassistant]",
 ]
 
 [project.scripts]
@@ -65,7 +73,7 @@ hermes-agent = "run_agent:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants"]
 
 [tool.setuptools.packages.find]
-include = ["tools", "hermes_cli", "gateway", "cron"]
+include = ["tools", "hermes_cli", "gateway", "cron", "honcho_integration"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

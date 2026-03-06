@@ -30,6 +30,9 @@ def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
+    parent.api_key = "parent-key"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
     parent.platform = "cli"
     parent.providers_allowed = None
@@ -217,6 +220,30 @@ class TestDelegateTask(unittest.TestCase):
 
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
+
+    def test_child_inherits_runtime_credentials(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.api_key = "codex-token"
+        parent.provider = "openai-codex"
+        parent.api_mode = "codex_responses"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test runtime inheritance", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+            self.assertEqual(kwargs["api_key"], parent.api_key)
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
 
 class TestBlockedTools(unittest.TestCase):

@@ -136,14 +136,29 @@ terminal:
 #   timeout: 180
 #   lifetime_seconds: 300
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+
+# -----------------------------------------------------------------------------
+# OPTION 6: Daytona cloud execution
+# Commands run in Daytona cloud sandboxes
+# Great for: Cloud dev environments, persistent workspaces, team collaboration
+# Requires: pip install daytona, DAYTONA_API_KEY env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "daytona"
+#   cwd: "~"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   container_disk: 10240          # Daytona max is 10GB per sandbox
+
 #
-# --- Container resource limits (docker, singularity, modal -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
-#   container_cpu: 1              # CPU cores (default: 1)
-#   container_memory: 5120        # Memory in MB (default: 5120 = 5GB)
-#   container_disk: 51200         # Disk in MB (default: 51200 = 50GB)
-#   container_persistent: true    # Persist filesystem across sessions (default: true)
+  container_cpu: 1              # CPU cores
+  container_memory: 5120        # Memory in MB (5120 = 5GB)
+  container_disk: 51200         # Disk in MB (51200 = 50GB)
+  container_persistent: true    # Persist filesystem across sessions (false = ephemeral)
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)
@@ -231,6 +246,33 @@ memory:
   # lost (compression, /new, /reset, exit). Set to 0 to disable.
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
+
+# =============================================================================
+# Session Reset Policy (Messaging Platforms)
+# =============================================================================
+# Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
+# automatically cleared. Without resets, conversation context grows indefinitely
+# which increases API costs with every message.
+#
+# When a reset triggers, the agent first saves important information to its
+# persistent memory — but the conversation context is wiped. The agent starts
+# fresh but retains learned facts via its memory system.
+#
+# Users can always manually reset with /reset or /new in chat.
+#
+# Modes:
+#   "both"  - Reset on EITHER inactivity timeout or daily boundary (recommended)
+#   "idle"  - Reset only after N minutes of inactivity
+#   "daily" - Reset only at a fixed hour each day
+#   "none"  - Never auto-reset; context lives until /reset or compression kicks in
+#
+# When a reset triggers, the agent gets one turn to save important memories and
+# skills before the context is wiped. Persistent memory carries across sessions.
+#
+session_reset:
+  mode: both           # "both", "idle", "daily", or "none"
+  idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
+  at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
 
 # =============================================================================
 # Skills Configuration
@@ -436,6 +478,41 @@ toolsets:
 #   - safe
 
 # =============================================================================
+# MCP (Model Context Protocol) Servers
+# =============================================================================
+# Connect to external MCP servers to add tools from the MCP ecosystem.
+# Each server's tools are automatically discovered and registered.
+# See docs/mcp.md for full documentation.
+#
+# Stdio servers (spawn a subprocess):
+#   command: the executable to run
+#   args: command-line arguments
+#   env: environment variables (only these + safe defaults passed to subprocess)
+#
+# HTTP servers (connect to a URL):
+#   url: the MCP server endpoint
+#   headers: HTTP headers (e.g., for authentication)
+#
+# Optional per-server settings:
+#   timeout: tool call timeout in seconds (default: 120)
+#   connect_timeout: initial connection timeout (default: 60)
+#
+# mcp_servers:
+#   time:
+#     command: uvx
+#     args: ["mcp-server-time"]
+#   filesystem:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+#   notion:
+#     url: https://mcp.notion.com/mcp
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
@@ -483,8 +560,22 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (up to 3 parallel).
 delegation:
-  max_iterations: 50                          # Max tool-calling turns per child (default: 25)
+  max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+
+# =============================================================================
+# Honcho Integration (Cross-Session User Modeling)
+# =============================================================================
+# AI-native persistent memory via Honcho (https://honcho.dev/).
+# Builds a deeper understanding of the user across sessions and tools.
+# Runs alongside USER.md — additive, not a replacement.
+#
+# Requires: pip install honcho-ai
+# Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
+# API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
+#
+# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
+# honcho: {}
 
 # =============================================================================
 # Display
@@ -492,3 +583,11 @@ delegation:
 display:
   # Use compact banner mode
   compact: false
+
+  # Tool progress display level (CLI and gateway)
+  #   off:     Silent — no tool activity shown, just the final response
+  #   new:     Show a tool indicator only when the tool changes (skip repeats)
+  #   all:     Show every tool call with a short preview (default)
+  #   verbose: Full args, results, and debug logs (same as /verbose)
+  # Toggle at runtime with /verbose in the CLI
+  tool_progress: all

@@ -157,31 +157,31 @@ THREAT_PATTERNS = [
      "markdown link with variable interpolation"),
 
     # ── Prompt injection ──
-    (r'ignore\s+(previous|all|above|prior)\s+instructions',
+    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
      "prompt injection: ignore previous instructions"),
-    (r'you\s+are\s+now\s+',
+    (r'you\s+are\s+(?:\w+\s+)*now\s+',
      "role_hijack", "high", "injection",
      "attempts to override the agent's role"),
-    (r'do\s+not\s+tell\s+the\s+user',
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "critical", "injection",
      "instructs agent to hide information from user"),
     (r'system\s+prompt\s+override',
      "sys_prompt_override", "critical", "injection",
      "attempts to override the system prompt"),
-    (r'pretend\s+(you\s+are|to\s+be)\s+',
+    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
      "role_pretend", "high", "injection",
      "attempts to make the agent assume a different identity"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)',
+    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection",
      "instructs agent to disregard its rules"),
-    (r'output\s+the\s+(system|initial)\s+prompt',
+    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection",
      "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',
      "conditional_deception", "high", "injection",
      "conditional instruction to behave differently when unobserved"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)',
+    (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)',
      "bypass_restrictions", "critical", "injection",
      "instructs agent to act without restrictions"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
@@ -464,10 +464,10 @@ THREAT_PATTERNS = [
     (r'for\s+educational\s+purposes?\s+only',
      "educational_pretext", "medium", "injection",
      "educational pretext often used to justify harmful content"),
-    (r'(respond|answer|reply)\s+without\s+(any\s+)?(restrictions|limitations|filters|safety)',
+    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)',
      "remove_filters", "critical", "injection",
      "instructs agent to respond without safety filters"),
-    (r'you\s+have\s+been\s+(updated|upgraded|patched)\s+to',
+    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection",
      "fake update/patch announcement (social engineering)"),
     (r'new\s+policy|updated\s+guidelines|revised\s+instructions',
@@ -475,7 +475,7 @@ THREAT_PATTERNS = [
      "claims new policy/guidelines (may be social engineering)"),
 
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(the\s+)?(entire\s+)?(conversation|chat\s+history|previous\s+messages|context)',
+    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
@@ -650,7 +650,7 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     Returns:
         (allowed, reason) tuple
     """
-    if result.verdict == "dangerous" and not force:
+    if result.verdict == "dangerous":
         return False, f"Scan verdict is DANGEROUS ({len(result.findings)} findings). Blocked."
 
     policy = INSTALL_POLICY.get(result.trust_level, INSTALL_POLICY["community"])
@@ -743,7 +743,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
         if f.is_symlink():
             try:
                 resolved = f.resolve()
-                if not str(resolved).startswith(str(skill_dir.resolve())):
+                if not resolved.is_relative_to(skill_dir.resolve()):
                     findings.append(Finding(
                         pattern_id="symlink_escape",
                         severity="critical",
@@ -1046,6 +1046,9 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    # Official optional skills shipped with the repo
+    if source.startswith("official/") or source == "official":
+        return "builtin"
     # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
         if source.startswith(trusted) or source == trusted:

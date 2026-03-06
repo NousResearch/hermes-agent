@@ -1,7 +1,8 @@
 """Docker execution environment wrapping mini-swe-agent's DockerEnvironment.
 
-Adds security hardening, configurable resource limits (CPU, memory, disk),
-and optional filesystem persistence via `docker commit`/`docker create --image`.
+Adds security hardening (cap-drop ALL, no-new-privileges, PID limits),
+configurable resource limits (CPU, memory, disk), and optional filesystem
+persistence via bind mounts.
 """
 
 import logging
@@ -19,13 +20,15 @@ logger = logging.getLogger(__name__)
 
 
 
-# Security flags applied to every container
+# Security flags applied to every container.
+# The container itself is the security boundary (isolated from host).
+# We drop all capabilities, block privilege escalation, and limit PIDs.
+# /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
-    "--read-only",
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
@@ -37,12 +40,13 @@ _storage_opt_ok: Optional[bool] = None  # cached result across instances
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution with resource limits and persistence.
 
-    Security: read-only root, all capabilities dropped, no privilege escalation,
-    PID limits, tmpfs for writable scratch. Writable overlay for /home and cwd
-    via tmpfs or bind mounts.
+    Security: all capabilities dropped, no privilege escalation, PID limits,
+    size-limited tmpfs for scratch dirs. The container itself is the security
+    boundary — the filesystem inside is writable so agents can install packages
+    (pip, npm, apt) as needed. Writable workspace via tmpfs or bind mounts.
 
-    Persistence: when enabled, `docker commit` saves the container state on
-    cleanup, and the next creation restores from that image.
+    Persistence: when enabled, bind mounts preserve /workspace and /root
+    across container restarts.
     """
 
     def __init__(
@@ -55,6 +59,7 @@ class DockerEnvironment(BaseEnvironment):
         disk: int = 0,
         persistent_filesystem: bool = False,
         task_id: str = "default",
+        volumes: list = None,
         network: bool = True,
     ):
         if cwd == "~":
@@ -64,6 +69,11 @@ class DockerEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._container_id: Optional[str] = None
+        logger.info(f"DockerEnvironment volumes: {volumes}")
+        # Ensure volumes is a list (config.yaml could be malformed)
+        if volumes is not None and not isinstance(volumes, list):
+            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
+            volumes = []
 
         from minisweagent.environments.docker import DockerEnvironment as _Docker
 
@@ -108,10 +118,26 @@ class DockerEnvironment(BaseEnvironment):
                 "--tmpfs", "/root:rw,exec,size=1g",
             ]
 
-        # All containers get full security hardening (read-only root + writable
-        # mounts for the workspace). Persistence uses Docker volumes, not
-        # filesystem layer commits, so --read-only is always safe.
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args
+        # All containers get security hardening (capabilities dropped, no privilege
+        # escalation, PID limits). The container filesystem is writable so agents
+        # can install packages as needed.
+        # User-configured volume mounts (from config.yaml docker_volumes)
+        volume_args = []
+        for vol in (volumes or []):
+            if not isinstance(vol, str):
+                logger.warning(f"Docker volume entry is not a string: {vol!r}")
+                continue
+            vol = vol.strip()
+            if not vol:
+                continue
+            if ":" in vol:
+                volume_args.extend(["-v", vol])
+            else:
+                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+
+        logger.info(f"Docker volume_args: {volume_args}")
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        logger.info(f"Docker run_args: {all_run_args}")
 
         self._inner = _Docker(
             image=image, cwd=cwd, timeout=timeout,

@@ -31,25 +31,30 @@ class ContextCompressor:
         threshold_percent: float = 0.85,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
-        summary_target_tokens: int = 500,
+        summary_target_tokens: int = 2500,
         quiet_mode: bool = False,
+        summary_model_override: str = None,
+        base_url: str = "",
     ):
         self.model = model
+        self.base_url = base_url
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
 
-        self.context_length = get_model_context_length(model)
+        self.context_length = get_model_context_length(model, base_url=base_url)
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
+        self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, self.summary_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client()
+        self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -85,7 +90,7 @@ class ContextCompressor:
         parts = []
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
             if len(content) > 2000:
                 content = content[:1000] + "\n...[truncated]...\n" + content[-500:]
             tool_calls = msg.get("tool_calls", [])
@@ -113,20 +118,83 @@ TURNS TO SUMMARIZE:
 Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.summary_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=self.summary_target_tokens * 2,
-                timeout=30.0,
-            )
-            summary = response.choices[0].message.content.strip()
-            if not summary.startswith("[CONTEXT SUMMARY]:"):
-                summary = "[CONTEXT SUMMARY]: " + summary
-            return summary
+            return self._call_summary_model(self.client, self.summary_model, prompt)
         except Exception as e:
-            logging.warning(f"Failed to generate context summary: {e}")
+            logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
+
+            # Fallback: try the main model's endpoint.  This handles the common
+            # case where the user switched providers (e.g. OpenRouter → local LLM)
+            # but a stale API key causes the auxiliary client to pick the old
+            # provider which then fails (402, auth error, etc.).
+            fallback_client, fallback_model = self._get_fallback_client()
+            if fallback_client is not None:
+                try:
+                    logger.info("Retrying context summary with fallback client (%s)", fallback_model)
+                    summary = self._call_summary_model(fallback_client, fallback_model, prompt)
+                    # Success — swap in the working client for future compressions
+                    self.client = fallback_client
+                    self.summary_model = fallback_model
+                    return summary
+                except Exception as fallback_err:
+                    logging.warning(f"Fallback summary model also failed: {fallback_err}")
+
             return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+
+    def _call_summary_model(self, client, model: str, prompt: str) -> str:
+        """Make the actual LLM call to generate a summary. Raises on failure."""
+        kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "timeout": 30.0,
+        }
+        # Most providers (OpenRouter, local models) use max_tokens.
+        # Direct OpenAI with newer models (gpt-4o, o-series, gpt-5+)
+        # requires max_completion_tokens instead.
+        try:
+            kwargs["max_tokens"] = self.summary_target_tokens * 2
+            response = client.chat.completions.create(**kwargs)
+        except Exception as first_err:
+            if "max_tokens" in str(first_err) or "unsupported_parameter" in str(first_err):
+                kwargs.pop("max_tokens", None)
+                kwargs["max_completion_tokens"] = self.summary_target_tokens * 2
+                response = client.chat.completions.create(**kwargs)
+            else:
+                raise
+
+        summary = response.choices[0].message.content.strip()
+        if not summary.startswith("[CONTEXT SUMMARY]:"):
+            summary = "[CONTEXT SUMMARY]: " + summary
+        return summary
+
+    def _get_fallback_client(self):
+        """Try to build a fallback client from the main model's endpoint config.
+
+        When the primary auxiliary client fails (e.g. stale OpenRouter key), this
+        creates a client using the user's active custom endpoint (OPENAI_BASE_URL)
+        so compression can still produce a real summary instead of a static string.
+
+        Returns (client, model) or (None, None).
+        """
+        custom_base = os.getenv("OPENAI_BASE_URL")
+        custom_key = os.getenv("OPENAI_API_KEY")
+        if not custom_base or not custom_key:
+            return None, None
+
+        # Don't fallback to the same provider that just failed
+        from hermes_constants import OPENROUTER_BASE_URL
+        if custom_base.rstrip("/") == OPENROUTER_BASE_URL.rstrip("/"):
+            return None, None
+
+        model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or self.model
+        try:
+            from openai import OpenAI as _OpenAI
+            client = _OpenAI(api_key=custom_key, base_url=custom_base)
+            logger.debug("Built fallback auxiliary client: %s via %s", model, custom_base)
+            return client, model
+        except Exception as exc:
+            logger.debug("Could not build fallback auxiliary client: %s", exc)
+            return None, None
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
@@ -178,7 +246,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
-                msg["content"] = msg.get("content", "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
+                msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
             compressed.append(msg)
 
         compressed.append({"role": "user", "content": summary})

@@ -31,6 +31,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
         "schedule_cronjob": "name",
+        "execute_code": "code", "delegate_task": "goal",
+        "clarify": "question", "skill_manage": "name",
     }
 
     if tool_name == "process":
@@ -97,7 +99,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
 
     key = primary_args.get(tool_name)
     if not key:
-        for fallback_key in ("query", "text", "command", "path", "name", "prompt"):
+        for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
             if fallback_key in args:
                 key = fallback_key
                 break
@@ -182,8 +184,8 @@ class KawaiiSpinner:
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            clear = '\r' + ' ' * self.last_line_len + '\r'
-            self._write(clear + line, end='', flush=True)
+            pad = max(self.last_line_len - len(line), 0)
+            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -199,11 +201,32 @@ class KawaiiSpinner:
     def update_text(self, new_message: str):
         self.message = new_message
 
+    def print_above(self, text: str):
+        """Print a line above the spinner without disrupting animation.
+
+        Clears the current spinner line, prints the text, and lets the
+        next animation tick redraw the spinner on the line below.
+        Thread-safe: uses the captured stdout reference (self._out).
+        Works inside redirect_stdout(devnull) because _write bypasses
+        sys.stdout and writes to the stdout captured at spinner creation.
+        """
+        if not self.running:
+            self._write(f"  {text}", flush=True)
+            return
+        # Clear spinner line with spaces (not \033[K) to avoid garbled escape
+        # codes when prompt_toolkit's patch_stdout is active — same approach
+        # as stop(). Then print text; spinner redraws on next tick.
+        blanks = ' ' * max(self.last_line_len + 5, 40)
+        self._write(f"\r{blanks}\r  {text}", flush=True)
+
     def stop(self, final_message: str = None):
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        self._write('\r' + ' ' * (self.last_line_len + 5) + '\r', end='', flush=True)
+        # Clear the spinner line with spaces instead of \033[K to avoid
+        # garbled escape codes when prompt_toolkit's patch_stdout is active.
+        blanks = ' ' * max(self.last_line_len + 5, 40)
+        self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
             self._write(f"  {final_message}", flush=True)
 
@@ -279,6 +302,15 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass
         return False, ""
+
+    # Memory-specific: distinguish "full" from real errors
+    if tool_name == "memory":
+        try:
+            data = json.loads(result)
+            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+                return True, " [full]"
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()

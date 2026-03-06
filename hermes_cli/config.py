@@ -13,10 +13,13 @@ This module provides:
 """
 
 import os
+import platform
 import sys
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 import yaml
 
@@ -68,6 +71,12 @@ DEFAULT_CONFIG = {
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "container_cpu": 1,
+        "container_memory": 5120,       # MB (default 5GB)
+        "container_disk": 51200,        # MB (default 50GB)
+        "container_persistent": True,   # Persist filesystem across sessions
     },
     
     "browser": {
@@ -127,11 +136,16 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
+    # This section is only needed for hermes-specific overrides; everything else
+    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
+    "honcho": {},
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     
     # Config schema version - bump this when adding new required fields
-    "_config_version": 3,
+    "_config_version": 5,
 }
 
 # =============================================================================
@@ -165,6 +179,14 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
+    },
+    "FIRECRAWL_API_URL": {
+        "description": "Firecrawl API URL for self-hosted instances (optional)",
+        "prompt": "Firecrawl API URL (leave empty for cloud)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for browser automation",
@@ -225,6 +247,16 @@ OPTIONAL_ENV_VARS = {
         "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
         "prompt": "GitHub Token",
         "url": "https://github.com/settings/tokens",
+        "password": True,
+        "category": "tool",
+    },
+
+    # ── Honcho ──
+    "HONCHO_API_KEY": {
+        "description": "Honcho API key for AI-native persistent memory",
+        "prompt": "Honcho API key",
+        "url": "https://app.honcho.dev",
+        "tools": ["query_user_context"],
         "password": True,
         "category": "tool",
     },
@@ -303,16 +335,19 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
+    # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
+    # Gateway falls back to these env vars for backward compatibility.
     "HERMES_TOOL_PROGRESS": {
-        "description": "Send tool progress messages in messaging channels (true/false)",
-        "prompt": "Enable tool progress messages",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Tool progress (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
     },
     "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "Progress mode: 'all' (every tool) or 'new' (only when tool changes)",
-        "prompt": "Progress mode (all/new)",
+        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
+        "prompt": "Progress mode (deprecated — use config.yaml)",
         "url": None,
         "password": False,
         "category": "setting",
@@ -426,6 +461,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # Check config version
     current_ver, latest_ver = check_config_version()
+    
+    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
+    if current_ver < 4:
+        config = load_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "tool_progress" not in display:
+            old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
+            old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
+            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+                display["tool_progress"] = "off"
+                results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
+            elif old_mode and old_mode.lower() in ("new", "all"):
+                display["tool_progress"] = old_mode.lower()
+                results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
+            else:
+                display["tool_progress"] = "all"
+                results["config_added"].append("display.tool_progress=all (default)")
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -577,7 +635,10 @@ def load_env() -> Dict[str, str]:
     env_vars = {}
     
     if env_path.exists():
-        with open(env_path) as f:
+        # On Windows, open() defaults to the system locale (cp1252) which can
+        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
+        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+        with open(env_path, **open_kw) as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
@@ -592,10 +653,14 @@ def save_env_value(key: str, value: str):
     ensure_hermes_home()
     env_path = get_env_path()
     
-    # Load existing
+    # On Windows, open() defaults to the system locale (cp1252) which can
+    # cause OSError errno 22 on UTF-8 .env files.
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
     lines = []
     if env_path.exists():
-        with open(env_path) as f:
+        with open(env_path, **read_kw) as f:
             lines = f.readlines()
     
     # Find and update or append
@@ -612,7 +677,7 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
     
-    with open(env_path, 'w') as f:
+    with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
 
 
@@ -697,6 +762,10 @@ def show_config():
         print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
+    elif terminal.get('backend') == 'daytona':
+        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        daytona_key = get_env_value('DAYTONA_API_KEY')
+        print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -765,11 +834,11 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
     if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):
@@ -815,6 +884,20 @@ def set_config_value(key: str, value: str):
     with open(config_path, 'w') as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
+    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
+    # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
+    _config_to_env_sync = {
+        "terminal.backend": "TERMINAL_ENV",
+        "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
+        "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
+        "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.cwd": "TERMINAL_CWD",
+        "terminal.timeout": "TERMINAL_TIMEOUT",
+    }
+    if key in _config_to_env_sync:
+        save_env_value(_config_to_env_sync[key], str(value))
+
     print(f"✓ Set {key} = {value} in {config_path}")
 
 

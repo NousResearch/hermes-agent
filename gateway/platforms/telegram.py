@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import os
 import re
 from typing import Dict, List, Optional, Any
 
@@ -28,7 +29,17 @@ except ImportError:
     Bot = Any
     Message = Any
     Application = Any
-    ContextTypes = Any
+    CommandHandler = Any
+    TelegramMessageHandler = Any
+    filters = None
+    ParseMode = None
+    ChatType = None
+
+    # Mock ContextTypes so type annotations using ContextTypes.DEFAULT_TYPE
+    # don't crash during class definition when the library isn't installed.
+    class _MockContextTypes:
+        DEFAULT_TYPE = Any
+    ContextTypes = _MockContextTypes
 
 import sys
 from pathlib import Path as _Path
@@ -42,6 +53,8 @@ from gateway.platforms.base import (
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
+    cache_document_from_bytes,
+    SUPPORTED_DOCUMENT_TYPES,
 )
 
 
@@ -205,7 +218,36 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             return SendResult(success=False, error=str(e))
-    
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a previously sent Telegram message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            formatted = self.format_message(content)
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            except Exception:
+                # Fallback: retry without markdown formatting
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=content,
+                )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,
@@ -269,6 +311,30 @@ class TelegramAdapter(BasePlatformAdapter):
             # Fallback: send as text link
             return await super().send_image(chat_id, image_url, caption, reply_to)
     
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        
+        try:
+            msg = await self._bot.send_animation(
+                chat_id=int(chat_id),
+                animation=animation_url,
+                caption=caption[:1024] if caption else None,
+                reply_to_message_id=int(reply_to) if reply_to else None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send animation, falling back to photo: {e}")
+            # Fallback: try as a regular photo
+            return await self.send_image(chat_id, animation_url, caption, reply_to)
+
     async def send_typing(self, chat_id: str) -> None:
         """Send typing indicator."""
         if self._bot:
@@ -369,8 +435,10 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        #    [^*\n]+ prevents matching across newlines (which would corrupt
+        #    bullet lists using * markers and multi-line content).
         text = re.sub(
-            r'\*([^*]+)\*',
+            r'\*([^*\n]+)\*',
             lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
             text,
         )
@@ -419,6 +487,8 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.AUDIO
         elif msg.voice:
             msg_type = MessageType.VOICE
+        elif msg.document:
+            msg_type = MessageType.DOCUMENT
         else:
             msg_type = MessageType.DOCUMENT
         
@@ -479,7 +549,73 @@ class TelegramAdapter(BasePlatformAdapter):
                 print(f"[Telegram] Cached user audio: {cached_path}", flush=True)
             except Exception as e:
                 print(f"[Telegram] Failed to cache audio: {e}", flush=True)
-        
+
+        # Download document files to cache for agent processing
+        elif msg.document:
+            doc = msg.document
+            try:
+                # Determine file extension
+                ext = ""
+                original_filename = doc.file_name or ""
+                if original_filename:
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+
+                # If no extension from filename, reverse-lookup from MIME type
+                if not ext and doc.mime_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(doc.mime_type, "")
+
+                # Check if supported
+                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                    event.text = (
+                        f"Unsupported document type '{ext or 'unknown'}'. "
+                        f"Supported types: {supported_list}"
+                    )
+                    print(f"[Telegram] Unsupported document type: {ext or 'unknown'}", flush=True)
+                    await self.handle_message(event)
+                    return
+
+                # Check file size (Telegram Bot API limit: 20 MB)
+                MAX_DOC_BYTES = 20 * 1024 * 1024
+                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                    event.text = (
+                        "The document is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
+                    )
+                    print(f"[Telegram] Document too large: {doc.file_size} bytes", flush=True)
+                    await self.handle_message(event)
+                    return
+
+                # Download and cache
+                file_obj = await doc.get_file()
+                doc_bytes = await file_obj.download_as_bytearray()
+                raw_bytes = bytes(doc_bytes)
+                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                event.media_urls = [cached_path]
+                event.media_types = [mime_type]
+                print(f"[Telegram] Cached user document: {cached_path}", flush=True)
+
+                # For text files, inject content into event.text (capped at 100 KB)
+                MAX_TEXT_INJECT_BYTES = 100 * 1024
+                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    try:
+                        text_content = raw_bytes.decode("utf-8")
+                        display_name = original_filename or f"document{ext}"
+                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        injection = f"[Content of {display_name}]:\n{text_content}"
+                        if event.text:
+                            event.text = f"{injection}\n\n{event.text}"
+                        else:
+                            event.text = injection
+                    except UnicodeDecodeError:
+                        print(f"[Telegram] Could not decode text file as UTF-8, skipping content injection", flush=True)
+
+            except Exception as e:
+                print(f"[Telegram] Failed to cache document: {e}", flush=True)
+
         await self.handle_message(event)
     
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:

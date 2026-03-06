@@ -1,11 +1,16 @@
 """Tests for gateway session management."""
 
+import json
 import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.session import (
     SessionSource,
+    SessionStore,
     build_session_context,
     build_session_context_prompt,
+    build_session_key,
 )
 
 
@@ -30,6 +35,24 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id == "99"
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
+
+    def test_full_roundtrip_with_chat_topic(self):
+        """chat_topic should survive to_dict/from_dict roundtrip."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="789",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_id="42",
+            user_name="bob",
+            chat_topic="Planning and coordination for Project X",
+        )
+        d = source.to_dict()
+        assert d["chat_topic"] == "Planning and coordination for Project X"
+
+        restored = SessionSource.from_dict(d)
+        assert restored.chat_topic == "Planning and coordination for Project X"
+        assert restored.chat_name == "Server / #project-planning"
 
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
@@ -57,6 +80,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id is None
         assert restored.user_name is None
         assert restored.thread_id is None
+        assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
     def test_invalid_platform_raises(self):
@@ -174,6 +198,52 @@ class TestBuildSessionContextPrompt:
 
         assert "Discord" in prompt
 
+    def test_discord_prompt_with_channel_topic(self):
+        """Channel topic should appear in the session context prompt."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #project-planning",
+            chat_type="group",
+            user_name="alice",
+            chat_topic="Planning and coordination for Project X",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Discord" in prompt
+        assert "**Channel Topic:** Planning and coordination for Project X" in prompt
+
+    def test_prompt_omits_channel_topic_when_none(self):
+        """Channel Topic line should NOT appear when chat_topic is None."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_name="Server / #general",
+            chat_type="group",
+            user_name="alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Channel Topic" not in prompt
+
     def test_local_prompt_mentions_machine(self):
         config = GatewayConfig()
         source = SessionSource.local_cli()
@@ -199,3 +269,163 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
+
+
+class TestSessionStoreRewriteTranscript:
+    """Regression: /retry and /undo must persist truncated history to disk."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None  # no SQLite for these tests
+        s._loaded = True
+        return s
+
+    def test_rewrite_replaces_jsonl(self, store, tmp_path):
+        session_id = "test_session_1"
+        # Write initial transcript
+        for msg in [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "undo this"},
+            {"role": "assistant", "content": "ok"},
+        ]:
+            store.append_to_transcript(session_id, msg)
+
+        # Rewrite with truncated history
+        store.rewrite_transcript(session_id, [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ])
+
+        reloaded = store.load_transcript(session_id)
+        assert len(reloaded) == 2
+        assert reloaded[0]["content"] == "hello"
+        assert reloaded[1]["content"] == "hi"
+
+    def test_rewrite_with_empty_list(self, store):
+        session_id = "test_session_2"
+        store.append_to_transcript(session_id, {"role": "user", "content": "hi"})
+
+        store.rewrite_transcript(session_id, [])
+
+        reloaded = store.load_transcript(session_id)
+        assert reloaded == []
+
+
+class TestWhatsAppDMSessionKeyConsistency:
+    """Regression: all session-key construction must go through build_session_key
+    so WhatsApp DMs include chat_id while other DMs do not."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_whatsapp_dm_includes_chat_id(self):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
+
+    def test_store_delegates_to_build_session_key(self, store):
+        """SessionStore._generate_session_key must produce the same result."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        assert store._generate_session_key(source) == build_session_key(source)
+
+    def test_telegram_dm_omits_chat_id(self):
+        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm"
+
+    def test_discord_group_includes_chat_id(self):
+        """Group/channel keys include chat_type and chat_id."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:discord:group:guild-123"
+
+
+class TestSessionStoreEntriesAttribute:
+    """Regression: /reset must access _entries, not _sessions."""
+
+    def test_entries_attribute_exists(self):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=Path("/tmp"), config=config)
+        store._loaded = True
+        assert hasattr(store, "_entries")
+        assert not hasattr(store, "_sessions")
+
+
+class TestHasAnySessions:
+    """Tests for has_any_sessions() fix (issue #351)."""
+
+    @pytest.fixture
+    def store_with_mock_db(self, tmp_path):
+        """SessionStore with a mocked database."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._loaded = True
+        s._entries = {}
+        s._db = MagicMock()
+        return s
+
+    def test_uses_database_count_when_available(self, store_with_mock_db):
+        """has_any_sessions should use database session_count, not len(_entries)."""
+        store = store_with_mock_db
+        # Simulate single-platform user with only 1 entry in memory
+        store._entries = {"telegram:12345": MagicMock()}
+        # But database has 3 sessions (current + 2 previous resets)
+        store._db.session_count.return_value = 3
+
+        assert store.has_any_sessions() is True
+        store._db.session_count.assert_called_once()
+
+    def test_first_session_ever_returns_false(self, store_with_mock_db):
+        """First session ever should return False (only current session in DB)."""
+        store = store_with_mock_db
+        store._entries = {"telegram:12345": MagicMock()}
+        # Database has exactly 1 session (the current one just created)
+        store._db.session_count.return_value = 1
+
+        assert store.has_any_sessions() is False
+
+    def test_fallback_without_database(self, tmp_path):
+        """Should fall back to len(_entries) when DB is not available."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._entries = {"key1": MagicMock(), "key2": MagicMock()}
+
+        # > 1 entries means has sessions
+        assert store.has_any_sessions() is True
+
+        store._entries = {"key1": MagicMock()}
+        assert store.has_any_sessions() is False

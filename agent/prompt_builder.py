@@ -90,11 +90,21 @@ SKILLS_GUIDANCE = (
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render."
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. The file "
+        "will be sent as a native WhatsApp attachment — images (.jpg, .png, "
+        ".webp) appear as photos, videos (.mp4, .mov) play inline, and other "
+        "files arrive as downloadable documents. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render."
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Audio "
+        "(.ogg) sends as voice bubbles. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user."

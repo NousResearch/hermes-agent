@@ -20,34 +20,24 @@ import concurrent.futures
 import json
 import os
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from openai import AsyncOpenAI, OpenAI
 
-from agent.auxiliary_client import get_text_auxiliary_client
+from agent.auxiliary_client import get_async_text_auxiliary_client
 
-# Resolve the auxiliary client at import time so we have the model slug.
-# We build an AsyncOpenAI from the same credentials for async summarization.
-_aux_client, _SUMMARIZER_MODEL = get_text_auxiliary_client()
-_async_aux_client: AsyncOpenAI | None = None
-if _aux_client is not None:
-    _async_kwargs = {
-        "api_key": _aux_client.api_key,
-        "base_url": str(_aux_client.base_url),
-    }
-    if "openrouter" in str(_aux_client.base_url).lower():
-        _async_kwargs["default_headers"] = {
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-            "X-OpenRouter-Title": "Hermes Agent",
-            "X-OpenRouter-Categories": "cli-agent",
-        }
-    _async_aux_client = AsyncOpenAI(**_async_kwargs)
+# Resolve the async auxiliary client at import time so we have the model slug.
+# Handles Codex Responses API adapter transparently.
+_async_aux_client, _SUMMARIZER_MODEL = get_async_text_auxiliary_client()
 MAX_SESSION_CHARS = 100_000
-MAX_SUMMARY_TOKENS = 2000
+MAX_SUMMARY_TOKENS = 10000
 
 
-def _format_timestamp(ts) -> str:
-    """Convert a Unix timestamp (float/int) or ISO string to a human-readable date."""
+def _format_timestamp(ts: Union[int, float, str, None]) -> str:
+    """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
+
+    Returns "unknown" for None, str(ts) if conversion fails.
+    """
     if ts is None:
         return "unknown"
     try:
@@ -61,8 +51,11 @@ def _format_timestamp(ts) -> str:
                 dt = datetime.fromtimestamp(float(ts))
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
-    except Exception:
-        pass
+    except (ValueError, OSError, OverflowError) as e:
+        # Log specific errors for debugging while gracefully handling edge cases
+        logging.debug("Failed to format timestamp %s: %s", ts, e)
+    except Exception as e:
+        logging.debug("Unexpected error formatting timestamp %s: %s", ts, e)
     return str(ts)
 
 
@@ -170,7 +163,7 @@ async def _summarize_session(
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            from agent.auxiliary_client import get_auxiliary_extra_body
+            from agent.auxiliary_client import get_auxiliary_extra_body, auxiliary_max_tokens_param
             _extra = get_auxiliary_extra_body()
             response = await _async_aux_client.chat.completions.create(
                 model=_SUMMARIZER_MODEL,
@@ -180,7 +173,7 @@ async def _summarize_session(
                 ],
                 **({} if not _extra else {"extra_body": _extra}),
                 temperature=0.1,
-                max_tokens=MAX_SUMMARY_TOKENS,
+                **auxiliary_max_tokens_param(MAX_SUMMARY_TOKENS),
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -196,11 +189,13 @@ def session_search(
     role_filter: str = None,
     limit: int = 3,
     db=None,
+    current_session_id: str = None,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
 
     Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
+    The current session is excluded from results since the agent already has that context.
     """
     if db is None:
         return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
@@ -236,26 +231,36 @@ def session_search(
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id):
+        def _resolve_to_parent(session_id: str) -> str:
+            """Walk delegation chain to find the root parent session ID."""
             visited = set()
             sid = session_id
             while sid and sid not in visited:
                 visited.add(sid)
-                session = db.get_session(sid)
-                if not session:
-                    break
-                parent = session.get("parent_session_id")
-                if parent:
-                    sid = parent
-                else:
+                try:
+                    session = db.get_session(sid)
+                    if not session:
+                        break
+                    parent = session.get("parent_session_id")
+                    if parent:
+                        sid = parent
+                    else:
+                        break
+                except Exception as e:
+                    logging.debug("Error resolving parent for session %s: %s", sid, e)
                     break
             return sid
 
-        # Group by resolved (parent) session_id, dedup
+        # Group by resolved (parent) session_id, dedup, skip current session
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
+            # Skip the current session — the agent already has that context
+            if current_session_id and resolved_sid == current_session_id:
+                continue
+            if current_session_id and raw_sid == current_session_id:
+                continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid
@@ -278,7 +283,8 @@ def session_search(
                 logging.warning(f"Failed to prepare session {session_id}: {e}")
 
         # Summarize all sessions in parallel
-        async def _summarize_all():
+        async def _summarize_all() -> List[Union[str, Exception]]:
+            """Summarize all sessions in parallel."""
             coros = [
                 _summarize_session(text, query, meta)
                 for _, _, text, meta in tasks
@@ -290,7 +296,14 @@ def session_search(
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 results = pool.submit(lambda: asyncio.run(_summarize_all())).result(timeout=60)
         except RuntimeError:
+            # No event loop running, create a new one
             results = asyncio.run(_summarize_all())
+        except concurrent.futures.TimeoutError:
+            logging.warning("Session summarization timed out after 60 seconds")
+            return json.dumps({
+                "success": False,
+                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
+            }, ensure_ascii=False)
 
         summaries = []
         for (session_id, match_info, _, _), result in zip(tasks, results):
@@ -381,6 +394,7 @@ registry.register(
         query=args.get("query", ""),
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
-        db=kw.get("db")),
+        db=kw.get("db"),
+        current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,
 )

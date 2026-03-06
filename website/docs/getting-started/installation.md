@@ -164,6 +164,7 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 
 # Optional — enable additional tools:
 FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping
+FIRECRAWL_API_URL=http://localhost:3002  # Self-hosted Firecrawl (optional)
 FAL_KEY=your-fal-key                   # Image generation (FLUX)
 ```
 

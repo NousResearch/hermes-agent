@@ -421,6 +421,7 @@ The system uses `_config_version` to detect outdated configs:
 API keys are loaded from `~/.hermes/.env`:
 - `OPENROUTER_API_KEY` - Main LLM API access (primary provider)
 - `FIRECRAWL_API_KEY` - Web search/extract tools
+- `FIRECRAWL_API_URL` - Self-hosted Firecrawl endpoint (optional)
 - `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
 - `FAL_KEY` - Image generation (FLUX model)
 - `NOUS_API_KEY` - Vision and Mixture-of-Agents tools

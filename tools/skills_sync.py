@@ -12,12 +12,11 @@ The manifest lives at ~/.hermes/skills/.bundled_manifest and is a simple
 newline-delimited list of skill names that have been offered to the user.
 """
 
-import json
 import logging
 import os
 import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Set, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ def _get_bundled_dir() -> Path:
     return Path(__file__).parent.parent / "skills"
 
 
-def _read_manifest() -> set:
+def _read_manifest() -> Set[str]:
     """Read the set of skill names already offered to the user."""
     if not MANIFEST_FILE.exists():
         return set()
@@ -42,17 +41,34 @@ def _read_manifest() -> set:
             for line in MANIFEST_FILE.read_text(encoding="utf-8").splitlines()
             if line.strip()
         )
-    except (OSError, IOError):
+    except (OSError, IOError) as e:
+        logger.debug("Failed to read manifest file %s: %s", MANIFEST_FILE, e)
         return set()
 
 
-def _write_manifest(names: set):
-    """Write the manifest file."""
+def _write_manifest(names: Set[str]) -> None:
+    """Write the manifest file, using an atomic replace to avoid corruption."""
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_FILE.write_text(
-        "\n".join(sorted(names)) + "\n",
-        encoding="utf-8",
-    )
+    data = "\n".join(sorted(names)) + "\n"
+
+    # Write to a temporary file in the same directory, then atomically replace.
+    tmp_path = MANIFEST_FILE.with_suffix(MANIFEST_FILE.suffix + ".tmp")
+    try:
+        tmp_path.write_text(data, encoding="utf-8")
+        os.replace(tmp_path, MANIFEST_FILE)
+    except (OSError, IOError) as e:
+        logger.debug(
+            "Could not atomically write manifest to %s: %s; falling back to direct write",
+            MANIFEST_FILE,
+            e,
+        )
+        MANIFEST_FILE.write_text(data, encoding="utf-8")
+        # Best effort to clean up a leftover temp file if it exists
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
@@ -84,7 +100,7 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return SKILLS_DIR / rel
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def sync_skills(quiet: bool = False) -> Dict[str, object]:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 

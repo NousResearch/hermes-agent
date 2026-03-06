@@ -2540,6 +2540,9 @@ metadata:
             # Use planner to break goal into tasks
             planner = TaskPlanner()
             tasks = planner.decompose(goal)
+            # Override all task models to use the CLI session's current model
+            for t in tasks:
+                t.model = self.model
 
             if not tasks:
                 self.console.print("[yellow]Planner returned no tasks.[/]")

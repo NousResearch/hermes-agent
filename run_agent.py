@@ -25,6 +25,9 @@ import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
+# Suppress litellm's verbose debug/info spam
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 import os
 import random
 import re
@@ -2084,6 +2087,7 @@ class AIAgent:
         if self._use_litellm:
             import litellm
             litellm.drop_params = True
+            litellm.suppress_debug_info = True
             return litellm.completion(**kwargs)
         return self.client.chat.completions.create(**kwargs)
 

@@ -52,35 +52,20 @@ class LocalWorkerBackend(WorkerBackend):
             logger.error("AIAgent not available — falling back to stub")
             return {"status": "completed", "output": f"stub result for {task.name}"}
 
-        # Resolve model — task.model is set by the router before dispatch
-        model = task.model or "local/qwen3.5-9b"
+        model = task.model or "claude-haiku-4-5"
 
-        # Determine API key and base URL from model prefix
-        api_key = "not-needed"
-        base_url = "http://localhost:1234/v1"
-        provider = "local"
-
-        if "/" in model:
-            prefix = model.split("/")[0]
-            if prefix in ("anthropic",):
-                import os
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-                base_url = "https://api.anthropic.com/v1"
-                provider = "anthropic"
-            elif prefix in ("openai",):
-                import os
-                api_key = os.environ.get("OPENAI_API_KEY", "")
-                base_url = "https://api.openai.com/v1"
-                provider = "openai"
-            elif prefix in ("local",):
-                api_key = "not-needed"
-                base_url = "http://localhost:1234/v1"
-                provider = "local"
-            else:
-                import os
-                api_key = os.environ.get("OPENROUTER_API_KEY", "")
-                base_url = "https://openrouter.ai/api/v1"
-                provider = "openrouter"
+        # Use the shared runtime provider resolver for credentials
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider()
+            api_key = runtime.get("api_key", "")
+            base_url = runtime.get("base_url", "")
+            provider = runtime.get("provider", "openrouter")
+        except Exception:
+            import os
+            api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+            base_url = ""
+            provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
 
         try:
             agent = AIAgent(
@@ -88,7 +73,8 @@ class LocalWorkerBackend(WorkerBackend):
                 api_key=api_key,
                 base_url=base_url,
                 provider=provider,
-                max_turns=task.max_retries * 5 or 15,
+                max_iterations=task.max_retries * 5 or 15,
+                quiet_mode=True,
             )
 
             result = agent.run_conversation(

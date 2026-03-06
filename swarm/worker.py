@@ -56,7 +56,7 @@ class LocalWorkerBackend(WorkerBackend):
 
         # Infer provider from model name
         import os
-        if model.startswith("claude"):
+        if "claude" in model:
             provider = "anthropic"
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             base_url = ""  # litellm handles routing
@@ -85,9 +85,15 @@ class LocalWorkerBackend(WorkerBackend):
                 system_message=f"You are a focused worker agent. Complete this task: {task.name}",
             )
 
+            final = result.get("final_response", "") or ""
+            logger.info("Task %s completed: api_calls=%s, completed=%s, output_len=%d",
+                        task.id, result.get("api_calls"), result.get("completed"), len(final))
+            if not final:
+                logger.warning("Task %s returned empty final_response. Keys: %s", task.id, list(result.keys()))
+
             return {
                 "status": "completed" if result.get("completed") else "failed",
-                "output": result.get("final_response", ""),
+                "output": final,
                 "api_calls": result.get("api_calls", 0),
                 "tokens": getattr(agent, "session_total_tokens", 0),
             }

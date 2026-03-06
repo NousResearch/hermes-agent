@@ -2585,22 +2585,29 @@ metadata:
             for tid, task in orch._scheduler._tasks.items():
                 r = task.result
                 if not r:
+                    print(f"  {task.name}: no result")
                     continue
                 # SwarmResult has .output which is a dict from the worker
                 out = getattr(r, 'output', r) if not isinstance(r, dict) else r
                 if isinstance(out, dict):
                     text = out.get('output', '') or out.get('final_response', '') or ''
+                    status = out.get('status', '')
                 elif isinstance(out, str):
                     text = out
+                    status = ''
                 else:
                     text = str(out) if out else ''
+                    status = ''
                 text = (text or '').strip()
+                duration = getattr(r, 'duration_seconds', 0)
                 if text:
-                    print(f"\n--- {task.name} ({task.role}) ---")
+                    print(f"\n--- {task.name} ({task.role}) [{duration:.0f}s] ---")
                     print(text[:500])
                     shown += 1
+                else:
+                    print(f"  {task.name}: empty output (status={status}, duration={duration:.1f}s, type={type(out).__name__})")
             if shown == 0:
-                print("  (no output captured from agents)")
+                print("  (no output captured — check model/API key)")
 
         except Exception as e:
             print(f"Swarm error: {e}")

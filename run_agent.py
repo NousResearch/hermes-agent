@@ -2646,7 +2646,21 @@ class AIAgent:
                     # Tool call deltas
                     if delta and delta.tool_calls:
                         for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
+                            idx = tc_delta.index if tc_delta.index is not None else 0
+                            # Gemini may reuse index 0 for multiple tool calls,
+                            # sending a new id each time.  Detect this and assign
+                            # a fresh virtual index so calls don't merge.
+                            if idx in tool_calls_acc and tc_delta.id and tc_delta.id != tool_calls_acc[idx]["id"]:
+                                # Look for existing entry with this id first
+                                # (follow-up deltas for an already-created tool call)
+                                matched = False
+                                for eidx, eentry in tool_calls_acc.items():
+                                    if eentry["id"] == tc_delta.id:
+                                        idx = eidx
+                                        matched = True
+                                        break
+                                if not matched:
+                                    idx = (max(k for k in tool_calls_acc if isinstance(k, int)) + 1) if tool_calls_acc else 0
                             if idx not in tool_calls_acc:
                                 tool_calls_acc[idx] = {
                                     "id": tc_delta.id or "",

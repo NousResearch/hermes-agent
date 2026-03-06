@@ -522,6 +522,7 @@ def stream_tts_to_speaker(
         min_sentence_len = 20
         long_flush_len = 100
         queue_timeout = 0.5
+        _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
         # Regex to strip complete <think>...</think> blocks from buffer
         _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
@@ -532,6 +533,12 @@ def stream_tts_to_speaker(
             cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
                 return
+            # Skip duplicate/near-duplicate sentences (LLM repetition)
+            cleaned_lower = cleaned.lower().rstrip(".!,")
+            for prev in _spoken_sentences:
+                if prev.lower().rstrip(".!,") == cleaned_lower:
+                    return
+            _spoken_sentences.append(cleaned)
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)

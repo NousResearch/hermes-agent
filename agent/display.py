@@ -197,8 +197,9 @@ class KawaiiSpinner:
         self.start_time = time.time()
         # Hide cursor while spinner runs to prevent blink-sync flashing
         try:
-            sys.stdout.write("[?25l")
-            sys.stdout.flush()
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            out.write("[?25l")
+            out.flush()
         except (ValueError, OSError):
             pass
         self.thread = threading.Thread(target=self._animate, daemon=True)

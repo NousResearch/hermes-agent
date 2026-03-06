@@ -980,19 +980,20 @@ def run_setup_wizard(args):
     
     terminal_choices.extend([
         "Modal (cloud execution, GPU access, serverless)",
+        "Daytona (cloud sandboxes, persistent workspaces)",
         "SSH (run commands on a remote server)",
         f"Keep current ({current_backend})"
     ])
     
     # Build index map based on available choices
     if is_linux:
-        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'ssh'}
-        keep_current_idx = 5
+        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'daytona': 4, 'ssh': 5}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'daytona', 5: 'ssh'}
+        keep_current_idx = 6
     else:
-        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'ssh': 3}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'ssh'}
-        keep_current_idx = 4
+        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'daytona': 3, 'ssh': 4}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'daytona', 4: 'ssh'}
+        keep_current_idx = 5
         if current_backend == 'singularity':
             print_warning("Singularity is only available on Linux - please select a different backend")
     
@@ -1067,7 +1068,7 @@ def run_setup_wizard(args):
         
         print()
         print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
-        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+        print_info("are in your config but only apply to Docker/Singularity/Modal/Daytona backends.")
 
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
@@ -1151,7 +1152,52 @@ def run_setup_wizard(args):
         
         _prompt_container_resources(config)
         print_success("Terminal set to Modal")
-    
+
+    elif selected_backend == 'daytona':
+        config.setdefault('terminal', {})['backend'] = 'daytona'
+        default_daytona = config.get('terminal', {}).get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
+        print_info("Daytona Cloud Configuration:")
+        print_info("Get your API key at: https://app.daytona.io/dashboard/keys")
+
+        # Check if daytona SDK is installed
+        try:
+            from daytona import Daytona
+            print_info("daytona SDK: installed ✓")
+        except ImportError:
+            print_info("Installing required package: daytona...")
+            import subprocess
+            import shutil
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "daytona"],
+                    capture_output=True, text=True
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "daytona"],
+                    capture_output=True, text=True
+                )
+            if result.returncode == 0:
+                print_success("daytona SDK installed")
+            else:
+                print_warning("Failed to install daytona SDK — install manually:")
+                print_info('  pip install daytona')
+
+        daytona_image = prompt("  Container image", default_daytona)
+        config['terminal']['daytona_image'] = daytona_image
+
+        current_key = get_env_value('DAYTONA_API_KEY')
+        if current_key:
+            print_info(f"  API Key: {current_key[:8]}... (configured)")
+
+        api_key = prompt("  Daytona API key", current_key or "", password=True)
+        if api_key:
+            save_env_value("DAYTONA_API_KEY", api_key)
+
+        _prompt_container_resources(config)
+        print_success("Terminal set to Daytona")
+
     elif selected_backend == 'ssh':
         config.setdefault('terminal', {})['backend'] = 'ssh'
         print_info("SSH Remote Execution Configuration:")
@@ -1181,7 +1227,7 @@ def run_setup_wizard(args):
         
         print()
         print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
-        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+        print_info("are in your config but only apply to Docker/Singularity/Modal/Daytona backends.")
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     
@@ -1192,6 +1238,9 @@ def run_setup_wizard(args):
         docker_image = config.get('terminal', {}).get('docker_image')
         if docker_image:
             save_env_value("TERMINAL_DOCKER_IMAGE", docker_image)
+        daytona_image = config.get('terminal', {}).get('daytona_image')
+        if daytona_image:
+            save_env_value("TERMINAL_DAYTONA_IMAGE", daytona_image)
     
     # =========================================================================
     # Step 5: Agent Settings

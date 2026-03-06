@@ -158,6 +158,7 @@ def load_cli_config() -> Dict[str, Any]:
             "docker_image": "python:3.11",
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
+            "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
@@ -284,12 +285,13 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",

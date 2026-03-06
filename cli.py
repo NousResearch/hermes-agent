@@ -2581,13 +2581,26 @@ metadata:
                 print(f"Swarm: {completed}/{total} succeeded, {failed} failed")
 
             # Show what each agent produced
+            shown = 0
             for tid, task in orch._scheduler._tasks.items():
                 r = task.result
-                if r and hasattr(r, 'output') and isinstance(r.output, dict):
-                    text = r.output.get('output', '') or ''
-                    if text:
-                        print(f"\n--- {task.name} ({task.role}) ---")
-                        print(text[:500])
+                if not r:
+                    continue
+                # SwarmResult has .output which is a dict from the worker
+                out = getattr(r, 'output', r) if not isinstance(r, dict) else r
+                if isinstance(out, dict):
+                    text = out.get('output', '') or out.get('final_response', '') or ''
+                elif isinstance(out, str):
+                    text = out
+                else:
+                    text = str(out) if out else ''
+                text = (text or '').strip()
+                if text:
+                    print(f"\n--- {task.name} ({task.role}) ---")
+                    print(text[:500])
+                    shown += 1
+            if shown == 0:
+                print("  (no output captured from agents)")
 
         except Exception as e:
             print(f"Swarm error: {e}")

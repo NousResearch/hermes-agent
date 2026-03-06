@@ -40,7 +40,7 @@ This directory contains the integration layer between **hermes-agent's** tool-ca
 - `evaluate_log()` for saving eval results to JSON + samples.jsonl
 
 **HermesAgentBaseEnv** (`hermes_base_env.py`) extends BaseEnv with hermes-agent specifics:
-- Sets `os.environ["TERMINAL_ENV"]` to configure the terminal backend (local, docker, modal, ssh, singularity)
+- Sets `os.environ["TERMINAL_ENV"]` to configure the terminal backend (local, docker, modal, daytona, ssh, singularity)
 - Resolves hermes-agent toolsets via `_resolve_tools_for_group()` (calls `get_tool_definitions()` which queries `tools/registry.py`)
 - Implements `collect_trajectory()` which runs the full agent loop and computes rewards
 - Supports two-phase operation (Phase 1: OpenAI server, Phase 2: VLLM ManagedServer)
@@ -324,7 +324,7 @@ For eval benchmarks, follow the pattern in `terminalbench2_env.py`:
 | `distribution` | Probabilistic toolset distribution name | `None` |
 | `max_agent_turns` | Max LLM calls per rollout | `30` |
 | `agent_temperature` | Sampling temperature | `1.0` |
-| `terminal_backend` | `local`, `docker`, `modal`, `ssh`, `singularity` | `local` |
+| `terminal_backend` | `local`, `docker`, `modal`, `daytona`, `ssh`, `singularity` | `local` |
 | `system_prompt` | System message for the agent | `None` |
 | `tool_call_parser` | Parser name for Phase 2 | `hermes` |
 | `eval_handling` | `STOP_TRAIN`, `LIMIT_TRAIN`, `NONE` | `STOP_TRAIN` |

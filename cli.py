@@ -59,14 +59,14 @@ _user_env = _hermes_home / ".env"
 _project_env = Path(__file__).parent / '.env'
 if _user_env.exists():
     try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_user_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
-elif _project_env.exists():
+        load_dotenv(dotenv_path=_user_env, encoding="latin-1", override=True)
+if _project_env.exists():
     try:
-        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_project_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+        load_dotenv(dotenv_path=_project_env, encoding="latin-1", override=True)
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))

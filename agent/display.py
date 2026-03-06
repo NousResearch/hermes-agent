@@ -163,15 +163,15 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        # Note: _write() always uses current sys.stdout to respect patch_stdout
+        # Keep _out for test compatibility; _write uses it but falls back to sys.stdout
+        self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to stdout, always using current sys.stdout to respect patch_stdout."""
+        """Write to self._out (testable) which defaults to sys.stdout."""
         try:
-            out = sys.stdout
-            out.write(text + end)
+            self._out.write(text + end)
             if flush:
-                out.flush()
+                self._out.flush()
         except (ValueError, OSError):
             pass
 
@@ -234,8 +234,8 @@ class KawaiiSpinner:
         self._write(f"\r{blanks}\r", end='', flush=True)
         # Restore cursor visibility
         try:
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
+            self._out.write("\033[?25h")
+            self._out.flush()
         except (ValueError, OSError):
             pass
         if final_message:

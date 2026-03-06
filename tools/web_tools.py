@@ -62,7 +62,12 @@ def _get_firecrawl_client():
         api_key = os.getenv("FIRECRAWL_API_KEY")
         if not api_key:
             raise ValueError("FIRECRAWL_API_KEY environment variable not set")
-        _firecrawl_client = Firecrawl(api_key=api_key)
+        
+        api_url = os.getenv("FIRECRAWL_API_URL")
+        if api_url:
+            _firecrawl_client = Firecrawl(api_key=api_key, api_url=api_url)
+        else:
+            _firecrawl_client = Firecrawl(api_key=api_key)
     return _firecrawl_client
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000

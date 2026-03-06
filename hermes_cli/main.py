@@ -143,6 +143,13 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
+    try:
+        from tools.skills_sync import sync_skills
+        sync_skills(quiet=True)
+    except Exception:
+        pass
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -851,11 +858,15 @@ def _update_via_zip(args):
     # Sync skills
     try:
         from tools.skills_sync import sync_skills
-        print("→ Checking for new bundled skills...")
+        print("→ Syncing bundled skills...")
         result = sync_skills(quiet=True)
         if result["copied"]:
-            print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
-        else:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if not result["copied"] and not result.get("updated"):
             print("  ✓ Skills are up to date")
     except Exception:
         pass
@@ -961,15 +972,19 @@ def cmd_update(args):
         print()
         print("✓ Code updated!")
         
-        # Sync any new bundled skills (manifest-based -- won't overwrite or re-add deleted skills)
+        # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
             from tools.skills_sync import sync_skills
             print()
-            print("→ Checking for new bundled skills...")
+            print("→ Syncing bundled skills...")
             result = sync_skills(quiet=True)
             if result["copied"]:
-                print(f"  + {len(result['copied'])} new skill(s): {', '.join(result['copied'])}")
-            else:
+                print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+            if result.get("updated"):
+                print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+            if result.get("cleaned"):
+                print(f"  − {len(result['cleaned'])} removed from manifest")
+            if not result["copied"] and not result.get("updated"):
                 print("  ✓ Skills are up to date")
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)

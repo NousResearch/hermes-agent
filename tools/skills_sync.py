@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Skills Sync -- Manifest-based seeding of bundled skills into ~/.hermes/skills/.
+Skills Sync -- Manifest-based seeding and updating of bundled skills.
 
-On fresh install: copies all bundled skills from the repo's skills/ directory
-into ~/.hermes/skills/ and records every skill name in a manifest file.
+Copies bundled skills from the repo's skills/ directory into ~/.hermes/skills/
+and uses a manifest to track which skills have been offered.
 
-On update: copies only NEW bundled skills (names not in the manifest) so that
-user deletions are permanent and user modifications are never overwritten.
+Behavior:
+  - NEW skills (not in manifest): copied to user dir, added to manifest.
+  - EXISTING skills (in manifest, present in user dir): UPDATED from bundled.
+  - DELETED by user (in manifest, absent from user dir): respected -- not re-added.
+  - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
 The manifest lives at ~/.hermes/skills/.bundled_manifest and is a simple
 newline-delimited list of skill names that have been offered to the user.
 """
 
-import json
+import hashlib
 import logging
 import os
 import shutil
@@ -84,47 +87,90 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return SKILLS_DIR / rel
 
 
+def _dir_hash(directory: Path) -> str:
+    """Compute a hash of all file contents in a directory for change detection."""
+    hasher = hashlib.md5()
+    try:
+        for fpath in sorted(directory.rglob("*")):
+            if fpath.is_file():
+                rel = fpath.relative_to(directory)
+                hasher.update(str(rel).encode("utf-8"))
+                hasher.update(fpath.read_bytes())
+    except (OSError, IOError):
+        pass
+    return hasher.hexdigest()
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
-    - Skills whose names are already in the manifest are skipped (even if deleted by user).
-    - New skills (not in manifest) are copied to SKILLS_DIR and added to the manifest.
+    - NEW skills (not in manifest): copied to user dir, added to manifest.
+    - EXISTING skills (in manifest, present in user dir): updated from bundled.
+    - DELETED by user (in manifest, absent from user dir): respected, not re-added.
+    - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
     Returns:
-        dict with keys: copied (list of names), skipped (int), total_bundled (int)
+        dict with keys: copied (list), updated (list), skipped (int),
+                        cleaned (list), total_bundled (int)
     """
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
-        return {"copied": [], "skipped": 0, "total_bundled": 0}
+        return {"copied": [], "updated": [], "skipped": 0, "cleaned": [], "total_bundled": 0}
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
+    bundled_names = {name for name, _ in bundled_skills}
+
     copied = []
+    updated = []
     skipped = 0
 
     for skill_name, skill_src in bundled_skills:
-        if skill_name in manifest:
-            skipped += 1
-            continue
-
         dest = _compute_relative_dest(skill_src, bundled_dir)
-        try:
-            if dest.exists():
-                # Skill dir exists (maybe user created one with same name) -- don't overwrite
-                skipped += 1
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(skill_src, dest)
-                copied.append(skill_name)
-                if not quiet:
-                    print(f"  + {skill_name}")
-        except (OSError, IOError) as e:
-            if not quiet:
-                print(f"  ! Failed to copy {skill_name}: {e}")
 
-        manifest.add(skill_name)
+        if skill_name not in manifest:
+            # New skill -- never offered before
+            try:
+                if dest.exists():
+                    # User already has a skill with the same name (unlikely but possible)
+                    skipped += 1
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(skill_src, dest)
+                    copied.append(skill_name)
+                    if not quiet:
+                        print(f"  + {skill_name}")
+            except (OSError, IOError) as e:
+                if not quiet:
+                    print(f"  ! Failed to copy {skill_name}: {e}")
+            manifest.add(skill_name)
+
+        elif dest.exists():
+            # Existing skill in manifest AND on disk -- check for updates
+            src_hash = _dir_hash(skill_src)
+            dst_hash = _dir_hash(dest)
+            if src_hash != dst_hash:
+                try:
+                    shutil.rmtree(dest)
+                    shutil.copytree(skill_src, dest)
+                    updated.append(skill_name)
+                    if not quiet:
+                        print(f"  ↑ {skill_name} (updated)")
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to update {skill_name}: {e}")
+            else:
+                skipped += 1
+
+        else:
+            # In manifest but not on disk -- user deleted it, respect that
+            skipped += 1
+
+    # Clean stale manifest entries (skills removed from bundled dir)
+    cleaned = sorted(manifest - bundled_names)
+    manifest -= set(cleaned)
 
     # Also copy DESCRIPTION.md files for categories (if not already present)
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
@@ -141,7 +187,9 @@ def sync_skills(quiet: bool = False) -> dict:
 
     return {
         "copied": copied,
+        "updated": updated,
         "skipped": skipped,
+        "cleaned": cleaned,
         "total_bundled": len(bundled_skills),
     }
 
@@ -149,5 +197,6 @@ def sync_skills(quiet: bool = False) -> dict:
 if __name__ == "__main__":
     print("Syncing bundled skills into ~/.hermes/skills/ ...")
     result = sync_skills(quiet=False)
-    print(f"\nDone: {len(result['copied'])} new, {result['skipped']} skipped, "
+    print(f"\nDone: {len(result['copied'])} new, {len(result['updated'])} updated, "
+          f"{result['skipped']} unchanged, {len(result['cleaned'])} cleaned from manifest, "
           f"{result['total_bundled']} total bundled.")

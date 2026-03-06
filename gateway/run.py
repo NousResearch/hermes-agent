@@ -2410,6 +2410,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
         )
         return False
 
+    # Sync bundled skills on gateway start (fast -- skips unchanged)
+    try:
+        from tools.skills_sync import sync_skills
+        sync_skills(quiet=True)
+    except Exception:
+        pass
+
     # Configure rotating file log so gateway output is persisted for debugging
     log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)

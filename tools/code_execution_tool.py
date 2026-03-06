@@ -137,9 +137,44 @@ def generate_hermes_tools_module(enabled_tools: List[str]) -> str:
 
     header = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket
+import json, os, socket, shlex, time
 
 _sock = None
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers (avoid common scripting pitfalls)
+# ---------------------------------------------------------------------------
+
+def json_parse(text: str):
+    """Parse JSON tolerant of control characters (strict=False).
+    Use this instead of json.loads() when parsing output from terminal()
+    or web_extract() that may contain raw tabs/newlines in strings."""
+    return json.loads(text, strict=False)
+
+
+def shell_quote(s: str) -> str:
+    """Shell-escape a string for safe interpolation into commands.
+    Use this when inserting dynamic content into terminal() commands:
+        terminal(f"echo {shell_quote(user_input)}")
+    """
+    return shlex.quote(s)
+
+
+def retry(fn, max_attempts=3, delay=2):
+    """Retry a function up to max_attempts times with exponential backoff.
+    Use for transient failures (network errors, API rate limits):
+        result = retry(lambda: terminal("gh issue list ..."))
+    """
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                time.sleep(delay * (2 ** attempt))
+    raise last_err
 
 def _connect():
     global _sock
@@ -586,7 +621,11 @@ EXECUTE_CODE_SCHEMA = {
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
-        "datetime, collections, etc.) for processing between tool calls."
+        "datetime, collections, etc.) for processing between tool calls.\n\n"
+        "Also available (no import needed — built into hermes_tools):\n"
+        "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
+        "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
+        "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
     ),
     "parameters": {
         "type": "object",

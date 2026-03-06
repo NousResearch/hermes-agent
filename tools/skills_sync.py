@@ -47,12 +47,38 @@ def _read_manifest() -> set:
 
 
 def _write_manifest(names: set):
-    """Write the manifest file."""
+    """Write the manifest file atomically.
+
+    Uses a temp file + replace to avoid corruption if the process crashes or is
+    interrupted while writing. The manifest controls which bundled skills have
+    been offered to the user, so we prefer durability over silently truncated
+    files.
+    """
+    import tempfile
+
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_FILE.write_text(
-        "\n".join(sorted(names)) + "\n",
-        encoding="utf-8",
-    )
+    data = "\n".join(sorted(names)) + "\n"
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(MANIFEST_FILE.parent),
+            prefix=".bundled_manifest_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, MANIFEST_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
 
 
 def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:

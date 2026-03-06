@@ -3077,6 +3077,7 @@ metadata:
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
+        self._image_select_idx: int = -1  # -1 = not in image select mode
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -3152,6 +3153,7 @@ metadata:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
                 self._attached_images.clear()
+                self._image_select_idx = -1
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
@@ -3217,15 +3219,51 @@ metadata:
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
+            """Up arrow: image select if images attached, else history."""
+            if self._attached_images and self._image_select_idx == -1:
+                # Enter image select mode — select last image
+                self._image_select_idx = len(self._attached_images) - 1
+                event.app.invalidate()
+                return
+            if self._image_select_idx >= 0:
+                # Navigate within image selection
+                self._image_select_idx = max(0, self._image_select_idx - 1)
+                event.app.invalidate()
+                return
             _history_navigating[0] = True
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down arrow: navigate image select or history."""
+            if self._image_select_idx >= 0:
+                if self._image_select_idx < len(self._attached_images) - 1:
+                    self._image_select_idx += 1
+                else:
+                    # Exit image select mode
+                    self._image_select_idx = -1
+                event.app.invalidate()
+                return
             _history_navigating[0] = True
             event.app.current_buffer.auto_down(count=event.arg)
+
+        @kb.add('delete', filter=Condition(lambda: self._image_select_idx >= 0))
+        @kb.add('backspace', filter=Condition(lambda: self._image_select_idx >= 0))
+        def delete_selected_image(event):
+            """Delete/Backspace removes the selected image."""
+            if 0 <= self._image_select_idx < len(self._attached_images):
+                self._attached_images.pop(self._image_select_idx)
+                if not self._attached_images:
+                    self._image_select_idx = -1
+                elif self._image_select_idx >= len(self._attached_images):
+                    self._image_select_idx = len(self._attached_images) - 1
+                event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: self._image_select_idx >= 0))
+        def exit_image_select(event):
+            """Escape exits image select mode."""
+            self._image_select_idx = -1
+            event.app.invalidate()
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
@@ -3281,6 +3319,7 @@ metadata:
                 if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
+                    self._image_select_idx = -1
                     event.app.invalidate()
                 else:
                     self._should_exit = True
@@ -3664,15 +3703,23 @@ metadata:
             if not cli_ref._attached_images:
                 return []
             fragments = []
+            sel = cli_ref._image_select_idx
             base_num = cli_ref._image_counter - len(cli_ref._attached_images) + 1
             for i, img_path in enumerate(cli_ref._attached_images):
                 num = base_num + i
                 size_kb = img_path.stat().st_size // 1024 if img_path.exists() else 0
                 if i > 0:
                     fragments.append(('', ' '))
-                fragments.append(('class:image-tag', f' [Image #{num}] '))
-                fragments.append(('class:image-hint', f' {size_kb}KB'))
-            fragments.append(('class:image-hint', '  (\u2191 to select)'))
+                if i == sel:
+                    fragments.append(('class:image-selected', f' [Image #{num}] '))
+                    fragments.append(('class:image-selected-hint', f' {size_kb}KB ⌫'))
+                else:
+                    fragments.append(('class:image-tag', f' [Image #{num}] '))
+                    fragments.append(('class:image-hint', f' {size_kb}KB'))
+            if sel >= 0:
+                fragments.append(('class:image-hint', '  ↑↓ select · backspace delete · esc cancel'))
+            else:
+                fragments.append(('class:image-hint', '  (↑ to select)'))
             return fragments
 
         images_widget = ConditionalContainer(
@@ -3860,6 +3907,8 @@ metadata:
             # Attached images
             'image-tag': 'bg:#333355 #FFD700 bold underline',
             'image-hint': '#555555 italic',
+            'image-selected': 'bg:#552222 #FF6B6B bold',
+            'image-selected-hint': '#FF6B6B italic',
             # Queued messages (typed while agent/swarm is running)
             'queued-label': '#555555 italic',
             'queued-text': '#777777',

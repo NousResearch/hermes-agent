@@ -332,6 +332,29 @@ def build_context_files_prompt(cwd: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
 
+    # THEORY.MD (repo root, case-insensitive)
+    theory_path = None
+    for name in ["THEORY.MD", "theory.md", "THEORY.md", "theory.MD"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            theory_path = candidate
+            break
+
+    if theory_path:
+        try:
+            content = theory_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, "THEORY.MD")
+                content = _truncate_content(content, "THEORY.MD")
+                sections.append(
+                    f"## THEORY.MD\n\nTHEORY.MD is an agent-maintained strategic narrative "
+                    f"capturing the operating theory behind the current work. It answers "
+                    f"'why does this system work this way?' and 'where does uncertainty remain?' "
+                    f"Read it to understand the project's mental model and strategic context.\n\n{content}"
+                )
+        except Exception as e:
+            logger.debug("Could not read THEORY.MD from %s: %s", theory_path, e)
+
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)

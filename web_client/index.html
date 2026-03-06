@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Agent — WebGPU Inference</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a1a; color: #fff8dc; font-family: 'SF Mono', 'Fira Code', monospace; }
+  #app { max-width: 720px; margin: 0 auto; padding: 2rem 1rem; }
+  h1 { color: #ffd700; font-size: 1.4rem; margin-bottom: 0.5rem; }
+  .subtitle { color: #cd7f32; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  #status { padding: 0.8rem 1rem; border-radius: 6px; margin-bottom: 1rem;
+            background: #1a1a2e; border: 1px solid #333355; font-size: 0.9rem; }
+  #status.loading { border-color: #cd7f32; }
+  #status.ready { border-color: #4caf50; color: #4caf50; }
+  #status.error { border-color: #f44336; color: #f44336; }
+  #progress-bar { height: 4px; background: #333355; border-radius: 2px; margin-top: 0.5rem; overflow: hidden; }
+  #progress-fill { height: 100%; background: #cd7f32; width: 0%; transition: width 0.3s; }
+  #model-select { width: 100%; padding: 0.6rem; background: #1a1a2e; color: #fff8dc;
+                   border: 1px solid #333355; border-radius: 4px; font-family: inherit;
+                   font-size: 0.9rem; margin-bottom: 1rem; }
+  #model-select option { background: #1a1a2e; }
+  button { padding: 0.6rem 1.2rem; background: #333355; color: #ffd700; border: 1px solid #cd7f32;
+           border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 0.9rem; }
+  button:hover { background: #444466; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #log { margin-top: 1.5rem; background: #111122; border: 1px solid #222244; border-radius: 6px;
+         padding: 0.8rem; font-size: 0.8rem; max-height: 300px; overflow-y: auto; }
+  #log .entry { margin-bottom: 0.3rem; }
+  #log .time { color: #555; }
+  #log .info { color: #888; }
+  #log .ok { color: #4caf50; }
+  #log .err { color: #f44336; }
+  .controls { display: flex; gap: 0.5rem; align-items: center; }
+  .bridge-info { margin-top: 1rem; padding: 0.8rem; background: #1a1a2e; border: 1px solid #333355;
+                 border-radius: 6px; font-size: 0.85rem; display: none; }
+  .bridge-info code { color: #ffd700; }
+  .stats { display: flex; gap: 1.5rem; margin-top: 0.5rem; font-size: 0.8rem; color: #888; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Hermes Agent — WebGPU Inference</h1>
+  <p class="subtitle">Client-side model loading — runs on your GPU, nothing leaves your machine</p>
+
+  <select id="model-select">
+    <option value="Qwen/Qwen3-4B-q4f16_1-MLC">Qwen3 4B (q4f16, ~2.5GB VRAM)</option>
+    <option value="Qwen/Qwen2.5-3B-Instruct-q4f16_1-MLC">Qwen2.5 3B Instruct (q4f16, ~1.8GB)</option>
+    <option value="mlc-ai/Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B Instruct (q4f16, ~4.5GB)</option>
+    <option value="mlc-ai/Mistral-7B-Instruct-v0.3-q4f16_1-MLC">Mistral 7B v0.3 (q4f16, ~4GB)</option>
+    <option value="mlc-ai/SmolLM2-1.7B-Instruct-q4f16_1-MLC">SmolLM2 1.7B (q4f16, ~1GB)</option>
+  </select>
+
+  <div class="controls">
+    <button id="btn-load" onclick="loadModel()">Load Model</button>
+    <button id="btn-connect" onclick="connectBridge()" disabled>Connect to Hermes</button>
+  </div>
+
+  <div id="status">Select a model and click Load</div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+  <div class="stats">
+    <span>Requests: <span id="stat-reqs">0</span></span>
+    <span>Tokens: <span id="stat-toks">0</span></span>
+    <span>Avg tok/s: <span id="stat-tps">-</span></span>
+  </div>
+
+  <div class="bridge-info" id="bridge-info">
+    Connected to bridge at <code id="bridge-url">ws://127.0.0.1:8801</code><br>
+    Hermes can now use: <code>hermes --provider webgpu</code>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script type="module">
+import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+
+let engine = null;
+let ws = null;
+let stats = { reqs: 0, toks: 0, totalTime: 0 };
+
+function log(msg, cls = "info") {
+  const el = document.getElementById("log");
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `<div class="entry"><span class="time">${t}</span> <span class="${cls}">${msg}</span></div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(msg, cls = "") {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = cls;
+}
+
+function setProgress(pct) {
+  document.getElementById("progress-fill").style.width = pct + "%";
+}
+
+function updateStats() {
+  document.getElementById("stat-reqs").textContent = stats.reqs;
+  document.getElementById("stat-toks").textContent = stats.toks;
+  const avg = stats.totalTime > 0 ? (stats.toks / stats.totalTime).toFixed(1) : "-";
+  document.getElementById("stat-tps").textContent = avg;
+}
+
+window.loadModel = async function() {
+  const modelId = document.getElementById("model-select").value;
+  const btn = document.getElementById("btn-load");
+  btn.disabled = true;
+  setStatus("Checking WebGPU support...", "loading");
+
+  if (!navigator.gpu) {
+    setStatus("WebGPU not supported in this browser. Use Chrome 113+ or Edge 113+.", "error");
+    log("WebGPU not available", "err");
+    btn.disabled = false;
+    return;
+  }
+
+  log(`Loading ${modelId}...`);
+  setStatus(`Loading ${modelId}...`, "loading");
+
+  try {
+    engine = await webllm.CreateMLCEngine(modelId, {
+      initProgressCallback: (report) => {
+        setStatus(report.text, "loading");
+        setProgress(report.progress * 100);
+      },
+    });
+
+    setStatus(`Model ready: ${modelId}`, "ready");
+    setProgress(100);
+    log(`Model loaded: ${modelId}`, "ok");
+    document.getElementById("btn-connect").disabled = false;
+  } catch (e) {
+    setStatus(`Failed to load: ${e.message}`, "error");
+    log(`Load error: ${e.message}`, "err");
+    btn.disabled = false;
+  }
+};
+
+async function handleRequest(data) {
+  const messages = data.messages || [];
+  const id = data.id || "chatcmpl-" + Date.now();
+  const stream = data.stream || false;
+
+  stats.reqs++;
+  const t0 = performance.now();
+
+  try {
+    if (stream) {
+      // Streaming response
+      const chunks = await engine.chat.completions.create({
+        messages,
+        model: data.model || "default",
+        temperature: data.temperature ?? 0.7,
+        max_tokens: data.max_tokens ?? 4096,
+        tools: data.tools,
+        stream: true,
+      });
+
+      for await (const chunk of chunks) {
+        ws.send(JSON.stringify({ id, type: "chunk", data: chunk }));
+        const delta = chunk.choices?.[0]?.delta;
+        if (delta?.content) stats.toks += delta.content.length / 4; // rough estimate
+      }
+      ws.send(JSON.stringify({ id, type: "done" }));
+    } else {
+      // Non-streaming
+      const response = await engine.chat.completions.create({
+        messages,
+        model: data.model || "default",
+        temperature: data.temperature ?? 0.7,
+        max_tokens: data.max_tokens ?? 4096,
+        tools: data.tools,
+      });
+
+      const elapsed = (performance.now() - t0) / 1000;
+      const toks = response.usage?.completion_tokens || 0;
+      stats.toks += toks;
+      stats.totalTime += elapsed;
+      updateStats();
+
+      log(`Completed: ${toks} tokens in ${elapsed.toFixed(1)}s (${(toks/elapsed).toFixed(1)} tok/s)`, "ok");
+      ws.send(JSON.stringify({ id, type: "response", data: response }));
+    }
+  } catch (e) {
+    log(`Inference error: ${e.message}`, "err");
+    ws.send(JSON.stringify({ id, type: "error", error: e.message }));
+  }
+}
+
+window.connectBridge = function() {
+  const url = "ws://127.0.0.1:8801/ws";
+  document.getElementById("btn-connect").disabled = true;
+  log(`Connecting to bridge: ${url}`);
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    log("Bridge connected", "ok");
+    document.getElementById("bridge-info").style.display = "block";
+    ws.send(JSON.stringify({ type: "ready", model: document.getElementById("model-select").value }));
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "inference") {
+        handleRequest(msg.data);
+      } else if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong" }));
+      }
+    } catch (e) {
+      log(`Message error: ${e.message}`, "err");
+    }
+  };
+
+  ws.onclose = () => {
+    log("Bridge disconnected", "err");
+    document.getElementById("bridge-info").style.display = "none";
+    document.getElementById("btn-connect").disabled = false;
+  };
+
+  ws.onerror = (e) => {
+    log("Bridge connection failed — is the bridge server running?", "err");
+    document.getElementById("btn-connect").disabled = false;
+  };
+};
+</script>
+</body>
+</html>

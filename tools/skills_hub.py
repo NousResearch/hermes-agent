@@ -63,7 +63,7 @@ class SkillMeta:
     """Minimal metadata returned by search results."""
     name: str
     description: str
-    source: str           # "github", "clawhub", "claude-marketplace", "lobehub"
+    source: str           # "official", "github", "clawhub", "claude-marketplace", "lobehub"
     identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
@@ -987,12 +987,22 @@ class OptionalSkillSource(SkillSource):
         rel = identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
         skill_dir = self._optional_dir / rel
 
-        if not skill_dir.is_dir():
+        # Guard against path traversal (e.g. "official/../../etc")
+        try:
+            resolved = skill_dir.resolve()
+            if not str(resolved).startswith(str(self._optional_dir.resolve())):
+                return None
+        except (OSError, ValueError):
+            return None
+
+        if not resolved.is_dir():
             # Try searching by skill name only (last segment)
             skill_name = rel.rsplit("/", 1)[-1]
             skill_dir = self._find_skill_dir(skill_name)
             if not skill_dir:
                 return None
+        else:
+            skill_dir = resolved
 
         files: Dict[str, str] = {}
         for f in skill_dir.rglob("*"):

@@ -17,7 +17,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("google/gemini-3-flash-preview",   ""),
     ("z-ai/glm-4.7",                    ""),
     ("moonshotai/kimi-k2.5",            ""),
-    ("minimax/minimax-m2.1",            ""),
+    ("minimax/minimax-m2.5",            ""),
 ]
 
 

@@ -167,11 +167,12 @@ class KawaiiSpinner:
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to self._out (testable) which defaults to sys.stdout."""
+        """Write to self._out if overridden (tests), else current sys.stdout."""
         try:
-            self._out.write(text + end)
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            out.write(text + end)
             if flush:
-                self._out.flush()
+                out.flush()
         except (ValueError, OSError):
             pass
 
@@ -234,8 +235,9 @@ class KawaiiSpinner:
         self._write(f"\r{blanks}\r", end='', flush=True)
         # Restore cursor visibility
         try:
-            self._out.write("\033[?25h")
-            self._out.flush()
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            out.write("\033[?25h")
+            out.flush()
         except (ValueError, OSError):
             pass
         if final_message:

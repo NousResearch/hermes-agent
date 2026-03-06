@@ -168,11 +168,12 @@ class KawaiiSpinner:
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time."""
+        """Write to stdout, always using current sys.stdout to respect patch_stdout."""
         try:
-            self._out.write(text + end)
+            out = sys.stdout
+            out.write(text + end)
             if flush:
-                self._out.flush()
+                out.flush()
         except (ValueError, OSError):
             pass
 

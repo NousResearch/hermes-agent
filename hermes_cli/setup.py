@@ -72,7 +72,11 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
-    """Prompt for a choice from a list with arrow key navigation."""
+    """Prompt for a choice from a list with arrow key navigation.
+    
+    Escape keeps the current default (skips the question).
+    Ctrl+C exits the wizard.
+    """
     print(color(question, Colors.YELLOW))
     
     # Try to use interactive menu if available
@@ -88,6 +92,8 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         )
         menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
         
+        print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
+        
         terminal_menu = TerminalMenu(
             menu_choices,
             cursor_index=default,
@@ -99,9 +105,10 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         )
         
         idx = terminal_menu.show()
-        if idx is None:  # User pressed Escape or Ctrl+C
+        if idx is None:  # User pressed Escape — keep current value
+            print_info(f"  Skipped (keeping current)")
             print()
-            sys.exit(1)
+            return default
         print()  # Add newline after selection
         return idx
         
@@ -117,6 +124,8 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             print(color(f"  {marker} {choice}", Colors.GREEN))
         else:
             print(f"  {marker} {choice}")
+
+    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
 
     while True:
         try:
@@ -134,11 +143,15 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             sys.exit(1)
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
     default_str = "Y/n" if default else "y/N"
     
     while True:
-        value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
+        try:
+            value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)
         
         if not value:
             return default
@@ -168,7 +181,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         pre_selected = []
     
     print(color(title, Colors.YELLOW))
-    print_info("SPACE to toggle, ENTER to confirm.")
+    print_info("  SPACE Toggle  ENTER Confirm  ESC Skip  Ctrl+C Exit")
     print()
     
     try:
@@ -204,7 +217,8 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         terminal_menu.show()
         
         if terminal_menu.chosen_menu_entries is None:
-            return []
+            print_info("  Skipped (keeping current)")
+            return list(pre_selected)
         
         selected = list(terminal_menu.chosen_menu_indices or [])
         return selected

@@ -1611,6 +1611,32 @@ For more help on a command:
     sessions_parser.set_defaults(func=cmd_sessions)
 
     # =========================================================================
+    # insights command
+    # =========================================================================
+    insights_parser = subparsers.add_parser(
+        "insights",
+        help="Show usage insights and analytics",
+        description="Analyze session history to show token usage, costs, tool patterns, and activity trends"
+    )
+    insights_parser.add_argument("--days", type=int, default=30, help="Number of days to analyze (default: 30)")
+    insights_parser.add_argument("--source", help="Filter by platform (cli, telegram, discord, etc.)")
+
+    def cmd_insights(args):
+        try:
+            from hermes_state import SessionDB
+            from agent.insights import InsightsEngine
+
+            db = SessionDB()
+            engine = InsightsEngine(db)
+            report = engine.generate(days=args.days, source=args.source)
+            print(engine.format_terminal(report))
+            db.close()
+        except Exception as e:
+            print(f"Error generating insights: {e}")
+
+    insights_parser.set_defaults(func=cmd_insights)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(

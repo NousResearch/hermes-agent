@@ -659,7 +659,7 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "reload-mcp", "update"}
+                          "compress", "usage", "insights", "reload-mcp", "update"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -700,6 +700,9 @@ class GatewayRunner:
 
         if command == "usage":
             return await self._handle_usage_command(event)
+
+        if command == "insights":
+            return await self._handle_insights_command(event)
 
         if command == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
@@ -1104,6 +1107,7 @@ class GatewayRunner:
             "`/sethome` — Set this chat as the home channel",
             "`/compress` — Compress conversation context",
             "`/usage` — Show token usage for this session",
+            "`/insights [days]` — Show usage insights and analytics",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -1396,6 +1400,53 @@ class GatewayRunner:
                 f"_(Detailed usage available during active conversations)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_insights_command(self, event: MessageEvent) -> str:
+        """Handle /insights command -- show usage insights and analytics."""
+        import asyncio as _asyncio
+
+        args = event.get_command_args().strip()
+        days = 30
+        source = None
+
+        # Parse simple args: /insights 7  or  /insights --days 7
+        if args:
+            parts = args.split()
+            i = 0
+            while i < len(parts):
+                if parts[i] == "--days" and i + 1 < len(parts):
+                    try:
+                        days = int(parts[i + 1])
+                    except ValueError:
+                        return f"Invalid --days value: {parts[i + 1]}"
+                    i += 2
+                elif parts[i] == "--source" and i + 1 < len(parts):
+                    source = parts[i + 1]
+                    i += 2
+                elif parts[i].isdigit():
+                    days = int(parts[i])
+                    i += 1
+                else:
+                    i += 1
+
+        try:
+            from hermes_state import SessionDB
+            from agent.insights import InsightsEngine
+
+            loop = _asyncio.get_event_loop()
+
+            def _run_insights():
+                db = SessionDB()
+                engine = InsightsEngine(db)
+                report = engine.generate(days=days, source=source)
+                result = engine.format_gateway(report)
+                db.close()
+                return result
+
+            return await loop.run_in_executor(None, _run_insights)
+        except Exception as e:
+            logger.error("Insights command error: %s", e, exc_info=True)
+            return f"Error generating insights: {e}"
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""

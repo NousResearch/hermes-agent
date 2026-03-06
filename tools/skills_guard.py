@@ -1046,6 +1046,9 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    # Official optional skills shipped with the repo
+    if source.startswith("official/") or source == "official":
+        return "builtin"
     # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
         if source.startswith(trusted) or source == trusted:

@@ -5,6 +5,7 @@ Skills Hub — Source adapters and hub state management for the Hermes Skills Hu
 This is a library module (not an agent tool). It provides:
   - GitHubAuth: Shared GitHub API authentication (PAT, gh CLI, GitHub App)
   - SkillSource ABC: Interface for all skill registry adapters
+  - OptionalSkillSource: Official optional skills shipped with the repo (not activated by default)
   - GitHubSource: Fetch skills from any GitHub repo via the Contents API
   - HubLockFile: Track provenance of installed hub skills
   - Hub state directory management (quarantine, audit log, taps, index cache)
@@ -942,6 +943,160 @@ class LobeHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# Official optional skills source adapter
+# ---------------------------------------------------------------------------
+
+class OptionalSkillSource(SkillSource):
+    """
+    Fetch skills from the optional-skills/ directory shipped with the repo.
+
+    These skills are official (maintained by Nous Research) but not activated
+    by default — they don't appear in the system prompt and aren't copied to
+    ~/.hermes/skills/ during setup.  They are discoverable via the Skills Hub
+    (search / install / inspect) and labelled "official" with "builtin" trust.
+    """
+
+    def __init__(self):
+        self._optional_dir = Path(__file__).parent.parent / "optional-skills"
+
+    def source_id(self) -> str:
+        return "official"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "builtin"
+
+    # -- search -----------------------------------------------------------
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        results: List[SkillMeta] = []
+        query_lower = query.lower()
+
+        for meta in self._scan_all():
+            searchable = f"{meta.name} {meta.description} {' '.join(meta.tags)}".lower()
+            if query_lower in searchable:
+                results.append(meta)
+            if len(results) >= limit:
+                break
+
+        return results
+
+    # -- fetch ------------------------------------------------------------
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        # identifier format: "official/category/skill" or "official/skill"
+        rel = identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
+        skill_dir = self._optional_dir / rel
+
+        if not skill_dir.is_dir():
+            # Try searching by skill name only (last segment)
+            skill_name = rel.rsplit("/", 1)[-1]
+            skill_dir = self._find_skill_dir(skill_name)
+            if not skill_dir:
+                return None
+
+        files: Dict[str, str] = {}
+        for f in skill_dir.rglob("*"):
+            if f.is_file() and not f.name.startswith("."):
+                rel_path = str(f.relative_to(skill_dir))
+                try:
+                    files[rel_path] = f.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+        if not files:
+            return None
+
+        # Determine category from directory structure
+        name = skill_dir.name
+
+        return SkillBundle(
+            name=name,
+            files=files,
+            source="official",
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            trust_level="builtin",
+        )
+
+    # -- inspect ----------------------------------------------------------
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        rel = identifier.split("/", 1)[-1] if identifier.startswith("official/") else identifier
+        skill_name = rel.rsplit("/", 1)[-1]
+
+        for meta in self._scan_all():
+            if meta.name == skill_name:
+                return meta
+        return None
+
+    # -- internal helpers -------------------------------------------------
+
+    def _find_skill_dir(self, name: str) -> Optional[Path]:
+        """Find a skill directory by name anywhere in optional-skills/."""
+        if not self._optional_dir.is_dir():
+            return None
+        for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if skill_md.parent.name == name:
+                return skill_md.parent
+        return None
+
+    def _scan_all(self) -> List[SkillMeta]:
+        """Enumerate all optional skills with metadata."""
+        if not self._optional_dir.is_dir():
+            return []
+
+        results: List[SkillMeta] = []
+        for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
+            parent = skill_md.parent
+            rel_parts = parent.relative_to(self._optional_dir).parts
+            if any(part.startswith(".") for part in rel_parts):
+                continue
+
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            fm = self._parse_frontmatter(content)
+            name = fm.get("name", parent.name)
+            desc = fm.get("description", "")
+            tags = []
+            meta_block = fm.get("metadata", {})
+            if isinstance(meta_block, dict):
+                hermes_meta = meta_block.get("hermes", {})
+                if isinstance(hermes_meta, dict):
+                    tags = hermes_meta.get("tags", [])
+
+            rel_path = str(parent.relative_to(self._optional_dir))
+
+            results.append(SkillMeta(
+                name=name,
+                description=desc[:200],
+                source="official",
+                identifier=f"official/{rel_path}",
+                trust_level="builtin",
+                path=rel_path,
+                tags=tags if isinstance(tags, list) else [],
+            ))
+
+        return results
+
+    @staticmethod
+    def _parse_frontmatter(content: str) -> dict:
+        """Parse YAML frontmatter from SKILL.md content."""
+        if not content.startswith("---"):
+            return {}
+        match = re.search(r'\n---\s*\n', content[3:])
+        if not match:
+            return {}
+        yaml_text = content[3:match.start() + 3]
+        try:
+            parsed = yaml.safe_load(yaml_text)
+            return parsed if isinstance(parsed, dict) else {}
+        except yaml.YAMLError:
+            return {}
+
+
+# ---------------------------------------------------------------------------
 # Shared cache helpers (used by multiple adapters)
 # ---------------------------------------------------------------------------
 
@@ -1219,6 +1374,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     extra_taps = taps_mgr.list_taps()
 
     sources: List[SkillSource] = [
+        OptionalSkillSource(),        # Official optional skills (highest priority)
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

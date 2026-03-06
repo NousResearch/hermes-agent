@@ -99,12 +99,13 @@ def do_search(query: str, source: str = "all", limit: int = 10,
     table.add_column("Identifier", style="dim")
 
     for r in results:
-        trust_style = {"trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+        trust_label = "official" if r.source == "official" else r.trust_level
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
             r.source,
-            f"[{trust_style}]{r.trust_level}[/]",
+            f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
 
@@ -147,6 +148,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
         return
 
+    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
+    if bundle.source == "official" and not category:
+        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        if len(id_parts) >= 3:
+            category = id_parts[1]
+
     # Check if already installed
     lock = HubLockFile()
     existing = lock.get_installed(bundle.name)
@@ -177,18 +184,28 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          f"{len(result.findings)}_findings")
         return
 
-    # Confirm with user — always show risk warning regardless of source
+    # Confirm with user — show appropriate warning based on source
     if not force:
         c.print()
-        c.print(Panel(
-            "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
-            "External skills can contain instructions that influence agent behavior,\n"
-            "shell commands, and scripts. Even after automated scanning, you should\n"
-            "review the installed files before use.\n\n"
-            f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
-            title="Disclaimer",
-            border_style="yellow",
-        ))
+        if bundle.source == "official":
+            c.print(Panel(
+                "[bold bright_cyan]This is an official optional skill maintained by Nous Research.[/]\n\n"
+                "It ships with hermes-agent but is not activated by default.\n"
+                "Installing will copy it to your skills directory where the agent can use it.\n\n"
+                f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                title="Official Skill",
+                border_style="bright_cyan",
+            ))
+        else:
+            c.print(Panel(
+                "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
+                "External skills can contain instructions that influence agent behavior,\n"
+                "shell commands, and scripts. Even after automated scanning, you should\n"
+                "review the installed files before use.\n\n"
+                f"Files will be at: [cyan]~/.hermes/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                title="Disclaimer",
+                border_style="yellow",
+            ))
         c.print(f"[bold]Install '{bundle.name}'?[/]")
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
@@ -297,8 +314,9 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
         if source_filter == "builtin" and hub_entry:
             continue
 
-        trust_style = {"builtin": "blue", "trusted": "green", "community": "yellow"}.get(trust, "dim")
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust}[/]")
+        trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(trust, "dim")
+        trust_label = "official" if source_display == "official" else trust
+        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]")
 
     c.print(table)
     c.print(f"[dim]{len(hub_installed)} hub-installed, "

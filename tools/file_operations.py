@@ -646,6 +646,8 @@ class ShellFileOperations(FileOperations):
         
         # Write via stdin pipe — content bypasses shell arg parsing entirely,
         # so there's no ARG_MAX limit regardless of file size.
+        from tools.checkpoint_tool import take_checkpoint
+        take_checkpoint(str(Path(path).parent), f"before overwrite: {path}")
         write_cmd = f"cat > {self._escape_shell_arg(path)}"
         write_result = self._exec(write_cmd, stdin_data=content)
         

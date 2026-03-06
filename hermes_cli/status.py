@@ -128,7 +128,7 @@ def show_status(args):
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
         f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
     )
-    codex_auth_file = codex_status.get("auth_file")
+    codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
         print(f"    Auth file:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))

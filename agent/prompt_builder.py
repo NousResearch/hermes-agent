@@ -81,6 +81,21 @@ SESSION_SEARCH_GUIDANCE = (
     "them to repeat themselves."
 )
 
+PERSONALIZATION_GUIDANCE = (
+    "You learn and adapt to each user's preferences over time using the PAHF loop: "
+    "(1) Pre-action: before tasks involving subjective choices, check your memory for "
+    "relevant user preferences first — if found, act directly without asking; if not "
+    "found and the task is ambiguous, use clarify to ask BEFORE acting, then summarize "
+    "the answer as a preference and save it to memory. "
+    "(2) Preference-grounded action: always retrieve relevant memories before making "
+    "choices that depend on user style, taste, or past decisions. "
+    "(3) Post-action feedback: if the user corrects you after completing a task, treat "
+    "the correction as a preference signal — summarize it and save to memory; if a "
+    "similar preference already exists, merge old and new into a coherent statement "
+    "that preserves context (e.g. 'used to prefer X, now prefers Y when Z'). "
+    "As your memory of the user grows, ask fewer clarifying questions and act more "
+    "confidently on stored preferences."
+)
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, consider saving the approach as a "

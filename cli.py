@@ -889,6 +889,11 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Normalize model names: dots to dashes (e.g. claude-opus-4.6 -> claude-opus-4-6)
+        # Anthropic API requires dashes, but configs/env may use dots
+        if "claude" in self.model:
+            import re as _re_model
+            self.model = _re_model.sub(r'(\d+)\.(\d+)', r'\1-\2', self.model)
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -2537,26 +2542,29 @@ metadata:
             self.console.print("[bold red]Swarm module not available.[/]")
             return
 
-        print("Swarm: decomposing goal...")
+        print("  Decomposing goal...")
+
+        # Mark agent as running so typed messages queue for later
+        self._agent_running = True
+
+        # Snapshot files before swarm for change detection
+        import time as _time
+        _swarm_start = _time.time()
 
         try:
-            # Use planner to break goal into tasks
             planner = TaskPlanner()
             tasks = planner.decompose(goal)
-            # Use a fast/cheap model for swarm workers (haiku) unless user
-            # is already on a small model. Swarm tasks are parallelized so
-            # using opus/sonnet for each would be slow and expensive.
             swarm_model = self.model
             if "opus" in swarm_model or "sonnet" in swarm_model:
                 swarm_model = "claude-haiku-4-5"
-            for t in tasks:
+            for i, t in enumerate(tasks):
                 t.model = swarm_model
+                t.name = f"Agent {i + 1}"
 
             if not tasks:
                 print("  Planner returned no tasks.")
                 return
 
-            # Convert SwarmTask objects to dicts for add_plan().
             id_to_name = {t.id: t.name for t in tasks}
             plan = [
                 {"name": t.name, "prompt": t.prompt, "role": t.role,
@@ -2565,62 +2573,124 @@ metadata:
                 for t in tasks
             ]
 
-            print(f"  {len(plan)} tasks planned")
-            for i, t in enumerate(plan, 1):
-                print(f"  {i}. {t['name']}: {t['prompt'][:60]}")
-
-            # Run swarm
             config = SwarmConfig()
             orch = SwarmOrchestrator(config)
             orch.add_plan(plan)
 
-            print(f"Swarm: executing {len(plan)} tasks...")
-            summary = orch.run_with_display()
+            print(f"  Swarm ({len(plan)} agents, model={swarm_model})")
 
-            # Display results
-            task_counts = summary.get("tasks", {})
-            completed = task_counts.get("completed", 0)
-            failed = task_counts.get("failed", 0)
+            def _update_display(data):
+                self._swarm_display = data
+
+            summary = orch.run_with_display(display_callback=_update_display)
+
+            # Final results
+            sched_status = summary.get("tasks", {})
+            completed = sched_status.get("completed", 0)
+            failed = sched_status.get("failed", 0)
             total = summary.get("total_tasks", len(plan))
 
+            print(f"\n  {'─' * 50}")
             if failed == 0:
-                print(f"Swarm complete: {completed}/{total} tasks succeeded")
+                print(f"  {completed}/{total} agents completed")
             else:
-                print(f"Swarm: {completed}/{total} succeeded, {failed} failed")
+                print(f"  {completed}/{total} completed, {failed} failed")
 
-            # Show what each agent produced
-            shown = 0
+            # Show each agent's output
+            import re as _re_files
+            _ORANGE = "\033[38;5;208m"
+            _YELLOW = "\033[33m"
+            _GREEN = "\033[32m"
+            _RED = "\033[31m"
+            _DIM2 = "\033[2m"
+            _RST2 = "\033[0m"
+            _BOLD2 = "\033[1m"
+
+            def _highlight_files(line):
+                """Highlight filenames in yellow."""
+                return _re_files.sub(
+                    r'{0}\g<0>{1}'.format(_YELLOW, _RST2),
+                    line,
+                    # Match common file patterns
+                ) if False else _re_files.sub(
+                    r'(\b\w+\.(?:py|txt|md|json|yaml|yml|js|ts|html|css|toml|cfg|ini|sh|rs)\b)',
+                    f'{_YELLOW}\\1{_RST2}',
+                    line,
+                )
+
             for tid, task in orch._scheduler._tasks.items():
                 r = task.result
                 if not r:
-                    print(f"  {task.name}: no result")
                     continue
-                # SwarmResult has .output which is a dict from the worker
                 out = getattr(r, 'output', r) if not isinstance(r, dict) else r
                 if isinstance(out, dict):
                     text = out.get('output', '') or out.get('final_response', '') or ''
-                    status = out.get('status', '')
                 elif isinstance(out, str):
                     text = out
-                    status = ''
                 else:
                     text = str(out) if out else ''
-                    status = ''
                 text = (text or '').strip()
                 duration = getattr(r, 'duration_seconds', 0)
+                status = "done" if task.state.value == "completed" else task.state.value
                 if text:
-                    print(f"\n--- {task.name} ({task.role}) [{duration:.0f}s] ---")
-                    print(text[:500])
-                    shown += 1
-                else:
-                    # Show the error/status so we can debug
-                    err = out.get('output', '') or out.get('error', '') if isinstance(out, dict) else str(out)
-                    print(f"  {task.name}: {status} ({duration:.1f}s) — {str(err)[:200]}")
-            if shown == 0:
-                print("  (no output captured — check model/API key)")
+                    icon = f"{_GREEN}●{_RST2}" if status == 'done' else f"{_RED}✗{_RST2}"
+                    _cprint(f"\n  {icon} {_ORANGE}{_BOLD2}{task.name}{_RST2} {_DIM2}[{task.role}, {duration:.0f}s]{_RST2}")
+                    out_lines = text.split('\n')
+                    for line in out_lines[:8]:
+                        colored = _highlight_files(line[:120])
+                        _cprint(f"    {colored}")
+                    if len(out_lines) > 8:
+                        _cprint(f"    {_DIM2}... +{len(out_lines) - 8} lines{_RST2}")
+
+            # Show files created/modified during swarm
+            import os as _os
+            _cwd = _os.getcwd()
+            _new_files = []
+            _mod_files = []
+            for _root, _dirs, _fnames in _os.walk(_cwd):
+                # Skip hidden dirs, __pycache__, .git, .venv, node_modules
+                _dirs[:] = [d for d in _dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules', '.venv')]
+                for _fn in _fnames:
+                    _fp = _os.path.join(_root, _fn)
+                    try:
+                        st = _os.stat(_fp)
+                        if st.st_mtime >= _swarm_start:
+                            rel = _os.path.relpath(_fp, _cwd)
+                            if st.st_ctime >= _swarm_start:
+                                _new_files.append(rel)
+                            else:
+                                _mod_files.append(rel)
+                    except OSError:
+                        pass
+
+            if _new_files or _mod_files:
+                _cprint(f"\n  {_DIM2}{'─' * 50}{_RST2}")
+                _cprint(f"  {_BOLD2}Files changed:{_RST2}")
+                for f in sorted(_new_files):
+                    _cprint(f"    {_GREEN}+{_RST2} {_YELLOW}{f}{_RST2}")
+                for f in sorted(_mod_files):
+                    _cprint(f"    {_ORANGE}~{_RST2} {_YELLOW}{f}{_RST2}")
 
         except Exception as e:
             print(f"Swarm error: {e}")
+        finally:
+            self._agent_running = False
+            self._swarm_display = None
+            self._queued_messages.clear()
+            # Discard messages typed during swarm — don't auto-send
+            dropped = []
+            while hasattr(self, '_interrupt_queue') and not self._interrupt_queue.empty():
+                try:
+                    msg = self._interrupt_queue.get_nowait()
+                    if msg:
+                        dropped.append(msg)
+                except queue.Empty:
+                    break
+            if dropped:
+                for msg in dropped:
+                    display = msg[0] if isinstance(msg, tuple) else str(msg)
+                    print(f"  (discarded input while swarm ran: '{str(display)[:60]}')")
+                print(f"  Use up-arrow to re-enter.")
 
     def _clarify_callback(self, question, choices):
         """
@@ -2878,9 +2948,9 @@ metadata:
             if response:
                 w = _term_width()
                 label = " ⚕ Hermes "
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                fill = w - 2 - len(label)
+                top = f"{_GOLD}├─{label}{'─' * max(fill - 1, 0)}┤{_RST}"
+                bot = f"{_GOLD}├{'─' * (w - 2)}┤{_RST}"
 
                 # Style or strip <think> blocks based on user preference
                 import re as _re
@@ -2977,6 +3047,8 @@ metadata:
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._queued_messages: list[str] = []   # Display list for queued-while-busy messages
+        self._swarm_display: list[dict] | None = None  # Live swarm task states for widget
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
         self._background_jobs = []  # list of {"id": int, "thread": Thread, "prompt": str, "started": float, "result": None}
@@ -3082,6 +3154,8 @@ metadata:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    self._queued_messages.append(text if text else "(image)")
+                    event.app.invalidate()
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -3280,6 +3354,9 @@ metadata:
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
+        _spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        _spin_frame = [0]
+
         def get_prompt():
             if cli_ref._sudo_state:
                 return [('class:sudo-prompt', '🔐 ❯ ')]
@@ -3290,7 +3367,8 @@ metadata:
             if cli_ref._clarify_state:
                 return [('class:prompt-working', '? ❯ ')]
             if cli_ref._agent_running:
-                return [('class:prompt-working', '⚕ ❯ ')]
+                spin = _spinners[_spin_frame[0] % len(_spinners)]
+                return [('class:prompt-working', f'{spin} ❯ ')]
             return [('class:prompt', '❯ ')]
 
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
@@ -3602,6 +3680,101 @@ metadata:
             filter=Condition(lambda: len(cli_ref._attached_images) > 0),
         )
 
+        def _get_queued_display():
+            if not cli_ref._queued_messages:
+                return []
+            fragments = []
+            for i, msg in enumerate(cli_ref._queued_messages):
+                if i > 0:
+                    fragments.append(('', '\n'))
+                fragments.append(('class:queued-label', '  queued '))
+                fragments.append(('class:queued-text', f' {msg[:80]}'))
+            return fragments
+
+        def _queued_height():
+            return len(cli_ref._queued_messages) if cli_ref._queued_messages else 0
+
+        queued_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_queued_display),
+                height=_queued_height,
+            ),
+            filter=Condition(lambda: len(cli_ref._queued_messages) > 0),
+        )
+
+        # Swarm live display widget — shows animated task status
+        _swarm_spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        def _get_swarm_display():
+            data = cli_ref._swarm_display
+            if not data:
+                return []
+            frm = _spin_frame[0]
+            fragments = []
+            for i, t in enumerate(data):
+                if i > 0:
+                    fragments.append(('', '\n'))
+                state = t.get('state', 'pending')
+                name = t.get('name', '?')
+                elapsed = t.get('elapsed', 0)
+                ts = f"{elapsed:.0f}s" if elapsed > 0 else ""
+                preview = t.get('preview', '')
+
+                if state == 'completed':
+                    fragments.append(('class:swarm-done', '  ● '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-done', '  done '))
+                    fragments.append(('class:swarm-dim', ts))
+                    if preview:
+                        fragments.append(('class:swarm-dim', f' - {preview}'))
+                elif state == 'failed':
+                    fragments.append(('class:swarm-fail', '  ✗ '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-fail', '  failed '))
+                    fragments.append(('class:swarm-dim', ts))
+                    if preview:
+                        fragments.append(('class:swarm-dim', f' - {preview}'))
+                elif state == 'running':
+                    spin = _swarm_spinners[frm % len(_swarm_spinners)]
+                    fragments.append(('class:swarm-run', f'  {spin} '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-run', '  running '))
+                    fragments.append(('class:swarm-time', ts))
+                else:
+                    fragments.append(('class:swarm-dim', f'  ○ {name}  pending'))
+
+            # Summary line
+            done = sum(1 for t in data if t.get('state') == 'completed')
+            failed = sum(1 for t in data if t.get('state') == 'failed')
+            running = sum(1 for t in data if t.get('state') == 'running')
+            total = len(data)
+            fragments.append(('', '\n'))
+            fragments.append(('class:swarm-rule', '  ' + '─' * 40))
+            fragments.append(('', '\n'))
+            fragments.append(('class:swarm-done', f'  {done}'))
+            fragments.append(('class:swarm-summary', f'/{total} done'))
+            if running:
+                fragments.append(('class:swarm-run', f'  {running}'))
+                fragments.append(('class:swarm-summary', ' running'))
+            if failed:
+                fragments.append(('class:swarm-fail', f'  {failed}'))
+                fragments.append(('class:swarm-summary', ' failed'))
+            return fragments
+
+        def _swarm_display_height():
+            data = cli_ref._swarm_display
+            if not data:
+                return 0
+            return len(data) + 2  # tasks + separator + summary
+
+        swarm_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_swarm_display),
+                height=_swarm_display_height,
+            ),
+            filter=Condition(lambda: cli_ref._swarm_display is not None),
+        )
+
         # Horizontal rules above and below the input (bronze, 1 line each).
         input_rule_top = Window(height=1, char='─', style='class:input-rule')
         input_rule_bot = Window(height=1, char='─', style='class:input-rule')
@@ -3634,6 +3807,8 @@ metadata:
                 approval_widget,
                 clarify_widget,
                 spacer,
+                swarm_widget,
+                queued_widget,
                 images_widget,
                 input_rule_top,
                 image_bar,
@@ -3682,6 +3857,18 @@ metadata:
             # Attached images
             'image-tag': 'bg:#333355 #FFD700 bold underline',
             'image-hint': '#555555 italic',
+            # Queued messages (typed while agent/swarm is running)
+            'queued-label': '#555555 italic',
+            'queued-text': '#777777',
+            # Swarm live display
+            'swarm-done': '#32CD32',
+            'swarm-fail': '#FF4444',
+            'swarm-run': '#FFD700',
+            'swarm-time': '#00CED1',
+            'swarm-dim': '#666666',
+            'swarm-name': '#FF8C00 bold',
+            'swarm-rule': '#CD7F32',
+            'swarm-summary': '#AAAAAA',
         })
         
         # Create the application
@@ -3693,7 +3880,22 @@ metadata:
             mouse_support=False,
         )
         self._app = app  # Store reference for clarify_callback
-        
+
+        # Spinner animation thread — ticks the prompt spinner when agent is running
+        def _spinner_loop():
+            while not self._should_exit:
+                if self._agent_running:
+                    _spin_frame[0] += 1
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+                import time as _st
+                _st.sleep(0.12)
+
+        _spinner_thread = threading.Thread(target=_spinner_loop, daemon=True, name="spinner")
+        _spinner_thread.start()
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
@@ -3804,6 +4006,7 @@ metadata:
                     else:
                         # Chat completed normally (not backgrounded)
                         self._agent_running = False
+                        self._queued_messages.clear()
                         app.invalidate()  # Refresh status line
                         if chat_result[0] and isinstance(chat_result[0], Exception):
                             print(f"Error: {chat_result[0]}")

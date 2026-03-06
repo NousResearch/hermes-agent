@@ -221,33 +221,49 @@ class SwarmOrchestrator:
 
         return table
 
-    def _print_status(self):
-        """Print a plain-text status line."""
+    def _get_task_elapsed(self, task: SwarmTask) -> float:
+        if not task.started_at:
+            return 0.0
         from datetime import datetime, timezone
-        sched_status = self._scheduler.get_status()
-        completed = sched_status.get("completed", 0)
-        failed = sched_status.get("failed", 0)
-        pending = sched_status.get("pending", 0)
-        running = sched_status.get("running", 0)
-        total = sum(sched_status.values())
+        now = datetime.now(timezone.utc)
+        started = task.started_at.replace(tzinfo=timezone.utc)
+        if task.completed_at:
+            ended = task.completed_at.replace(tzinfo=timezone.utc)
+            return (ended - started).total_seconds()
+        return (now - started).total_seconds()
 
-        workers = []
-        for wid, worker in sorted(self._pool._workers.items()):
-            if worker.current_task_id:
-                task = self._scheduler._tasks.get(worker.current_task_id)
-                if task:
-                    elapsed = ""
-                    if task.started_at:
-                        now = datetime.now(timezone.utc)
-                        started = task.started_at.replace(tzinfo=timezone.utc)
-                        secs = (now - started).total_seconds()
-                        elapsed = f" {secs:.0f}s"
-                    workers.append(f"{worker.name[:8]}:{task.name}{elapsed}")
-        worker_str = ", ".join(workers) if workers else ""
-        print(f"\r  [{completed}/{total} done, {running} running, {failed} failed] {worker_str}    ", end="", flush=True)
+    def _get_task_output_preview(self, task: SwarmTask, max_len: int = 60) -> str:
+        r = task.result
+        if not r:
+            return ""
+        out = getattr(r, 'output', r) if not isinstance(r, dict) else r
+        if isinstance(out, dict):
+            text = out.get('output', '') or out.get('final_response', '') or ''
+        elif isinstance(out, str):
+            text = out
+        else:
+            text = str(out) if out else ''
+        text = (text or '').strip().replace('\n', ' ')
+        if len(text) > max_len:
+            text = text[:max_len] + "..."
+        return text
 
-    def run_with_display(self, console=None, max_turns: int = 1000, poll_interval: float = 0.5) -> dict:
-        """Run the swarm with a plain-text progress display."""
+    def _snapshot_display(self) -> list[dict]:
+        """Build display data for the prompt_toolkit widget."""
+        result = []
+        for task in self._scheduler._tasks.values():
+            elapsed = self._get_task_elapsed(task)
+            preview = self._get_task_output_preview(task, 40) if task.state in (TaskState.completed, TaskState.failed) else ""
+            result.append({
+                "name": task.name,
+                "state": task.state.value,
+                "elapsed": elapsed,
+                "preview": preview,
+            })
+        return result
+
+    def run_with_display(self, display_callback=None, max_turns: int = 1000, poll_interval: float = 0.5, **kw) -> dict:
+        """Run the swarm, calling display_callback with task data on each tick."""
         self._cancelled.clear()
         self._ensure_workers()
 
@@ -282,7 +298,9 @@ class SwarmOrchestrator:
                 dispatched += 1
 
             self._collect_results()
-            self._print_status()
+
+            if display_callback:
+                display_callback(self._snapshot_display())
 
             if dispatched == 0 and not self._has_running_tasks():
                 if self._scheduler.is_complete():
@@ -293,10 +311,11 @@ class SwarmOrchestrator:
             if dispatched == 0:
                 time.sleep(poll_interval)
 
-        print()  # newline after \r status updates
-
         self._drain_running(timeout=self._config.timeout_seconds)
         self._collect_results()
+
+        if display_callback:
+            display_callback(self._snapshot_display())
 
         return self._build_summary()
 

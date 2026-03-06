@@ -95,15 +95,15 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "grep", path: str = ".", file_glob: str = None, limit: int = 50',
-        '"""Search file contents (target="grep") or find files by name (target="find"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit}',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
     ),
     "patch": (
         "patch",
-        "path: str, old_string: str, new_string: str, replace_all: bool = False",
-        '"""Replace old_string with new_string in a file. Returns dict with status."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all}',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
     ),
     "terminal": (
         "terminal",

@@ -132,6 +132,7 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        thinking_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
         max_tokens: int = None,
@@ -217,6 +218,7 @@ class AIAgent:
                 "or any OpenAI-compatible proxy that wraps the Anthropic API."
             )
         self.tool_progress_callback = tool_progress_callback
+        self.thinking_callback = thinking_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
@@ -3030,9 +3032,12 @@ class AIAgent:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
-                spinner_type = 'dots'  # fixed: emoji spinners caused terminal flashing
-                thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
-                thinking_spinner.start()
+                if self.thinking_callback:
+                    self.thinking_callback(f"{face} {verb}...")
+                else:
+                    spinner_type = 'dots'
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                    thinking_spinner.start()
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -3063,8 +3068,9 @@ class AIAgent:
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
                     if thinking_spinner:
-                        thinking_spinner.stop("")
+                        if thinking_spinner: thinking_spinner.stop("")
                         thinking_spinner = None
+                        if self.thinking_callback: self.thinking_callback("")
                     
                     if not self.quiet_mode:
                         print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
@@ -3103,8 +3109,9 @@ class AIAgent:
                     if response_invalid:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
-                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            if thinking_spinner: thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
                             thinking_spinner = None
+                            if self.thinking_callback: self.thinking_callback("")
                         
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
@@ -3268,8 +3275,9 @@ class AIAgent:
 
                 except InterruptedError:
                     if thinking_spinner:
-                        thinking_spinner.stop("")
+                        if thinking_spinner: thinking_spinner.stop("")
                         thinking_spinner = None
+                        if self.thinking_callback: self.thinking_callback("")
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
                     interrupted = True
@@ -3279,8 +3287,9 @@ class AIAgent:
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
-                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        if thinking_spinner: thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
+                        if self.thinking_callback: self.thinking_callback("")
 
                     status_code = getattr(api_error, "status_code", None)
                     if (

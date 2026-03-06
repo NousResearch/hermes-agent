@@ -943,6 +943,7 @@ class HermesCLI:
         # History file for persistent input recall across sessions
         self._history_file = Path.home() / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
+        self._spinner_text: str = ""  # thinking spinner text for TUI
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -951,6 +952,11 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _on_thinking(self, text: str) -> None:
+        """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        self._spinner_text = text or ""
+        self._invalidate()
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1078,6 +1084,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
+                thinking_callback=self._on_thinking,
             )
             return True
         except Exception as e:
@@ -2820,6 +2827,20 @@ class HermesCLI:
             # right up against the top rule of the input area
             return 1 if cli_ref._agent_running else 0
 
+        def get_spinner_text():
+            txt = cli_ref._spinner_text
+            if not txt:
+                return []
+            return [('class:hint', f'  {txt}')]
+
+        def get_spinner_height():
+            return 1 if cli_ref._spinner_text else 0
+
+        spinner_widget = Window(
+            content=FormattedTextControl(get_spinner_text),
+            height=get_spinner_height,
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -3002,6 +3023,7 @@ class HermesCLI:
                 sudo_widget,
                 approval_widget,
                 clarify_widget,
+                spinner_widget,
                 spacer,
                 input_rule_top,
                 image_bar,

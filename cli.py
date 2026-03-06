@@ -2605,7 +2605,9 @@ metadata:
                     print(text[:500])
                     shown += 1
                 else:
-                    print(f"  {task.name}: empty output (status={status}, duration={duration:.1f}s, type={type(out).__name__})")
+                    # Show the error/status so we can debug
+                    err = out.get('output', '') or out.get('error', '') if isinstance(out, dict) else str(out)
+                    print(f"  {task.name}: {status} ({duration:.1f}s) — {str(err)[:200]}")
             if shown == 0:
                 print("  (no output captured — check model/API key)")
 

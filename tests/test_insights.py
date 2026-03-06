@@ -11,6 +11,7 @@ from agent.insights import (
     _estimate_cost,
     _format_duration,
     _bar_chart,
+    _has_known_pricing,
     _DEFAULT_PRICING,
 )
 
@@ -145,9 +146,19 @@ class TestPricing:
         pricing = _get_pricing("anthropic/claude-haiku-future")
         assert pricing["input"] == 0.80
 
-    def test_unknown_model_returns_default(self):
+    def test_unknown_model_returns_zero_cost(self):
+        """Unknown/custom models should NOT have fabricated costs."""
         pricing = _get_pricing("totally-unknown-model-xyz")
         assert pricing == _DEFAULT_PRICING
+        assert pricing["input"] == 0.0
+        assert pricing["output"] == 0.0
+
+    def test_custom_endpoint_model_zero_cost(self):
+        """Self-hosted models should return zero cost."""
+        for model in ["FP16_Hermes_4.5", "Hermes_4.5_1T_epoch2", "my-local-llama"]:
+            pricing = _get_pricing(model)
+            assert pricing["input"] == 0.0, f"{model} should have zero cost"
+            assert pricing["output"] == 0.0, f"{model} should have zero cost"
 
     def test_none_model(self):
         pricing = _get_pricing(None)
@@ -164,6 +175,24 @@ class TestPricing:
     def test_gemini_heuristic(self):
         pricing = _get_pricing("gemini-3.0-ultra")
         assert pricing["input"] == 0.15
+
+
+class TestHasKnownPricing:
+    def test_known_commercial_model(self):
+        assert _has_known_pricing("gpt-4o") is True
+        assert _has_known_pricing("anthropic/claude-sonnet-4-20250514") is True
+        assert _has_known_pricing("deepseek-chat") is True
+
+    def test_unknown_custom_model(self):
+        assert _has_known_pricing("FP16_Hermes_4.5") is False
+        assert _has_known_pricing("my-custom-model") is False
+        assert _has_known_pricing("") is False
+        assert _has_known_pricing(None) is False
+
+    def test_heuristic_matched_models(self):
+        """Models matched by keyword heuristics should be considered known."""
+        assert _has_known_pricing("some-opus-model") is True
+        assert _has_known_pricing("future-sonnet-v2") is True
 
 
 class TestEstimateCost:
@@ -448,6 +477,19 @@ class TestTerminalFormatting:
 
         assert "█" in text  # Bar chart characters
 
+    def test_terminal_format_shows_na_for_custom_models(self, db):
+        """Custom models should show N/A instead of fake cost."""
+        db.create_session(session_id="s1", source="cli", model="my-custom-model")
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "N/A" in text
+        assert "custom/self-hosted" in text
+
 
 class TestGatewayFormatting:
     def test_gateway_format_is_shorter(self, populated_db):
@@ -525,6 +567,49 @@ class TestEdgeCases:
         models = report["models"]
         assert len(models) == 1
         assert models[0]["model"] == "unknown"
+        assert models[0]["has_pricing"] is False
+
+    def test_custom_model_shows_zero_cost(self, db):
+        """Custom/self-hosted models should show $0 cost, not fake estimates."""
+        db.create_session(session_id="s1", source="cli", model="FP16_Hermes_4.5")
+        db.update_token_counts("s1", input_tokens=100000, output_tokens=50000)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["estimated_cost"] == 0.0
+        assert "FP16_Hermes_4.5" in report["overview"]["models_without_pricing"]
+
+        models = report["models"]
+        custom = next(m for m in models if m["model"] == "FP16_Hermes_4.5")
+        assert custom["cost"] == 0.0
+        assert custom["has_pricing"] is False
+
+    def test_mixed_commercial_and_custom_models(self, db):
+        """Mix of commercial and custom models: only commercial ones get costs."""
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts("s1", input_tokens=10000, output_tokens=5000)
+        db.create_session(session_id="s2", source="cli", model="my-local-llama")
+        db.update_token_counts("s2", input_tokens=10000, output_tokens=5000)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+
+        # Cost should only come from gpt-4o, not from the custom model
+        overview = report["overview"]
+        assert overview["estimated_cost"] > 0
+        assert "gpt-4o" in overview["models_with_pricing"]
+        assert "my-local-llama" in overview["models_without_pricing"]
+
+        # Verify individual model entries
+        gpt = next(m for m in report["models"] if m["model"] == "gpt-4o")
+        assert gpt["has_pricing"] is True
+        assert gpt["cost"] > 0
+
+        llama = next(m for m in report["models"] if m["model"] == "my-local-llama")
+        assert llama["has_pricing"] is False
+        assert llama["cost"] == 0.0
 
     def test_single_session_streak(self, db):
         """Single session should have streak of 0 or 1."""

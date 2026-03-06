@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import json
+import shlex
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -401,7 +402,7 @@ class ShellFileOperations(FileOperations):
                 elif path.startswith('~/'):
                     return home + path[1:]  # Replace ~ with home
                 # ~username format - let shell expand it
-                expand_result = self._exec(f"echo {path}")
+                expand_result = self._exec(f"echo {shlex.quote(path)}")
                 if expand_result.exit_code == 0:
                     return expand_result.stdout.strip()
         

@@ -56,18 +56,29 @@ logger = logging.getLogger(__name__)
 _firecrawl_client = None
 
 def _get_firecrawl_client():
-    """Get or create the Firecrawl client (lazy initialization)."""
+    """Get or create the Firecrawl client (lazy initialization).
+
+    Uses the cloud API by default (requires FIRECRAWL_API_KEY).
+    Set FIRECRAWL_API_URL to point at a self-hosted instance instead —
+    in that case the API key is optional (set USE_DB_AUTHENTICATION=false
+    on your Firecrawl server to disable auth entirely).
+    """
     global _firecrawl_client
     if _firecrawl_client is None:
         api_key = os.getenv("FIRECRAWL_API_KEY")
-        if not api_key:
-            raise ValueError("FIRECRAWL_API_KEY environment variable not set")
-        
         api_url = os.getenv("FIRECRAWL_API_URL")
+        if not api_key and not api_url:
+            raise ValueError(
+                "FIRECRAWL_API_KEY environment variable not set. "
+                "Set it for cloud Firecrawl, or set FIRECRAWL_API_URL "
+                "to use a self-hosted instance."
+            )
+        kwargs = {}
+        if api_key:
+            kwargs["api_key"] = api_key
         if api_url:
-            _firecrawl_client = Firecrawl(api_key=api_key, api_url=api_url)
-        else:
-            _firecrawl_client = Firecrawl(api_key=api_key)
+            kwargs["api_url"] = api_url
+        _firecrawl_client = Firecrawl(**kwargs)
     return _firecrawl_client
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000

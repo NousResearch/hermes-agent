@@ -1,0 +1,13 @@
+[package]
+name = "hermes_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hermes_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+regex = "1"
+once_cell = "1"

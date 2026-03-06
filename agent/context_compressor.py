@@ -216,8 +216,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         if not self.quiet_mode:
-            print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
-            print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
+            print(f"\n› Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
+            print(f"   › Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
 
         # Truncation fallback when no auxiliary model is available
         if self.client is None:
@@ -238,7 +238,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             return kept
 
         if not self.quiet_mode:
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+            print(f"   › Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
 
         summary = self._generate_summary(turns_to_summarize)
 
@@ -260,6 +260,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             new_estimate = estimate_messages_tokens_rough(compressed)
             saved_estimate = display_tokens - new_estimate
             print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
-            print(f"   💡 Compression #{self.compression_count} complete")
+            print(f"   › Compression #{self.compression_count} complete")
 
         return compressed

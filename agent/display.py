@@ -132,9 +132,9 @@ class KawaiiSpinner:
         'grow': ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'],
         'arrows': ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'],
         'star': ['✶', '✷', '✸', '✹', '✺', '✹', '✸', '✷'],
-        'moon': ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'],
+        'moon': ['◦', '◔', '◑', '◕', '●', '◕', '◑', '◔'],
         'pulse': ['◜', '◠', '◝', '◞', '◡', '◟'],
-        'brain': ['🧠', '💭', '💡', '✨', '💫', '🌟', '💡', '💭'],
+        'brain': ['◇', '◈', '◆', '◇', '◈', '◆', '◇', '◈'],
         'sparkle': ['⁺', '˚', '*', '✧', '✦', '✧', '*', '˚'],
     }
 
@@ -183,7 +183,8 @@ class KawaiiSpinner:
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
-            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+            timer_suffix = f" ({elapsed:.1f}s)" if elapsed >= 7.0 else ""
+            line = f"  {frame} {self.message}{timer_suffix}"
             pad = max(self.last_line_len - len(line), 0)
             self._write(f"\r{line}{' ' * pad}", end='', flush=True)
             self.last_line_len = len(line)
@@ -348,21 +349,21 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        return _wrap(f"┊ ◎ search    {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            return _wrap(f"┊ ▤ fetch     {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ ▤ fetch     pages  {dur}")
     if tool_name == "web_crawl":
         url = args.get("url", "")
         domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}")
+        return _wrap(f"┊ ◎ crawl     {_trunc(domain, 35)}  {dur}")
     if tool_name == "terminal":
-        return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
+        return _wrap(f"┊ ▸ $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
         action = args.get("action", "?")
         sid = args.get("session_id", "")[:12]
@@ -370,25 +371,25 @@ def get_cute_tool_message(
                   "wait": f"wait {sid}", "kill": f"kill {sid}", "write": f"write {sid}", "submit": f"submit {sid}"}
         return _wrap(f"┊ ⚙️  proc      {labels.get(action, f'{action} {sid}')}  {dur}")
     if tool_name == "read_file":
-        return _wrap(f"┊ 📖 read      {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ ▤ read      {_path(args.get('path', ''))}  {dur}")
     if tool_name == "write_file":
         return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "patch":
-        return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ △ patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":
         pattern = _trunc(args.get("pattern", ""), 35)
         target = args.get("target", "content")
         verb = "find" if target == "files" else "grep"
-        return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
+        return _wrap(f"┊ ◎ {verb:9} {pattern}  {dur}")
     if tool_name == "browser_navigate":
         url = args.get("url", "")
         domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
+        return _wrap(f"┊ ◌ navigate  {_trunc(domain, 35)}  {dur}")
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"
-        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
+        return _wrap(f"┊ ▣ snapshot  {mode}  {dur}")
     if tool_name == "browser_click":
-        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
+        return _wrap(f"┊ ▸ click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":
         return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
     if tool_name == "browser_scroll":
@@ -400,46 +401,46 @@ def get_cute_tool_message(
     if tool_name == "browser_press":
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
     if tool_name == "browser_close":
-        return _wrap(f"┊ 🚪 close     browser  {dur}")
+        return _wrap(f"┊ × close     browser  {dur}")
     if tool_name == "browser_get_images":
-        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
+        return _wrap(f"┊ ▣ images    extracting  {dur}")
     if tool_name == "browser_vision":
-        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
+        return _wrap(f"┊ ◉ vision    analyzing page  {dur}")
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         if todos_arg is None:
-            return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
+            return _wrap(f"┊ ≡ plan      reading tasks  {dur}")
         elif merge:
-            return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
+            return _wrap(f"┊ ≡ plan      update {len(todos_arg)} task(s)  {dur}")
         else:
-            return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
+            return _wrap(f"┊ ≡ plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
-        return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+        return _wrap(f"┊ ◎ recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")
         if action == "add":
-            return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
+            return _wrap(f"┊ ◆ memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            return _wrap(f"┊ ◆ memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
         elif action == "remove":
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
-        return _wrap(f"┊ 🧠 memory    {action}  {dur}")
+            return _wrap(f"┊ ◆ memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+        return _wrap(f"┊ ◆ memory    {action}  {dur}")
     if tool_name == "skills_list":
-        return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
+        return _wrap(f"┊ ≡ skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        return _wrap(f"┊ ≡ skill     {_trunc(args.get('name', ''), 30)}  {dur}")
     if tool_name == "image_generate":
-        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
+        return _wrap(f"┊ ◈ create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
-        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
+        return _wrap(f"┊ ♪ speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
-        return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
+        return _wrap(f"┊ ◉ vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "mixture_of_agents":
-        return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
+        return _wrap(f"┊ ◆ reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
-        return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
+        return _wrap(f"┊ ▷ send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
     if tool_name == "schedule_cronjob":
         return _wrap(f"┊ ⏰ schedule  {_trunc(args.get('name', args.get('prompt', 'task')), 30)}  {dur}")
     if tool_name == "list_cronjobs":
@@ -454,16 +455,16 @@ def get_cute_tool_message(
             "rl_stop_training": f"stop {args.get('run_id', '?')[:12]}", "rl_get_results": f"results {args.get('run_id', '?')[:12]}",
             "rl_list_runs": "list runs", "rl_test_inference": "test inference",
         }
-        return _wrap(f"┊ 🧪 rl        {rl.get(tool_name, tool_name.replace('rl_', ''))}  {dur}")
+        return _wrap(f"┊ ◇ rl        {rl.get(tool_name, tool_name.replace('rl_', ''))}  {dur}")
     if tool_name == "execute_code":
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+        return _wrap(f"┊ ▸ exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ ⤳ delegate  {len(tasks)} parallel tasks  {dur}")
+        return _wrap(f"┊ ⤳ delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")

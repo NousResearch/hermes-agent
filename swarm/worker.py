@@ -54,18 +54,20 @@ class LocalWorkerBackend(WorkerBackend):
 
         model = task.model or "claude-haiku-4-5"
 
-        # Use the shared runtime provider resolver for credentials
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-            runtime = resolve_runtime_provider()
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            provider = runtime.get("provider", "openrouter")
-        except Exception:
-            import os
-            api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-            base_url = ""
-            provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "openrouter"
+        # Infer provider from model name
+        import os
+        if model.startswith("claude"):
+            provider = "anthropic"
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            base_url = ""  # litellm handles routing
+        elif model.startswith("local/"):
+            provider = "local"
+            api_key = "local"
+            base_url = os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8800/v1")
+        else:
+            provider = "openrouter"
+            api_key = os.environ.get("OPENROUTER_API_KEY", "")
+            base_url = "https://openrouter.ai/api/v1"
 
         try:
             agent = AIAgent(
@@ -80,7 +82,7 @@ class LocalWorkerBackend(WorkerBackend):
             result = agent.run_conversation(
                 user_message=task.prompt,
                 conversation_history=[],
-                system_prompt=f"You are a focused worker agent. Complete this task: {task.name}",
+                system_message=f"You are a focused worker agent. Complete this task: {task.name}",
             )
 
             return {

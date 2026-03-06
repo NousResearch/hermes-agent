@@ -2087,7 +2087,10 @@ class AIAgent:
         if self._use_litellm:
             import litellm
             litellm.drop_params = True
+            litellm.modify_params = True
             litellm.suppress_debug_info = True
+            # Strip OpenRouter-specific params that Anthropic API rejects
+            kwargs.pop("extra_body", None)
             return litellm.completion(**kwargs)
         return self.client.chat.completions.create(**kwargs)
 

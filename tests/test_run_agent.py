@@ -905,6 +905,79 @@ class TestFlushSentinelNotLeaked:
 # Conversation history mutation
 # ---------------------------------------------------------------------------
 
+class TestPrematureQuitDetection:
+    """Premature quit detection nudges the model when it gives a short 'giving up'
+    response instead of continuing to use tools."""
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+    def test_short_quit_phrase_triggers_nudge(self, agent):
+        """Short response with a quit phrase after tool use should nudge, not stop."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        resp_tool = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp_quit = _mock_response(content="I'm unable to do that.", finish_reason="stop")
+        resp_final = _mock_response(content="Here is the completed result.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_tool, resp_quit, resp_final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="tool output"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do a task")
+
+        # The quit response should have been nudged, so the final answer is from resp_final
+        assert result["final_response"] == "Here is the completed result."
+        assert result["api_calls"] == 3  # tool call + quit + final
+
+    def test_normal_response_not_detected_as_quit(self, agent):
+        """A short response without quit phrases should NOT trigger nudge."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        resp_tool = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp_ok = _mock_response(content="All done, task complete!", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_tool, resp_ok]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="tool output"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do a task")
+
+        assert result["final_response"] == "All done, task complete!"
+        assert result["api_calls"] == 2  # no nudge, just tool call + stop
+
+    def test_long_response_never_detected(self, agent):
+        """Responses over 300 chars should never trigger quit detection."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        resp_tool = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        # Long response with quit phrase -- should NOT be nudged
+        long_text = "I'm unable to " + ("x" * 300)
+        resp_long = _mock_response(content=long_text, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp_tool, resp_long]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="tool output"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do a task")
+
+        assert result["final_response"] == long_text
+        assert result["api_calls"] == 2  # no nudge
+
+
 class TestConversationHistoryNotMutated:
     """run_conversation must not mutate the caller's conversation_history list."""
 

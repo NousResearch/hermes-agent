@@ -141,8 +141,7 @@ class TestCloseBridgeLog:
 class TestDataInitialized:
     """Verify ``data = {}`` prevents NameError when resp.json() fails."""
 
-    @pytest.mark.asyncio
-    async def test_no_name_error_when_json_always_fails(self):
+    def test_no_name_error_when_json_always_fails(self):
         """HTTP 200 sets http_ready but json() always raises.
 
         Without the fix, ``data`` was never assigned and the Phase 2 check
@@ -161,11 +160,13 @@ class TestDataInitialized:
 
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
-             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
-            # Must NOT raise NameError
-            result = await adapter.connect()
+        async def _run():
+            with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                 patches[5], patches[6], patches[7], patches[8], \
+                 patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+                return await adapter.connect()
+
+        result = asyncio.run(_run())
 
         # connect() returns True (warn-and-proceed path)
         assert result is True
@@ -179,8 +180,7 @@ class TestDataInitialized:
 class TestFileHandleClosedOnError:
     """Verify the bridge log file handle is closed on every failure path."""
 
-    @pytest.mark.asyncio
-    async def test_closed_when_bridge_dies_phase1(self):
+    def test_closed_when_bridge_dies_phase1(self):
         """Bridge process exits during Phase 1 health-check loop."""
         adapter = _make_adapter()
 
@@ -191,16 +191,18 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
-            result = await adapter.connect()
+        async def _run():
+            with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                 patches[5], patches[6], patches[7]:
+                return await adapter.connect()
+
+        result = asyncio.run(_run())
 
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
 
-    @pytest.mark.asyncio
-    async def test_closed_when_http_not_ready(self):
+    def test_closed_when_http_not_ready(self):
         """Health endpoint never returns 200 within 15 attempts."""
         adapter = _make_adapter()
 
@@ -211,16 +213,18 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
-            result = await adapter.connect()
+        async def _run():
+            with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                 patches[5], patches[6], patches[7], patches[8]:
+                return await adapter.connect()
+
+        result = asyncio.run(_run())
 
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
 
-    @pytest.mark.asyncio
-    async def test_closed_when_bridge_dies_phase2(self):
+    def test_closed_when_bridge_dies_phase2(self):
         """Bridge alive during Phase 1 but dies during Phase 2."""
         adapter = _make_adapter()
 
@@ -242,28 +246,33 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
-            result = await adapter.connect()
+        async def _run():
+            with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                 patches[5], patches[6], patches[7], patches[8]:
+                return await adapter.connect()
+
+        result = asyncio.run(_run())
 
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
 
-    @pytest.mark.asyncio
-    async def test_closed_on_unexpected_exception(self):
+    def test_closed_on_unexpected_exception(self):
         """Popen raises, outer except block must still close the handle."""
         adapter = _make_adapter()
 
         mock_fh = MagicMock()
 
-        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
-             patch.object(Path, "exists", return_value=True), \
-             patch.object(Path, "mkdir", return_value=None), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
-             patch("subprocess.Popen", side_effect=OSError("spawn failed")), \
-             patch("builtins.open", return_value=mock_fh):
-            result = await adapter.connect()
+        async def _run():
+            with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+                 patch.object(Path, "exists", return_value=True), \
+                 patch.object(Path, "mkdir", return_value=None), \
+                 patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+                 patch("subprocess.Popen", side_effect=OSError("spawn failed")), \
+                 patch("builtins.open", return_value=mock_fh):
+                return await adapter.connect()
+
+        result = asyncio.run(_run())
 
         assert result is False
         mock_fh.close.assert_called_once()

@@ -1113,6 +1113,52 @@ class HermesCLI:
         
         self.console.print()
     
+    def _try_attach_clipboard_image(self) -> bool:
+        """Check clipboard for an image and attach it if found.
+
+        Saves the image to ~/.hermes/images/ and appends the path to
+        ``_attached_images``.  Returns True if an image was attached.
+        """
+        from hermes_cli.clipboard import save_clipboard_image
+
+        img_dir = Path.home() / ".hermes" / "images"
+        self._image_counter += 1
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
+        if save_clipboard_image(img_path):
+            self._attached_images.append(img_path)
+            return True
+        self._image_counter -= 1
+        return False
+
+    def _build_multimodal_content(self, text: str, images: list) -> list:
+        """Convert text + image paths into OpenAI vision multimodal content.
+
+        Returns a list of content parts suitable for the ``content`` field
+        of a ``user`` message.
+        """
+        import base64 as _b64
+
+        content_parts = []
+        text_part = text if isinstance(text, str) and text else "What do you see in this image?"
+        content_parts.append({"type": "text", "text": text_part})
+
+        _MIME = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp",
+        }
+        for img_path in images:
+            if img_path.exists():
+                data = _b64.b64encode(img_path.read_bytes()).decode()
+                ext = img_path.suffix.lower().lstrip(".")
+                mime = _MIME.get(ext, "image/png")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data}"}
+                })
+        return content_parts
+
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
         try:
@@ -2164,25 +2210,12 @@ class HermesCLI:
         
         # Convert attached images to OpenAI vision multimodal content
         if images:
-            import base64 as _b64
-            content_parts = []
-            text_part = message if isinstance(message, str) else ""
-            if not text_part:
-                text_part = "What do you see in this image?"
-            content_parts.append({"type": "text", "text": text_part})
+            message = self._build_multimodal_content(
+                message if isinstance(message, str) else "", images
+            )
             for img_path in images:
                 if img_path.exists():
-                    data = _b64.b64encode(img_path.read_bytes()).decode()
-                    ext = img_path.suffix.lower().lstrip(".")
-                    mime = {"png": "image/png", "jpg": "image/jpeg",
-                            "jpeg": "image/jpeg", "gif": "image/gif",
-                            "webp": "image/webp"}.get(ext, "image/png")
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{data}"}
-                    })
                     _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
-            message = content_parts
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -2565,29 +2598,10 @@ class HermesCLI:
 
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
-            """Handle Cmd+V / Ctrl+V paste — detect clipboard images.
-
-            On every paste event, check the system clipboard for image data.
-            If found, save to ~/.hermes/images/ and attach it to the next
-            message.  Any pasted text is inserted into the buffer normally.
-            """
-            from hermes_cli.clipboard import save_clipboard_image
-
+            """Handle Cmd+V / Ctrl+V paste — detect clipboard images."""
             pasted_text = event.data or ""
-
-            # Check clipboard for image
-            img_dir = Path.home() / ".hermes" / "images"
-            self._image_counter += 1
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
-
-            if save_clipboard_image(img_path):
-                self._attached_images.append(img_path)
+            if self._try_attach_clipboard_image():
                 event.app.invalidate()
-            else:
-                self._image_counter -= 1
-
-            # Insert any pasted text normally
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
         

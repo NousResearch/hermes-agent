@@ -1,15 +1,18 @@
-"""Tests for hermes_cli/clipboard.py — clipboard image extraction.
+"""Tests for clipboard image paste — clipboard extraction, multimodal conversion,
+and CLI integration.
 
-Tests clipboard image extraction across platforms, and the CLI-level
-multimodal content conversion that turns attached images into OpenAI
-vision API format.
+Coverage:
+  hermes_cli/clipboard.py  — platform-specific image extraction
+  cli.py                   — _try_attach_clipboard_image, _build_multimodal_content,
+                              image attachment state, queue tuple routing
 """
 
 import base64
+import queue
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, PropertyMock
 
 import pytest
 
@@ -20,8 +23,12 @@ from hermes_cli.clipboard import (
     _macos_osascript,
 )
 
+FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
-# ── Platform dispatch ────────────────────────────────────────────────────
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 1: Clipboard module — platform dispatch + tool interactions
+# ═════════════════════════════════════════════════════════════════════════
 
 class TestSaveClipboardImage:
     def test_dispatches_to_macos_on_darwin(self, tmp_path):
@@ -49,21 +56,15 @@ class TestSaveClipboardImage:
         assert dest.parent.exists()
 
 
-# ── macOS pngpaste ───────────────────────────────────────────────────────
-
 class TestMacosPngpaste:
     def test_success_writes_file(self, tmp_path):
-        """pngpaste writes the file on success — verify we detect it."""
         dest = tmp_path / "out.png"
-
         def fake_run(cmd, **kw):
-            # Simulate pngpaste writing the file
-            dest.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+            dest.write_bytes(FAKE_PNG)
             return MagicMock(returncode=0)
-
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_pngpaste(dest) is True
-        assert dest.stat().st_size > 0
+        assert dest.stat().st_size == len(FAKE_PNG)
 
     def test_not_installed(self, tmp_path):
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
@@ -77,18 +78,19 @@ class TestMacosPngpaste:
         assert not dest.exists()
 
     def test_empty_file_rejected(self, tmp_path):
-        """pngpaste exits 0 but writes an empty file — should return False."""
         dest = tmp_path / "out.png"
-
         def fake_run(cmd, **kw):
-            dest.write_bytes(b"")  # empty
+            dest.write_bytes(b"")
             return MagicMock(returncode=0)
-
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_pngpaste(dest) is False
 
+    def test_timeout_returns_false(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("pngpaste", 3)):
+            assert _macos_pngpaste(dest) is False
 
-# ── macOS osascript ──────────────────────────────────────────────────────
 
 class TestMacosOsascript:
     def test_no_image_type_in_clipboard(self, tmp_path):
@@ -103,57 +105,53 @@ class TestMacosOsascript:
             assert _macos_osascript(tmp_path / "out.png") is False
 
     def test_success_with_png(self, tmp_path):
-        """clipboard has PNGf, osascript extracts it successfully."""
         dest = tmp_path / "out.png"
-        call_count = [0]
-
+        calls = []
         def fake_run(cmd, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # clipboard info check
+            calls.append(cmd)
+            if len(calls) == 1:
                 return MagicMock(stdout="«class PNGf», «class ut16»", returncode=0)
-            else:
-                # extraction — simulate writing the file
-                dest.write_bytes(b"\x89PNG" + b"\x00" * 50)
-                return MagicMock(stdout="", returncode=0)
-
+            dest.write_bytes(FAKE_PNG)
+            return MagicMock(stdout="", returncode=0)
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is True
         assert dest.stat().st_size > 0
 
     def test_success_with_tiff(self, tmp_path):
-        """clipboard has TIFF type — should still attempt extraction."""
         dest = tmp_path / "out.png"
-        call_count = [0]
-
+        calls = []
         def fake_run(cmd, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
+            calls.append(cmd)
+            if len(calls) == 1:
                 return MagicMock(stdout="«class TIFF»", returncode=0)
-            else:
-                dest.write_bytes(b"\x89PNG" + b"\x00" * 50)
-                return MagicMock(stdout="", returncode=0)
-
+            dest.write_bytes(FAKE_PNG)
+            return MagicMock(stdout="", returncode=0)
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is True
 
     def test_extraction_returns_fail(self, tmp_path):
-        """clipboard info says image but extraction script returns 'fail'."""
         dest = tmp_path / "out.png"
-        call_count = [0]
-
+        calls = []
         def fake_run(cmd, **kw):
-            call_count[0] += 1
-            if call_count[0] == 1:
+            calls.append(cmd)
+            if len(calls) == 1:
                 return MagicMock(stdout="«class PNGf»", returncode=0)
-            else:
-                return MagicMock(stdout="fail", returncode=0)
-
+            return MagicMock(stdout="fail", returncode=0)
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _macos_osascript(dest) is False
 
+    def test_extraction_writes_empty_file(self, tmp_path):
+        dest = tmp_path / "out.png"
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) == 1:
+                return MagicMock(stdout="«class PNGf»", returncode=0)
+            dest.write_bytes(b"")
+            return MagicMock(stdout="", returncode=0)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _macos_osascript(dest) is False
 
-# ── Linux xclip ──────────────────────────────────────────────────────────
 
 class TestLinuxSave:
     def test_no_xclip_installed(self, tmp_path):
@@ -166,116 +164,234 @@ class TestLinuxSave:
             assert _linux_save(tmp_path / "out.png") is False
 
     def test_image_extraction_success(self, tmp_path):
-        """xclip reports image/png in targets, then pipes PNG data."""
         dest = tmp_path / "out.png"
-        call_count = [0]
-
         def fake_run(cmd, **kw):
-            call_count[0] += 1
             if "TARGETS" in cmd:
                 return MagicMock(stdout="image/png\ntext/plain\n", returncode=0)
-            # Extract call — write via the stdout file handle
             if "stdout" in kw and hasattr(kw["stdout"], "write"):
-                kw["stdout"].write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+                kw["stdout"].write(FAKE_PNG)
             return MagicMock(returncode=0)
-
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _linux_save(dest) is True
         assert dest.stat().st_size > 0
 
     def test_extraction_fails_cleans_up(self, tmp_path):
-        """If xclip extraction fails, any partial file is cleaned up."""
         dest = tmp_path / "out.png"
-        call_count = [0]
-
         def fake_run(cmd, **kw):
-            call_count[0] += 1
             if "TARGETS" in cmd:
                 return MagicMock(stdout="image/png\n", returncode=0)
             raise subprocess.SubprocessError("pipe broke")
-
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _linux_save(dest) is False
         assert not dest.exists()
 
+    def test_targets_check_timeout(self, tmp_path):
+        with patch("hermes_cli.clipboard.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("xclip", 3)):
+            assert _linux_save(tmp_path / "out.png") is False
 
-# ── Multimodal content conversion (CLI-level) ────────────────────────────
 
-class TestMultimodalConversion:
-    """Test the image → OpenAI vision content conversion in chat()."""
+# ═════════════════════════════════════════════════════════════════════════
+# Level 2: _build_multimodal_content — image → OpenAI vision format
+# ═════════════════════════════════════════════════════════════════════════
 
-    def _make_fake_image(self, tmp_path, name="test.png", size=64):
-        """Create a small fake PNG file."""
+class TestBuildMultimodalContent:
+    """Test the extracted _build_multimodal_content method directly."""
+
+    @pytest.fixture
+    def cli(self):
+        """Minimal HermesCLI with mocked internals."""
+        with patch("cli.load_cli_config") as mock_cfg:
+            mock_cfg.return_value = {
+                "model": {"default": "test/model", "base_url": "http://x", "provider": "auto"},
+                "terminal": {"timeout": 60},
+                "browser": {},
+                "compression": {"enabled": True},
+                "agent": {"max_turns": 10},
+                "display": {"compact": True},
+                "clarify": {},
+                "code_execution": {},
+                "delegation": {},
+            }
+            with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+                with patch("cli.CLI_CONFIG", mock_cfg.return_value):
+                    from cli import HermesCLI
+                    cli_obj = HermesCLI.__new__(HermesCLI)
+                    # Manually init just enough state
+                    cli_obj._attached_images = []
+                    cli_obj._image_counter = 0
+                    return cli_obj
+
+    def _make_image(self, tmp_path, name="test.png", content=FAKE_PNG):
         img = tmp_path / name
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * size)
+        img.write_bytes(content)
         return img
 
-    def test_single_image_with_text(self, tmp_path):
-        """One image + text → multimodal content array."""
-        img = self._make_fake_image(tmp_path)
-        raw_bytes = img.read_bytes()
-        expected_b64 = base64.b64encode(raw_bytes).decode()
+    def test_single_image_with_text(self, cli, tmp_path):
+        img = self._make_image(tmp_path)
+        result = cli._build_multimodal_content("Describe this", [img])
 
-        # Simulate what chat() does with images
-        message = "What's in this image?"
-        images = [img]
+        assert len(result) == 2
+        assert result[0] == {"type": "text", "text": "Describe this"}
+        assert result[1]["type"] == "image_url"
+        url = result[1]["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        # Verify the base64 actually decodes to our image
+        b64_data = url.split(",", 1)[1]
+        assert base64.b64decode(b64_data) == FAKE_PNG
 
-        content_parts = []
-        content_parts.append({"type": "text", "text": message})
-        for img_path in images:
-            data = base64.b64encode(img_path.read_bytes()).decode()
-            ext = img_path.suffix.lower().lstrip(".")
-            mime = {"png": "image/png", "jpg": "image/jpeg"}.get(ext, "image/png")
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{data}"}
-            })
+    def test_multiple_images(self, cli, tmp_path):
+        imgs = [self._make_image(tmp_path, f"img{i}.png") for i in range(3)]
+        result = cli._build_multimodal_content("Compare", imgs)
+        assert len(result) == 4  # 1 text + 3 images
+        assert all(r["type"] == "image_url" for r in result[1:])
 
-        assert len(content_parts) == 2
-        assert content_parts[0]["type"] == "text"
-        assert content_parts[0]["text"] == "What's in this image?"
-        assert content_parts[1]["type"] == "image_url"
-        assert content_parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
-        assert expected_b64 in content_parts[1]["image_url"]["url"]
+    def test_empty_text_gets_default_question(self, cli, tmp_path):
+        img = self._make_image(tmp_path)
+        result = cli._build_multimodal_content("", [img])
+        assert result[0]["text"] == "What do you see in this image?"
 
-    def test_multiple_images(self, tmp_path):
-        """Multiple images → all included in content array."""
-        imgs = [self._make_fake_image(tmp_path, f"img{i}.png") for i in range(3)]
+    def test_jpeg_mime_type(self, cli, tmp_path):
+        img = self._make_image(tmp_path, "photo.jpg", b"\xff\xd8\xff\x00" * 20)
+        result = cli._build_multimodal_content("test", [img])
+        assert "image/jpeg" in result[1]["image_url"]["url"]
 
-        content_parts = [{"type": "text", "text": "Compare these"}]
-        for img_path in imgs:
-            data = base64.b64encode(img_path.read_bytes()).decode()
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{data}"}
-            })
+    def test_webp_mime_type(self, cli, tmp_path):
+        img = self._make_image(tmp_path, "img.webp", b"RIFF\x00\x00" * 10)
+        result = cli._build_multimodal_content("test", [img])
+        assert "image/webp" in result[1]["image_url"]["url"]
 
-        assert len(content_parts) == 4  # 1 text + 3 images
+    def test_unknown_extension_defaults_to_png(self, cli, tmp_path):
+        img = self._make_image(tmp_path, "data.bmp", b"\x00" * 50)
+        result = cli._build_multimodal_content("test", [img])
+        assert "image/png" in result[1]["image_url"]["url"]
 
-    def test_no_text_gets_default(self):
-        """Empty text with image → default question added."""
-        text = ""
-        if not text:
-            text = "What do you see in this image?"
-        assert text == "What do you see in this image?"
+    def test_missing_image_skipped(self, cli, tmp_path):
+        missing = tmp_path / "gone.png"
+        result = cli._build_multimodal_content("test", [missing])
+        assert len(result) == 1  # only text
 
-    def test_jpeg_mime_type(self, tmp_path):
-        """JPEG files get the correct MIME type."""
-        img = tmp_path / "photo.jpg"
-        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 50)
+    def test_mix_of_existing_and_missing(self, cli, tmp_path):
+        real = self._make_image(tmp_path, "real.png")
+        missing = tmp_path / "gone.png"
+        result = cli._build_multimodal_content("test", [real, missing])
+        assert len(result) == 2  # text + 1 real image
 
-        ext = img.suffix.lower().lstrip(".")
-        mime = {"png": "image/png", "jpg": "image/jpeg",
-                "jpeg": "image/jpeg", "gif": "image/gif",
-                "webp": "image/webp"}.get(ext, "image/png")
-        assert mime == "image/jpeg"
 
-    def test_missing_image_skipped(self, tmp_path):
-        """Non-existent image path is silently skipped."""
-        missing = tmp_path / "does_not_exist.png"
-        images = [missing]
-        content_parts = [{"type": "text", "text": "test"}]
-        for img_path in images:
-            if img_path.exists():
-                content_parts.append({"type": "image_url"})
-        assert len(content_parts) == 1  # only text, no image
+# ═════════════════════════════════════════════════════════════════════════
+# Level 3: _try_attach_clipboard_image — state management
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestTryAttachClipboardImage:
+    """Test the clipboard → state flow."""
+
+    @pytest.fixture
+    def cli(self):
+        from cli import HermesCLI
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj._attached_images = []
+        cli_obj._image_counter = 0
+        return cli_obj
+
+    def test_image_found_attaches(self, cli):
+        with patch("hermes_cli.clipboard.save_clipboard_image", return_value=True):
+            result = cli._try_attach_clipboard_image()
+        assert result is True
+        assert len(cli._attached_images) == 1
+        assert cli._image_counter == 1
+
+    def test_no_image_doesnt_attach(self, cli):
+        with patch("hermes_cli.clipboard.save_clipboard_image", return_value=False):
+            result = cli._try_attach_clipboard_image()
+        assert result is False
+        assert len(cli._attached_images) == 0
+        assert cli._image_counter == 0  # rolled back
+
+    def test_multiple_attaches_increment_counter(self, cli):
+        with patch("hermes_cli.clipboard.save_clipboard_image", return_value=True):
+            cli._try_attach_clipboard_image()
+            cli._try_attach_clipboard_image()
+            cli._try_attach_clipboard_image()
+        assert len(cli._attached_images) == 3
+        assert cli._image_counter == 3
+
+    def test_mixed_success_and_failure(self, cli):
+        results = [True, False, True]
+        with patch("hermes_cli.clipboard.save_clipboard_image", side_effect=results):
+            cli._try_attach_clipboard_image()
+            cli._try_attach_clipboard_image()
+            cli._try_attach_clipboard_image()
+        assert len(cli._attached_images) == 2
+        assert cli._image_counter == 2  # 3 attempts, 1 rolled back
+
+    def test_image_path_follows_naming_convention(self, cli):
+        with patch("hermes_cli.clipboard.save_clipboard_image", return_value=True):
+            cli._try_attach_clipboard_image()
+        path = cli._attached_images[0]
+        assert path.parent == Path.home() / ".hermes" / "images"
+        assert path.name.startswith("clip_")
+        assert path.suffix == ".png"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 4: Queue routing — tuple unpacking in process_loop
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestQueueRouting:
+    """Test that (text, images) tuples are correctly unpacked and routed."""
+
+    def test_plain_string_stays_string(self):
+        """Regular text input has no images."""
+        user_input = "hello world"
+        submit_images = []
+        if isinstance(user_input, tuple):
+            user_input, submit_images = user_input
+        assert user_input == "hello world"
+        assert submit_images == []
+
+    def test_tuple_unpacks_text_and_images(self, tmp_path):
+        """(text, images) tuple is correctly split."""
+        img = tmp_path / "test.png"
+        img.write_bytes(FAKE_PNG)
+        user_input = ("describe this", [img])
+
+        submit_images = []
+        if isinstance(user_input, tuple):
+            user_input, submit_images = user_input
+        assert user_input == "describe this"
+        assert len(submit_images) == 1
+        assert submit_images[0] == img
+
+    def test_empty_text_with_images(self, tmp_path):
+        """Images without text — text should be empty string."""
+        img = tmp_path / "test.png"
+        img.write_bytes(FAKE_PNG)
+        user_input = ("", [img])
+
+        submit_images = []
+        if isinstance(user_input, tuple):
+            user_input, submit_images = user_input
+        assert user_input == ""
+        assert len(submit_images) == 1
+
+    def test_command_with_images_not_treated_as_command(self):
+        """Text starting with / in a tuple should still be a command."""
+        user_input = "/help"
+        submit_images = []
+        if isinstance(user_input, tuple):
+            user_input, submit_images = user_input
+        is_command = isinstance(user_input, str) and user_input.startswith("/")
+        assert is_command is True
+
+    def test_images_only_not_treated_as_command(self, tmp_path):
+        """Empty text + images should not be treated as a command."""
+        img = tmp_path / "test.png"
+        img.write_bytes(FAKE_PNG)
+        user_input = ("", [img])
+
+        submit_images = []
+        if isinstance(user_input, tuple):
+            user_input, submit_images = user_input
+        is_command = isinstance(user_input, str) and user_input.startswith("/")
+        assert is_command is False
+        assert len(submit_images) == 1

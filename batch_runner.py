@@ -250,7 +250,7 @@ def _process_single_prompt(
     task_id = f"task_{prompt_index}"
     
     # Per-prompt container image override: if the dataset row has an 'image' field,
-    # register it for this task's sandbox. Works with Docker, Modal, and Singularity.
+    # register it for this task's sandbox. Works with Docker, Modal, Singularity, and Daytona.
     container_image = prompt_data.get("image") or prompt_data.get("docker_image")
     if container_image:
         # Verify the image is accessible before spending tokens on the agent loop.
@@ -292,6 +292,7 @@ def _process_single_prompt(
             "docker_image": container_image,
             "modal_image": container_image,
             "singularity_image": f"docker://{container_image}",
+            "daytona_image": container_image,
         }
         if prompt_data.get("cwd"):
             overrides["cwd"] = prompt_data["cwd"]

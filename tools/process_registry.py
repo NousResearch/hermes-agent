@@ -11,7 +11,7 @@ Tracks processes spawned via terminal(background=true), providing:
 
 Background processes execute THROUGH the environment interface -- nothing
 runs on the host machine unless TERMINAL_ENV=local. For Docker, Singularity,
-Modal, and SSH backends, the command runs inside the sandbox.
+Modal, Daytona, and SSH backends, the command runs inside the sandbox.
 
 Usage:
     from tools.process_registry import process_registry
@@ -238,7 +238,7 @@ class ProcessRegistry:
         """
         Spawn a background process through a non-local environment backend.
 
-        For Docker/Singularity/Modal/SSH: runs the command inside the sandbox
+        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
         using the environment's execute() interface. We wrap the command to
         capture the in-sandbox PID and redirect output to a log file inside
         the sandbox, then poll the log via subsequent execute() calls.

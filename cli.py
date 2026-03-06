@@ -870,7 +870,13 @@ class HermesCLI:
             or os.getenv("OPENAI_BASE_URL")
             or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
         )
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        _openrouter_base = (os.getenv("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL).rstrip("/")
+        _on_openrouter = (self.base_url or "").rstrip("/") == _openrouter_base
+        self.api_key = (
+            api_key
+            or os.getenv("OPENROUTER_API_KEY" if _on_openrouter else "OPENAI_API_KEY")
+            or os.getenv("OPENAI_API_KEY" if _on_openrouter else "OPENROUTER_API_KEY")
+        )
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > config file > env var > default

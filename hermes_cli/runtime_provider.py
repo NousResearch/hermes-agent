@@ -72,10 +72,11 @@ def _resolve_openrouter_runtime(
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
+    openrouter_base = (env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
     api_key = (
         explicit_api_key
-        or os.getenv("OPENROUTER_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY" if base_url == openrouter_base else "OPENAI_API_KEY")
+        or os.getenv("OPENAI_API_KEY" if base_url == openrouter_base else "OPENROUTER_API_KEY")
         or ""
     )
 

@@ -121,6 +121,39 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     assert resolved["api_key"] == "sk-openai-fallback"
 
 
+def test_openai_key_wins_on_custom_endpoint(monkeypatch):
+    """OPENAI_API_KEY should win when OPENAI_BASE_URL points to a custom endpoint.
+
+    Regression test: PR #295 inverted key priority globally, causing OPENROUTER_API_KEY
+    (even empty) to override OPENAI_API_KEY when users point hermes at a non-OpenRouter
+    provider via OPENAI_BASE_URL.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.custom-provider.example/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-custom-should-win")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-lose")
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["api_key"] == "sk-custom-should-win"
+
+
+def test_openai_key_wins_on_custom_endpoint_even_when_openrouter_key_empty(monkeypatch):
+    """Empty OPENROUTER_API_KEY must not override a valid OPENAI_API_KEY on custom endpoints."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.z.ai/api/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-zai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["api_key"] == "sk-zai-key"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

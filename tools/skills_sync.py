@@ -123,6 +123,7 @@ def sync_skills(quiet: bool = False) -> dict:
         except (OSError, IOError) as e:
             if not quiet:
                 print(f"  ! Failed to copy {skill_name}: {e}")
+            continue
 
         manifest.add(skill_name)
 

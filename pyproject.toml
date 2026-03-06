@@ -7,7 +7,7 @@ name = "hermes-agent"
 version = "0.1.0"
 description = "AI agent with advanced tool-calling and toolsets"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [

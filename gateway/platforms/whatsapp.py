@@ -61,6 +61,72 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def _kill_process_on_port(port: int) -> bool:
+    """
+    Kill any process listening on the given TCP port.
+    
+    Cross-platform implementation:
+    - Linux/macOS: Uses lsof (more portable than fuser)
+    - Windows: Uses netstat + taskkill
+    
+    Returns True if a process was found and killed, False otherwise.
+    """
+    try:
+        if _IS_WINDOWS:
+            # Windows: Use netstat to find PID, then taskkill
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return False
+            
+            # Parse netstat output to find the PID listening on our port
+            # Format: TCP    0.0.0.0:PORT    0.0.0.0:0    LISTENING    PID
+            for line in result.stdout.splitlines():
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        pid = parts[-1]
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/F", "/PID", pid],
+                                capture_output=True,
+                                timeout=5,
+                            )
+                            return True
+                        except Exception:
+                            pass
+            return False
+        else:
+            # Unix: Use lsof (more portable than fuser, available on macOS and most Linux)
+            result = subprocess.run(
+                ["lsof", "-t", f"-i:{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return False
+            
+            # Kill each PID found
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    subprocess.run(
+                        ["kill", "-9", pid.strip()],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+            return True
+    except Exception:
+        return False
+
+
 class WhatsAppAdapter(BasePlatformAdapter):
     """
     WhatsApp adapter.
@@ -145,21 +211,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._session_path.mkdir(parents=True, exist_ok=True)
             
             # Kill any orphaned bridge from a previous gateway run
-            try:
-                result = subprocess.run(
-                    ["fuser", f"{self._bridge_port}/tcp"],
-                    capture_output=True, timeout=5,
-                )
-                if result.returncode == 0:
-                    # Port is in use — kill the process
-                    subprocess.run(
-                        ["fuser", "-k", f"{self._bridge_port}/tcp"],
-                        capture_output=True, timeout=5,
-                    )
-                    import time
-                    time.sleep(2)
-            except Exception:
-                pass
+            if _kill_process_on_port(self._bridge_port):
+                import time
+                time.sleep(2)
             
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
@@ -293,13 +347,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] Error stopping bridge: {e}")
         
         # Also kill any orphaned bridge processes on our port
-        try:
-            subprocess.run(
-                ["fuser", "-k", f"{self._bridge_port}/tcp"],
-                capture_output=True, timeout=5,
-            )
-        except Exception:
-            pass
+        _kill_process_on_port(self._bridge_port)
         
         self._running = False
         self._bridge_process = None

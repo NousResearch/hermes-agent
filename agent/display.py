@@ -185,23 +185,23 @@ class KawaiiSpinner:
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
-            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
+            # Use \r only — no ANSI escape codes that patch_stdout might mishandle
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            try:
+                out.write(f"\r{line}{' ' * pad}")
+                out.flush()
+            except (ValueError, OSError):
+                pass
             self.last_line_len = len(line)
             self.frame_idx += 1
-            time.sleep(0.25)  # fixed: slower refresh reduces terminal flashing
+            time.sleep(0.25)
 
     def start(self):
         if self.running:
             return
         self.running = True
         self.start_time = time.time()
-        # Hide cursor while spinner runs to prevent blink-sync flashing
-        try:
-            out = self._out if self._out is not sys.__stdout__ else sys.stdout
-            out.write("[?25l")
-            out.flush()
-        except (ValueError, OSError):
-            pass
+
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
 

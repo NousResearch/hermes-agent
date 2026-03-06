@@ -254,6 +254,15 @@ class AIAgent:
         self._use_prompt_caching = is_openrouter and is_claude
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
+        # Iteration budget pressure: warn the LLM as it approaches max_iterations.
+        # Inspired by Utah's budget pressure system. Thresholds are relative (0.0-1.0).
+        # - Caution tier: nudge the LLM to start wrapping up
+        # - Warning tier: urgent signal to provide final response immediately
+        # Messages are injected into api_messages only (not persisted to session history).
+        self._budget_caution_threshold = 0.7   # 70% of max_iterations
+        self._budget_warning_threshold = 0.9   # 90% of max_iterations
+        self._budget_pressure_enabled = True   # Can be disabled if needed
+        
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         from agent.redact import RedactingFormatter
@@ -2640,6 +2649,48 @@ class AIAgent:
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
 
+    def _get_budget_warning_message(self, api_call_count: int) -> Optional[Dict[str, str]]:
+        """
+        Generate a budget pressure warning message if the agent is approaching max_iterations.
+        
+        Returns an ephemeral system message to inject into api_messages (not persisted),
+        or None if no warning is needed yet.
+        
+        Two-tier system inspired by Utah (github.com/inngest/utah):
+        - Caution tier (70%): nudge to start consolidating work
+        - Warning tier (90%): urgent signal to respond immediately
+        """
+        if not self._budget_pressure_enabled or self.max_iterations <= 0:
+            return None
+        
+        progress = api_call_count / self.max_iterations
+        remaining = self.max_iterations - api_call_count
+        
+        # Warning tier (90%+): urgent, must respond now
+        if progress >= self._budget_warning_threshold:
+            return {
+                "role": "system",
+                "content": (
+                    f"[BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
+                    f"You have only {remaining} iteration(s) left. "
+                    "You MUST provide your final response NOW. "
+                    "Do not make additional tool calls unless absolutely critical.]"
+                ),
+            }
+        
+        # Caution tier (70%+): gentle nudge to wrap up
+        if progress >= self._budget_caution_threshold:
+            return {
+                "role": "system",
+                "content": (
+                    f"[BUDGET: Iteration {api_call_count}/{self.max_iterations}. "
+                    f"You have {remaining} iterations left. "
+                    "Start consolidating your work and prepare to provide a final response.]"
+                ),
+            }
+        
+        return None
+
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
@@ -3014,6 +3065,18 @@ class AIAgent:
             # input token costs by ~75% on multi-turn conversations.
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
+            
+            # Inject iteration budget pressure warnings as the agent approaches max_iterations.
+            # These ephemeral messages are injected at the END of api_messages (after any
+            # cached content) so they don't invalidate prompt caching prefixes.
+            # The LLM gets advance warning to wrap up before hitting the hard limit.
+            budget_warning = self._get_budget_warning_message(api_call_count)
+            if budget_warning:
+                api_messages.append(budget_warning)
+                if not self.quiet_mode:
+                    remaining = self.max_iterations - api_call_count
+                    tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
+                    print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
             
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)

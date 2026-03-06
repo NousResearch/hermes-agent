@@ -57,8 +57,9 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         table.add_column("Trust", style="dim")
         table.add_column("Identifier", style="bold cyan")
         for r in exact:
-            trust_style = {"trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
-            table.add_row(r.source, f"[{trust_style}]{r.trust_level}[/]", r.identifier)
+            trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
+            trust_label = "official" if r.source == "official" else r.trust_level
+            table.add_row(r.source, f"[{trust_style}]{trust_label}[/]", r.identifier)
         c.print(table)
         c.print("[bold]Use the full identifier to install a specific one.[/]\n")
         return ""
@@ -123,6 +124,9 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     from tools.skills_hub import (
         GitHubAuth, create_source_router, OptionalSkillSource, SkillMeta,
     )
+
+    # Clamp page_size to safe range
+    page_size = max(1, min(page_size, 100))
 
     c = console or _console
 
@@ -375,13 +379,14 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
             break
 
     c.print()
-    trust_style = {"trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
+    trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
+    trust_label = "official" if meta.source == "official" else meta.trust_level
 
     info_lines = [
         f"[bold]Name:[/] {meta.name}",
         f"[bold]Description:[/] {meta.description}",
         f"[bold]Source:[/] {meta.source}",
-        f"[bold]Trust:[/] [{trust_style}]{meta.trust_level}[/]",
+        f"[bold]Trust:[/] [{trust_style}]{trust_label}[/]",
         f"[bold]Identifier:[/] {meta.identifier}",
     ]
     if meta.tags:

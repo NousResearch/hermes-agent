@@ -704,6 +704,7 @@ COMMANDS = {
     "/cron": "Manage scheduled tasks (list, add, remove)",
     "/skills": "Search, install, inspect, or manage skills from online registries",
     "/platforms": "Show gateway/messaging platform status",
+    "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
@@ -1131,6 +1132,23 @@ class HermesCLI:
             return True
         self._image_counter -= 1
         return False
+
+    def _handle_paste_command(self):
+        """Handle /paste — explicitly check clipboard for an image.
+
+        This is the reliable fallback for terminals where BracketedPaste
+        doesn't fire for image-only clipboard content (e.g., VSCode terminal,
+        Windows Terminal with WSL2).
+        """
+        from hermes_cli.clipboard import has_clipboard_image
+        if has_clipboard_image():
+            if self._try_attach_clipboard_image():
+                n = len(self._attached_images)
+                _cprint(f"  📎 Image #{n} attached from clipboard")
+            else:
+                _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
+        else:
+            _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
     def _build_multimodal_content(self, text: str, images: list) -> list:
         """Convert text + image paths into OpenAI vision multimodal content.
@@ -1837,6 +1855,8 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower == "/paste":
+            self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
         else:
@@ -2598,13 +2618,32 @@ class HermesCLI:
 
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
-            """Handle Cmd+V / Ctrl+V paste — detect clipboard images."""
+            """Handle terminal paste — detect clipboard images.
+
+            When the terminal supports bracketed paste, Ctrl+V / Cmd+V
+            triggers this with the pasted text.  We also check the
+            clipboard for an image on every paste event.
+            """
             pasted_text = event.data or ""
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
-        
+
+        @kb.add('c-v')
+        def handle_ctrl_v(event):
+            """Fallback image paste for terminals without bracketed paste.
+
+            On Linux terminals (GNOME Terminal, Konsole, etc.), Ctrl+V
+            sends raw byte 0x16 instead of triggering a paste.  This
+            binding catches that and checks the clipboard for images.
+            On terminals that DO intercept Ctrl+V for paste (macOS
+            Terminal, iTerm2, VSCode, Windows Terminal), the bracketed
+            paste handler fires instead and this binding never triggers.
+            """
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
+
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self

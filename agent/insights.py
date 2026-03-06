@@ -56,12 +56,22 @@ MODEL_PRICING = {
     "llama-4-scout": {"input": 0.20, "output": 0.30},
 }
 
-# Fallback pricing for unknown models
-_DEFAULT_PRICING = {"input": 3.00, "output": 12.00}
+# Fallback: unknown/custom models get zero cost (we can't assume pricing
+# for self-hosted models, custom OAI endpoints, local inference, etc.)
+_DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
+
+
+def _has_known_pricing(model_name: str) -> bool:
+    """Check if a model has known pricing (vs unknown/custom endpoint)."""
+    return _get_pricing(model_name) is not _DEFAULT_PRICING
 
 
 def _get_pricing(model_name: str) -> Dict[str, float]:
-    """Look up pricing for a model. Uses fuzzy matching on model name."""
+    """Look up pricing for a model. Uses fuzzy matching on model name.
+
+    Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
+    we can't assume costs for self-hosted endpoints, local inference, etc.
+    """
     if not model_name:
         return _DEFAULT_PRICING
 
@@ -290,10 +300,19 @@ class InsightsEngine:
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
         # Cost estimation (weighted by model)
-        total_cost = sum(
-            _estimate_cost(s.get("model", ""), s.get("input_tokens") or 0, s.get("output_tokens") or 0)
-            for s in sessions
-        )
+        total_cost = 0.0
+        models_with_pricing = set()
+        models_without_pricing = set()
+        for s in sessions:
+            model = s.get("model") or ""
+            inp = s.get("input_tokens") or 0
+            out = s.get("output_tokens") or 0
+            total_cost += _estimate_cost(model, inp, out)
+            display = model.split("/")[-1] if "/" in model else (model or "unknown")
+            if _has_known_pricing(model):
+                models_with_pricing.add(display)
+            else:
+                models_without_pricing.add(display)
 
         # Session duration stats
         durations = []
@@ -328,6 +347,8 @@ class InsightsEngine:
             "tool_messages": message_stats.get("tool_messages") or 0,
             "date_range_start": date_range_start,
             "date_range_end": date_range_end,
+            "models_with_pricing": models_with_pricing,
+            "models_without_pricing": models_without_pricing,
         }
 
     def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
@@ -350,6 +371,7 @@ class InsightsEngine:
             d["total_tokens"] += inp + out
             d["tool_calls"] += s.get("tool_call_count") or 0
             d["cost"] += _estimate_cost(model, inp, out)
+            d["has_pricing"] = _has_known_pricing(model)
 
         result = [
             {"model": model, **data}
@@ -556,7 +578,10 @@ class InsightsEngine:
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  Est. cost:       ${o['estimated_cost']:.2f}")
+        cost_str = f"${o['estimated_cost']:.2f}"
+        if o.get("models_without_pricing"):
+            cost_str += " *"
+        lines.append(f"  Total tokens:      {o['total_tokens']:<12,}  Est. cost:       {cost_str}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
@@ -569,7 +594,13 @@ class InsightsEngine:
             lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12} {'Cost':>8}")
             for m in report["models"]:
                 model_name = m["model"][:28]
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} ${m['cost']:>6.2f}")
+                if m.get("has_pricing"):
+                    cost_cell = f"${m['cost']:>6.2f}"
+                else:
+                    cost_cell = "     N/A"
+                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
+            if o.get("models_without_pricing"):
+                lines.append(f"  * Cost N/A for custom/self-hosted models")
             lines.append("")
 
         # Platform breakdown
@@ -650,7 +681,10 @@ class InsightsEngine:
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
-        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}")
+        cost_note = ""
+        if o.get("models_without_pricing"):
+            cost_note = " _(excludes custom/self-hosted models)_"
+        lines.append(f"**Est. cost:** ${o['estimated_cost']:.2f}{cost_note}")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
@@ -659,7 +693,8 @@ class InsightsEngine:
         if report["models"]:
             lines.append("**🤖 Models:**")
             for m in report["models"][:5]:
-                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens, ${m['cost']:.2f}")
+                cost_str = f"${m['cost']:.2f}" if m.get("has_pricing") else "N/A"
+                lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens, {cost_str}")
             lines.append("")
 
         # Platforms (if multi-platform)

@@ -234,13 +234,6 @@ class KawaiiSpinner:
         # garbled escape codes when prompt_toolkit's patch_stdout is active.
         blanks = ' ' * max(self.last_line_len + 5, 40)
         self._write(f"\r{blanks}\r", end='', flush=True)
-        # Restore cursor visibility
-        try:
-            out = self._out if self._out is not sys.__stdout__ else sys.stdout
-            out.write("\033[?25h")
-            out.flush()
-        except (ValueError, OSError):
-            pass
         if final_message:
             self._write(f"  {final_message}", flush=True)
 

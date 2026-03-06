@@ -32,6 +32,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -172,6 +173,49 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Nested git detection
+# ---------------------------------------------------------------------------
+
+
+def _has_project_git(working_dir: str) -> bool:
+    """Return True if working_dir already contains a .git entry.
+
+    Both a .git directory (standard repo) and a .git file (worktree pointer)
+    mean git already owns this directory. Checkpointing is disabled in that
+    case so the shadow repo never competes with the user's own git history or
+    index, and restoring checkpoint files cannot corrupt staged changes.
+    """
+    return (Path(working_dir) / ".git").exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-directory concurrency locks
+# ---------------------------------------------------------------------------
+
+_dir_locks: Dict[str, threading.Lock] = {}
+_dir_locks_meta = threading.Lock()
+
+
+def _get_dir_lock(working_dir: str) -> threading.Lock:
+    """Return the threading.Lock for a specific working directory.
+
+    Creates a new Lock on first access. The meta-lock serialises dict
+    mutations so the registry itself is never corrupted under concurrent
+    access. Callers use the returned lock as a context manager:
+
+        with _get_dir_lock(self.working_dir):
+            ...git operations...
+
+    This prevents two simultaneous take() or restore() calls on the same
+    directory from corrupting the git index or producing duplicate commits.
+    """
+    with _dir_locks_meta:
+        if working_dir not in _dir_locks:
+            _dir_locks[working_dir] = threading.Lock()
+        return _dir_locks[working_dir]
+
+
+# ---------------------------------------------------------------------------
 # CheckpointStore class
 # ---------------------------------------------------------------------------
 
@@ -201,83 +245,104 @@ class CheckpointStore:
     def take(self, reason: str) -> Dict[str, Any]:
         """Stage all files and commit with reason as the commit message.
 
+        Refuses with a warning if working_dir already contains a .git repo —
+        use git directly in that case to avoid shadow/project repo conflicts.
+
+        Acquires the per-directory lock before any git I/O so that two rapid
+        concurrent take() calls on the same directory are serialised: the
+        second call will wait, then detect no changes and return the existing
+        hash rather than producing a duplicate empty commit.
+
         Respects info/exclude (node_modules, dist, .env, etc.).
         If nothing has changed since the last checkpoint, returns the
         existing HEAD hash without creating a new commit.
         """
-        err = self._ensure_initialized()
-        if err:
-            return {"success": False, "error": err}
+        # Fast pre-lock checks — no git I/O, no lock needed
+        if _has_project_git(self.working_dir):
+            return {
+                "success": False,
+                "warning": True,
+                "error": (
+                    f"Checkpointing disabled: '{self.working_dir}' already contains a "
+                    f".git repository. Use git directly to manage snapshots in this "
+                    f"directory, or checkpoint a parent directory that is not a git repo."
+                ),
+            }
 
         reason = reason.strip()
         if not reason:
             return {"success": False, "error": "reason cannot be empty"}
 
-        # Stage all files — respects shadow repo's info/exclude
-        ok, _, err = _run_git(
-            ["add", "-A"],
-            self.shadow_repo,
-            self.working_dir,
-            timeout=60,
-        )
-        if not ok:
-            return {"success": False, "error": f"git add failed: {err}"}
+        with _get_dir_lock(self.working_dir):
+            err = self._ensure_initialized()
+            if err:
+                return {"success": False, "error": err}
 
-        # Check if anything was actually staged
-        ok, status_out, _ = _run_git(
-            ["status", "--porcelain"],
-            self.shadow_repo,
-            self.working_dir,
-        )
-        if ok and not status_out.strip():
-            # Nothing changed — return existing HEAD rather than an error
-            ok2, head, _ = _run_git(
+            # Stage all files — respects shadow repo's info/exclude
+            ok, _, err = _run_git(
+                ["add", "-A"],
+                self.shadow_repo,
+                self.working_dir,
+                timeout=60,
+            )
+            if not ok:
+                return {"success": False, "error": f"git add failed: {err}"}
+
+            # Check if anything was actually staged
+            ok, status_out, _ = _run_git(
+                ["status", "--porcelain"],
+                self.shadow_repo,
+                self.working_dir,
+            )
+            if ok and not status_out.strip():
+                # Nothing changed — return existing HEAD rather than an error
+                ok2, head, _ = _run_git(
+                    ["rev-parse", "--short", "HEAD"],
+                    self.shadow_repo,
+                    self.working_dir,
+                )
+                if ok2 and head:
+                    return {
+                        "success": True,
+                        "commit_hash": head,
+                        "files_changed": 0,
+                        "message": "No changes since last checkpoint — existing snapshot returned",
+                        "working_dir": self.working_dir,
+                    }
+                return {
+                    "success": False,
+                    "error": (
+                        "Nothing to commit and no prior checkpoint exists. "
+                        "The working directory may be empty or all files are excluded."
+                    ),
+                }
+
+            # Count staged files for the response
+            staged_files = [l for l in status_out.splitlines() if l.strip()]
+
+            ok, out, err = _run_git(
+                ["commit", "-m", reason],
+                self.shadow_repo,
+                self.working_dir,
+                timeout=60,
+            )
+            if not ok:
+                return {"success": False, "error": f"git commit failed: {err}"}
+
+            ok2, commit_hash, _ = _run_git(
                 ["rev-parse", "--short", "HEAD"],
                 self.shadow_repo,
                 self.working_dir,
             )
-            if ok2 and head:
-                return {
-                    "success": True,
-                    "commit_hash": head,
-                    "files_changed": 0,
-                    "message": "No changes since last checkpoint — existing snapshot returned",
-                    "working_dir": self.working_dir,
-                }
+
             return {
-                "success": False,
-                "error": (
-                    "Nothing to commit and no prior checkpoint exists. "
-                    "The working directory may be empty or all files are excluded."
-                ),
+                "success": True,
+                "commit_hash": commit_hash if ok2 else "unknown",
+                "files_changed": len(staged_files),
+                "message": f"Checkpoint saved: {reason}",
+                "working_dir": self.working_dir,
+                "shadow_repo": str(self.shadow_repo),
             }
-
-        # Count staged files for the response
-        staged_files = [l for l in status_out.splitlines() if l.strip()]
-
-        ok, out, err = _run_git(
-            ["commit", "-m", reason],
-            self.shadow_repo,
-            self.working_dir,
-            timeout=60,
-        )
-        if not ok:
-            return {"success": False, "error": f"git commit failed: {err}"}
-
-        ok2, commit_hash, _ = _run_git(
-            ["rev-parse", "--short", "HEAD"],
-            self.shadow_repo,
-            self.working_dir,
-        )
-
-        return {
-            "success": True,
-            "commit_hash": commit_hash if ok2 else "unknown",
-            "files_changed": len(staged_files),
-            "message": f"Checkpoint saved: {reason}",
-            "working_dir": self.working_dir,
-            "shadow_repo": str(self.shadow_repo),
-        }
 
     # ------------------------------------------------------------------
     # restore
@@ -286,68 +351,89 @@ class CheckpointStore:
     def restore(self, commit_hash: str) -> Dict[str, Any]:
         """Restore the working tree to match a specific checkpoint.
 
+        Refuses with a warning if working_dir contains a .git repo: restoring
+        checkpoint files into a git repo could corrupt staged changes or cause
+        git to lose track of modifications. Use git checkout or git stash there.
+
+        Acquires the per-directory lock for the entire operation so that a
+        concurrent take() cannot stage a half-restored working tree as a new
+        snapshot.
+
         Uses `git checkout {commit_hash} -- .` so the current HEAD is not
         moved. Only files that were snapshotted are restored; excluded files
         (node_modules, .env, etc.) are left untouched.
         """
-        err = self._ensure_initialized()
-        if err:
-            return {"success": False, "error": err}
+        # Fast pre-lock checks
+        if _has_project_git(self.working_dir):
+            return {
+                "success": False,
+                "warning": True,
+                "error": (
+                    f"Restore disabled: '{self.working_dir}' contains a .git repository. "
+                    f"Restoring checkpoint files here could conflict with git's tracked "
+                    f"state. Use git checkout or git stash instead."
+                ),
+            }
 
         commit_hash = commit_hash.strip()
         if not commit_hash:
             return {"success": False, "error": "commit_hash cannot be empty"}
 
-        # Verify the commit exists before touching the working tree
-        ok, full_hash, verify_err = _run_git(
-            ["rev-parse", "--verify", f"{commit_hash}^{{commit}}"],
-            self.shadow_repo,
-            self.working_dir,
-        )
-        if not ok:
+        with _get_dir_lock(self.working_dir):
+            err = self._ensure_initialized()
+            if err:
+                return {"success": False, "error": err}
+
+            # Verify the commit exists before touching the working tree
+            ok, full_hash, verify_err = _run_git(
+                ["rev-parse", "--verify", f"{commit_hash}^{{commit}}"],
+                self.shadow_repo,
+                self.working_dir,
+            )
+            if not ok:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Checkpoint '{commit_hash}' not found in shadow repo. "
+                        f"Use action='list' to see available checkpoints. ({verify_err})"
+                    ),
+                }
+
+            # Retrieve commit metadata before modifying the working tree
+            ok_msg, reason, _ = _run_git(
+                ["log", "-1", "--pretty=format:%s", commit_hash],
+                self.shadow_repo,
+                self.working_dir,
+            )
+            ok_ts, timestamp, _ = _run_git(
+                ["log", "-1", "--pretty=format:%ai", commit_hash],
+                self.shadow_repo,
+                self.working_dir,
+            )
+
+            # Restore working tree contents from the commit.
+            # '--' separates the treeish from the pathspec; '.' means all paths.
+            ok, _, restore_err = _run_git(
+                ["checkout", commit_hash, "--", "."],
+                self.shadow_repo,
+                self.working_dir,
+                timeout=120,
+            )
+            if not ok:
+                return {"success": False, "error": f"git checkout failed: {restore_err}"}
+
             return {
-                "success": False,
-                "error": (
-                    f"Checkpoint '{commit_hash}' not found in shadow repo. "
-                    f"Use action='list' to see available checkpoints. ({verify_err})"
+                "success": True,
+                "commit_hash": commit_hash,
+                "reason": reason if ok_msg else "",
+                "timestamp": timestamp if ok_ts else "",
+                "message": f"Working directory restored to checkpoint {commit_hash}",
+                "working_dir": self.working_dir,
+                "note": (
+                    "Only snapshotted files were restored. "
+                    "Excluded paths (node_modules/, dist/, .env) were not modified."
                 ),
             }
-
-        # Retrieve commit metadata before modifying the working tree
-        ok_msg, reason, _ = _run_git(
-            ["log", "-1", "--pretty=format:%s", commit_hash],
-            self.shadow_repo,
-            self.working_dir,
-        )
-        ok_ts, timestamp, _ = _run_git(
-            ["log", "-1", "--pretty=format:%ai", commit_hash],
-            self.shadow_repo,
-            self.working_dir,
-        )
-
-        # Restore working tree contents from the commit.
-        # '--' separates the treeish from the pathspec; '.' means all paths.
-        ok, _, restore_err = _run_git(
-            ["checkout", commit_hash, "--", "."],
-            self.shadow_repo,
-            self.working_dir,
-            timeout=120,
-        )
-        if not ok:
-            return {"success": False, "error": f"git checkout failed: {restore_err}"}
-
-        return {
-            "success": True,
-            "commit_hash": commit_hash,
-            "reason": reason if ok_msg else "",
-            "timestamp": timestamp if ok_ts else "",
-            "message": f"Working directory restored to checkpoint {commit_hash}",
-            "working_dir": self.working_dir,
-            "note": (
-                "Only snapshotted files were restored. "
-                "Excluded paths (node_modules/, dist/, .env) were not modified."
-            ),
-        }
 
     # ------------------------------------------------------------------
     # list

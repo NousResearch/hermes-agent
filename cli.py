@@ -2135,12 +2135,12 @@ class HermesCLI:
         self._approval_state = None
         self._approval_deadline = 0
         self._invalidate()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-        return "deny"
-
-    def chat(self, message: str) -> Optional[str]:
+    def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
+        
+        Handles streaming output, interrupt detection (user typing while agent
+        is working), and re-queueing of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
@@ -2148,7 +2148,8 @@ class HermesCLI:
         idle go to _pending_input.
         
         Args:
-            message: The user's message
+            message: The user's message (str or multimodal content list)
+            images: Optional list of Path objects for attached images
             
         Returns:
             The agent's response, or None on error
@@ -2161,6 +2162,28 @@ class HermesCLI:
         if not self._init_agent():
             return None
         
+        # Convert attached images to OpenAI vision multimodal content
+        if images:
+            import base64 as _b64
+            content_parts = []
+            text_part = message if isinstance(message, str) else ""
+            if not text_part:
+                text_part = "What do you see in this image?"
+            content_parts.append({"type": "text", "text": text_part})
+            for img_path in images:
+                if img_path.exists():
+                    data = _b64.b64encode(img_path.read_bytes()).decode()
+                    ext = img_path.suffix.lower().lstrip(".")
+                    mime = {"png": "image/png", "jpg": "image/jpeg",
+                            "jpeg": "image/jpeg", "gif": "image/gif",
+                            "webp": "image/webp"}.get(ext, "image/png")
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{data}"}
+                    })
+                    _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
+            message = content_parts
+
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
@@ -2325,6 +2348,10 @@ class HermesCLI:
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
         self._approval_deadline = 0
 
+        # Clipboard image attachments (paste images into the CLI)
+        self._attached_images: list[Path] = []
+        self._image_counter = 0
+
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
@@ -2394,11 +2421,18 @@ class HermesCLI:
 
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
-            if text:
-                if self._agent_running and not text.startswith("/"):
-                    self._interrupt_queue.put(text)
+            has_images = bool(self._attached_images)
+            if text or has_images:
+                # Snapshot and clear attached images
+                images = list(self._attached_images)
+                self._attached_images.clear()
+                event.app.invalidate()
+                # Bundle text + images as a tuple when images are present
+                payload = (text, images) if images else text
+                if self._agent_running and not (text and text.startswith("/")):
+                    self._interrupt_queue.put(payload)
                 else:
-                    self._pending_input.put(text)
+                    self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
@@ -2511,10 +2545,12 @@ class HermesCLI:
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
-                # If there's text in the input buffer, clear it (like bash).
-                # If the buffer is already empty, exit.
-                if event.app.current_buffer.text:
+                # If there's text or images, clear them (like bash).
+                # If everything is already empty, exit.
+                if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
+                    self._attached_images.clear()
+                    event.app.invalidate()
                 else:
                     self._should_exit = True
                     event.app.exit()
@@ -2524,6 +2560,36 @@ class HermesCLI:
             """Handle Ctrl+D - exit."""
             self._should_exit = True
             event.app.exit()
+
+        from prompt_toolkit.keys import Keys
+
+        @kb.add(Keys.BracketedPaste, eager=True)
+        def handle_paste(event):
+            """Handle Cmd+V / Ctrl+V paste — detect clipboard images.
+
+            On every paste event, check the system clipboard for image data.
+            If found, save to ~/.hermes/images/ and attach it to the next
+            message.  Any pasted text is inserted into the buffer normally.
+            """
+            from hermes_cli.clipboard import save_clipboard_image
+
+            pasted_text = event.data or ""
+
+            # Check clipboard for image
+            img_dir = Path.home() / ".hermes" / "images"
+            self._image_counter += 1
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
+
+            if save_clipboard_image(img_path):
+                self._attached_images.append(img_path)
+                event.app.invalidate()
+            else:
+                self._image_counter -= 1
+
+            # Insert any pasted text normally
+            if pasted_text:
+                event.current_buffer.insert_text(pasted_text)
         
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -2834,6 +2900,24 @@ class HermesCLI:
             style='class:input-rule',
         )
 
+        # Image attachment indicator — shows badges like [📎 Image #1] above input
+        cli_ref = self
+
+        def _get_image_bar():
+            if not cli_ref._attached_images:
+                return []
+            base = cli_ref._image_counter - len(cli_ref._attached_images) + 1
+            badges = " ".join(
+                f"[📎 Image #{base + i}]"
+                for i in range(len(cli_ref._attached_images))
+            )
+            return [("class:image-badge", f" {badges} ")]
+
+        image_bar = Window(
+            content=FormattedTextControl(_get_image_bar),
+            height=Condition(lambda: bool(cli_ref._attached_images)),
+        )
+
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
         # the corresponding interactive prompt is active.
@@ -2845,6 +2929,7 @@ class HermesCLI:
                 clarify_widget,
                 spacer,
                 input_rule_top,
+                image_bar,
                 input_area,
                 input_rule_bot,
                 CompletionsMenu(max_height=12, scroll_offset=1),
@@ -2860,6 +2945,8 @@ class HermesCLI:
             'hint': '#555555 italic',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
+            # Clipboard image attachment badges
+            'image-badge': '#87CEEB bold',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
@@ -2909,9 +2996,14 @@ class HermesCLI:
                     
                     if not user_input:
                         continue
+
+                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    submit_images = []
+                    if isinstance(user_input, tuple):
+                        user_input, submit_images = user_input
                     
                     # Check for commands
-                    if user_input.startswith("/"):
+                    if isinstance(user_input, str) and user_input.startswith("/"):
                         print(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
@@ -2922,7 +3014,7 @@ class HermesCLI:
                     
                     # Expand paste references back to full content
                     import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input)
+                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
                     if paste_match:
                         paste_path = Path(paste_match.group(1))
                         if paste_path.exists():
@@ -2944,12 +3036,17 @@ class HermesCLI:
                             print()
                             _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
                     
+                    # Show image attachment count
+                    if submit_images:
+                        n = len(submit_images)
+                        _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
                     
                     try:
-                        self.chat(user_input)
+                        self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         app.invalidate()  # Refresh status line

@@ -37,7 +37,6 @@ import shlex
 import shutil
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -707,25 +706,9 @@ class ProcessRegistry:
                             "session_key": s.session_key,
                         })
             
-            # Atomic write: temp file + os.replace to avoid corruption on crash
-            CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(CHECKPOINT_PATH.parent),
-                prefix='.checkpoint_',
-                suffix='.tmp',
-            )
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(entries, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, CHECKPOINT_PATH)
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            # Atomic write to avoid corruption on crash
+            from utils import atomic_json_write
+            atomic_json_write(CHECKPOINT_PATH, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -774,26 +757,9 @@ class ProcessRegistry:
                 logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
         # Clear the checkpoint (will be rewritten as processes finish)
-        # Use atomic write to avoid corruption
         try:
-            CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(CHECKPOINT_PATH.parent),
-                prefix='.checkpoint_',
-                suffix='.tmp',
-            )
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    f.write("[]")
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, CHECKPOINT_PATH)
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            from utils import atomic_json_write
+            atomic_json_write(CHECKPOINT_PATH, [])
         except Exception as e:
             logger.debug("Could not clear checkpoint file: %s", e, exc_info=True)
 

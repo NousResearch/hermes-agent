@@ -295,9 +295,8 @@ class SwarmOrchestrator:
 
         print()  # newline after \r status updates
 
-            self._drain_running(timeout=self._config.timeout_seconds)
-            self._collect_results()
-            live.update(self._build_live_table())
+        self._drain_running(timeout=self._config.timeout_seconds)
+        self._collect_results()
 
         return self._build_summary()
 

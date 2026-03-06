@@ -86,6 +86,31 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 
+### Self-Hosting Firecrawl
+
+By default, Hermes uses the [Firecrawl cloud API](https://firecrawl.dev/) for web search and scraping. If you prefer to run Firecrawl locally, you can point Hermes at a self-hosted instance instead.
+
+**What you get:** No API key required, no rate limits, no per-page costs, full data sovereignty.
+
+**What you lose:** The cloud version uses Firecrawl's proprietary "Fire-engine" for advanced anti-bot bypassing (Cloudflare, CAPTCHAs, IP rotation). Self-hosted uses basic fetch + Playwright, so some protected sites may fail. Search uses DuckDuckGo instead of Google.
+
+**Setup:**
+
+1. Clone and start the Firecrawl Docker stack (5 containers: API, Playwright, Redis, RabbitMQ, PostgreSQL — requires ~4-8 GB RAM):
+   ```bash
+   git clone https://github.com/mendableai/firecrawl
+   cd firecrawl
+   # In .env, set: USE_DB_AUTHENTICATION=false
+   docker compose up -d
+   ```
+
+2. Point Hermes at your instance (no API key needed):
+   ```bash
+   hermes config set FIRECRAWL_API_URL http://localhost:3002
+   ```
+
+You can also set both `FIRECRAWL_API_KEY` and `FIRECRAWL_API_URL` if your self-hosted instance has authentication enabled.
+
 ## OpenRouter Provider Routing
 
 When using OpenRouter, you can control how requests are routed across providers. Add a `provider_routing` section to `~/.hermes/config.yaml`:
@@ -108,7 +133,7 @@ Configure which environment the agent uses for terminal commands:
 
 ```yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal
+  backend: local    # or: docker, ssh, singularity, modal, daytona
   cwd: "."          # Working directory ("." = current dir)
   timeout: 180      # Command timeout in seconds
 ```

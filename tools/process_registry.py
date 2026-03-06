@@ -11,7 +11,7 @@ Tracks processes spawned via terminal(background=true), providing:
 
 Background processes execute THROUGH the environment interface -- nothing
 runs on the host machine unless TERMINAL_ENV=local. For Docker, Singularity,
-Modal, and SSH backends, the command runs inside the sandbox.
+Modal, Daytona, and SSH backends, the command runs inside the sandbox.
 
 Usage:
     from tools.process_registry import process_registry
@@ -238,7 +238,7 @@ class ProcessRegistry:
         """
         Spawn a background process through a non-local environment backend.
 
-        For Docker/Singularity/Modal/SSH: runs the command inside the sandbox
+        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
         using the environment's execute() interface. We wrap the command to
         capture the in-sandbox PID and redirect output to a log file inside
         the sandbox, then poll the log via subsequent execute() calls.
@@ -690,7 +690,7 @@ class ProcessRegistry:
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self):
-        """Write running process metadata to checkpoint file."""
+        """Write running process metadata to checkpoint file atomically."""
         try:
             with self._lock:
                 entries = []
@@ -705,12 +705,12 @@ class ProcessRegistry:
                             "task_id": s.task_id,
                             "session_key": s.session_key,
                         })
-            CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
-            CHECKPOINT_PATH.write_text(
-                json.dumps(entries, indent=2), encoding="utf-8"
-            )
-        except Exception:
-            pass  # Best-effort
+            
+            # Atomic write to avoid corruption on crash
+            from utils import atomic_json_write
+            atomic_json_write(CHECKPOINT_PATH, entries)
+        except Exception as e:
+            logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
     def recover_from_checkpoint(self) -> int:
         """
@@ -758,9 +758,10 @@ class ProcessRegistry:
 
         # Clear the checkpoint (will be rewritten as processes finish)
         try:
-            CHECKPOINT_PATH.write_text("[]", encoding="utf-8")
+            from utils import atomic_json_write
+            atomic_json_write(CHECKPOINT_PATH, [])
         except Exception as e:
-            logger.debug("Could not write checkpoint file: %s", e)
+            logger.debug("Could not clear checkpoint file: %s", e, exc_info=True)
 
         return recovered
 

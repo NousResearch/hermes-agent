@@ -49,6 +49,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/code-execution',
             'user-guide/features/browser',
             'user-guide/features/image-generation',
+            'user-guide/features/vision',
             'user-guide/features/tts',
             'user-guide/features/provider-routing',
             'user-guide/features/honcho',

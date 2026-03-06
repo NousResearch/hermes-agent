@@ -82,6 +82,8 @@ from agent.prompt_builder import (
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
     estimate_tokens_rough, estimate_messages_tokens_rough,
+    get_next_probe_tier, parse_context_limit_from_error,
+    save_context_length,
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -540,6 +542,7 @@ class AIAgent:
             summary_target_tokens=500,
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
+            base_url=self.base_url,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -2848,7 +2851,7 @@ class AIAgent:
                         "messages": api_messages,
                     }
                     if self.max_tokens is not None:
-                        summary_kwargs["max_tokens"] = self.max_tokens
+                        summary_kwargs.update(self._max_tokens_param(self.max_tokens))
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 
@@ -3350,6 +3353,13 @@ class AIAgent:
                         }
                         self.context_compressor.update_from_response(usage_dict)
 
+                        # Cache discovered context length after successful call
+                        if self.context_compressor._context_probed:
+                            ctx = self.context_compressor.context_length
+                            save_context_length(self.model, self.base_url, ctx)
+                            print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
+                            self.context_compressor._context_probed = False
+
                         self.session_prompt_tokens += prompt_tokens
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
@@ -3469,18 +3479,37 @@ class AIAgent:
                     ])
                     
                     if is_context_length_error:
-                        self._vprint(f"{self.log_prefix}⚠️  Context length exceeded - attempting compression...")
+                        compressor = self.context_compressor
+                        old_ctx = compressor.context_length
+
+                        # Try to parse the actual limit from the error message
+                        parsed_limit = parse_context_limit_from_error(error_msg)
+                        if parsed_limit and parsed_limit < old_ctx:
+                            new_ctx = parsed_limit
+                            self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
+                        else:
+                            # Step down to the next probe tier
+                            new_ctx = get_next_probe_tier(old_ctx)
+
+                        if new_ctx and new_ctx < old_ctx:
+                            compressor.context_length = new_ctx
+                            compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
+                            compressor._context_probed = True
+                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens")
+                        else:
+                            self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens
                         )
 
-                        if len(messages) < original_len:
-                            self._vprint(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
-                            continue  # Retry with compressed messages
+                        if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
+                            if len(messages) < original_len:
+                                self._vprint(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            continue  # Retry with compressed messages or new tier
                         else:
-                            # Can't compress further
+                            # Can't compress further and already at minimum tier
                             self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
                             self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content.")
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")

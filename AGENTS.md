@@ -44,7 +44,8 @@ hermes-agent/
 │   │   ├── docker.py          # Docker container execution
 │   │   ├── ssh.py             # SSH remote execution
 │   │   ├── singularity.py     # Singularity/Apptainer + SIF management
-│   │   └── modal.py           # Modal cloud execution
+│   │   ├── modal.py           # Modal cloud execution
+│   │   └── daytona.py         # Daytona cloud sandboxes
 │   ├── terminal_tool.py       # Terminal orchestration (sudo, lifecycle, factory)
 │   ├── todo_tool.py           # Planning & task management
 │   ├── process_registry.py    # Background process management
@@ -55,6 +56,7 @@ hermes-agent/
 ├── cron/                 # Scheduler implementation
 ├── environments/         # RL training environments (Atropos integration)
 ├── skills/               # Bundled skill sources
+├── optional-skills/      # Official optional skills (not activated by default)
 ├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
 ├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
@@ -421,16 +423,19 @@ The system uses `_config_version` to detect outdated configs:
 API keys are loaded from `~/.hermes/.env`:
 - `OPENROUTER_API_KEY` - Main LLM API access (primary provider)
 - `FIRECRAWL_API_KEY` - Web search/extract tools
+- `FIRECRAWL_API_URL` - Self-hosted Firecrawl endpoint (optional)
 - `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
 - `FAL_KEY` - Image generation (FLUX model)
 - `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
-- `terminal.backend` - Backend: local, docker, singularity, modal, or ssh
+- `terminal.backend` - Backend: local, docker, singularity, modal, daytona, or ssh
 - `terminal.cwd` - Working directory ("." = host CWD for local only; for remote backends set an absolute path inside the target, or omit to use the backend's default)
 - `terminal.docker_image` - Image for Docker backend
 - `terminal.singularity_image` - Image for Singularity backend
 - `terminal.modal_image` - Image for Modal backend
+- `terminal.daytona_image` - Image for Daytona backend
+- `DAYTONA_API_KEY` - API key for Daytona backend (in .env)
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
 
 Agent behavior (in `~/.hermes/.env`):
@@ -494,7 +499,7 @@ terminal(command="pytest -v tests/", background=true)
 - `process(action="submit", session_id="proc_abc123", data="yes")` -- send + Enter
 
 **Key behaviors:**
-- Background processes execute through the configured terminal backend (local/Docker/Modal/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
+- Background processes execute through the configured terminal backend (local/Docker/Modal/Daytona/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
 - The `wait` action blocks the tool call until the process finishes, times out, or is interrupted by a new user message
 - PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex, Claude Code)
 - In RL training, background processes are auto-killed when the episode ends (`tool_context.cleanup()`)
@@ -660,12 +665,12 @@ metadata:
 # Skill Content...
 ```
 
-**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub, Claude marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
+**Skills Hub** — user-driven skill search/install from online registries and official optional skills. Sources: official optional skills (shipped with repo, labeled "official"), GitHub (openai/skills, anthropics/skills, custom taps), ClawHub, Claude marketplace, LobeHub. Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills browse/search/install` CLI commands or the `/skills` slash command in chat.
 
 Key files:
 - `tools/skills_tool.py` — Agent-facing skill list/view (progressive disclosure)
 - `tools/skills_guard.py` — Security scanner (regex + LLM audit, trust-aware install policy)
-- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
+- `tools/skills_hub.py` — Source adapters (OptionalSkillSource, GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
 - `hermes_cli/skills_hub.py` — CLI subcommands + `/skills` slash command handler
 
 ---

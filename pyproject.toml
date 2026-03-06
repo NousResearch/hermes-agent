@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermes-agent"
 version = "0.1.0"
-description = "AI agent with advanced tool-calling and toolsets"
+description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
@@ -39,6 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 modal = ["swe-rex[modal]>=1.4.0"]
+daytona = ["daytona>=0.148.0"]
 dev = ["pytest", "pytest-asyncio"]
 messaging = ["python-telegram-bot>=20.0", "discord.py>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cron = ["croniter"]
@@ -52,6 +53,7 @@ mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
 all = [
   "hermes-agent[modal]",
+  "hermes-agent[daytona]",
   "hermes-agent[messaging]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",

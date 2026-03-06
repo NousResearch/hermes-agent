@@ -45,7 +45,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | Fork bomb patterns | Fork bombs |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, or `modal` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -224,7 +224,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker` or `modal` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 ## Terminal Backend Security Comparison
@@ -236,6 +236,7 @@ For production gateway deployments, use `docker` or `modal` backend to isolate a
 | **docker** | Container | ❌ Skipped (container is boundary) | Production gateway |
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
+| **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 
 ## MCP Credential Handling
 

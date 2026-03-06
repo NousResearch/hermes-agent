@@ -71,7 +71,8 @@ DEFAULT_CONFIG = {
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal — ignored for local/ssh)
+        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -186,6 +187,14 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search", "web_extract"],
         "password": True,
         "category": "tool",
+    },
+    "FIRECRAWL_API_URL": {
+        "description": "Firecrawl API URL for self-hosted instances (optional)",
+        "prompt": "Firecrawl API URL (leave empty for cloud)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for browser automation",
@@ -761,6 +770,10 @@ def show_config():
         print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
+    elif terminal.get('backend') == 'daytona':
+        print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
+        daytona_key = get_env_value('DAYTONA_API_KEY')
+        print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -828,15 +841,16 @@ def set_config_value(key: str, value: str):
     """Set a configuration value."""
     # Check if it's an API key (goes to .env)
     api_keys = [
-        'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'FIRECRAWL_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'NOUS_API_KEY', 'WANDB_API_KEY',
+        'TINKER_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().startswith('TERMINAL_SSH'):
+    if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
@@ -886,6 +900,7 @@ def set_config_value(key: str, value: str):
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
+        "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
     }

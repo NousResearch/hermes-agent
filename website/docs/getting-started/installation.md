@@ -163,7 +163,7 @@ Open `~/.hermes/.env` and add at minimum an LLM provider key:
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
 
 # Optional — enable additional tools:
-FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping
+FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping (or self-host, see docs)
 FAL_KEY=your-fal-key                   # Image generation (FLUX)
 ```
 

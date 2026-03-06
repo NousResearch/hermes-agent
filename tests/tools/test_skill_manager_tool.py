@@ -59,21 +59,27 @@ class TestValidateName:
         assert _validate_name("a") is None
 
     def test_empty_name(self):
-        assert _validate_name("") is not None
+        assert _validate_name("") == "Skill name is required."
 
     def test_too_long(self):
-        assert _validate_name("a" * (MAX_NAME_LENGTH + 1)) is not None
+        err = _validate_name("a" * (MAX_NAME_LENGTH + 1))
+        assert err == f"Skill name exceeds {MAX_NAME_LENGTH} characters."
 
     def test_uppercase_rejected(self):
-        assert _validate_name("MySkill") is not None
+        err = _validate_name("MySkill")
+        assert "Invalid skill name 'MySkill'" in err
 
     def test_starts_with_hyphen_rejected(self):
-        assert _validate_name("-invalid") is not None
+        err = _validate_name("-invalid")
+        assert "Invalid skill name '-invalid'" in err
 
     def test_special_chars_rejected(self):
-        assert _validate_name("skill/name") is not None
-        assert _validate_name("skill name") is not None
-        assert _validate_name("skill@name") is not None
+        err = _validate_name("skill/name")
+        assert "Invalid skill name 'skill/name'" in err
+        err = _validate_name("skill name")
+        assert "Invalid skill name 'skill name'" in err
+        err = _validate_name("skill@name")
+        assert "Invalid skill name 'skill@name'" in err
 
 
 # ---------------------------------------------------------------------------
@@ -86,33 +92,32 @@ class TestValidateFrontmatter:
         assert _validate_frontmatter(VALID_SKILL_CONTENT) is None
 
     def test_empty_content(self):
-        assert _validate_frontmatter("") is not None
-        assert _validate_frontmatter("   ") is not None
+        assert _validate_frontmatter("") == "Content cannot be empty."
+        assert _validate_frontmatter("   ") == "Content cannot be empty."
 
     def test_no_frontmatter(self):
         err = _validate_frontmatter("# Just a heading\nSome content.\n")
-        assert err is not None
-        assert "frontmatter" in err.lower()
+        assert err == "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 
     def test_unclosed_frontmatter(self):
         content = "---\nname: test\ndescription: desc\nBody content.\n"
-        assert _validate_frontmatter(content) is not None
+        assert _validate_frontmatter(content) == "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
 
     def test_missing_name_field(self):
         content = "---\ndescription: desc\n---\n\nBody.\n"
-        assert _validate_frontmatter(content) is not None
+        assert _validate_frontmatter(content) == "Frontmatter must include 'name' field."
 
     def test_missing_description_field(self):
         content = "---\nname: test\n---\n\nBody.\n"
-        assert _validate_frontmatter(content) is not None
+        assert _validate_frontmatter(content) == "Frontmatter must include 'description' field."
 
     def test_no_body_after_frontmatter(self):
         content = "---\nname: test\ndescription: desc\n---\n"
-        assert _validate_frontmatter(content) is not None
+        assert _validate_frontmatter(content) == "SKILL.md must have content after the frontmatter (instructions, procedures, etc.)."
 
     def test_invalid_yaml(self):
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
-        assert _validate_frontmatter(content) is not None
+        assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
 
 # ---------------------------------------------------------------------------
@@ -128,24 +133,26 @@ class TestValidateFilePath:
         assert _validate_file_path("assets/image.png") is None
 
     def test_empty_path(self):
-        assert _validate_file_path("") is not None
+        assert _validate_file_path("") == "file_path is required."
 
     def test_path_traversal_blocked(self):
         err = _validate_file_path("references/../../../etc/passwd")
-        assert err is not None
-        assert "traversal" in err.lower()
+        assert err == "Path traversal ('..') is not allowed."
 
     def test_disallowed_subdirectory(self):
         err = _validate_file_path("secret/hidden.txt")
-        assert err is not None
+        assert "File must be under one of:" in err
+        assert "'secret/hidden.txt'" in err
 
     def test_directory_only_rejected(self):
         err = _validate_file_path("references")
-        assert err is not None
+        assert "Provide a file path, not just a directory" in err
+        assert "'references/myfile.md'" in err
 
     def test_root_level_file_rejected(self):
         err = _validate_file_path("malicious.py")
-        assert err is not None
+        assert "File must be under one of:" in err
+        assert "'malicious.py'" in err
 
 
 # ---------------------------------------------------------------------------

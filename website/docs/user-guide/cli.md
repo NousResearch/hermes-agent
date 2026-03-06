@@ -112,7 +112,7 @@ Type `/` to see an autocomplete dropdown of all available commands.
 | Command | Description |
 |---------|-------------|
 | `/cron` | Manage scheduled tasks |
-| `/skills` | Search, install, inspect, or manage skills |
+| `/skills` | Browse, search, install, inspect, or manage skills |
 | `/platforms` | Show gateway/messaging platform status |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose |
 | `/<skill-name>` | Invoke any installed skill (e.g., `/axolotl`, `/gif-search`) |

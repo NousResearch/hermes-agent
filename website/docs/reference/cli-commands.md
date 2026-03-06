@@ -71,6 +71,7 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
+| `hermes skills browse` | Browse all available skills with pagination (official first) |
 | `hermes skills search <query>` | Search skill registries |
 | `hermes skills install <identifier>` | Install a skill (with security scan) |
 | `hermes skills inspect <identifier>` | Preview before installing |
@@ -145,12 +146,18 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
 
+### Media & Input
+
+| Command | Description |
+|---------|-------------|
+| `/paste` | Check clipboard for an image and attach it (see [Vision & Image Paste](/docs/user-guide/features/vision)) |
+
 ### Skills & Scheduling
 
 | Command | Description |
 |---------|-------------|
 | `/cron` | Manage scheduled tasks |
-| `/skills` | Search, install, inspect, or manage skills |
+| `/skills` | Browse, search, install, inspect, or manage skills |
 | `/platforms` | Show gateway/messaging platform status |
 | `/verbose` | Cycle tool progress: off → new → all → verbose |
 | `/<skill-name>` | Invoke any installed skill |
@@ -175,10 +182,16 @@ These work in messaging platforms (Telegram, Discord, Slack, WhatsApp) but not t
 |-----|--------|
 | `Enter` | Send message |
 | `Alt+Enter` / `Ctrl+J` | New line (multi-line input) |
-| `Ctrl+C` | Interrupt agent (double-press to force exit) |
+| `Alt+V` | Paste image from clipboard (see [Vision & Image Paste](/docs/user-guide/features/vision)) |
+| `Ctrl+V` | Paste text + auto-check for clipboard image |
+| `Ctrl+C` | Clear input/images, interrupt agent, or exit (contextual) |
 | `Ctrl+D` | Exit |
 | `Tab` | Autocomplete slash commands |
 
 :::tip
 Commands are case-insensitive — `/HELP` works the same as `/help`.
+:::
+
+:::info Image paste keybindings
+`Alt+V` works in most terminals but **not** in VSCode's integrated terminal (VSCode intercepts Alt+key combos). `Ctrl+V` only triggers an image check when the clipboard also contains text (terminals don't send paste events for image-only clipboard). The `/paste` command is the universal fallback. See the [full compatibility table](/docs/user-guide/features/vision#platform-compatibility).
 :::

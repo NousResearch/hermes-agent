@@ -15,6 +15,7 @@ from cron.jobs import (
     save_jobs,
     get_job,
     list_jobs,
+    update_job,
     remove_job,
     mark_job_run,
     get_due_jobs,
@@ -70,8 +71,10 @@ class TestParseSchedule:
         result = parse_schedule("30m")
         assert result["kind"] == "once"
         assert "run_at" in result
-        # run_at should be ~30 minutes from now
-        run_at = datetime.fromisoformat(result["run_at"])
+        # run_at should be a valid ISO timestamp string ~30 minutes from now
+        run_at_str = result["run_at"]
+        assert isinstance(run_at_str, str)
+        run_at = datetime.fromisoformat(run_at_str)
         assert run_at > datetime.now()
         assert run_at < datetime.now() + timedelta(minutes=31)
 
@@ -140,8 +143,10 @@ class TestComputeNextRun:
         pytest.importorskip("croniter")
         schedule = {"kind": "cron", "expr": "* * * * *"}  # every minute
         result = compute_next_run(schedule)
-        assert result is not None
+        assert isinstance(result, str), f"Expected ISO timestamp string, got {type(result)}"
+        assert len(result) > 0
         next_dt = datetime.fromisoformat(result)
+        assert isinstance(next_dt, datetime)
         assert next_dt > datetime.now()
 
     def test_unknown_kind_returns_none(self):
@@ -205,6 +210,48 @@ class TestJobCRUD:
     def test_default_delivery_local_no_origin(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
+
+
+class TestUpdateJob:
+    def test_update_name(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")
+        assert job["name"] == "Old Name"
+        updated = update_job(job["id"], {"name": "New Name"})
+        assert updated is not None
+        assert isinstance(updated, dict)
+        assert updated["name"] == "New Name"
+        # Verify other fields are preserved
+        assert updated["prompt"] == "Check server status"
+        assert updated["id"] == job["id"]
+        assert updated["schedule"] == job["schedule"]
+        # Verify persisted to disk
+        fetched = get_job(job["id"])
+        assert fetched["name"] == "New Name"
+
+    def test_update_schedule(self, tmp_cron_dir):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        assert job["schedule"]["kind"] == "interval"
+        assert job["schedule"]["minutes"] == 60
+        new_schedule = parse_schedule("every 2h")
+        updated = update_job(job["id"], {"schedule": new_schedule})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 120
+        # Verify persisted to disk
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["minutes"] == 120
+
+    def test_update_enable_disable(self, tmp_cron_dir):
+        job = create_job(prompt="Toggle me", schedule="every 1h")
+        assert job["enabled"] is True
+        updated = update_job(job["id"], {"enabled": False})
+        assert updated["enabled"] is False
+        fetched = get_job(job["id"])
+        assert fetched["enabled"] is False
+
+    def test_update_nonexistent_returns_none(self, tmp_cron_dir):
+        result = update_job("nonexistent_id", {"name": "X"})
+        assert result is None
 
 
 class TestMarkJobRun:

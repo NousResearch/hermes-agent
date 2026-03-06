@@ -268,3 +268,94 @@ class TestFileHandleClosedOnError:
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
+
+
+# ---------------------------------------------------------------------------
+# _kill_port_process() cross-platform tests
+# ---------------------------------------------------------------------------
+
+class TestKillPortProcess:
+    """Verify _kill_port_process uses platform-appropriate commands."""
+
+    def test_uses_netstat_and_taskkill_on_windows(self):
+        from gateway.platforms.whatsapp import _kill_port_process
+
+        netstat_output = (
+            "  Proto  Local Address          Foreign Address        State           PID\n"
+            "  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       12345\n"
+            "  TCP    0.0.0.0:3001           0.0.0.0:0              LISTENING       99999\n"
+        )
+        mock_netstat = MagicMock(stdout=netstat_output)
+        mock_taskkill = MagicMock()
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd[0] == "netstat":
+                return mock_netstat
+            if cmd[0] == "taskkill":
+                return mock_taskkill
+            return MagicMock()
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", side_effect=run_side_effect) as mock_run:
+            _kill_port_process(3000)
+
+        # netstat called
+        assert any(
+            call.args[0][0] == "netstat" for call in mock_run.call_args_list
+        )
+        # taskkill called with correct PID
+        assert any(
+            call.args[0] == ["taskkill", "/PID", "12345", "/F"]
+            for call in mock_run.call_args_list
+        )
+
+    def test_does_not_kill_wrong_port_on_windows(self):
+        from gateway.platforms.whatsapp import _kill_port_process
+
+        netstat_output = (
+            "  TCP    0.0.0.0:30000          0.0.0.0:0              LISTENING       55555\n"
+        )
+        mock_netstat = MagicMock(stdout=netstat_output)
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=mock_netstat) as mock_run:
+            _kill_port_process(3000)
+
+        # Should NOT call taskkill because port 30000 != 3000
+        assert not any(
+            call.args[0][0] == "taskkill"
+            for call in mock_run.call_args_list
+        )
+
+    def test_uses_fuser_on_linux(self):
+        from gateway.platforms.whatsapp import _kill_port_process
+
+        mock_check = MagicMock(returncode=0)
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", False), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=mock_check) as mock_run:
+            _kill_port_process(3000)
+
+        calls = [c.args[0] for c in mock_run.call_args_list]
+        assert ["fuser", "3000/tcp"] in calls
+        assert ["fuser", "-k", "3000/tcp"] in calls
+
+    def test_skips_fuser_kill_when_port_free(self):
+        from gateway.platforms.whatsapp import _kill_port_process
+
+        mock_check = MagicMock(returncode=1)  # port not in use
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", False), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=mock_check) as mock_run:
+            _kill_port_process(3000)
+
+        calls = [c.args[0] for c in mock_run.call_args_list]
+        assert ["fuser", "3000/tcp"] in calls
+        assert ["fuser", "-k", "3000/tcp"] not in calls
+
+    def test_suppresses_exceptions(self):
+        from gateway.platforms.whatsapp import _kill_port_process
+
+        with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", side_effect=OSError("no netstat")):
+            _kill_port_process(3000)  # must not raise

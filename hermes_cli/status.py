@@ -128,7 +128,7 @@ def show_status(args):
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
         f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
     )
-    codex_auth_file = codex_status.get("auth_file")
+    codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
         print(f"    Auth file:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
@@ -163,6 +163,9 @@ def show_status(args):
     elif terminal_env == "docker":
         docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
+    elif terminal_env == "daytona":
+        daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
+        print(f"  Daytona Image: {daytona_image}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

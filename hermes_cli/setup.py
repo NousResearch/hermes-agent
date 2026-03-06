@@ -72,7 +72,11 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
-    """Prompt for a choice from a list with arrow key navigation."""
+    """Prompt for a choice from a list with arrow key navigation.
+    
+    Escape keeps the current default (skips the question).
+    Ctrl+C exits the wizard.
+    """
     print(color(question, Colors.YELLOW))
     
     # Try to use interactive menu if available
@@ -88,6 +92,8 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         )
         menu_choices = [f"  {_emoji_re.sub('', choice).strip()}" for choice in choices]
         
+        print_info("  ↑/↓ Navigate  Enter Select  Esc Skip  Ctrl+C Exit")
+        
         terminal_menu = TerminalMenu(
             menu_choices,
             cursor_index=default,
@@ -99,9 +105,10 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         )
         
         idx = terminal_menu.show()
-        if idx is None:  # User pressed Escape or Ctrl+C
+        if idx is None:  # User pressed Escape — keep current value
+            print_info(f"  Skipped (keeping current)")
             print()
-            sys.exit(1)
+            return default
         print()  # Add newline after selection
         return idx
         
@@ -117,6 +124,8 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             print(color(f"  {marker} {choice}", Colors.GREEN))
         else:
             print(f"  {marker} {choice}")
+
+    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
 
     while True:
         try:
@@ -134,11 +143,15 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
             sys.exit(1)
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
     default_str = "Y/n" if default else "y/N"
     
     while True:
-        value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
+        try:
+            value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)
         
         if not value:
             return default
@@ -168,7 +181,7 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         pre_selected = []
     
     print(color(title, Colors.YELLOW))
-    print_info("SPACE to toggle, ENTER to confirm.")
+    print_info("  SPACE Toggle  ENTER Confirm  ESC Skip  Ctrl+C Exit")
     print()
     
     try:
@@ -204,7 +217,8 @@ def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list
         terminal_menu.show()
         
         if terminal_menu.chosen_menu_entries is None:
-            return []
+            print_info("  Skipped (keeping current)")
+            return list(pre_selected)
         
         selected = list(terminal_menu.chosen_menu_indices or [])
         return selected
@@ -394,7 +408,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
     terminal = config.setdefault('terminal', {})
 
     print()
@@ -980,19 +994,20 @@ def run_setup_wizard(args):
     
     terminal_choices.extend([
         "Modal (cloud execution, GPU access, serverless)",
+        "Daytona (cloud sandboxes, persistent workspaces)",
         "SSH (run commands on a remote server)",
         f"Keep current ({current_backend})"
     ])
     
     # Build index map based on available choices
     if is_linux:
-        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'ssh': 4}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'ssh'}
-        keep_current_idx = 5
+        backend_to_idx = {'local': 0, 'docker': 1, 'singularity': 2, 'modal': 3, 'daytona': 4, 'ssh': 5}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'singularity', 3: 'modal', 4: 'daytona', 5: 'ssh'}
+        keep_current_idx = 6
     else:
-        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'ssh': 3}
-        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'ssh'}
-        keep_current_idx = 4
+        backend_to_idx = {'local': 0, 'docker': 1, 'modal': 2, 'daytona': 3, 'ssh': 4}
+        idx_to_backend = {0: 'local', 1: 'docker', 2: 'modal', 3: 'daytona', 4: 'ssh'}
+        keep_current_idx = 5
         if current_backend == 'singularity':
             print_warning("Singularity is only available on Linux - please select a different backend")
     
@@ -1067,7 +1082,7 @@ def run_setup_wizard(args):
         
         print()
         print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
-        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+        print_info("are in your config but only apply to Docker/Singularity/Modal/Daytona backends.")
 
         if prompt_yes_no("  Enable sudo support? (allows agent to run sudo commands)", False):
             print_warning("  SECURITY WARNING: Sudo password will be stored in plaintext")
@@ -1151,7 +1166,52 @@ def run_setup_wizard(args):
         
         _prompt_container_resources(config)
         print_success("Terminal set to Modal")
-    
+
+    elif selected_backend == 'daytona':
+        config.setdefault('terminal', {})['backend'] = 'daytona'
+        default_daytona = config.get('terminal', {}).get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')
+        print_info("Daytona Cloud Configuration:")
+        print_info("Get your API key at: https://app.daytona.io/dashboard/keys")
+
+        # Check if daytona SDK is installed
+        try:
+            from daytona import Daytona
+            print_info("daytona SDK: installed ✓")
+        except ImportError:
+            print_info("Installing required package: daytona...")
+            import subprocess
+            import shutil
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "daytona"],
+                    capture_output=True, text=True
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "daytona"],
+                    capture_output=True, text=True
+                )
+            if result.returncode == 0:
+                print_success("daytona SDK installed")
+            else:
+                print_warning("Failed to install daytona SDK — install manually:")
+                print_info('  pip install daytona')
+
+        daytona_image = prompt("  Container image", default_daytona)
+        config['terminal']['daytona_image'] = daytona_image
+
+        current_key = get_env_value('DAYTONA_API_KEY')
+        if current_key:
+            print_info(f"  API Key: {current_key[:8]}... (configured)")
+
+        api_key = prompt("  Daytona API key", current_key or "", password=True)
+        if api_key:
+            save_env_value("DAYTONA_API_KEY", api_key)
+
+        _prompt_container_resources(config)
+        print_success("Terminal set to Daytona")
+
     elif selected_backend == 'ssh':
         config.setdefault('terminal', {})['backend'] = 'ssh'
         print_info("SSH Remote Execution Configuration:")
@@ -1181,7 +1241,7 @@ def run_setup_wizard(args):
         
         print()
         print_info("Note: Container resource settings (CPU, memory, disk, persistence)")
-        print_info("are in your config but only apply to Docker/Singularity/Modal backends.")
+        print_info("are in your config but only apply to Docker/Singularity/Modal/Daytona backends.")
         print_success("Terminal set to SSH")
     # else: Keep current (selected_backend is None)
     
@@ -1192,6 +1252,9 @@ def run_setup_wizard(args):
         docker_image = config.get('terminal', {}).get('docker_image')
         if docker_image:
             save_env_value("TERMINAL_DOCKER_IMAGE", docker_image)
+        daytona_image = config.get('terminal', {}).get('daytona_image')
+        if daytona_image:
+            save_env_value("TERMINAL_DAYTONA_IMAGE", daytona_image)
     
     # =========================================================================
     # Step 5: Agent Settings

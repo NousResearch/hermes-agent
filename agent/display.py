@@ -163,9 +163,7 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        # Capture stdout NOW, before any redirect_stdout(devnull) from
-        # child agents can replace sys.stdout with a black hole.
-        self._out = sys.stdout
+        # Note: _write() always uses current sys.stdout to respect patch_stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
         """Write to stdout, always using current sys.stdout to respect patch_stdout."""

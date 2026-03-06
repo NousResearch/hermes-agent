@@ -2389,6 +2389,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
     """
+    # ── Duplicate-instance guard ──────────────────────────────────────
+    # Prevent two gateways from running under the same HERMES_HOME.
+    # The PID file is scoped to HERMES_HOME, so future multi-profile
+    # setups (each profile using a distinct HERMES_HOME) will naturally
+    # allow concurrent instances without tripping this guard.
+    from gateway.status import get_running_pid
+    existing_pid = get_running_pid()
+    if existing_pid is not None and existing_pid != os.getpid():
+        hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+        logger.error(
+            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+            existing_pid, hermes_home,
+        )
+        print(
+            f"\n❌ Gateway already running (PID {existing_pid}).\n"
+            f"   Use 'hermes gateway restart' to replace it,\n"
+            f"   or 'hermes gateway stop' to kill it first.\n"
+        )
+        return False
+
     # Configure rotating file log so gateway output is persisted for debugging
     log_dir = _hermes_home / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)

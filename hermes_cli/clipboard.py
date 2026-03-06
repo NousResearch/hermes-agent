@@ -288,17 +288,24 @@ def _convert_to_png(path: Path) -> bool:
     try:
         tmp = path.with_suffix(".bmp")
         path.rename(tmp)
-        r = subprocess.run(
-            ["convert", str(tmp), "png:" + str(path)],
-            capture_output=True, timeout=5,
-        )
-        tmp.unlink(missing_ok=True)
-        if r.returncode == 0 and path.exists() and path.stat().st_size > 0:
-            return True
-    except FileNotFoundError:
-        logger.debug("ImageMagick not installed — cannot convert BMP to PNG")
+        try:
+            r = subprocess.run(
+                ["convert", str(tmp), "png:" + str(path)],
+                capture_output=True, timeout=5,
+            )
+            tmp.unlink(missing_ok=True)
+            if r.returncode == 0 and path.exists() and path.stat().st_size > 0:
+                return True
+        except FileNotFoundError:
+            # ImageMagick not installed — restore original file
+            tmp.rename(path)
+            logger.debug("ImageMagick not installed — cannot convert BMP to PNG")
+        except Exception as e:
+            if tmp.exists() and not path.exists():
+                tmp.rename(path)
+            logger.debug("ImageMagick BMP→PNG conversion failed: %s", e)
     except Exception as e:
-        logger.debug("ImageMagick BMP→PNG conversion failed: %s", e)
+        logger.debug("BMP→PNG rename failed: %s", e)
 
     # Can't convert — BMP is still usable as-is for most APIs
     return path.exists() and path.stat().st_size > 0

@@ -47,15 +47,15 @@ _user_env = _hermes_home / ".env"
 _project_env = Path(__file__).parent / '.env'
 if _user_env.exists():
     try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_user_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
+        load_dotenv(dotenv_path=_user_env, encoding="latin-1", override=True)
     logger.info("Loaded environment variables from %s", _user_env)
 elif _project_env.exists():
     try:
-        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_project_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+        load_dotenv(dotenv_path=_project_env, encoding="latin-1", override=True)
     logger.info("Loaded environment variables from %s", _project_env)
 else:
     logger.info("No .env file found. Using system environment variables.")

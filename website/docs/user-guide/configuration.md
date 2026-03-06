@@ -74,6 +74,227 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 :::
 
+## Custom & Self-Hosted LLM Providers
+
+Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.
+
+### General Setup
+
+Two ways to configure a custom endpoint:
+
+**Interactive (recommended):**
+```bash
+hermes model
+# Select "Custom endpoint (self-hosted / VLLM / etc.)"
+# Enter: API base URL, API key, Model name
+```
+
+**Manual (`.env` file):**
+```bash
+# Add to ~/.hermes/.env
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=your-key-or-dummy
+LLM_MODEL=your-model-name
+```
+
+Everything below follows this same pattern — just change the URL, key, and model name.
+
+---
+
+### Ollama — Local Models, Zero Config
+
+[Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use.
+
+```bash
+# Install and run a model
+ollama pull llama3.1:70b
+ollama serve   # Starts on port 11434
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_API_KEY=ollama           # Any non-empty string
+LLM_MODEL=llama3.1:70b
+```
+
+Ollama's OpenAI-compatible endpoint supports chat completions, streaming, and tool calling (for supported models). No GPU required for smaller models — Ollama handles CPU inference automatically.
+
+:::tip
+List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`.
+:::
+
+---
+
+### vLLM — High-Performance GPU Inference
+
+[vLLM](https://docs.vllm.ai/) is the standard for production LLM serving. Best for: maximum throughput on GPU hardware, serving large models, continuous batching.
+
+```bash
+# Start vLLM server
+pip install vllm
+vllm serve meta-llama/Llama-3.1-70B-Instruct \
+  --port 8000 \
+  --tensor-parallel-size 2    # Multi-GPU
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+vLLM supports tool calling, structured output, and multi-modal models. Use `--enable-auto-tool-choice` and `--tool-call-parser hermes` for Hermes-format tool calling with NousResearch models.
+
+---
+
+### SGLang — Fast Serving with RadixAttention
+
+[SGLang](https://github.com/sgl-project/sglang) is an alternative to vLLM with RadixAttention for KV cache reuse. Best for: multi-turn conversations (prefix caching), constrained decoding, structured output.
+
+```bash
+# Start SGLang server
+pip install sglang[all]
+python -m sglang.launch_server \
+  --model meta-llama/Llama-3.1-70B-Instruct \
+  --port 8000 \
+  --tp 2
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+---
+
+### llama.cpp / llama-server — CPU & Metal Inference
+
+[llama.cpp](https://github.com/ggml-org/llama.cpp) runs quantized models on CPU, Apple Silicon (Metal), and consumer GPUs. Best for: running models without a datacenter GPU, Mac users, edge deployment.
+
+```bash
+# Build and start llama-server
+cmake -B build && cmake --build build --config Release
+./build/bin/llama-server \
+  -m models/llama-3.1-8b-instruct-Q4_K_M.gguf \
+  --port 8080 --host 0.0.0.0
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8080/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=llama-3.1-8b-instruct
+```
+
+:::tip
+Download GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf). Q4_K_M quantization offers the best balance of quality vs. memory usage.
+:::
+
+---
+
+### LiteLLM Proxy — Multi-Provider Gateway
+
+[LiteLLM](https://docs.litellm.ai/) is an OpenAI-compatible proxy that unifies 100+ LLM providers behind a single API. Best for: switching between providers without config changes, load balancing, fallback chains, budget controls.
+
+```bash
+# Install and start
+pip install litellm[proxy]
+litellm --model anthropic/claude-sonnet-4 --port 4000
+
+# Or with a config file for multiple models:
+litellm --config litellm_config.yaml --port 4000
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:4000/v1
+OPENAI_API_KEY=sk-your-litellm-key
+LLM_MODEL=anthropic/claude-sonnet-4
+```
+
+Example `litellm_config.yaml` with fallback:
+```yaml
+model_list:
+  - model_name: "best"
+    litellm_params:
+      model: anthropic/claude-sonnet-4
+      api_key: sk-ant-...
+  - model_name: "best"
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: sk-...
+router_settings:
+  routing_strategy: "latency-based-routing"
+```
+
+---
+
+### ClawRouter — Cost-Optimized Routing
+
+[ClawRouter](https://github.com/BlockRunAI/ClawRouter) by BlockRunAI is a local routing proxy that auto-selects models based on query complexity. It classifies requests across 14 dimensions and routes to the cheapest model that can handle the task. Payment is via USDC cryptocurrency (no API keys).
+
+```bash
+# Install and start
+npx @blockrun/clawrouter    # Starts on port 8402
+
+# Configure Hermes
+OPENAI_BASE_URL=http://localhost:8402/v1
+OPENAI_API_KEY=dummy
+LLM_MODEL=blockrun/auto     # or: blockrun/eco, blockrun/premium, blockrun/agentic
+```
+
+Routing profiles:
+| Profile | Strategy | Savings |
+|---------|----------|---------|
+| `blockrun/auto` | Balanced quality/cost | 74-100% |
+| `blockrun/eco` | Cheapest possible | 95-100% |
+| `blockrun/premium` | Best quality models | 0% |
+| `blockrun/free` | Free models only | 100% |
+| `blockrun/agentic` | Optimized for tool use | varies |
+
+:::note
+ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requests route through BlockRun's backend API. Run `npx @blockrun/clawrouter doctor` to check wallet status.
+:::
+
+---
+
+### Other Compatible Providers
+
+Any service with an OpenAI-compatible API works. Some popular options:
+
+| Provider | Base URL | Notes |
+|----------|----------|-------|
+| [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
+| [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
+| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
+| [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
+| [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
+| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
+| [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
+| [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
+| [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
+| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
+
+```bash
+# Example: Together AI
+OPENAI_BASE_URL=https://api.together.xyz/v1
+OPENAI_API_KEY=your-together-key
+LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
+```
+
+---
+
+### Choosing the Right Setup
+
+| Use Case | Recommended |
+|----------|-------------|
+| **Just want it to work** | OpenRouter (default) or Nous Portal |
+| **Local models, easy setup** | Ollama |
+| **Production GPU serving** | vLLM or SGLang |
+| **Mac / no GPU** | Ollama or llama.cpp |
+| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
+| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
+| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
+| **Enterprise / Azure** | Azure OpenAI with custom endpoint |
+
+:::tip
+You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
+:::
+
 ## Optional API Keys
 
 | Feature | Provider | Env Variable |

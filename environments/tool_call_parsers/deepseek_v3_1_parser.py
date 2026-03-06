@@ -35,7 +35,8 @@ class DeepSeekV31ToolCallParser(ToolCallParser):
 
     # Regex captures: function_name, function_arguments
     PATTERN = re.compile(
-        r"<｜tool▁call▁begin｜>(?P<function_name>.*?)<｜tool▁sep｜>(?P<function_arguments>.*?)<｜tool▁call▁end｜>"
+        r"<｜tool▁call▁begin｜>(?P<function_name>.*?)<｜tool▁sep｜>(?P<function_arguments>.*?)<｜tool▁call▁end｜>",
+        re.DOTALL,
     )
 
     def parse(self, text: str) -> ParseResult:

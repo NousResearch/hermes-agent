@@ -3148,8 +3148,8 @@ class AIAgent:
                 print(f"\n{self.log_prefix}› Making API call #{api_call_count}/{self.max_iterations}...")
                 print(f"{self.log_prefix}   › Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 print(f"{self.log_prefix}   › Available tools: {len(self.tools) if self.tools else 0}")
-            else:
-                # Animated thinking spinner in quiet mode
+            elif threading.current_thread() is threading.main_thread():
+                # Animated thinking spinner in quiet mode (main thread only)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
                 thinking_spinner = KawaiiSpinner(f"{verb}...", spinner_type=spinner_type)
@@ -3418,14 +3418,18 @@ class AIAgent:
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     
-                    # Enhanced error logging
+                    # Enhanced error logging (suppress in worker threads to avoid swarm noise)
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
-                    
-                    print(f"{self.log_prefix}△ API call failed (attempt {retry_count}/{max_retries}): {error_type}")
-                    print(f"{self.log_prefix}  › elapsed: {elapsed_time:.2f}s")
-                    print(f"{self.log_prefix}  › error: {str(api_error)[:200]}")
-                    print(f"{self.log_prefix}  › context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+                    _is_main = threading.current_thread() is threading.main_thread()
+
+                    if _is_main or not self.quiet_mode:
+                        print(f"{self.log_prefix}△ API call failed (attempt {retry_count}/{max_retries}): {error_type}")
+                        print(f"{self.log_prefix}  › elapsed: {elapsed_time:.2f}s")
+                        print(f"{self.log_prefix}  › error: {str(api_error)[:200]}")
+                        print(f"{self.log_prefix}  › context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
+                    else:
+                        logger.warning("API call failed (attempt %d): %s: %s", retry_count, error_type, str(api_error)[:200])
                     
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:

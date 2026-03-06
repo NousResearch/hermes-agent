@@ -108,7 +108,8 @@ class TaskPlanner:
         n = max(2, min(n, 10))
 
         # Strip the "N agents to" prefix to get the actual goal
-        clean_goal = re.sub(r'\d+\s*agents?\s*(?:to\s+)?', '', goal, flags=re.IGNORECASE).strip()
+        clean_goal = re.sub(r'(?:swarm\s+)?\d+\s*agents?\s*(?:to\s+)?', '', goal, flags=re.IGNORECASE).strip()
+        clean_goal = re.sub(r'^swarm\s+', '', clean_goal, flags=re.IGNORECASE).strip()
         if not clean_goal:
             clean_goal = goal
 

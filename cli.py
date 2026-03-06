@@ -2580,6 +2580,15 @@ metadata:
             else:
                 print(f"Swarm: {completed}/{total} succeeded, {failed} failed")
 
+            # Show what each agent produced
+            for tid, task in orch._scheduler._tasks.items():
+                r = task.result
+                if r and hasattr(r, 'output') and isinstance(r.output, dict):
+                    text = r.output.get('output', '') or ''
+                    if text:
+                        print(f"\n--- {task.name} ({task.role}) ---")
+                        print(text[:500])
+
         except Exception as e:
             print(f"Swarm error: {e}")
 

@@ -55,6 +55,7 @@ hermes-agent/
 ├── cron/                 # Scheduler implementation
 ├── environments/         # RL training environments (Atropos integration)
 ├── skills/               # Bundled skill sources
+├── optional-skills/      # Official optional skills (not activated by default)
 ├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
 ├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
@@ -661,12 +662,12 @@ metadata:
 # Skill Content...
 ```
 
-**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub, Claude marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
+**Skills Hub** — user-driven skill search/install from online registries and official optional skills. Sources: official optional skills (shipped with repo, labeled "official"), GitHub (openai/skills, anthropics/skills, custom taps), ClawHub, Claude marketplace, LobeHub. Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills browse/search/install` CLI commands or the `/skills` slash command in chat.
 
 Key files:
 - `tools/skills_tool.py` — Agent-facing skill list/view (progressive disclosure)
 - `tools/skills_guard.py` — Security scanner (regex + LLM audit, trust-aware install policy)
-- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
+- `tools/skills_hub.py` — Source adapters (OptionalSkillSource, GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
 - `hermes_cli/skills_hub.py` — CLI subcommands + `/skills` slash command handler
 
 ---

@@ -43,7 +43,9 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is specialized (a niche engineering tool, a specific SaaS integration, a game), it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, builtin trust).
+
+If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
 
 ---
 
@@ -168,6 +170,7 @@ hermes-agent/
 │   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
+├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── environments/             # RL training environments (Atropos integration)
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
@@ -294,9 +297,9 @@ If it's a new toolset, add it to `toolsets.py` and to the relevant platform pres
 
 ---
 
-## Adding a Bundled Skill
+## Adding a Skill
 
-Bundled skills live in `skills/` organized by category:
+Bundled skills live in `skills/` organized by category. Official optional skills use the same structure in `optional-skills/`:
 
 ```
 skills/

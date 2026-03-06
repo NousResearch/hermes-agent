@@ -71,6 +71,7 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
+| `hermes skills browse` | Browse all available skills with pagination (official first) |
 | `hermes skills search <query>` | Search skill registries |
 | `hermes skills install <identifier>` | Install a skill (with security scan) |
 | `hermes skills inspect <identifier>` | Preview before installing |
@@ -156,7 +157,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | Command | Description |
 |---------|-------------|
 | `/cron` | Manage scheduled tasks |
-| `/skills` | Search, install, inspect, or manage skills |
+| `/skills` | Browse, search, install, inspect, or manage skills |
 | `/platforms` | Show gateway/messaging platform status |
 | `/verbose` | Cycle tool progress: off → new → all → verbose |
 | `/<skill-name>` | Invoke any installed skill |

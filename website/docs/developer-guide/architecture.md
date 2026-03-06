@@ -70,6 +70,7 @@ hermes-agent/
 │   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/)
+├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── environments/             # RL training environments (Atropos integration)
 └── tests/                    # Test suite
 ```

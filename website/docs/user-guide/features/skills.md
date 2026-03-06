@@ -123,9 +123,11 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ## Skills Hub
 
-Search, install, and manage skills from online registries:
+Browse, search, install, and manage skills from online registries and official optional skills:
 
 ```bash
+hermes skills browse                     # Browse all hub skills (official first)
+hermes skills browse --source official   # Browse only official optional skills
 hermes skills search kubernetes          # Search all sources
 hermes skills install openai/skills/k8s  # Install with security scan
 hermes skills inspect openai/skills/k8s  # Preview before installing
@@ -144,6 +146,7 @@ All hub-installed skills go through a **security scanner** that checks for data 
 | Level | Source | Policy |
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
+| `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
 | `trusted` | openai/skills, anthropics/skills | Trusted sources |
 | `community` | Everything else | Any findings = blocked unless `--force` |
 
@@ -152,6 +155,7 @@ All hub-installed skills go through a **security scanner** that checks for data 
 All the same commands work with `/skills` prefix:
 
 ```
+/skills browse
 /skills search kubernetes
 /skills install openai/skills/skill-creator
 /skills list

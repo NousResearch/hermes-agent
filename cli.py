@@ -59,14 +59,14 @@ _user_env = _hermes_home / ".env"
 _project_env = Path(__file__).parent / '.env'
 if _user_env.exists():
     try:
-        load_dotenv(dotenv_path=_user_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_user_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_user_env, encoding="latin-1")
-elif _project_env.exists():
+        load_dotenv(dotenv_path=_user_env, encoding="latin-1", override=True)
+if _project_env.exists():
     try:
-        load_dotenv(dotenv_path=_project_env, encoding="utf-8")
+        load_dotenv(dotenv_path=_project_env, encoding="utf-8", override=True)
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=_project_env, encoding="latin-1")
+        load_dotenv(dotenv_path=_project_env, encoding="latin-1", override=True)
 
 # Point mini-swe-agent at ~/.hermes/ so it shares our config
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
@@ -146,7 +146,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4.6",
+            "default": "claude-haiku-4-5",
             "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
         },
@@ -407,10 +407,40 @@ def _run_cleanup():
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
+def _term_width() -> int:
+    """Usable terminal width — accounts for scrollbar gutter in embedded terminals."""
+    import shutil
+    w = shutil.get_terminal_size((80, 24)).columns
+    # Embedded terminals (VS Code, JetBrains) reserve ~1 col for scrollbar
+    return max(w - 1, 40)
+
 _GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
+_ITALIC = "\033[3m"
+_THINK = "\033[2;3;37m"  # dim + italic + gray — wispy thought text
 _RST = "\033[0m"
+
+
+def _format_think_blocks(text: str) -> str:
+    """Render <think>...</think> blocks as dim italic gray text.
+
+    Replaces raw think tags with styled ANSI output so the model's
+    internal reasoning appears as wispy, faded thoughts.
+    """
+    import re
+
+    def _style_think(m):
+        thought = m.group(1).strip()
+        if not thought:
+            return ""
+        # Wrap each line so long thoughts stay dim
+        lines = thought.splitlines()
+        styled = "\n".join(f"  {_THINK}{line}{_RST}" for line in lines)
+        return f"{_THINK}  ~ thinking ~{_RST}\n{styled}\n"
+
+    return re.sub(r'<think>(.*?)</think>', _style_think, text, flags=re.DOTALL)
+
 
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
@@ -692,7 +722,8 @@ COMMANDS = {
     "/help": "Show this help message",
     "/tools": "List available tools",
     "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
+    "/model": "Switch model (opus/sonnet/haiku/qwen or full name)",
+    "/provider": "Switch provider (openrouter, local, custom) with API key",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
     "/clear": "Clear screen and reset conversation (fresh start)",
@@ -708,6 +739,11 @@ COMMANDS = {
     "/platforms": "Show gateway/messaging platform status",
     "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",
+    "/copycode": "Import Claude Code commands as Hermes skills",
+    "/swarm": "Run parallel agent swarm on a complex task",
+    "/context": "Show remaining context window (ASCII bar)",
+    "/jobs": "List background agent tasks",
+    "/fg": "Bring a background task to foreground (/fg <id>)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 
@@ -847,18 +883,34 @@ class HermesCLI:
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        # Whether to show <think> blocks in model responses (default: off)
+        self.show_thinking = CLI_CONFIG["display"].get("show_thinking", False)
         
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Normalize model names: dots to dashes (e.g. claude-opus-4.6 -> claude-opus-4-6)
+        # Anthropic API requires dashes, but configs/env may use dots
+        if "claude" in self.model:
+            import re as _re_model
+            self.model = _re_model.sub(r'(\d+)\.(\d+)', r'\1-\2', self.model)
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
+        # Infer provider from model prefix if not explicitly set.
+        _inferred_provider = None
+        if self.model.startswith("local/"):
+            _inferred_provider = "local"
+        elif self.model.startswith("claude") or self.model.startswith("anthropic/"):
+            _inferred_provider = "anthropic"
+        elif self.model.startswith("openai/"):
+            _inferred_provider = "auto"
         self.requested_provider = (
             provider
             or os.getenv("HERMES_INFERENCE_PROVIDER")
+            or _inferred_provider
             or CLI_CONFIG["model"].get("provider")
             or "auto"
         )
@@ -976,10 +1028,12 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
-        if not isinstance(api_key, str) or not api_key:
+        is_local = resolved_provider == "local"
+        is_litellm = resolved_provider == "anthropic"  # litellm handles routing
+        if not is_local and not is_litellm and (not isinstance(api_key, str) or not api_key):
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
-        if not isinstance(base_url, str) or not base_url:
+        if not is_litellm and (not isinstance(base_url, str) or not base_url):
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False
 
@@ -1083,8 +1137,13 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        # First launch: let user pick color scheme with a single keypress
+        from hermes_cli.color_scheme import needs_scheme_pick, pick_color_scheme
+        if needs_scheme_pick():
+            pick_color_scheme()
+
         self.console.clear()
-        
+
         if self.compact:
             self.console.print(COMPACT_BANNER)
             self._show_status()
@@ -1374,12 +1433,83 @@ class HermesCLI:
         print(f"  Config File: {config_path} {config_status}")
         print()
     
+    def _handle_provider_command(self, cmd: str):
+        """Switch provider, model, and API key mid-session."""
+        parts = cmd.split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if not arg:
+            print()
+            print(f"  Current provider config:")
+            print(f"    Model:    {self.model}")
+            print(f"    Base URL: {self.base_url}")
+            api = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set'
+            print(f"    API Key:  {api}")
+            print()
+            print("  Usage:")
+            print("    /provider openrouter    Switch to OpenRouter (prompts for API key)")
+            print("    /provider local         Switch to local Qwen3.5-9B")
+            print("    /provider custom        Set custom endpoint + key")
+            print()
+            return
+
+        try:
+            if arg == "openrouter":
+                key = input("  OpenRouter API key: ").strip()
+                if not key:
+                    print("  Cancelled.")
+                    return
+                model = input(f"  Model [{self.model}]: ").strip() or self.model
+                self.api_key = key
+                self.base_url = "https://openrouter.ai/api/v1"
+                self.model = model
+                self.agent = None
+                save_config_value("model.default", model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENROUTER_API_KEY", key)
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                print(f"  Switched to OpenRouter: {model}")
+
+            elif arg == "local":
+                self.api_key = "local"
+                self.base_url = "http://127.0.0.1:8800/v1"
+                self.model = "local/qwen3.5-9b"
+                self.agent = None
+                save_config_value("model.default", self.model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                save_env_value("OPENAI_API_KEY", "local")
+                print(f"  Switched to local Qwen3.5-9B (port 8800)")
+
+            elif arg == "custom":
+                url = input("  Base URL: ").strip()
+                if not url:
+                    print("  Cancelled.")
+                    return
+                key = input("  API key (optional): ").strip() or "none"
+                model = input(f"  Model name [{self.model}]: ").strip() or self.model
+                self.api_key = key
+                self.base_url = url.rstrip("/")
+                self.model = model
+                self.agent = None
+                save_config_value("model.default", model)
+                from hermes_cli.config import save_env_value
+                save_env_value("OPENAI_BASE_URL", self.base_url)
+                save_env_value("OPENAI_API_KEY", key)
+                print(f"  Switched to {model} at {self.base_url}")
+
+            else:
+                print(f"  Unknown provider: {arg}")
+                print("  Options: openrouter, local, custom")
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
             print("(._.) No conversation history yet.")
             return
-        
+
         print()
         print("+" + "-" * 50 + "+")
         print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
@@ -1817,20 +1947,87 @@ class HermesCLI:
         elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
-            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
+            # Shortcut aliases for quick model switching
+            # Maps alias -> (anthropic_direct_id, openrouter_id)
+            _CLAUDE_MODELS = {
+                "opus": ("claude-opus-4-6", "anthropic/claude-opus-4"),
+                "sonnet": ("claude-sonnet-4-6", "anthropic/claude-sonnet-4"),
+                "haiku": ("claude-haiku-4-5", "anthropic/claude-haiku-4"),
+            }
+            _MODEL_ALIASES = {
+                "qwen": "local/qwen3.5-9b",
+            }
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1]
+                arg = parts[1].strip()
+                arg_lower = arg.lower()
+
+                # Resolve Claude shortcuts based on available API keys
+                claude_alias = _CLAUDE_MODELS.get(arg_lower)
+                if claude_alias:
+                    ant_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+                    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                    direct_id, openrouter_id = claude_alias
+                    if ant_key:
+                        new_model = direct_id
+                        self.requested_provider = "anthropic"
+                        self.api_key = ant_key
+                        self.base_url = ""
+                        self._explicit_base_url = ""
+                    elif or_key:
+                        new_model = openrouter_id
+                        self.requested_provider = "openrouter"
+                        self.api_key = or_key
+                        self.base_url = "https://openrouter.ai/api/v1"
+                        self._explicit_base_url = self.base_url
+                    else:
+                        print("  Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY first")
+                        return True
+                elif arg_lower in _MODEL_ALIASES:
+                    new_model = _MODEL_ALIASES[arg_lower]
+                else:
+                    new_model = arg
+
                 self.model = new_model
                 self.agent = None  # Force re-init
-                # Save to config
-                if save_config_value("model.default", new_model):
-                    print(f"(^_^)b Model changed to: {new_model} (saved to config)")
-                else:
-                    print(f"(^_^) Model changed to: {new_model} (session only)")
+                if new_model.startswith("local/"):
+                    self.requested_provider = "local"
+                    self.api_key = "local"
+                    self.base_url = "http://127.0.0.1:8800/v1"
+                    self._explicit_base_url = self.base_url
+                elif not claude_alias:
+                    # Non-alias, non-local model — try OpenRouter
+                    if new_model.startswith("anthropic/") or new_model.startswith("claude"):
+                        ant_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+                        or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                        if ant_key:
+                            self.requested_provider = "anthropic"
+                            self.api_key = ant_key
+                            self.base_url = ""
+                            self._explicit_base_url = ""
+                        elif or_key:
+                            self.requested_provider = "openrouter"
+                            self.api_key = or_key
+                            self.base_url = "https://openrouter.ai/api/v1"
+                            self._explicit_base_url = self.base_url
+                    else:
+                        or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+                        if or_key:
+                            self.requested_provider = "openrouter"
+                            self.api_key = or_key
+                            self.base_url = "https://openrouter.ai/api/v1"
+                            self._explicit_base_url = self.base_url
+                save_config_value("model.default", new_model)
+                provider_label = self.requested_provider
+                if provider_label == "anthropic":
+                    provider_label = "anthropic (direct)"
+                print(f"  Switched to: {new_model} ({provider_label})")
             else:
                 print(f"Current model: {self.model}")
-                print("  Usage: /model <model-name> to change")
+                print("  Shortcuts: /model opus | sonnet | haiku | qwen")
+                print("  Or: /model <full-model-name>")
+        elif cmd_lower.startswith("/provider"):
+            self._handle_provider_command(cmd_original)
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
@@ -1854,6 +2051,12 @@ class HermesCLI:
             self._show_gateway_status()
         elif cmd_lower == "/verbose":
             self._toggle_verbose()
+        elif cmd_lower == "/thinkoff":
+            self.show_thinking = False
+            print("Thinking blocks hidden. Use /thinkon to show them again.")
+        elif cmd_lower == "/thinkon":
+            self.show_thinking = True
+            print("Thinking blocks visible.")
         elif cmd_lower == "/compress":
             self._manual_compress()
         elif cmd_lower == "/usage":
@@ -1862,6 +2065,16 @@ class HermesCLI:
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
+        elif cmd_lower == "/copycode":
+            self._copycode()
+        elif cmd_lower == "/context":
+            self._show_context_gauge()
+        elif cmd_lower.startswith("/swarm"):
+            self._handle_swarm_command(cmd_original)
+        elif cmd_lower == "/jobs":
+            self._show_jobs()
+        elif cmd_lower.startswith("/fg"):
+            self._handle_fg_command(cmd_original)
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -1983,6 +2196,121 @@ class HermesCLI:
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
 
+    def _show_jobs(self):
+        """Show background agent tasks."""
+        import time as _time
+        if not self._background_jobs:
+            print("  No background jobs.")
+            return
+        for job in self._background_jobs:
+            done = job["done"].is_set()
+            elapsed = _time.time() - job["started"]
+            status = "done" if done else "running"
+            icon = "\u2705" if done else "\u23f3"
+            print(f"  {icon} [{job['id']}] {status} ({elapsed:.0f}s) \u2014 {job['prompt']}")
+
+    def _handle_fg_command(self, command: str):
+        """Bring a background job result to foreground."""
+        parts = command.split()
+        if len(parts) < 2:
+            if not self._background_jobs:
+                print("  No background jobs. Usage: /fg <id>")
+                return
+            job = self._background_jobs[-1]
+        else:
+            try:
+                job_id = int(parts[1])
+            except ValueError:
+                print(f"  Invalid job ID: {parts[1]}")
+                return
+            job = next((j for j in self._background_jobs if j["id"] == job_id), None)
+            if not job:
+                print(f"  Job {job_id} not found.")
+                return
+
+        if not job["done"].is_set():
+            print(f"  Job [{job['id']}] is still running. Use /jobs to check status.")
+            return
+
+        # Job is done — remove from list
+        self._background_jobs = [j for j in self._background_jobs if j["id"] != job["id"]]
+        if job["result"][0] and isinstance(job["result"][0], Exception):
+            print(f"  Job [{job['id']}] failed: {job['result'][0]}")
+        else:
+            print(f"  Job [{job['id']}] completed: {job['prompt']}")
+
+    def _show_context_gauge(self):
+        """Show ASCII context window gauge for the current model."""
+        # Model context limits (only Qwen3.5-9B for now)
+        MODEL_CONTEXTS = {
+            "local/qwen3.5-9b": 32768,
+            "qwen/qwen3.5-9b": 262144,
+        }
+
+        # Try to get context length from compressor first, then hardcoded
+        ctx_len = 0
+        used_tokens = 0
+
+        if self.agent and hasattr(self.agent, 'context_compressor'):
+            compressor = self.agent.context_compressor
+            ctx_len = compressor.context_length
+            used_tokens = compressor.last_prompt_tokens
+
+        if not ctx_len:
+            # Fuzzy match model name
+            for key, length in MODEL_CONTEXTS.items():
+                if key in self.model or self.model in key:
+                    ctx_len = length
+                    break
+
+        if not ctx_len:
+            print(f"  (._.) Context tracking not available for model: {self.model}")
+            print(f"  Only local/qwen3.5-9b is supported right now.")
+            return
+
+        # Estimate used tokens from conversation history if compressor has no data
+        if not used_tokens and self.conversation_history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            used_tokens = estimate_messages_tokens_rough(self.conversation_history)
+
+        remaining = max(0, ctx_len - used_tokens)
+        pct_used = (used_tokens / ctx_len * 100) if ctx_len else 0
+        pct_free = 100.0 - pct_used
+
+        # ASCII bar — 50 chars wide
+        bar_width = 50
+        filled = int(bar_width * pct_used / 100)
+        empty = bar_width - filled
+
+        # Color thresholds
+        if pct_used < 50:
+            color = "green"
+            status = "plenty of room"
+        elif pct_used < 75:
+            color = "yellow"
+            status = "getting warm"
+        elif pct_used < 90:
+            color = "#FF8C00"
+            status = "running low"
+        else:
+            color = "red"
+            status = "CRITICAL"
+
+        # Build the gauge
+        bar_filled = "\u2588" * filled
+        bar_empty = "\u2591" * empty
+
+        print()
+        print(f"  Context Window \u2014 {self.model}")
+        print(f"  {'\u2500' * 56}")
+        self.console.print(f"  [{color}]{bar_filled}[/][dim]{bar_empty}[/] {pct_used:.1f}%")
+        print()
+        print(f"  Used:      {used_tokens:>8,} tokens")
+        print(f"  Remaining: {remaining:>8,} tokens")
+        print(f"  Capacity:  {ctx_len:>8,} tokens")
+        print(f"  Status:    {status}")
+        print()
+
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
 
@@ -2067,6 +2395,299 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _copycode(self):
+        """Import Claude Code skills and commands into Hermes skills directory."""
+        import shutil
+        import re
+
+        claude_base = Path.home() / ".claude"
+        skills_dir = Path.home() / ".hermes" / "skills" / "imported-from-claude"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        imported = 0
+        skipped = 0
+
+        # --- 1. Copy SKILL.md directories (skills already in hermes format) ---
+        for skill_md in claude_base.rglob("SKILL.md"):
+            skill_src_dir = skill_md.parent
+            name = skill_src_dir.name  # e.g. "frontend-design", "skill-creator"
+            dest_dir = skills_dir / name
+
+            if dest_dir.exists():
+                skipped += 1
+                continue
+
+            # Copy the whole skill directory (SKILL.md + references/)
+            shutil.copytree(skill_src_dir, dest_dir)
+            imported += 1
+            print(f"  + {name} (skill)")
+
+        # --- 2. Convert command .md files to SKILL.md format ---
+        for cmd_md in claude_base.rglob("*.md"):
+            # Only grab files inside a "commands" directory
+            if "commands" not in cmd_md.parts:
+                continue
+            if cmd_md.name == "SKILL.md":
+                continue
+
+            name = cmd_md.stem
+            dest_dir = skills_dir / name
+
+            if dest_dir.exists():
+                skipped += 1
+                continue
+
+            content = cmd_md.read_text(encoding="utf-8")
+
+            # Parse frontmatter
+            fm_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+            if fm_match:
+                fm_text = fm_match.group(1)
+                body = content[fm_match.end():]
+                desc_match = re.search(r'^description:\s*(.+)$', fm_text, re.MULTILINE)
+                desc = desc_match.group(1).strip() if desc_match else f"Imported command: {name}"
+            else:
+                body = content
+                desc = f"Imported command: {name}"
+
+            # Figure out plugin name for attribution
+            parts = cmd_md.parts
+            plugin_name = name
+            if "plugins" in parts:
+                idx = list(parts).index("plugins")
+                if idx + 2 < len(parts):
+                    plugin_name = parts[idx + 2]
+
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / "SKILL.md").write_text(f"""---
+name: {name}
+description: {desc}
+version: 1.0.0
+author: Imported from Claude Code ({plugin_name})
+license: MIT
+metadata:
+  hermes:
+    tags: [imported, claude-code, command]
+    source: "{cmd_md}"
+---
+
+{body}""", encoding="utf-8")
+            imported += 1
+            print(f"  + {name} (command)")
+
+        # --- 3. Pull from Anthropic official skills repo (github.com/anthropics/skills) ---
+        print("\nChecking Anthropic skills repo...")
+        try:
+            import subprocess as _sp
+            result = _sp.run(
+                ["gh", "api", "repos/anthropics/skills/contents/skills", "--jq", ".[].name"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                remote_skills = result.stdout.strip().splitlines()
+                for skill_name in remote_skills:
+                    dest_dir = skills_dir / skill_name
+                    if dest_dir.exists():
+                        skipped += 1
+                        continue
+                    # Get file listing for this skill
+                    files_result = _sp.run(
+                        ["gh", "api", f"repos/anthropics/skills/contents/skills/{skill_name}",
+                         "--jq", r'.[] | "\(.name)\t\(.download_url)"'],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if files_result.returncode != 0:
+                        continue
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    for line in files_result.stdout.strip().splitlines():
+                        parts = line.split("\t", 1)
+                        if len(parts) != 2:
+                            continue
+                        fname, url = parts
+                        if url == "null" or not url:
+                            continue
+                        dl = _sp.run(["curl", "-sL", url], capture_output=True, timeout=30)
+                        if dl.returncode == 0 and dl.stdout:
+                            (dest_dir / fname).write_bytes(dl.stdout)
+                    if (dest_dir / "SKILL.md").exists():
+                        imported += 1
+                        print(f"  + {skill_name} (anthropic)")
+                    else:
+                        shutil.rmtree(dest_dir, ignore_errors=True)
+            else:
+                print("  (gh CLI not available or API error — skipping remote skills)")
+        except Exception as e:
+            print(f"  (skipping remote: {e})")
+
+        print(f"\nImported {imported} to {skills_dir}")
+        if skipped:
+            print(f"  ({skipped} already existed, skipped)")
+
+    def _handle_swarm_command(self, command: str):
+        """Handle /swarm <goal> — run a parallel agent swarm."""
+        parts = command.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            print("  Usage: /swarm <goal>")
+            print("  Example: /swarm refactor the auth module and add tests")
+            return
+
+        goal = parts[1].strip()
+
+        try:
+            from swarm.orchestrator import SwarmOrchestrator
+            from swarm.planner import TaskPlanner
+            from swarm.types import SwarmConfig
+        except ImportError:
+            self.console.print("[bold red]Swarm module not available.[/]")
+            return
+
+        print("  Decomposing goal...")
+
+        # Mark agent as running so typed messages queue for later
+        self._agent_running = True
+
+        # Snapshot files before swarm for change detection
+        import time as _time
+        _swarm_start = _time.time()
+
+        try:
+            planner = TaskPlanner()
+            tasks = planner.decompose(goal)
+            swarm_model = self.model
+            if "opus" in swarm_model or "sonnet" in swarm_model:
+                swarm_model = "claude-haiku-4-5"
+            for i, t in enumerate(tasks):
+                t.model = swarm_model
+                t.name = f"Agent {i + 1}"
+
+            if not tasks:
+                print("  Planner returned no tasks.")
+                return
+
+            id_to_name = {t.id: t.name for t in tasks}
+            plan = [
+                {"name": t.name, "prompt": t.prompt, "role": t.role,
+                 "deps": [id_to_name.get(d, d) for d in t.deps],
+                 "model": t.model or None}
+                for t in tasks
+            ]
+
+            config = SwarmConfig()
+            orch = SwarmOrchestrator(config)
+            orch.add_plan(plan)
+
+            print(f"  Swarm ({len(plan)} agents, model={swarm_model})")
+
+            def _update_display(data):
+                self._swarm_display = data
+
+            summary = orch.run_with_display(display_callback=_update_display)
+
+            # Final results
+            sched_status = summary.get("tasks", {})
+            completed = sched_status.get("completed", 0)
+            failed = sched_status.get("failed", 0)
+            total = summary.get("total_tasks", len(plan))
+
+            print(f"\n  {'─' * 50}")
+            if failed == 0:
+                print(f"  {completed}/{total} agents completed")
+            else:
+                print(f"  {completed}/{total} completed, {failed} failed")
+
+            # Show each agent's output
+            import re as _re_files
+            _ORANGE = "\033[38;5;208m"
+            _YELLOW = "\033[33m"
+            _GREEN = "\033[32m"
+            _RED = "\033[31m"
+            _DIM2 = "\033[2m"
+            _RST2 = "\033[0m"
+            _BOLD2 = "\033[1m"
+
+            def _highlight_files(line):
+                """Highlight filenames in yellow."""
+                return _re_files.sub(
+                    r'{0}\g<0>{1}'.format(_YELLOW, _RST2),
+                    line,
+                    # Match common file patterns
+                ) if False else _re_files.sub(
+                    r'(\b\w+\.(?:py|txt|md|json|yaml|yml|js|ts|html|css|toml|cfg|ini|sh|rs)\b)',
+                    f'{_YELLOW}\\1{_RST2}',
+                    line,
+                )
+
+            for tid, task in orch._scheduler._tasks.items():
+                r = task.result
+                if not r:
+                    continue
+                out = getattr(r, 'output', r) if not isinstance(r, dict) else r
+                if isinstance(out, dict):
+                    text = out.get('output', '') or out.get('final_response', '') or ''
+                elif isinstance(out, str):
+                    text = out
+                else:
+                    text = str(out) if out else ''
+                text = (text or '').strip()
+                duration = getattr(r, 'duration_seconds', 0)
+                status = "done" if task.state.value == "completed" else task.state.value
+                if text:
+                    icon = f"{_GREEN}●{_RST2}" if status == 'done' else f"{_RED}✗{_RST2}"
+                    _cprint(f"\n  {icon} {_ORANGE}{_BOLD2}{task.name}{_RST2} {_DIM2}[{task.role}, {duration:.0f}s]{_RST2}")
+                    out_lines = text.split('\n')
+                    for line in out_lines[:8]:
+                        colored = _highlight_files(line[:120])
+                        _cprint(f"    {colored}")
+                    if len(out_lines) > 8:
+                        _cprint(f"    {_DIM2}... +{len(out_lines) - 8} lines{_RST2}")
+
+            # Show files created/modified during swarm
+            import os as _os
+            _cwd = _os.getcwd()
+            _new_files = []
+            _mod_files = []
+            for _root, _dirs, _fnames in _os.walk(_cwd):
+                # Skip hidden dirs, __pycache__, .git, .venv, node_modules
+                _dirs[:] = [d for d in _dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules', '.venv')]
+                for _fn in _fnames:
+                    _fp = _os.path.join(_root, _fn)
+                    try:
+                        st = _os.stat(_fp)
+                        if st.st_mtime >= _swarm_start:
+                            rel = _os.path.relpath(_fp, _cwd)
+                            if st.st_ctime >= _swarm_start:
+                                _new_files.append(rel)
+                            else:
+                                _mod_files.append(rel)
+                    except OSError:
+                        pass
+
+            if _new_files or _mod_files:
+                _cprint(f"\n  {_DIM2}{'─' * 50}{_RST2}")
+                _cprint(f"  {_BOLD2}Files changed:{_RST2}")
+                for f in sorted(_new_files):
+                    _cprint(f"    {_GREEN}+{_RST2} {_YELLOW}{f}{_RST2}")
+                for f in sorted(_mod_files):
+                    _cprint(f"    {_ORANGE}~{_RST2} {_YELLOW}{f}{_RST2}")
+
+            # Final completion message
+            _cprint(f"\n  {_GREEN}✓{_RST2} {_BOLD2}Swarm complete{_RST2} {_DIM2}— {completed} agents finished in {sum(getattr(t.result, 'duration_seconds', 0) for t in orch._scheduler._tasks.values() if t.result):.0f}s{_RST2}\n")
+
+        except Exception as e:
+            print(f"Swarm error: {e}")
+        finally:
+            self._agent_running = False
+            self._swarm_display = None
+            self._queued_messages.clear()
+            # Re-queue messages typed during swarm so they process next
+            while hasattr(self, '_interrupt_queue') and not self._interrupt_queue.empty():
+                try:
+                    msg = self._interrupt_queue.get_nowait()
+                    if msg:
+                        self._pending_input.put(msg)
+                except queue.Empty:
+                    break
 
     def _clarify_callback(self, question, choices):
         """
@@ -2204,6 +2825,9 @@ class HermesCLI:
         self._approval_state = None
         self._approval_deadline = 0
         self._invalidate()
+        _cprint(f"\n{_DIM}  Timeout — denying command{_RST}")
+        return "deny"
+
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
@@ -2243,7 +2867,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = shutil.get_terminal_size().columns
+        w = _term_width()
         _cprint(f"{_GOLD}{'─' * w}{_RST}")
         print(flush=True)
         
@@ -2319,30 +2943,64 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = shutil.get_terminal_size().columns
+                w = _term_width()
                 label = " ⚕ Hermes "
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                fill = w - 2 - len(label)
+                top = f"{_GOLD}──{label}{'─' * max(fill, 0)}{_RST}"
+                bot = f"{_GOLD}{'─' * w}{_RST}"
+
+                # Style or strip <think> blocks based on user preference
+                import re as _re
+                if self.show_thinking:
+                    styled_response = _format_think_blocks(response)
+                else:
+                    # Strip closed think blocks
+                    styled_response = _re.sub(r'<think>.*?</think>\s*', '', response, flags=_re.DOTALL)
+                    # Strip unclosed think blocks (model ran out of tokens mid-think)
+                    styled_response = _re.sub(r'<think>.*', '', styled_response, flags=_re.DOTALL)
+                    # Strip orphaned </think> (opening tag in separate field)
+                    styled_response = _re.sub(r'^.*?</think>\s*', '', styled_response, flags=_re.DOTALL)
+                    styled_response = styled_response.strip()
+
+                # Always strip <tool_call> blocks from display — these are
+                # machine-readable tags that the adapter processes internally.
+                styled_response = _re.sub(
+                    r'<tool_call>.*?</tool_call>\s*', '', styled_response, flags=_re.DOTALL
+                )
+                # Strip truncated/unclosed tool_call tags too
+                styled_response = _re.sub(
+                    r'<tool_call>.*', '', styled_response, flags=_re.DOTALL
+                )
+                styled_response = styled_response.strip()
 
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                _cprint(f"\n{top}\n{styled_response}\n\n{bot}")
             
-            # Combine all interrupt messages (user may have typed multiple while waiting)
-            # and re-queue as one prompt for process_loop
+            # Re-queue interrupt message for process_loop
             if pending_message and hasattr(self, '_pending_input'):
-                all_parts = [pending_message]
+                # Drain any extra interrupt messages
+                extras = []
                 while not self._interrupt_queue.empty():
                     try:
                         extra = self._interrupt_queue.get_nowait()
                         if extra:
-                            all_parts.append(extra)
+                            extras.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
-                print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
-                self._pending_input.put(combined)
+                # If pending_message is a tuple (text, images), preserve it as-is
+                if isinstance(pending_message, tuple) or not extras:
+                    display = pending_message[0] if isinstance(pending_message, tuple) else str(pending_message)
+                    print(f"\n📨 Queued: '{str(display)[:50]}'")
+                    self._pending_input.put(pending_message)
+                else:
+                    all_texts = [pending_message] + extras
+                    combined = "\n".join(str(p) for p in all_texts)
+                    print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
+                    self._pending_input.put(combined)
+                # Re-queue any remaining extras
+                for ex in extras if isinstance(pending_message, tuple) else []:
+                    self._pending_input.put(ex)
             
             return response
             
@@ -2386,8 +3044,14 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._queued_messages: list[str] = []   # Display list for queued-while-busy messages
+        self._swarm_display: list[dict] | None = None  # Live swarm task states for widget
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._background_jobs = []  # list of {"id": int, "thread": Thread, "prompt": str, "started": float, "result": None}
+        self._next_job_id = 1
+        self._current_chat_thread = None  # reference to current chat thread for backgrounding
+        self._background_requested = False  # flag set by Ctrl+B handler
 
         # Clarify tool state: interactive question/answer with the user.
         # When the agent calls the clarify tool, _clarify_state is set and
@@ -2407,6 +3071,7 @@ class HermesCLI:
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
+        self._image_select_idx: int = -1  # -1 = not in image select mode
 
         # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
@@ -2482,11 +3147,18 @@ class HermesCLI:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
                 self._attached_images.clear()
+                self._image_select_idx = -1
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
                     self._interrupt_queue.put(payload)
+                    display_text = text or ""
+                    if images:
+                        img_labels = " ".join(f"[Image]" for _ in images)
+                        display_text = f"{display_text}  {img_labels}".strip() if display_text else img_labels
+                    self._queued_messages.append(display_text or "(empty)")
+                    event.app.invalidate()
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -2535,6 +3207,7 @@ class HermesCLI:
                 event.app.invalidate()
 
         # --- History navigation: up/down browse history in normal input mode ---
+        _history_navigating = [False]  # flag to suppress clipboard check on history nav
         # The TextArea is multiline, so by default up/down only move the cursor.
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
@@ -2544,13 +3217,51 @@ class HermesCLI:
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
+            """Up arrow: image select if images attached, else history."""
+            if self._attached_images and self._image_select_idx == -1:
+                # Enter image select mode — select last image
+                self._image_select_idx = len(self._attached_images) - 1
+                event.app.invalidate()
+                return
+            if self._image_select_idx >= 0:
+                # Navigate within image selection
+                self._image_select_idx = max(0, self._image_select_idx - 1)
+                event.app.invalidate()
+                return
+            _history_navigating[0] = True
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down arrow: navigate image select or history."""
+            if self._image_select_idx >= 0:
+                if self._image_select_idx < len(self._attached_images) - 1:
+                    self._image_select_idx += 1
+                else:
+                    # Exit image select mode
+                    self._image_select_idx = -1
+                event.app.invalidate()
+                return
+            _history_navigating[0] = True
             event.app.current_buffer.auto_down(count=event.arg)
+
+        @kb.add('delete', filter=Condition(lambda: self._image_select_idx >= 0))
+        @kb.add('backspace', filter=Condition(lambda: self._image_select_idx >= 0))
+        def delete_selected_image(event):
+            """Delete/Backspace removes the selected image."""
+            if 0 <= self._image_select_idx < len(self._attached_images):
+                self._attached_images.pop(self._image_select_idx)
+                if not self._attached_images:
+                    self._image_select_idx = -1
+                elif self._image_select_idx >= len(self._attached_images):
+                    self._image_select_idx = len(self._attached_images) - 1
+                event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: self._image_select_idx >= 0))
+        def exit_image_select(event):
+            """Escape exits image select mode."""
+            self._image_select_idx = -1
+            event.app.invalidate()
 
         @kb.add('c-c')
         def handle_ctrl_c(event):
@@ -2606,16 +3317,32 @@ class HermesCLI:
                 if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
+                    self._image_select_idx = -1
                     event.app.invalidate()
                 else:
                     self._should_exit = True
                     event.app.exit()
         
+        @kb.add('escape', eager=True)
+        def handle_escape(event):
+            """Escape key interrupts the running agent."""
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+
         @kb.add('c-d')
         def handle_ctrl_d(event):
             """Handle Ctrl+D - exit."""
             self._should_exit = True
             event.app.exit()
+
+        @kb.add('c-b')
+        def handle_ctrl_b(event):
+            """Background the current agent task."""
+            if not self._agent_running:
+                return
+            self._background_requested = True
+            event.app.invalidate()
 
         from prompt_toolkit.keys import Keys
 
@@ -2667,6 +3394,9 @@ class HermesCLI:
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
+        _spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        _spin_frame = [0]
+
         def get_prompt():
             if cli_ref._sudo_state:
                 return [('class:sudo-prompt', '🔐 ❯ ')]
@@ -2677,7 +3407,8 @@ class HermesCLI:
             if cli_ref._clarify_state:
                 return [('class:prompt-working', '? ❯ ')]
             if cli_ref._agent_running:
-                return [('class:prompt-working', '⚕ ❯ ')]
+                spin = _spinners[_spin_frame[0] % len(_spinners)]
+                return [('class:prompt-working', f'{spin} ❯ ')]
             return [('class:prompt', '❯ ')]
 
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
@@ -2698,7 +3429,7 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                available_width = shutil.get_terminal_size().columns - 4  # subtract prompt width
+                available_width = _term_width() - 4  # subtract prompt width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
@@ -2724,18 +3455,20 @@ class HermesCLI:
             line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
-            # Heuristic: a real paste adds many characters at once (not just a
-            # single newline from Alt+Enter) AND the result has 5+ lines.
-            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
-                _paste_counter[0] += 1
-                # Save to temp file
-                paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
-                paste_dir.mkdir(parents=True, exist_ok=True)
-                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
-                buf.cursor_position = len(buf.text)
+            # Skip clipboard check during history navigation
+            if _history_navigating[0]:
+                _history_navigating[0] = False
+                return
+            # Heuristic: a real paste adds many characters at once
+            if chars_added > 1 and not text.startswith('/'):
+                if line_count >= 5:
+                    _paste_counter[0] += 1
+                    paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))
+                    paste_dir.mkdir(parents=True, exist_ok=True)
+                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
+                    paste_file.write_text(text, encoding="utf-8")
+                    buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                    buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
 
@@ -2770,7 +3503,7 @@ class HermesCLI:
             if cli_ref._clarify_state:
                 return ""
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "type a message + Enter to interrupt, Ctrl+B to background, Ctrl+C to cancel"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -2838,7 +3571,9 @@ class HermesCLI:
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ─────────────────────────────╮\n'))
+            _cw = _term_width()
+            _fill = max(_cw - 3 - len('Hermes needs your input') - 2, 1)
+            lines.append(('class:clarify-border', ' ' + '─' * _fill + '╮\n'))
             lines.append(('class:clarify-border', '│\n'))
 
             # Question text
@@ -2869,7 +3604,7 @@ class HermesCLI:
                 lines.append(('', '\n'))
 
             lines.append(('class:clarify-border', '│\n'))
-            lines.append(('class:clarify-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:clarify-border', '╰' + '─' * max(_cw - 2, 1) + '╯\n'))
             return lines
 
         clarify_widget = ConditionalContainer(
@@ -2889,13 +3624,15 @@ class HermesCLI:
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', '🔐 Sudo Password Required'))
-            lines.append(('class:sudo-border', ' ──────────────────────────╮\n'))
+            _sw = _term_width()
+            _sfill = max(_sw - 3 - len('🔐 Sudo Password Required') - 2, 1)
+            lines.append(('class:sudo-border', ' ' + '─' * _sfill + '╮\n'))
             lines.append(('class:sudo-border', '│\n'))
             lines.append(('class:sudo-border', '│  '))
             lines.append(('class:sudo-text', 'Enter password below (hidden), or press Enter to skip'))
             lines.append(('', '\n'))
             lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:sudo-border', '╰' + '─' * max(_sw - 2, 1) + '╯\n'))
             return lines
 
         sudo_widget = ConditionalContainer(
@@ -2928,7 +3665,9 @@ class HermesCLI:
             lines = []
             lines.append(('class:approval-border', '╭─ '))
             lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            lines.append(('class:approval-border', ' ───────────────────────────────╮\n'))
+            _aw = _term_width()
+            _afill = max(_aw - 3 - len('⚠️  Dangerous Command') - 2, 1)
+            lines.append(('class:approval-border', ' ' + '─' * _afill + '╮\n'))
             lines.append(('class:approval-border', '│\n'))
             lines.append(('class:approval-border', '│  '))
             lines.append(('class:approval-desc', description))
@@ -2946,7 +3685,7 @@ class HermesCLI:
                     lines.append(('class:approval-choice', f'  {label}'))
                 lines.append(('', '\n'))
             lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '╰──────────────────────────────────────────────────────╯\n'))
+            lines.append(('class:approval-border', '╰' + '─' * max(_aw - 2, 1) + '╯\n'))
             return lines
 
         approval_widget = ConditionalContainer(
@@ -2957,22 +3696,138 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
-        # Horizontal rules above and below the input (bronze, 1 line each).
-        # The bottom rule moves down as the TextArea grows with newlines.
-        # Using char='─' instead of hardcoded repetition so the rule
-        # always spans the full terminal width on any screen size.
-        input_rule_top = Window(
-            char='─',
-            height=1,
-            style='class:input-rule',
-        )
-        input_rule_bot = Window(
-            char='─',
-            height=1,
-            style='class:input-rule',
+        # --- Attached images display (like Claude Code's [Image #N]) ---
+        def _get_images_display():
+            if not cli_ref._attached_images:
+                return []
+            fragments = []
+            sel = cli_ref._image_select_idx
+            base_num = cli_ref._image_counter - len(cli_ref._attached_images) + 1
+            for i, img_path in enumerate(cli_ref._attached_images):
+                num = base_num + i
+                size_kb = img_path.stat().st_size // 1024 if img_path.exists() else 0
+                if i > 0:
+                    fragments.append(('', ' '))
+                if i == sel:
+                    fragments.append(('class:image-selected', f' [Image #{num}] '))
+                    fragments.append(('class:image-selected-hint', f' {size_kb}KB ⌫'))
+                else:
+                    fragments.append(('class:image-tag', f' [Image #{num}] '))
+                    fragments.append(('class:image-hint', f' {size_kb}KB'))
+            if sel >= 0:
+                fragments.append(('class:image-hint', '  ↑↓ select · backspace delete · esc cancel'))
+            else:
+                fragments.append(('class:image-hint', '  (↑ to select)'))
+            return fragments
+
+        images_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_images_display),
+                height=1,
+            ),
+            filter=Condition(lambda: len(cli_ref._attached_images) > 0),
         )
 
-        # Image attachment indicator — shows badges like [📎 Image #1] above input
+        def _get_queued_display():
+            if not cli_ref._queued_messages:
+                return []
+            fragments = []
+            for i, msg in enumerate(cli_ref._queued_messages):
+                if i > 0:
+                    fragments.append(('', '\n'))
+                fragments.append(('class:queued-label', '  queued '))
+                fragments.append(('class:queued-text', f' {msg[:80]}'))
+            return fragments
+
+        def _queued_height():
+            return len(cli_ref._queued_messages) if cli_ref._queued_messages else 0
+
+        queued_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_queued_display),
+                height=_queued_height,
+            ),
+            filter=Condition(lambda: len(cli_ref._queued_messages) > 0),
+        )
+
+        # Swarm live display widget — shows animated task status
+        _swarm_spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        def _get_swarm_display():
+            data = cli_ref._swarm_display
+            if not data:
+                return []
+            frm = _spin_frame[0]
+            fragments = []
+            for i, t in enumerate(data):
+                if i > 0:
+                    fragments.append(('', '\n'))
+                state = t.get('state', 'pending')
+                name = t.get('name', '?')
+                elapsed = t.get('elapsed', 0)
+                ts = f"{elapsed:.0f}s" if elapsed > 0 else ""
+                preview = t.get('preview', '')
+
+                if state == 'completed':
+                    fragments.append(('class:swarm-done', '  ● '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-done', '  done '))
+                    fragments.append(('class:swarm-dim', ts))
+                    if preview:
+                        fragments.append(('class:swarm-dim', f' - {preview}'))
+                elif state == 'failed':
+                    fragments.append(('class:swarm-fail', '  ✗ '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-fail', '  failed '))
+                    fragments.append(('class:swarm-dim', ts))
+                    if preview:
+                        fragments.append(('class:swarm-dim', f' - {preview}'))
+                elif state == 'running':
+                    spin = _swarm_spinners[frm % len(_swarm_spinners)]
+                    fragments.append(('class:swarm-run', f'  {spin} '))
+                    fragments.append(('class:swarm-name', name))
+                    fragments.append(('class:swarm-run', '  running '))
+                    fragments.append(('class:swarm-time', ts))
+                else:
+                    fragments.append(('class:swarm-dim', f'  ○ {name}  pending'))
+
+            # Summary line
+            done = sum(1 for t in data if t.get('state') == 'completed')
+            failed = sum(1 for t in data if t.get('state') == 'failed')
+            running = sum(1 for t in data if t.get('state') == 'running')
+            total = len(data)
+            fragments.append(('', '\n'))
+            fragments.append(('class:swarm-rule', '  ' + '─' * 40))
+            fragments.append(('', '\n'))
+            fragments.append(('class:swarm-done', f'  {done}'))
+            fragments.append(('class:swarm-summary', f'/{total} done'))
+            if running:
+                fragments.append(('class:swarm-run', f'  {running}'))
+                fragments.append(('class:swarm-summary', ' running'))
+            if failed:
+                fragments.append(('class:swarm-fail', f'  {failed}'))
+                fragments.append(('class:swarm-summary', ' failed'))
+            return fragments
+
+        def _swarm_display_height():
+            data = cli_ref._swarm_display
+            if not data:
+                return 0
+            return len(data) + 2  # tasks + separator + summary
+
+        swarm_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_swarm_display),
+                height=_swarm_display_height,
+            ),
+            filter=Condition(lambda: cli_ref._swarm_display is not None),
+        )
+
+        # Horizontal rules above and below the input (bronze, 1 line each).
+        input_rule_top = Window(height=1, char='─', style='class:input-rule')
+        input_rule_bot = Window(height=1, char='─', style='class:input-rule')
+
+        # Image attachment indicator — shows badges like [Image #1] above input
         cli_ref = self
 
         def _get_image_bar():
@@ -2980,7 +3835,7 @@ class HermesCLI:
                 return []
             base = cli_ref._image_counter - len(cli_ref._attached_images) + 1
             badges = " ".join(
-                f"[📎 Image #{base + i}]"
+                f"[Image #{base + i}]"
                 for i in range(len(cli_ref._attached_images))
             )
             return [("class:image-badge", f" {badges} ")]
@@ -3000,6 +3855,9 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 spacer,
+                swarm_widget,
+                queued_widget,
+                images_widget,
                 input_rule_top,
                 image_bar,
                 input_area,
@@ -3044,6 +3902,23 @@ class HermesCLI:
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
+            # Attached images
+            'image-tag': 'bg:#333355 #FFD700 bold underline',
+            'image-hint': '#555555 italic',
+            'image-selected': 'bg:#552222 #FF6B6B bold',
+            'image-selected-hint': '#FF6B6B italic',
+            # Queued messages (typed while agent/swarm is running)
+            'queued-label': '#555555 italic',
+            'queued-text': '#777777',
+            # Swarm live display
+            'swarm-done': '#32CD32',
+            'swarm-fail': '#FF4444',
+            'swarm-run': '#FFD700',
+            'swarm-time': '#00CED1',
+            'swarm-dim': '#666666',
+            'swarm-name': '#FF8C00 bold',
+            'swarm-rule': '#CD7F32',
+            'swarm-summary': '#AAAAAA',
         })
         
         # Create the application
@@ -3055,7 +3930,22 @@ class HermesCLI:
             mouse_support=False,
         )
         self._app = app  # Store reference for clarify_callback
-        
+
+        # Spinner animation thread — ticks the prompt spinner when agent is running
+        def _spinner_loop():
+            while not self._should_exit:
+                if self._agent_running:
+                    _spin_frame[0] += 1
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+                import time as _st
+                _st.sleep(0.12)
+
+        _spinner_thread = threading.Thread(target=_spinner_loop, daemon=True, name="spinner")
+        _spinner_thread.start()
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
@@ -3066,62 +3956,110 @@ class HermesCLI:
                     except queue.Empty:
                         continue
                     
-                    if not user_input:
-                        continue
-
-                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    # Unpack (text, images) tuple if present
                     submit_images = []
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
-                    
+
+                    if not user_input and not submit_images:
+                        continue
+
                     # Check for commands
                     if isinstance(user_input, str) and user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        print(f"\n\u2699\uFE0F  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
-                            # Schedule app exit
                             if app.is_running:
                                 app.exit()
                         continue
-                    
+
                     # Expand paste references back to full content
                     import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
+                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines \u2192 (.+)\]', user_input) if isinstance(user_input, str) else None
                     if paste_match:
                         paste_path = Path(paste_match.group(1))
                         if paste_path.exists():
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
                             user_input = full_text
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
-                    else:
-                        if '\n' in user_input:
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{user_input}{_RST}")
+                    elif isinstance(user_input, str):
+                        if user_input and '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
-                        else:
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                        elif user_input:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
-                    
+                            _cprint(f"{_GOLD}\u25CF{_RST} {_BOLD}{user_input}{_RST}")
+
                     # Show image attachment count
                     if submit_images:
                         n = len(submit_images)
-                        _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+                        _cprint(f"  {_DIM}attached {n} image{'s' if n > 1 else ''}{_RST}")
+
+                    # Auto-detect swarm intent in natural language
+                    if isinstance(user_input, str) and _re.search(
+                        r'\bswarm\b', user_input, _re.IGNORECASE
+                    ):
+                        self._handle_swarm_command(f"/swarm {user_input}")
+                        continue
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._background_requested = False
                     app.invalidate()  # Refresh status line
-                    
-                    try:
-                        self.chat(user_input, images=submit_images or None)
-                    finally:
+
+                    import time as _bg_time
+
+                    # Run chat in a detachable thread
+                    chat_done = threading.Event()
+                    chat_result = [None]
+
+                    def _run_chat():
+                        try:
+                            self.chat(user_input, images=submit_images or None)
+                        except Exception as e:
+                            chat_result[0] = e
+                        finally:
+                            chat_done.set()
+
+                    chat_thread = threading.Thread(target=_run_chat, daemon=True, name="chat-fg")
+                    chat_thread.start()
+
+                    # Wait for completion OR background request
+                    while not chat_done.is_set():
+                        if self._background_requested:
+                            # Detach to background
+                            job_id = self._next_job_id
+                            self._next_job_id += 1
+                            job = {
+                                "id": job_id,
+                                "thread": chat_thread,
+                                "prompt": user_input[:80],
+                                "started": _bg_time.time(),
+                                "done": chat_done,
+                                "result": chat_result,
+                            }
+                            self._background_jobs.append(job)
+                            self._background_requested = False
+                            self._agent_running = False
+                            app.invalidate()
+                            _cprint(f"\n{_DIM}[{job_id}] Backgrounded: {user_input[:60]}...{_RST}")
+                            _cprint(f"{_DIM}Use /jobs to check status, /fg {job_id} to see result{_RST}")
+                            break
+                        chat_done.wait(timeout=0.1)
+                    else:
+                        # Chat completed normally (not backgrounded)
                         self._agent_running = False
+                        self._queued_messages.clear()
                         app.invalidate()  # Refresh status line
+                        if chat_result[0] and isinstance(chat_result[0], Exception):
+                            print(f"Error: {chat_result[0]}")
                     
                 except Exception as e:
                     print(f"Error: {e}")

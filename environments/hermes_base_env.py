@@ -114,8 +114,8 @@ class HermesAgentEnvConfig(BaseEnvConfig):
     # --- Terminal backend ---
     terminal_backend: str = Field(
         default="local",
-        description="Terminal backend: 'local', 'docker', 'modal', 'ssh', 'singularity'. "
-        "Modal recommended for production RL (cloud isolation per rollout).",
+        description="Terminal backend: 'local', 'docker', 'modal', 'daytona', 'ssh', 'singularity'. "
+        "Modal or Daytona recommended for production RL (cloud isolation per rollout).",
     )
     terminal_timeout: int = Field(
         default=120,

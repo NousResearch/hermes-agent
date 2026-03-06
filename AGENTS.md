@@ -44,7 +44,8 @@ hermes-agent/
 │   │   ├── docker.py          # Docker container execution
 │   │   ├── ssh.py             # SSH remote execution
 │   │   ├── singularity.py     # Singularity/Apptainer + SIF management
-│   │   └── modal.py           # Modal cloud execution
+│   │   ├── modal.py           # Modal cloud execution
+│   │   └── daytona.py         # Daytona cloud sandboxes
 │   ├── terminal_tool.py       # Terminal orchestration (sudo, lifecycle, factory)
 │   ├── todo_tool.py           # Planning & task management
 │   ├── process_registry.py    # Background process management
@@ -428,11 +429,13 @@ API keys are loaded from `~/.hermes/.env`:
 - `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
-- `terminal.backend` - Backend: local, docker, singularity, modal, or ssh
+- `terminal.backend` - Backend: local, docker, singularity, modal, daytona, or ssh
 - `terminal.cwd` - Working directory ("." = host CWD for local only; for remote backends set an absolute path inside the target, or omit to use the backend's default)
 - `terminal.docker_image` - Image for Docker backend
 - `terminal.singularity_image` - Image for Singularity backend
 - `terminal.modal_image` - Image for Modal backend
+- `terminal.daytona_image` - Image for Daytona backend
+- `DAYTONA_API_KEY` - API key for Daytona backend (in .env)
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
 
 Agent behavior (in `~/.hermes/.env`):
@@ -496,7 +499,7 @@ terminal(command="pytest -v tests/", background=true)
 - `process(action="submit", session_id="proc_abc123", data="yes")` -- send + Enter
 
 **Key behaviors:**
-- Background processes execute through the configured terminal backend (local/Docker/Modal/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
+- Background processes execute through the configured terminal backend (local/Docker/Modal/Daytona/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
 - The `wait` action blocks the tool call until the process finishes, times out, or is interrupted by a new user message
 - PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex, Claude Code)
 - In RL training, background processes are auto-killed when the episode ends (`tool_context.cleanup()`)

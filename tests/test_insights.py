@@ -176,6 +176,26 @@ class TestPricing:
         pricing = _get_pricing("gemini-3.0-ultra")
         assert pricing["input"] == 0.15
 
+    def test_dated_model_gpt4o_mini(self):
+        """gpt-4o-mini-2024-07-18 should match gpt-4o-mini, NOT gpt-4o."""
+        pricing = _get_pricing("gpt-4o-mini-2024-07-18")
+        assert pricing["input"] == 0.15  # gpt-4o-mini price, not gpt-4o's 2.50
+
+    def test_dated_model_o3_mini(self):
+        """o3-mini-2025-01-31 should match o3-mini, NOT o3."""
+        pricing = _get_pricing("o3-mini-2025-01-31")
+        assert pricing["input"] == 1.10  # o3-mini price, not o3's 10.00
+
+    def test_dated_model_gpt41_mini(self):
+        """gpt-4.1-mini-2025-04-14 should match gpt-4.1-mini, NOT gpt-4.1."""
+        pricing = _get_pricing("gpt-4.1-mini-2025-04-14")
+        assert pricing["input"] == 0.40  # gpt-4.1-mini, not gpt-4.1's 2.00
+
+    def test_dated_model_gpt41_nano(self):
+        """gpt-4.1-nano-2025-04-14 should match gpt-4.1-nano, NOT gpt-4.1."""
+        pricing = _get_pricing("gpt-4.1-nano-2025-04-14")
+        assert pricing["input"] == 0.10  # gpt-4.1-nano, not gpt-4.1's 2.00
+
 
 class TestHasKnownPricing:
     def test_known_commercial_model(self):
@@ -585,6 +605,58 @@ class TestEdgeCases:
         assert custom["cost"] == 0.0
         assert custom["has_pricing"] is False
 
+    def test_tool_usage_from_tool_calls_json(self, db):
+        """Tool usage should be extracted from tool_calls JSON when tool_name is NULL."""
+        import json as _json
+        db.create_session(session_id="s1", source="cli", model="test")
+        # Assistant message with tool_calls (this is what CLI produces)
+        db.append_message("s1", role="assistant", content="Let me search",
+                          tool_calls=[{"id": "call_1", "type": "function",
+                                       "function": {"name": "search_files", "arguments": "{}"}}])
+        # Tool response WITHOUT tool_name (this is the CLI bug)
+        db.append_message("s1", role="tool", content="found results",
+                          tool_call_id="call_1")
+        db.append_message("s1", role="assistant", content="Now reading",
+                          tool_calls=[{"id": "call_2", "type": "function",
+                                       "function": {"name": "read_file", "arguments": "{}"}}])
+        db.append_message("s1", role="tool", content="file content",
+                          tool_call_id="call_2")
+        db.append_message("s1", role="assistant", content="And searching again",
+                          tool_calls=[{"id": "call_3", "type": "function",
+                                       "function": {"name": "search_files", "arguments": "{}"}}])
+        db.append_message("s1", role="tool", content="more results",
+                          tool_call_id="call_3")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        tools = report["tools"]
+
+        # Should find tools from tool_calls JSON even though tool_name is NULL
+        tool_names = [t["tool"] for t in tools]
+        assert "search_files" in tool_names
+        assert "read_file" in tool_names
+
+        # search_files was called twice
+        sf = next(t for t in tools if t["tool"] == "search_files")
+        assert sf["count"] == 2
+
+    def test_overview_pricing_sets_are_lists(self, db):
+        """models_with/without_pricing should be JSON-serializable lists."""
+        import json as _json
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.create_session(session_id="s2", source="cli", model="my-custom")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        overview = report["overview"]
+
+        assert isinstance(overview["models_with_pricing"], list)
+        assert isinstance(overview["models_without_pricing"], list)
+        # Should be JSON-serializable
+        _json.dumps(report["overview"])  # would raise if sets present
+
     def test_mixed_commercial_and_custom_models(self, db):
         """Mix of commercial and custom models: only commercial ones get costs."""
         db.create_session(session_id="s1", source="cli", model="gpt-4o")
@@ -599,7 +671,7 @@ class TestEdgeCases:
         # Cost should only come from gpt-4o, not from the custom model
         overview = report["overview"]
         assert overview["estimated_cost"] > 0
-        assert "gpt-4o" in overview["models_with_pricing"]
+        assert "gpt-4o" in overview["models_with_pricing"]  # list now, not set
         assert "my-local-llama" in overview["models_without_pricing"]
 
         # Verify individual model entries

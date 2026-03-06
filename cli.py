@@ -1246,7 +1246,8 @@ class HermesCLI:
                 _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}\n")
+        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -2643,6 +2644,22 @@ class HermesCLI:
             """
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
+
+        @kb.add('escape', 'v')
+        def handle_alt_v(event):
+            """Alt+V — paste image from clipboard.
+
+            Alt key combos pass through all terminal emulators (sent as
+            ESC + key), unlike Ctrl+V which terminals intercept for text
+            paste.  This is the reliable way to attach clipboard images
+            on WSL2, VSCode, and any terminal over SSH where Ctrl+V
+            can't reach the application for image-only clipboard.
+            """
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
+            else:
+                # No image found — show a hint
+                pass  # silent when no image (avoid noise on accidental press)
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.

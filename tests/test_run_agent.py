@@ -213,6 +213,8 @@ class TestCleanSessionContent:
         result = AIAgent._clean_session_content(text)
         # Should not have excessive newlines around think block
         assert "\n\n\n" not in result
+        # Content after think block must be preserved
+        assert "after" in result
 
 
 class TestGetMessagesUpToLastAssistant:
@@ -361,7 +363,7 @@ class TestInit:
             assert a.valid_tool_names == {"web_search", "terminal"}
 
     def test_session_id_auto_generated(self):
-        """Session ID should be auto-generated when not provided."""
+        """Session ID should be auto-generated in YYYYMMDD_HHMMSS_<hex6> format."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -373,8 +375,10 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            assert a.session_id is not None
-            assert len(a.session_id) > 0
+            # Format: YYYYMMDD_HHMMSS_<6 hex chars>
+            assert re.match(r"^\d{8}_\d{6}_[0-9a-f]{6}$", a.session_id), (
+                f"session_id doesn't match expected format: {a.session_id}"
+            )
 
 
 class TestInterrupt:
@@ -621,9 +625,13 @@ class TestExecuteToolCalls:
         tc = _mock_tool_call(name="web_search", arguments="not valid json", call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
-        with patch("run_agent.handle_function_call", return_value="ok"):
+        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
+            # Invalid JSON args should fall back to empty dict
+            mock_hfc.assert_called_once_with("web_search", {}, "task-1")
         assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "c1"
 
     def test_result_truncation_over_100k(self, agent):
         tc = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -644,6 +652,8 @@ class TestHandleMaxIterations:
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
+        assert isinstance(result, str)
+        assert len(result) > 0
         assert "summary" in result.lower()
 
     def test_api_failure_returns_error(self, agent):
@@ -651,7 +661,9 @@ class TestHandleMaxIterations:
         agent._cached_system_prompt = "You are helpful."
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
-        assert "Error" in result or "error" in result
+        assert isinstance(result, str)
+        assert "error" in result.lower()
+        assert "API down" in result
 
 
 class TestRunConversation:
@@ -729,6 +741,8 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("do something")
         assert result["final_response"] == "Got it"
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
 
     def test_empty_content_retry_and_fallback(self, agent):
         """Empty content (only think block) retries, then falls back to partial."""
@@ -776,6 +790,8 @@ class TestRunConversation:
             )
             result = agent.run_conversation("search something")
         mock_compress.assert_called_once()
+        assert result["final_response"] == "All done"
+        assert result["completed"] is True
 
 
 class TestRetryExhaustion:
@@ -825,7 +841,10 @@ class TestRetryExhaustion:
             patch("run_agent.time", self._make_fast_time_mock()),
         ):
             result = agent.run_conversation("hello")
-        assert result.get("failed") is True or result.get("completed") is False
+        assert result.get("completed") is False, f"Expected completed=False, got: {result}"
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "Invalid API response" in result["error"]
 
     def test_api_error_raises_after_retries(self, agent):
         """Exhausted retries on API errors must raise, not fall through."""

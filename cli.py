@@ -3100,6 +3100,7 @@ metadata:
                 event.app.invalidate()
 
         # --- History navigation: up/down browse history in normal input mode ---
+        _history_navigating = [False]  # flag to suppress clipboard check on history nav
         # The TextArea is multiline, so by default up/down only move the cursor.
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
@@ -3110,11 +3111,13 @@ metadata:
         @kb.add('up', filter=_normal_input)
         def history_up(event):
             """Up arrow: browse history when on first line, else move cursor up."""
+            _history_navigating[0] = True
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
             """Down arrow: browse history when on last line, else move cursor down."""
+            _history_navigating[0] = True
             event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
@@ -3283,18 +3286,17 @@ metadata:
         _prev_text_len = [0]
 
         def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference.
-            Also auto-detect clipboard images on Cmd+V (bracketed paste)."""
+            """Detect large pastes and collapse them to a file reference."""
             text = buf.text
             line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
+            # Skip clipboard check during history navigation
+            if _history_navigating[0]:
+                _history_navigating[0] = False
+                return
             # Heuristic: a real paste adds many characters at once
             if chars_added > 1 and not text.startswith('/'):
-                # Check if clipboard also has an image (Cmd+V / middle-click paste)
-                if self._try_attach_clipboard_image():
-                    if self._app:
-                        self._app.invalidate()
                 if line_count >= 5:
                     _paste_counter[0] += 1
                     paste_dir = Path(os.path.expanduser("~/.hermes/pastes"))

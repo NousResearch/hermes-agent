@@ -2671,6 +2671,9 @@ metadata:
                 for f in sorted(_mod_files):
                     _cprint(f"    {_ORANGE}~{_RST2} {_YELLOW}{f}{_RST2}")
 
+            # Final completion message
+            _cprint(f"\n  {_GREEN}✓{_RST2} {_BOLD2}Swarm complete{_RST2} {_DIM2}— {completed} agents finished in {sum(getattr(t.result, 'duration_seconds', 0) for t in orch._scheduler._tasks.values() if t.result):.0f}s{_RST2}\n")
+
         except Exception as e:
             print(f"Swarm error: {e}")
         finally:

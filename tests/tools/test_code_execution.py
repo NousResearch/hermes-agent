@@ -86,6 +86,14 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def _connect(", src)
         self.assertIn("def _call(", src)
 
+    def test_convenience_helpers_present(self):
+        """Verify json_parse, shell_quote, and retry helpers are generated."""
+        src = generate_hermes_tools_module(["terminal"])
+        self.assertIn("def json_parse(", src)
+        self.assertIn("def shell_quote(", src)
+        self.assertIn("def retry(", src)
+        self.assertIn("import json, os, socket, shlex, time", src)
+
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
@@ -212,6 +220,82 @@ print(f"Found {len(results.get('results', []))} results")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertIn("Found 1 results", result["output"])
+
+    def test_json_parse_helper(self):
+        """json_parse handles control characters that json.loads(strict=True) rejects."""
+        code = r"""
+from hermes_tools import json_parse
+# This JSON has a literal tab character which strict mode rejects
+text = '{"body": "line1\tline2\nline3"}'
+result = json_parse(text)
+print(result["body"])
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("line1", result["output"])
+
+    def test_shell_quote_helper(self):
+        """shell_quote properly escapes dangerous characters."""
+        code = """
+from hermes_tools import shell_quote
+# String with backticks, quotes, and special chars
+dangerous = '`rm -rf /` && $(whoami) "hello"'
+escaped = shell_quote(dangerous)
+print(escaped)
+# Verify it's wrapped in single quotes with proper escaping
+assert "rm -rf" in escaped
+assert escaped.startswith("'")
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+
+    def test_retry_helper_success(self):
+        """retry returns on first success."""
+        code = """
+from hermes_tools import retry
+counter = [0]
+def flaky():
+    counter[0] += 1
+    return f"ok on attempt {counter[0]}"
+result = retry(flaky)
+print(result)
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("ok on attempt 1", result["output"])
+
+    def test_retry_helper_eventual_success(self):
+        """retry retries on failure and succeeds eventually."""
+        code = """
+from hermes_tools import retry
+counter = [0]
+def flaky():
+    counter[0] += 1
+    if counter[0] < 3:
+        raise ConnectionError(f"fail {counter[0]}")
+    return "success"
+result = retry(flaky, max_attempts=3, delay=0.01)
+print(result)
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("success", result["output"])
+
+    def test_retry_helper_all_fail(self):
+        """retry raises the last error when all attempts fail."""
+        code = """
+from hermes_tools import retry
+def always_fail():
+    raise ValueError("nope")
+try:
+    retry(always_fail, max_attempts=2, delay=0.01)
+    print("should not reach here")
+except ValueError as e:
+    print(f"caught: {e}")
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("caught: nope", result["output"])
 
 
 if __name__ == "__main__":

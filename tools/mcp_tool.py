@@ -71,12 +71,17 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+# Null sentinels so patch() can always find these names in the module namespace
+ClientSession = None
+StdioServerParameters = None
+stdio_client = None
+streamablehttp_client = None
 try:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    from mcp import ClientSession, StdioServerParameters  # type: ignore[assignment]
+    from mcp.client.stdio import stdio_client  # type: ignore[assignment]
     _MCP_AVAILABLE = True
     try:
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamablehttp_client  # type: ignore[assignment]
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False

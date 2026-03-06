@@ -114,6 +114,127 @@ def do_search(query: str, source: str = "all", limit: int = 10,
             "hermes skills install <identifier> to install[/]\n")
 
 
+def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
+              console: Optional[Console] = None) -> None:
+    """Browse all available skills across registries, paginated.
+
+    Official skills are always shown first, regardless of source filter.
+    """
+    from tools.skills_hub import (
+        GitHubAuth, create_source_router, OptionalSkillSource, SkillMeta,
+    )
+
+    c = console or _console
+
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+
+    # Collect results from all (or filtered) sources
+    # Use empty query to get everything; per-source limits prevent overload
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _PER_SOURCE_LIMIT = {"official": 100, "github": 100, "clawhub": 50,
+                         "claude-marketplace": 50, "lobehub": 50}
+
+    all_results: list = []
+    source_counts: dict = {}
+
+    for src in sources:
+        sid = src.source_id()
+        if source != "all" and sid != source and sid != "official":
+            # Always include official source for the "first" placement
+            continue
+        try:
+            limit = _PER_SOURCE_LIMIT.get(sid, 50)
+            results = src.search("", limit=limit)
+            source_counts[sid] = len(results)
+            all_results.extend(results)
+        except Exception:
+            continue
+
+    if not all_results:
+        c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
+
+    # Deduplicate by name, preferring higher trust
+    seen: dict = {}
+    for r in all_results:
+        rank = _TRUST_RANK.get(r.trust_level, 0)
+        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
+            seen[r.name] = r
+    deduped = list(seen.values())
+
+    # Sort: official first, then by trust level (desc), then alphabetically
+    deduped.sort(key=lambda r: (
+        -_TRUST_RANK.get(r.trust_level, 0),
+        r.source != "official",
+        r.name.lower(),
+    ))
+
+    # Paginate
+    total = len(deduped)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+    page_items = deduped[start:end]
+
+    # Count official vs other
+    official_count = sum(1 for r in deduped if r.source == "official")
+
+    # Build header
+    source_label = f"— {source}" if source != "all" else "— all sources"
+    c.print(f"\n[bold]Skills Hub — Browse {source_label}[/]"
+            f"  [dim]({total} skills, page {page}/{total_pages})[/]")
+    if official_count > 0 and page == 1:
+        c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from Nous Research[/]")
+    c.print()
+
+    # Build table
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="dim", width=4, justify="right")
+    table.add_column("Name", style="bold cyan", max_width=25)
+    table.add_column("Description", max_width=50)
+    table.add_column("Source", style="dim", width=12)
+    table.add_column("Trust", width=10)
+
+    for i, r in enumerate(page_items, start=start + 1):
+        trust_style = {"builtin": "bright_cyan", "trusted": "green",
+                       "community": "yellow"}.get(r.trust_level, "dim")
+        trust_label = "★ official" if r.source == "official" else r.trust_level
+
+        desc = r.description[:50]
+        if len(r.description) > 50:
+            desc += "..."
+
+        table.add_row(
+            str(i),
+            r.name,
+            desc,
+            r.source,
+            f"[{trust_style}]{trust_label}[/]",
+        )
+
+    c.print(table)
+
+    # Navigation hints
+    nav_parts = []
+    if page > 1:
+        nav_parts.append(f"[cyan]--page {page - 1}[/] ← prev")
+    if page < total_pages:
+        nav_parts.append(f"[cyan]--page {page + 1}[/] → next")
+
+    if nav_parts:
+        c.print(f"  {' | '.join(nav_parts)}")
+
+    # Source summary
+    if source == "all" and source_counts:
+        parts = [f"{sid}: {ct}" for sid, ct in sorted(source_counts.items())]
+        c.print(f"  [dim]Sources: {', '.join(parts)}[/]")
+
+    c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
+            "hermes skills install <identifier> to install[/]\n")
+
+
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill."""
@@ -676,7 +797,9 @@ def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     action = getattr(args, "skills_action", None)
 
-    if action == "search":
+    if action == "browse":
+        do_browse(page=args.page, page_size=args.size, source=args.source)
+    elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force)
@@ -710,7 +833,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [search|install|inspect|list|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|audit|uninstall|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -750,7 +873,32 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     action = parts[0].lower()
     args = parts[1:]
 
-    if action == "search":
+    if action == "browse":
+        page = 1
+        page_size = 20
+        source = "all"
+        i = 0
+        while i < len(args):
+            if args[i] == "--page" and i + 1 < len(args):
+                try:
+                    page = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--size" and i + 1 < len(args):
+                try:
+                    page_size = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--source" and i + 1 < len(args):
+                source = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        do_browse(page=page, page_size=page_size, source=source, console=c)
+
+    elif action == "search":
         if not args:
             c.print("[bold red]Usage:[/] /skills search <query> [--source github] [--limit N]\n")
             return
@@ -856,6 +1004,7 @@ def _print_skills_help(console: Console) -> None:
     """Print help for the /skills slash command."""
     console.print(Panel(
         "[bold]Skills Hub Commands:[/]\n\n"
+        "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"

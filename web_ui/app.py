@@ -10,6 +10,7 @@ import subprocess
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
@@ -227,38 +228,63 @@ async def nous_start():
         r = await c.post(
             f"{NOUS_PORTAL}/api/oauth/device/code",
             json={"client_id": CLIENT_ID, "scope": "inference:mint_agent_key"},
+            headers={"Accept": "application/json"},
         )
         if r.status_code != 200:
-            raise HTTPException(502, f"Nous Portal {r.status_code}: {r.text[:200]}")
+            raise HTTPException(502, f"Nous Portal {r.status_code}: {r.text[:300]}")
         d = r.json()
     _oauth_state["device_code"] = d["device_code"]
     _oauth_state["interval"]    = d.get("interval", 5)
     return {
-        "user_code":        d["user_code"],
-        "verification_uri": d["verification_uri"],
-        "expires_in":       d.get("expires_in", 300),
+        "user_code":                 d["user_code"],
+        "verification_uri":          d["verification_uri"],
+        "verification_uri_complete": d.get("verification_uri_complete", d["verification_uri"]),
+        "expires_in":                d.get("expires_in", 300),
+        "interval":                  d.get("interval", 5),
     }
 
 @app.get("/api/auth/nous/poll")
 async def nous_poll():
     if not _oauth_state.get("device_code"):
-        raise HTTPException(400, "No active OAuth flow")
+        raise HTTPException(400, "No active OAuth flow — call /api/auth/nous/start first")
     async with httpx.AsyncClient(timeout=15) as c:
+        # OAuth spec requires application/x-www-form-urlencoded for token requests
         r = await c.post(
             f"{NOUS_PORTAL}/api/oauth/token",
-            json={
+            data={
                 "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
                 "client_id":   CLIENT_ID,
                 "device_code": _oauth_state["device_code"],
             },
+            headers={"Accept": "application/json"},
         )
         d = r.json()
     if "access_token" in d:
+        now      = datetime.now(tz=timezone.utc)
+        expires  = int(d.get("expires_in", 0))
+        now_iso  = now.isoformat()
+        exp_iso  = now.replace(second=now.second + expires).isoformat() if expires else now_iso
+        # Build the full auth.json structure the gateway expects
         auth = read_auth()
+        auth["version"] = 1
         auth.setdefault("providers", {})["nous"] = {
-            "access_token":  d["access_token"],
-            "refresh_token": d.get("refresh_token"),
-            "expires_in":    d.get("expires_in"),
+            "portal_base_url":        NOUS_PORTAL,
+            "inference_base_url":     "https://inference-api.nousresearch.com/v1",
+            "client_id":              CLIENT_ID,
+            "token_type":             d.get("token_type", "Bearer"),
+            "scope":                  d.get("scope", "inference:mint_agent_key"),
+            "access_token":           d["access_token"],
+            "refresh_token":          d.get("refresh_token"),
+            "obtained_at":            now_iso,
+            "expires_in":             expires,
+            "expires_at":             exp_iso,
+            "agent_key":              None,
+            "agent_key_id":           None,
+            "agent_key_expires_at":   None,
+            "agent_key_expires_in":   None,
+            "agent_key_reused":       None,
+            "agent_key_obtained_at":  None,
+            "tls":                    {"insecure": False, "ca_bundle": None},
         }
         auth["active_provider"] = "nous"
         save_auth(auth)
@@ -270,9 +296,9 @@ async def nous_poll():
         return {"status": "authorized"}
     err = d.get("error", "unknown")
     if err in ("authorization_pending", "slow_down"):
-        return {"status": "pending"}
+        return {"status": "pending", "error": err}
     _oauth_state.clear()
-    return {"status": "error", "detail": err}
+    return {"status": "error", "detail": err, "raw": d}
 
 @app.post("/api/auth/nous/logout")
 async def nous_logout():

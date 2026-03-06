@@ -164,12 +164,17 @@ button.danger{background:var(--red)}
     <div id="nous-status-block"></div>
     <div id="nous-flow-block" style="display:none">
       <div class="alert alert-info" id="nous-code-block"></div>
-      <p class="hint" style="margin-bottom:10px">Open the verification URL, enter the code, then click Poll.</p>
-      <div style="display:flex;gap:8px">
-        <button onclick="pollNous()">Poll for token</button>
-        <button class="sec" onclick="cancelNousFlow()">Cancel</button>
+      <div id="nous-complete-url-row" style="display:none;margin-top:10px">
+        <p class="hint" style="margin-bottom:6px">Or open the direct link (code pre-filled):</p>
+        <a id="nous-complete-url" href="#" target="_blank" style="word-break:break-all;font-size:13px"></a>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+        <span class="spinner" id="nous-poll-spinner"></span>
+        <span style="font-size:12px;color:var(--muted)" id="nous-poll-status">Waiting for authorization…</span>
+        <button class="danger" style="margin-left:auto" onclick="cancelNousFlow()">Cancel</button>
       </div>
     </div>
+    <div id="nous-error-block" style="display:none;margin-top:10px"></div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button onclick="startNous()" id="btn-nous-login">Login with Nous Portal</button>
       <button class="danger" onclick="logoutNous()" id="btn-nous-logout" style="display:none">Logout</button>
@@ -888,7 +893,7 @@ async function loadOverview() {
         <span class="status-dot ${d.platforms[p] ? 'dot-green' : 'dot-red'}"></span>
         <span style="text-transform:capitalize">${p}</span>
       </div>`).join('');
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
   loadLogs();
 }
 
@@ -908,7 +913,7 @@ async function loadLogs() {
     }
     box.innerHTML = d.logs.map(l => `<div class="log-line">${escHtml(l)}</div>`).join('');
     box.scrollTop = box.scrollHeight;
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 async function restartGw() {
@@ -926,47 +931,96 @@ async function loadAuth() {
     document.getElementById('nous-status-block').innerHTML = li
       ? `<div class="alert alert-ok">Logged in to Nous Portal — active provider: <strong>${escHtml(d.active_provider)}</strong></div>`
       : `<div class="alert alert-info">Not logged in to Nous Portal.</div>`;
-    document.getElementById('btn-nous-login').style.display = li ? 'none' : '';
+    document.getElementById('btn-nous-login').style.display  = li ? 'none' : '';
     document.getElementById('btn-nous-logout').style.display = li ? '' : 'none';
-  } catch(e) { console.error(e); }
+    document.getElementById('nous-error-block').style.display = 'none';
+  } catch(e) {
+    document.getElementById('nous-status-block').innerHTML =
+      `<div class="alert alert-err">Could not fetch auth status: ${escHtml(e.message)}</div>`;
+  }
 }
 
-let _pollTimer = null;
+let _pollTimer   = null;
+let _pollCount   = 0;
+const MAX_POLLS  = 60;   // give up after ~5 min
 
 async function startNous() {
+  const btn = document.getElementById('btn-nous-login');
+  btn.disabled = true;
+  document.getElementById('nous-error-block').style.display = 'none';
   try {
     const d = await api('POST', '/api/auth/nous/start');
     document.getElementById('nous-flow-block').style.display = '';
     document.getElementById('nous-code-block').innerHTML =
-      `Visit <a href="${escHtml(d.verification_uri)}" target="_blank">${escHtml(d.verification_uri)}</a> and enter code: <strong style="font-size:18px;letter-spacing:3px">${escHtml(d.user_code)}</strong>`;
+      `Go to <a href="${escHtml(d.verification_uri)}" target="_blank"><strong>${escHtml(d.verification_uri)}</strong></a> and enter code: <span style="font-size:20px;font-weight:700;letter-spacing:4px;color:#fff">${escHtml(d.user_code)}</span>`;
+    // Show pre-filled URL if available
+    const completeRow = document.getElementById('nous-complete-url-row');
+    const completeLink = document.getElementById('nous-complete-url');
+    if (d.verification_uri_complete && d.verification_uri_complete !== d.verification_uri) {
+      completeLink.href = d.verification_uri_complete;
+      completeLink.textContent = d.verification_uri_complete;
+      completeRow.style.display = '';
+    } else {
+      completeRow.style.display = 'none';
+    }
+    // Start auto-polling
+    _pollCount = 0;
     clearInterval(_pollTimer);
-    _pollTimer = setInterval(pollNous, 5000);
-  } catch(e) { alert('Failed to start OAuth: ' + e.message); }
+    const interval = Math.max((d.interval || 5), 5) * 1000;
+    _pollTimer = setInterval(pollNous, interval);
+  } catch(e) {
+    btn.disabled = false;
+    document.getElementById('nous-error-block').innerHTML =
+      `<div class="alert alert-err">Failed to start login: ${escHtml(e.message)}</div>`;
+    document.getElementById('nous-error-block').style.display = '';
+  }
 }
 
 async function pollNous() {
+  _pollCount++;
+  if (_pollCount > MAX_POLLS) {
+    cancelNousFlow();
+    showNousError('Login timed out — please try again.');
+    return;
+  }
+  document.getElementById('nous-poll-status').textContent =
+    `Waiting for authorization… (${_pollCount})`;
   try {
     const d = await api('GET', '/api/auth/nous/poll');
     if (d.status === 'authorized') {
       clearInterval(_pollTimer);
       document.getElementById('nous-flow-block').style.display = 'none';
+      document.getElementById('btn-nous-login').disabled = false;
       loadAuth();
     } else if (d.status === 'error') {
-      clearInterval(_pollTimer);
-      document.getElementById('nous-flow-block').style.display = 'none';
-      alert('OAuth error: ' + d.detail);
+      cancelNousFlow();
+      showNousError(`OAuth error: ${escHtml(d.detail || 'unknown')}`);
     }
-  } catch(e) { console.error(e); }
+    // status === 'pending' → keep polling
+  } catch(e) {
+    // network error during poll — show in status, keep trying
+    document.getElementById('nous-poll-status').textContent =
+      `Poll error: ${e.message} — retrying…`;
+  }
 }
 
 function cancelNousFlow() {
   clearInterval(_pollTimer);
   document.getElementById('nous-flow-block').style.display = 'none';
+  document.getElementById('btn-nous-login').disabled = false;
+}
+
+function showNousError(msg) {
+  document.getElementById('nous-error-block').innerHTML =
+    `<div class="alert alert-err">${msg}</div>`;
+  document.getElementById('nous-error-block').style.display = '';
 }
 
 async function logoutNous() {
-  await api('POST', '/api/auth/nous/logout');
-  loadAuth();
+  try {
+    await api('POST', '/api/auth/nous/logout');
+    loadAuth();
+  } catch(e) { alert('Logout failed: ' + e.message); }
 }
 
 async function saveORKey() {
@@ -999,7 +1053,7 @@ async function loadProvider() {
     document.getElementById('rt-ignore').value    = d.routing_ignore;
     if (d.type === 'custom') document.getElementById('prov-base').value = d.base_url;
     onProvTypeChange();
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 function onProvTypeChange() {
@@ -1167,7 +1221,7 @@ async function loadPlatforms() {
     document.getElementById('sr-mode').value      = d.session_mode;
     document.getElementById('sr-idle').value      = d.session_idle_min;
     document.getElementById('sr-hour').value      = d.session_at_hour;
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 async function savePlatforms() {
@@ -1224,7 +1278,7 @@ async function loadAgent() {
     document.getElementById('stt-model').value      = d.stt_model;
     onHdModeChange();
     onTTSProvChange();
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 function onHdModeChange() {
@@ -1289,7 +1343,7 @@ async function loadTerminal() {
     document.getElementById('term-modal-img').value  = d.modal_image;
     document.getElementById('term-sing-img').value   = d.singularity_image;
     onTermBackendChange();
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 function onTermBackendChange() {
@@ -1336,7 +1390,7 @@ async function loadTools() {
     document.getElementById('gh-app-key').value    = d.github_app_key_path;
     document.getElementById('gh-app-install').value = d.github_app_install_id;
     document.getElementById('rl-url').value        = d.rl_api_url;
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 async function saveTools() {
@@ -1386,7 +1440,7 @@ async function loadAdvanced() {
     document.getElementById('dbg-oauth').checked      = d.oauth_trace;
     _mcpServers = d.mcp_servers || {};
     renderMCPList();
-  } catch(e) { console.error(e); }
+  } catch(e) { showPageError(e.message); }
 }
 
 function renderMCPList() {
@@ -1444,6 +1498,21 @@ async function saveAdvanced() {
     });
     flash('adv-msg');
   } catch(e) { alert('Save failed: ' + e.message); }
+}
+
+/* ── Global error bar ── */
+let _errTimer = null;
+function showPageError(msg) {
+  let bar = document.getElementById('global-err-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'global-err-bar';
+    bar.style.cssText = 'position:fixed;top:0;left:208px;right:0;z-index:9999;padding:10px 20px;background:rgba(239,68,68,.9);color:#fff;font-size:13px;display:flex;justify-content:space-between;align-items:center';
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `<span>Error: ${escHtml(msg)}</span><button onclick="this.parentElement.remove()" style="background:transparent;border:1px solid rgba(255,255,255,.5);padding:2px 8px;font-size:12px;color:#fff">✕</button>`;
+  clearTimeout(_errTimer);
+  _errTimer = setTimeout(() => bar.remove(), 8000);
 }
 
 /* Page loader map */

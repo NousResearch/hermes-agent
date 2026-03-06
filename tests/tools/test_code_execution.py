@@ -37,7 +37,7 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
         return json.dumps({"content": "line 1\nline 2\nline 3\n", "total_lines": 3})
     if function_name == "write_file":
         return json.dumps({"status": "ok", "path": function_args.get("path", "")})
-    if function_name == "search":
+    if function_name == "search_files":
         return json.dumps({"matches": [{"file": "test.py", "line": 1, "text": "match"}]})
     if function_name == "patch":
         return json.dumps({"status": "ok", "replacements": 1})

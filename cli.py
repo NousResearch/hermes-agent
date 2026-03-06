@@ -1858,6 +1858,8 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
+        elif cmd_lower.startswith("/insights"):
+            self._show_insights(cmd_original)
         elif cmd_lower == "/paste":
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
@@ -1982,6 +1984,39 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
+    def _show_insights(self, command: str = "/insights"):
+        """Show usage insights and analytics from session history."""
+        # Parse optional --days flag
+        parts = command.split()
+        days = 30
+        source = None
+        i = 1
+        while i < len(parts):
+            if parts[i] == "--days" and i + 1 < len(parts):
+                try:
+                    days = int(parts[i + 1])
+                except ValueError:
+                    print(f"  Invalid --days value: {parts[i + 1]}")
+                    return
+                i += 2
+            elif parts[i] == "--source" and i + 1 < len(parts):
+                source = parts[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        try:
+            from hermes_state import SessionDB
+            from agent.insights import InsightsEngine
+
+            db = SessionDB()
+            engine = InsightsEngine(db)
+            report = engine.generate(days=days, source=source)
+            print(engine.format_terminal(report))
+            db.close()
+        except Exception as e:
+            print(f"  Error generating insights: {e}")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

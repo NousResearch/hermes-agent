@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Hermes Agent',
-  tagline: 'An AI agent that grows with you',
+  tagline: 'The self-improving AI agent',
   favicon: 'img/favicon.svg',
 
   url: 'https://hermes-agent.nousresearch.com',

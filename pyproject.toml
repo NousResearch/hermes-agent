@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermes-agent"
 version = "0.1.0"
-description = "AI agent with advanced tool-calling and toolsets"
+description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]

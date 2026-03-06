@@ -10,7 +10,7 @@ import subprocess
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
@@ -263,7 +263,7 @@ async def nous_poll():
         now      = datetime.now(tz=timezone.utc)
         expires  = int(d.get("expires_in", 0))
         now_iso  = now.isoformat()
-        exp_iso  = now.replace(second=now.second + expires).isoformat() if expires else now_iso
+        exp_iso  = (now + timedelta(seconds=expires)).isoformat() if expires else now_iso
         # Build the full auth.json structure the gateway expects
         auth = read_auth()
         auth["version"] = 1

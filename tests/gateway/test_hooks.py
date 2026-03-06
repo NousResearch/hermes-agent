@@ -177,8 +177,10 @@ class TestEmit:
     @pytest.mark.asyncio
     async def test_no_handlers_for_event(self, tmp_path):
         reg = HookRegistry()
-        # Should not raise
-        await reg.emit("unknown:event", {})
+        # Should not raise and should have no handlers registered
+        result = await reg.emit("unknown:event", {})
+        assert result is None
+        assert not reg._handlers.get("unknown:event")
 
     @pytest.mark.asyncio
     async def test_handler_error_does_not_propagate(self, tmp_path):
@@ -190,8 +192,10 @@ class TestEmit:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path):
             reg.discover_and_load()
 
+        assert len(reg._handlers.get("agent:start", [])) == 1
         # Should not raise even though handler throws
-        await reg.emit("agent:start", {})
+        result = await reg.emit("agent:start", {})
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_emit_default_context(self, tmp_path):

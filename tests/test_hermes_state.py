@@ -43,7 +43,7 @@ class TestSessionLifecycle:
         db.end_session("s1", end_reason="user_exit")
 
         session = db.get_session("s1")
-        assert session["ended_at"] is not None
+        assert isinstance(session["ended_at"], float)
         assert session["end_reason"] == "user_exit"
 
     def test_update_system_prompt(self, db):
@@ -138,7 +138,7 @@ class TestFTS5Search:
         db.append_message("s1", role="assistant", content="Use docker compose up.")
 
         results = db.search_messages("docker")
-        assert len(results) >= 1
+        assert len(results) == 2
         # At least one result should mention docker
         snippets = [r.get("snippet", "") for r in results]
         assert any("docker" in s.lower() or "Docker" in s for s in snippets)
@@ -174,8 +174,10 @@ class TestFTS5Search:
         db.append_message("s1", role="assistant", content="Kubernetes is an orchestrator.")
 
         results = db.search_messages("Kubernetes")
-        assert len(results) >= 1
+        assert len(results) == 2
         assert "context" in results[0]
+        assert isinstance(results[0]["context"], list)
+        assert len(results[0]["context"]) > 0
 
 
 # =========================================================================
@@ -266,7 +268,7 @@ class TestDeleteAndExport:
         db.append_message("s1", role="assistant", content="Hi")
 
         export = db.export_session("s1")
-        assert export is not None
+        assert isinstance(export, dict)
         assert export["source"] == "cli"
         assert len(export["messages"]) == 2
 
@@ -312,7 +314,9 @@ class TestPruneSessions:
         pruned = db.prune_sessions(older_than_days=90)
         assert pruned == 1
         assert db.get_session("old") is None
-        assert db.get_session("new") is not None
+        session = db.get_session("new")
+        assert session is not None
+        assert session["id"] == "new"
 
     def test_prune_skips_active_sessions(self, db):
         db.create_session(session_id="active", source="cli")

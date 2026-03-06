@@ -92,36 +92,50 @@ class TestExtractImages:
         content = "![photo](https://example.com/photo.jpg)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/photo.jpg"
+        assert images[0][1] == "photo"
 
     def test_markdown_image_jpeg(self):
         content = "![](https://example.com/photo.jpeg)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/photo.jpeg"
+        assert images[0][1] == ""
 
     def test_markdown_image_gif(self):
         content = "![anim](https://example.com/anim.gif)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/anim.gif"
+        assert images[0][1] == "anim"
 
     def test_markdown_image_webp(self):
         content = "![](https://example.com/img.webp)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/img.webp"
+        assert images[0][1] == ""
 
     def test_fal_media_cdn(self):
         content = "![gen](https://fal.media/files/abc123/output.png)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://fal.media/files/abc123/output.png"
+        assert images[0][1] == "gen"
 
     def test_fal_cdn_url(self):
         content = "![](https://fal-cdn.example.com/result)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://fal-cdn.example.com/result"
+        assert images[0][1] == ""
 
     def test_replicate_delivery(self):
         content = "![](https://replicate.delivery/pbxt/abc/output)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://replicate.delivery/pbxt/abc/output"
+        assert images[0][1] == ""
 
     def test_non_image_ext_not_extracted(self):
         """Markdown image with non-image extension should not be extracted."""
@@ -142,11 +156,15 @@ class TestExtractImages:
         content = '<img src="https://example.com/photo.png"/>'
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/photo.png"
+        assert images[0][1] == ""
 
     def test_html_img_with_closing_tag(self):
         content = '<img src="https://example.com/photo.png"></img>'
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+        assert images[0][0] == "https://example.com/photo.png"
+        assert images[0][1] == ""
 
     def test_multiple_images(self):
         content = "![a](https://example.com/a.png)\n![b](https://example.com/b.jpg)"
@@ -267,6 +285,11 @@ class TestTruncateMessage:
         msg = "word " * 200  # ~1000 chars
         chunks = adapter.truncate_message(msg, max_length=200)
         assert len(chunks) > 1
+        # Verify all original content is preserved across chunks
+        reassembled = "".join(chunks)
+        # Strip chunk indicators like (1/N) to get raw content
+        for word in msg.strip().split():
+            assert word in reassembled, f"Word '{word}' lost during truncation"
 
     def test_chunks_have_indicators(self):
         adapter = self._adapter()

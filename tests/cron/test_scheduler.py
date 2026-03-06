@@ -15,9 +15,11 @@ class TestResolveOrigin:
             }
         }
         result = _resolve_origin(job)
-        assert result is not None
+        assert isinstance(result, dict)
+        assert result == job["origin"]
         assert result["platform"] == "telegram"
         assert result["chat_id"] == "123456"
+        assert result["chat_name"] == "Test Chat"
 
     def test_no_origin(self):
         assert _resolve_origin({}) is None

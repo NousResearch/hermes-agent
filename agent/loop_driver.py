@@ -123,7 +123,7 @@ def drive_loop(
         if t.action == Action.Break:
             interrupted = True
             if not agent.quiet_mode:
-                print(f"\n{agent.log_prefix}› Breaking out of tool loop due to interrupt...")
+                agent._print(f"\n{agent.log_prefix}› Breaking out of tool loop due to interrupt...")
             break
 
         # ── Fire step_callback ──
@@ -152,13 +152,13 @@ def drive_loop(
 
         # ── ApiCall ──
         thinking_spinner = None
-        if not agent.quiet_mode:
+        if not agent.quiet_mode and agent._show_display:
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4
-            print(f"\n{agent.log_prefix}› Making API call #{sm.iteration}/{agent.max_iterations}...")
-            print(f"{agent.log_prefix}   › Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-            print(f"{agent.log_prefix}   › Available tools: {len(agent.tools) if agent.tools else 0}")
-        else:
+            agent._print(f"\n{agent.log_prefix}› Making API call #{sm.iteration}/{agent.max_iterations}...")
+            agent._agent._print(f"{agent.log_prefix}   › Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+            agent._agent._print(f"{agent.log_prefix}   › Available tools: {len(agent.tools) if agent.tools else 0}")
+        elif agent._show_display:
             verb = random.choice(KawaiiSpinner.THINKING_VERBS)
             spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
             thinking_spinner = KawaiiSpinner(f"{verb}...", spinner_type=spinner_type)
@@ -187,7 +187,7 @@ def drive_loop(
                     thinking_spinner = None
 
                 if not agent.quiet_mode:
-                    print(f"{agent.log_prefix}›  API call completed in {api_duration:.2f}s")
+                    agent._print(f"{agent.log_prefix}›  API call completed in {api_duration:.2f}s")
 
                 # Validate response shape
                 response_invalid = _check_response_invalid(agent, response)
@@ -204,7 +204,7 @@ def drive_loop(
                         break
                     # Retry with backoff
                     wait_time = min(5 * (2 ** (sm.debug_counters()["api_retries"] - 1)), 120)
-                    print(f"{agent.log_prefix}⏳ Retrying in {wait_time}s...")
+                    agent._print(f"{agent.log_prefix}⏳ Retrying in {wait_time}s...")
                     if _sleep_interruptible(agent, wait_time):
                         api_error_result = _interrupted_result(agent, messages, sm.iteration)
                         break
@@ -313,7 +313,7 @@ def drive_loop(
                 assistant_message = response.choices[0].message
 
             if assistant_message.content and not agent.quiet_mode:
-                print(f"{agent.log_prefix}› Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                agent._print(f"{agent.log_prefix}› Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
             # Delegate progress callback
             if (assistant_message.content and agent.tool_progress_callback
@@ -337,7 +337,7 @@ def drive_loop(
                 t = sm.step(kind)  # ParseResponse → CheckScratchpad
                 t = sm.step(ResponseKind.Text)  # CheckScratchpad decision
                 if t.action == Action.Retry:
-                    print(f"{agent.log_prefix}△  Incomplete scratchpad, retrying ({t.message})...")
+                    agent._print(f"{agent.log_prefix}△  Incomplete scratchpad, retrying ({t.message})...")
                     continue
                 elif t.action == Action.Fail:
                     rolled_back = agent._get_messages_up_to_last_assistant(messages)
@@ -378,7 +378,7 @@ def drive_loop(
                         }
                         messages.append(nudge)
                         agent._log_msg_to_db(nudge)
-                        print(f"{agent.log_prefix}△  {t.message}")
+                        agent._print(f"{agent.log_prefix}△  {t.message}")
                         continue
                     else:
                         # Strip broken tags and treat as text
@@ -402,7 +402,7 @@ def drive_loop(
                             messages.append(interim_msg)
                             agent._log_msg_to_db(interim_msg)
                         if not agent.quiet_mode:
-                            print(f"{agent.log_prefix}↻ {t_codex.message}")
+                            agent._print(f"{agent.log_prefix}↻ {t_codex.message}")
                         agent._session_messages = messages
                         agent._save_session_log(messages)
                         continue
@@ -429,7 +429,7 @@ def drive_loop(
                 if invalid_names:
                     t = sm.step(ResponseKind.InvalidToolNames)
                     if t.action == Action.Retry:
-                        print(f"{agent.log_prefix}△  Invalid tool: '{invalid_names[0][:80]}' — {t.message}")
+                        agent._print(f"{agent.log_prefix}△  Invalid tool: '{invalid_names[0][:80]}' — {t.message}")
                         continue
                     elif t.action == Action.Fail:
                         agent._persist_session(messages, conversation_history)
@@ -457,7 +457,7 @@ def drive_loop(
                 if invalid_json:
                     t = sm.step(ResponseKind.InvalidToolJson)
                     if t.action == Action.Retry:
-                        print(f"{agent.log_prefix}△  Invalid JSON for '{invalid_json[0][0]}' — {t.message}")
+                        agent._print(f"{agent.log_prefix}△  Invalid JSON for '{invalid_json[0][0]}' — {t.message}")
                         continue
                     elif t.action == Action.Nudge:
                         tool_name, error_msg = invalid_json[0]
@@ -482,10 +482,10 @@ def drive_loop(
                 turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
-                    if agent.quiet_mode:
+                    if agent.quiet_mode and agent._show_display:
                         clean = agent._strip_think_blocks(turn_content).strip()
                         if clean:
-                            print(f"  ┊ › {clean}")
+                            agent._print(f"  ┊ › {clean}")
 
                 messages.append(assistant_msg)
                 agent._log_msg_to_db(assistant_msg)
@@ -520,9 +520,9 @@ def drive_loop(
                     t = sm.step(ResponseKind.EmptyAfterThink)
                     if t.action == Action.Nudge:
                         reasoning_text = agent._extract_reasoning(assistant_message)
-                        print(f"{agent.log_prefix}△  Empty after think block — {t.message}")
+                        agent._print(f"{agent.log_prefix}△  Empty after think block — {t.message}")
                         if reasoning_text:
-                            print(f"{agent.log_prefix}   Reasoning: {reasoning_text[:500]}")
+                            agent._print(f"{agent.log_prefix}   Reasoning: {reasoning_text[:500]}")
                         nudge = {
                             "role": "user",
                             "content": (
@@ -624,7 +624,7 @@ def drive_loop(
                         messages.append(nudge)
                         agent._log_msg_to_db(nudge)
                         if not agent.quiet_mode:
-                            print(f"{agent.log_prefix}› Model appeared to give up, nudging to continue ({agent._premature_quit_nudges}/2)...")
+                            agent._print(f"{agent.log_prefix}› Model appeared to give up, nudging to continue ({agent._premature_quit_nudges}/2)...")
                         continue
                     elif not _looks_like_quit:
                         agent._premature_quit_nudges = 0
@@ -667,12 +667,12 @@ def drive_loop(
                 agent._log_msg_to_db(final_msg)
 
                 if not agent.quiet_mode:
-                    print(f"{agent.log_prefix}› Conversation completed after {sm.iteration} API call(s)")
+                    agent._print(f"{agent.log_prefix}› Conversation completed after {sm.iteration} API call(s)")
                 break
 
         except Exception as e:
             error_msg = f"Error during API call #{sm.iteration}: {e}"
-            print(f"✕ {error_msg}")
+            agent._print(f"✕ {error_msg}")
             if agent.verbose_logging:
                 logging.exception("Detailed error:")
 
@@ -798,7 +798,7 @@ def _track_usage(agent, response, api_messages):
     if agent.context_compressor._context_probed:
         ctx = agent.context_compressor.context_length
         save_context_length(agent.model, agent.base_url, ctx)
-        print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
+        agent._print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
         agent.context_compressor._context_probed = False
 
     agent.session_prompt_tokens += prompt_tokens
@@ -813,7 +813,7 @@ def _track_usage(agent, response, api_messages):
         prompt = usage_dict["prompt_tokens"]
         hit_pct = (cached / prompt * 100) if prompt > 0 else 0
         if not agent.quiet_mode:
-            print(f"{agent.log_prefix}   › Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
+            agent._print(f"{agent.log_prefix}   › Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
 
 
 def _sleep_interruptible(agent, seconds):
@@ -919,7 +919,7 @@ def _handle_api_error(agent, api_error, api_kwargs, messages,
     ):
         agent._codex_auth_retry_attempted = True
         if agent._try_refresh_codex_client_credentials(force=True):
-            print(f"{agent.log_prefix}› Codex auth refreshed after 401. Retrying request...")
+            agent._print(f"{agent.log_prefix}› Codex auth refreshed after 401. Retrying request...")
             return {"_continue_retry": True}
 
     # Non-retryable client errors

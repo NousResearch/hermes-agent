@@ -31,6 +31,9 @@ platformdirs
 # Text-to-speech (Edge TTS is free, no API key needed)
 edge-tts
 
+# Translation (Google Translate, no API key needed)
+deep-translator
+
 # Optional: For cron expression parsing (cronjob scheduling)
 croniter
 

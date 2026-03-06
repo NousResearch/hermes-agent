@@ -46,6 +46,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from prompt_toolkit.cursor_shapes import CursorShape
 import threading
 import queue
 
@@ -3051,6 +3052,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            cursor=CursorShape.STEADY_BLOCK,
         )
         self._app = app  # Store reference for clarify_callback
         

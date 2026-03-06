@@ -3030,7 +3030,7 @@ class AIAgent:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
-                spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                spinner_type = 'dots'  # fixed: emoji spinners caused terminal flashing
                 thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                 thinking_spinner.start()
             

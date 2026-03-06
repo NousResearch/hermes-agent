@@ -188,7 +188,7 @@ class KawaiiSpinner:
             self._write(f"\r{line}{' ' * pad}", end='', flush=True)
             self.last_line_len = len(line)
             self.frame_idx += 1
-            time.sleep(0.12)
+            time.sleep(0.25)  # fixed: slower refresh reduces terminal flashing
 
     def start(self):
         if self.running:

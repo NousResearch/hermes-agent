@@ -891,7 +891,7 @@ def run_setup_wizard(args):
     if selected_provider != "custom":  # Custom already prompted for model name
         print_header("Default Model")
 
-        current_model = config.get('model', 'anthropic/claude-opus-4.6')
+        current_model = config.get('model', 'local/qwen3.5-9b')
         print_info(f"Current: {current_model}")
 
         if selected_provider == "nous" and nous_models:

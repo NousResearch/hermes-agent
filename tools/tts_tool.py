@@ -83,7 +83,11 @@ def _load_tts_config() -> Dict[str, Any]:
         from hermes_cli.config import load_config
         config = load_config()
         return config.get("tts", {})
-    except Exception:
+    except ImportError:
+        logger.debug("hermes_cli.config not available, using default TTS config")
+        return {}
+    except Exception as e:
+        logger.warning("Failed to load TTS config: %s", e, exc_info=True)
         return {}
 
 
@@ -115,15 +119,23 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 
     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
         )
+        if result.returncode != 0:
+            logger.warning("ffmpeg conversion failed with return code %d: %s", 
+                          result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
+            return None
         if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
             return ogg_path
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg OGG conversion timed out after 30s")
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found in PATH")
     except Exception as e:
-        logger.warning("ffmpeg OGG conversion failed: %s", e)
+        logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
     return None
 
 
@@ -369,9 +381,20 @@ def text_to_speech_tool(
             "voice_compatible": voice_compatible,
         }, ensure_ascii=False)
 
-    except Exception as e:
-        error_msg = f"TTS generation failed ({provider}): {e}"
+    except ValueError as e:
+        # Configuration errors (missing API keys, etc.)
+        error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
+        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+    except FileNotFoundError as e:
+        # Missing dependencies or files
+        error_msg = f"TTS dependency missing ({provider}): {e}"
+        logger.error("%s", error_msg, exc_info=True)
+        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+    except Exception as e:
+        # Unexpected errors
+        error_msg = f"TTS generation failed ({provider}): {e}"
+        logger.error("%s", error_msg, exc_info=True)
         return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
 
 

@@ -27,6 +27,7 @@ class Platform(Enum):
     WHATSAPP = "whatsapp"
     SLACK = "slack"
     HOMEASSISTANT = "homeassistant"
+    CLAWSUITE = "clawsuite"
 
 
 @dataclass
@@ -389,6 +390,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         hass_url = os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+
+    # ClawSuite WebSocket gateway
+    clawsuite_enabled = os.getenv("CLAWSUITE_ENABLED", "").lower() in ("true", "1", "yes")
+    clawsuite_token = os.getenv("CLAWSUITE_TOKEN")
+    if clawsuite_enabled or clawsuite_token:
+        if Platform.CLAWSUITE not in config.platforms:
+            config.platforms[Platform.CLAWSUITE] = PlatformConfig()
+        config.platforms[Platform.CLAWSUITE].enabled = True
+        if clawsuite_token:
+            config.platforms[Platform.CLAWSUITE].token = clawsuite_token
+        # Port / host go into extra so the adapter can read them
+        clawsuite_port = os.getenv("CLAWSUITE_PORT")
+        clawsuite_host = os.getenv("CLAWSUITE_HOST")
+        if clawsuite_port:
+            config.platforms[Platform.CLAWSUITE].extra["port"] = int(clawsuite_port)
+        if clawsuite_host:
+            config.platforms[Platform.CLAWSUITE].extra["host"] = clawsuite_host
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

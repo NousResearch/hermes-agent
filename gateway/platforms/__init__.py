@@ -9,9 +9,12 @@ Each adapter handles:
 """
 
 from .base import BasePlatformAdapter, MessageEvent, SendResult
+from .clawsuite import ClawSuiteAdapter, check_clawsuite_requirements
 
 __all__ = [
     "BasePlatformAdapter",
     "MessageEvent",
     "SendResult",
+    "ClawSuiteAdapter",
+    "check_clawsuite_requirements",
 ]

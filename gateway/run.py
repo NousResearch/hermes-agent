@@ -533,6 +533,13 @@ class GatewayRunner:
                 return None
             return HomeAssistantAdapter(config)
 
+        elif platform == Platform.CLAWSUITE:
+            from gateway.platforms.clawsuite import ClawSuiteAdapter, check_clawsuite_requirements
+            if not check_clawsuite_requirements():
+                logger.warning("ClawSuite: 'websockets' package not installed. Run: pip install websockets")
+                return None
+            return ClawSuiteAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -561,12 +568,14 @@ class GatewayRunner:
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.CLAWSUITE: "CLAWSUITE_ALLOWED_DEVICES",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.CLAWSUITE: "CLAWSUITE_ALLOW_ALL",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

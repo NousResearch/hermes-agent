@@ -28,6 +28,7 @@ COMMANDS = {
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
+    "/insights": "Show usage insights and analytics (last 30 days)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

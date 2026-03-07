@@ -234,6 +234,55 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_context_length_retry_rebuilds_request_after_compression(self, agent):
+        """Retry must send the compressed transcript, not the stale oversized payload."""
+        err_400 = Exception(
+            "Error code: 400 - {'error': {'message': "
+            "\"This endpoint's maximum context length is 128000 tokens. "
+            "Please reduce the length of the messages.\"}}"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after real compression", finish_reason="stop")
+
+        request_payloads = []
+
+        def _side_effect(**kwargs):
+            request_payloads.append(kwargs)
+            if len(request_payloads) == 1:
+                raise err_400
+            return ok_resp
+
+        agent.client.chat.completions.create.side_effect = _side_effect
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        assert result["completed"] is True
+        assert len(request_payloads) == 2
+        assert len(request_payloads[1]["messages"]) < len(request_payloads[0]["messages"])
+        assert request_payloads[1]["messages"][0] == {
+            "role": "system",
+            "content": "compressed prompt",
+        }
+        assert request_payloads[1]["messages"][1] == {
+            "role": "user",
+            "content": "compressed summary",
+        }
+
     def test_413_cannot_compress_further(self, agent):
         """When compression can't reduce messages, return partial result."""
         err_413 = _make_413_error()

@@ -86,6 +86,9 @@ def _strip_mdv2(text: str) -> str:
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    # Remove MarkdownV2 italic markers that format_message converted from *italic*
+    # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
+    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
     return cleaned
 
 

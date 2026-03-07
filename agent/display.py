@@ -163,16 +163,16 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        # Capture stdout NOW, before any redirect_stdout(devnull) from
-        # child agents can replace sys.stdout with a black hole.
+        # Keep _out for test compatibility; _write uses it but falls back to sys.stdout
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time."""
+        """Write to self._out if overridden (tests), else current sys.stdout."""
         try:
-            self._out.write(text + end)
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            out.write(text + end)
             if flush:
-                self._out.flush()
+                out.flush()
         except (ValueError, OSError):
             pass
 
@@ -185,16 +185,23 @@ class KawaiiSpinner:
             elapsed = time.time() - self.start_time
             line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
-            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
+            # Use \r only — no ANSI escape codes that patch_stdout might mishandle
+            out = self._out if self._out is not sys.__stdout__ else sys.stdout
+            try:
+                out.write(f"\r{line}{' ' * pad}")
+                out.flush()
+            except (ValueError, OSError):
+                pass
             self.last_line_len = len(line)
             self.frame_idx += 1
-            time.sleep(0.12)
+            time.sleep(0.25)
 
     def start(self):
         if self.running:
             return
         self.running = True
         self.start_time = time.time()
+
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
 

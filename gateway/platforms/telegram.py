@@ -8,9 +8,12 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import logging
 import os
 import re
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     from telegram import Update, Bot, Message
@@ -71,6 +74,19 @@ _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
+
+
+def _strip_mdv2(text: str) -> str:
+    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+
+    Also removes MarkdownV2 bold markers (*text* -> text) so the fallback
+    doesn't show stray asterisks from header/bold conversion.
+    """
+    # Remove escape backslashes before special characters
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove MarkdownV2 bold markers that format_message converted from **bold**
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    return cleaned
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -199,9 +215,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as md_error:
                     # Markdown parsing failed, try plain text
                     if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                        logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                        # Strip MDV2 escape backslashes so the user doesn't
+                        # see raw backslashes littered through the message.
+                        plain_chunk = _strip_mdv2(chunk)
                         msg = await self._bot.send_message(
                             chat_id=int(chat_id),
-                            text=chunk,
+                            text=plain_chunk,
                             parse_mode=None,  # Plain text
                             reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                             message_thread_id=int(thread_id) if thread_id else None,

@@ -2437,34 +2437,77 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     logger.info("Cron ticker stopped")
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False) -> bool:
     """
     Start the gateway and run until interrupted.
     
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
+    
+    Args:
+        config: Optional gateway configuration override.
+        replace: If True, kill any existing gateway instance before starting.
+                 Useful for systemd services to avoid restart-loop deadlocks
+                 when the previous process hasn't fully exited yet.
     """
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile
     # setups (each profile using a distinct HERMES_HOME) will naturally
     # allow concurrent instances without tripping this guard.
-    from gateway.status import get_running_pid
+    import time as _time
+    from gateway.status import get_running_pid, remove_pid_file
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
-        hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
-        logger.error(
-            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
-            existing_pid, hermes_home,
-        )
-        print(
-            f"\n❌ Gateway already running (PID {existing_pid}).\n"
-            f"   Use 'hermes gateway restart' to replace it,\n"
-            f"   or 'hermes gateway stop' to kill it first.\n"
-        )
-        return False
+        if replace:
+            logger.info(
+                "Replacing existing gateway instance (PID %d) with --replace.",
+                existing_pid,
+            )
+            try:
+                os.kill(existing_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # Already gone
+            except PermissionError:
+                logger.error(
+                    "Permission denied killing PID %d. Cannot replace.",
+                    existing_pid,
+                )
+                return False
+            # Wait up to 10 seconds for the old process to exit
+            for _ in range(20):
+                try:
+                    os.kill(existing_pid, 0)
+                    _time.sleep(0.5)
+                except (ProcessLookupError, PermissionError):
+                    break  # Process is gone
+            else:
+                # Still alive after 10s — force kill
+                logger.warning(
+                    "Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.",
+                    existing_pid,
+                )
+                try:
+                    os.kill(existing_pid, signal.SIGKILL)
+                    _time.sleep(0.5)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            remove_pid_file()
+        else:
+            hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+            logger.error(
+                "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+                "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+                existing_pid, hermes_home,
+            )
+            print(
+                f"\n❌ Gateway already running (PID {existing_pid}).\n"
+                f"   Use 'hermes gateway restart' to replace it,\n"
+                f"   or 'hermes gateway stop' to kill it first.\n"
+                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+            )
+            return False
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:

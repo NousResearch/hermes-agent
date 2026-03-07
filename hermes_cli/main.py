@@ -1315,6 +1315,8 @@ For more help on a command:
     # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="store_true")
+    gateway_run.add_argument("--replace", action="store_true",
+                             help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")

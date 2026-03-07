@@ -259,12 +259,16 @@ class SessionDB:
         msg_id = cursor.lastrowid
 
         # Update counters
-        is_tool_related = role == "tool" or tool_calls is not None
-        if is_tool_related:
+        # Count actual tool calls from the tool_calls list (not from tool responses).
+        # A single assistant message can contain multiple parallel tool calls.
+        num_tool_calls = 0
+        if tool_calls is not None:
+            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        if num_tool_calls > 0:
             self._conn.execute(
                 """UPDATE sessions SET message_count = message_count + 1,
-                   tool_call_count = tool_call_count + 1 WHERE id = ?""",
-                (session_id,),
+                   tool_call_count = tool_call_count + ? WHERE id = ?""",
+                (num_tool_calls, session_id),
             )
         else:
             self._conn.execute(

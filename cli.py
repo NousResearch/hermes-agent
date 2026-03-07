@@ -3147,6 +3147,8 @@ class HermesCLI:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        self._spinner_text = ""
+                        self._spinner_text = ""
                         app.invalidate()  # Refresh status line
                     
                 except Exception as e:

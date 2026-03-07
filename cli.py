@@ -19,6 +19,7 @@ import sys
 import json
 import atexit
 import uuid
+import textwrap
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -2767,6 +2768,8 @@ class HermesCLI:
                 return "type password (hidden), Enter to skip"
             if cli_ref._approval_state:
                 return ""
+            if cli_ref._clarify_freetext:
+                return "type your answer here and press Enter"
             if cli_ref._clarify_state:
                 return ""
             if cli_ref._agent_running:
@@ -2824,6 +2827,32 @@ class HermesCLI:
 
         # --- Clarify tool: dynamic display widget for questions + choices ---
 
+        def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
+            """Choose a stable panel width wide enough for the title and content."""
+            term_cols = shutil.get_terminal_size((100, 20)).columns
+            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
+            return inner + 2  # account for the single leading/trailing spaces inside borders
+
+        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
+            wrapped = textwrap.wrap(
+                text,
+                width=max(8, width),
+                break_long_words=False,
+                break_on_hyphens=False,
+                subsequent_indent=subsequent_indent,
+            )
+            return wrapped or [""]
+
+        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
+            inner_width = max(0, box_width - 2)
+            lines.append((border_style, "│ "))
+            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((border_style, " │\n"))
+
+        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
+            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
+
         def _get_clarify_display():
             """Build styled text for the clarify question/choices panel."""
             state = cli_ref._clarify_state
@@ -2833,43 +2862,62 @@ class HermesCLI:
             question = state["question"]
             choices = state.get("choices") or []
             selected = state.get("selected", 0)
+            preview_lines = _wrap_panel_text(question, 60)
+            for i, choice in enumerate(choices):
+                prefix = "❯ " if i == selected and not cli_ref._clarify_freetext else "  "
+                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="  "))
+            other_label = (
+                "❯ Other (type below)" if cli_ref._clarify_freetext
+                else "❯ Other (type your answer)" if selected == len(choices)
+                else "  Other (type your answer)"
+            )
+            preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="  "))
+            box_width = _panel_box_width("Hermes needs your input", preview_lines)
+            inner_text_width = max(8, box_width - 2)
 
             lines = []
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ─────────────────────────────╮\n'))
-            lines.append(('class:clarify-border', '│\n'))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             # Question text
-            lines.append(('class:clarify-border', '│  '))
-            lines.append(('class:clarify-question', question))
-            lines.append(('', '\n'))
-            lines.append(('class:clarify-border', '│\n'))
+            for wrapped in _wrap_panel_text(question, inner_text_width):
+                _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+            if cli_ref._clarify_freetext and not choices:
+                guidance = "Type your answer in the prompt below, then press Enter."
+                for wrapped in _wrap_panel_text(guidance, inner_text_width):
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
                 # Multiple-choice mode: show selectable options
                 for i, choice in enumerate(choices):
-                    lines.append(('class:clarify-border', '│  '))
-                    if i == selected and not cli_ref._clarify_freetext:
-                        lines.append(('class:clarify-selected', f'❯ {choice}'))
-                    else:
-                        lines.append(('class:clarify-choice', f'  {choice}'))
-                    lines.append(('', '\n'))
+                    style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
+                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
+                    wrapped_lines = _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  ")
+                    for wrapped in wrapped_lines:
+                        _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
 
                 # "Other" option (5th line, only shown when choices exist)
                 other_idx = len(choices)
-                lines.append(('class:clarify-border', '│  '))
                 if selected == other_idx and not cli_ref._clarify_freetext:
-                    lines.append(('class:clarify-selected', '❯ Other (type your answer)'))
+                    other_style = 'class:clarify-selected'
+                    other_label = '❯ Other (type your answer)'
                 elif cli_ref._clarify_freetext:
-                    lines.append(('class:clarify-active-other', '❯ Other (type below)'))
+                    other_style = 'class:clarify-active-other'
+                    other_label = '❯ Other (type below)'
                 else:
-                    lines.append(('class:clarify-choice', '  Other (type your answer)'))
-                lines.append(('', '\n'))
+                    other_style = 'class:clarify-choice'
+                    other_label = '  Other (type your answer)'
+                for wrapped in _wrap_panel_text(other_label, inner_text_width, subsequent_indent="  "):
+                    _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
 
-            lines.append(('class:clarify-border', '│\n'))
-            lines.append(('class:clarify-border', '╰──────────────────────────────────────────────────╯\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         clarify_widget = ConditionalContainer(
@@ -2924,29 +2972,32 @@ class HermesCLI:
                 "always": "Add to permanent allowlist",
                 "deny": "Deny",
             }
+            preview_lines = _wrap_panel_text(description, 60)
+            preview_lines.extend(_wrap_panel_text(cmd_display, 60))
+            for i, choice in enumerate(choices):
+                prefix = '❯ ' if i == selected else '  '
+                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice_labels.get(choice, choice)}", 60, subsequent_indent="  "))
+            box_width = _panel_box_width("⚠️  Dangerous Command", preview_lines)
+            inner_text_width = max(8, box_width - 2)
 
             lines = []
             lines.append(('class:approval-border', '╭─ '))
             lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            lines.append(('class:approval-border', ' ───────────────────────────────╮\n'))
-            lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '│  '))
-            lines.append(('class:approval-desc', description))
-            lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│  '))
-            lines.append(('class:approval-cmd', cmd_display))
-            lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│\n'))
+            lines.append(('class:approval-border', ' ' + ('─' * max(0, box_width - len("⚠️  Dangerous Command") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            for wrapped in _wrap_panel_text(description, inner_text_width):
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+            for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
             for i, choice in enumerate(choices):
-                lines.append(('class:approval-border', '│  '))
                 label = choice_labels.get(choice, choice)
-                if i == selected:
-                    lines.append(('class:approval-selected', f'❯ {label}'))
-                else:
-                    lines.append(('class:approval-choice', f'  {label}'))
-                lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '╰──────────────────────────────────────────────────────╯\n'))
+                style = 'class:approval-selected' if i == selected else 'class:approval-choice'
+                prefix = '❯ ' if i == selected else '  '
+                for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+                    _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         approval_widget = ConditionalContainer(

@@ -278,6 +278,8 @@ HERMES_MAX_ITERATIONS=60                  # Max tool-calling iterations
 MESSAGING_CWD=/home/myuser                # Terminal working directory for messaging
 
 # Tool progress is configured in config.yaml (display.tool_progress: off|new|all|verbose)
+# Background process watcher chat updates are configured separately
+# (display.background_process_notifications: off|result|error|all)
 ```
 
 ### Working Directory Behavior
@@ -339,6 +341,15 @@ When `tool_progress` is enabled in `config.yaml`, the bot sends status messages 
 Modes:
 - `new`: Only when switching to a different tool (less spam)
 - `all`: Every single tool call
+
+### Background Process Notifications
+
+Gateway watcher messages for `terminal(background=true, check_interval=...)`
+are controlled by `display.background_process_notifications`:
+- `off`: no watcher messages
+- `result`: only final completion message
+- `error`: only final message on non-zero exit
+- `all`: running updates plus final message
 
 ### Typing Indicator
 
@@ -442,6 +453,7 @@ Agent behavior (in `~/.hermes/.env`):
 - `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 60)
 - `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
 - `display.tool_progress` in config.yaml - Tool progress: `off`, `new`, `all`, `verbose`
+- `display.background_process_notifications` in config.yaml - Background watcher chat updates: `off`, `result`, `error`, `all`
 - `OPENAI_API_KEY` - Voice transcription (Whisper STT)
 - `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` - Slack integration (Socket Mode)
 - `SLACK_ALLOWED_USERS` - Comma-separated Slack user IDs

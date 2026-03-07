@@ -575,3 +575,11 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
+
+  # Background process notifications for gateway chats when using
+  # terminal(background=true, check_interval=...)
+  #   off:    Don't push watcher updates to chat
+  #   result: Only push the final completion message
+  #   error:  Only push the final message when exit_code != 0
+  #   all:    Push running output updates and the final message (default)
+  background_process_notifications: all

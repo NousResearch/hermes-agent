@@ -368,6 +368,40 @@ class GatewayRunner:
             pass
         return {}
 
+    @staticmethod
+    def _load_display_config() -> dict:
+        """Load display settings from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return cfg.get("display", {}) or {}
+        except Exception:
+            pass
+        return {}
+
+    @classmethod
+    def _get_background_process_notifications_mode(cls) -> str:
+        """Resolve background process notification mode from config/env."""
+        raw_mode = cls._load_display_config().get("background_process_notifications")
+        if raw_mode is False:
+            mode = "off"
+        elif raw_mode not in (None, ""):
+            mode = str(raw_mode)
+        else:
+            mode = os.getenv("HERMES_BACKGROUND_PROCESS_NOTIFICATIONS") or "all"
+        mode = str(mode).strip().lower()
+        valid = {"all", "result", "off", "error"}
+        if mode not in valid:
+            logger.warning(
+                "Unknown background_process_notifications '%s', using default 'all'",
+                mode,
+            )
+            return "all"
+        return mode
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -1780,8 +1814,13 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        notify_mode = self._get_background_process_notifications_mode()
 
         logger.debug("Process watcher started: %s (every %ss)", session_id, interval)
+
+        if notify_mode == "off":
+            logger.debug("Process watcher disabled for %s", session_id)
+            return
 
         last_output_len = 0
         while True:
@@ -1796,26 +1835,31 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
-                # Process finished -- deliver final update
-                new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                message_text = (
-                    f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                    f"Here's the final output:\n{new_output}]"
+                should_notify = (
+                    notify_mode in ("all", "result")
+                    or (notify_mode == "error" and session.exit_code not in (0, None))
                 )
-                # Try to deliver to the originating platform
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
-                if adapter and chat_id:
-                    try:
-                        await adapter.send(chat_id, message_text)
-                    except Exception as e:
-                        logger.error("Watcher delivery error: %s", e)
+                if should_notify:
+                    # Process finished -- deliver final update
+                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    message_text = (
+                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                        f"Here's the final output:\n{new_output}]"
+                    )
+                    # Try to deliver to the originating platform
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
+                            await adapter.send(chat_id, message_text)
+                        except Exception as e:
+                            logger.error("Watcher delivery error: %s", e)
                 break
 
-            elif has_new_output:
+            elif has_new_output and notify_mode == "all":
                 # New output available -- deliver status update
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 message_text = (

@@ -168,6 +168,18 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.85,    # Compress at 85% of model's context limit
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
+        "context_editing": {
+            # Anthropic server-side context editing (Claude-only, optional).
+            # Disabled by default; can be enabled in config.yaml or via env vars.
+            "enabled": False,
+            # Sensible defaults are derived from the model's context window; these
+            # values are only used when explicitly set in the config file.
+            "trigger_tokens": 100_000,
+            "keep_tool_uses": 5,
+            "keep_thinking_turns": 2,
+            "exclude_tools": ["memory", "skill_manage", "todo"],
+            "clear_tool_inputs": False,
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -337,6 +349,22 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in compression_env_mappings.items():
         if config_key in compression_config:
             os.environ[env_var] = str(compression_config[config_key])
+
+    # Apply Anthropic context editing config to environment variables.
+    # These are consumed by run_agent.AIAgent when constructing API kwargs.
+    context_editing_config = defaults.get("context_editing", {})
+    context_editing_env_mappings = {
+        "enabled": "CONTEXT_EDITING_ENABLED",
+        "trigger_tokens": "CONTEXT_EDITING_TRIGGER_TOKENS",
+        "keep_tool_uses": "CONTEXT_EDITING_KEEP_TOOL_USES",
+        "keep_thinking_turns": "CONTEXT_EDITING_KEEP_THINKING_TURNS",
+        "exclude_tools": "CONTEXT_EDITING_EXCLUDE_TOOLS",
+        "clear_tool_inputs": "CONTEXT_EDITING_CLEAR_TOOL_INPUTS",
+    }
+
+    for config_key, env_var in context_editing_env_mappings.items():
+        if config_key in context_editing_config:
+            os.environ[env_var] = str(context_editing_config[config_key])
     
     return defaults
 

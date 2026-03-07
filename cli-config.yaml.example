@@ -25,6 +25,26 @@ model:
   base_url: "https://openrouter.ai/api/v1"
 
 # =============================================================================
+# Anthropic Context Editing (Claude-only, optional)
+# =============================================================================
+# When enabled, Hermes will ask Anthropic to automatically clear old tool
+# calls and thinking blocks server-side using the Context Editing API.
+# This keeps prompt cache prefixes intact and offloads cleanup to Anthropic.
+#
+# NOTE:
+#   - Only affects Claude/Anthropic models.
+#   - Implemented via the Messages API `context_management` parameter.
+#   - Advanced tuning can be done via environment variables; see docs.
+#
+# context_editing:
+#   enabled: true              # Enable Anthropic server-side context editing
+#   trigger_tokens: 100000     # Input tokens threshold to start clearing tool calls
+#   keep_tool_uses: 5          # How many recent tool_use/result pairs to keep
+#   keep_thinking_turns: 2     # How many recent thinking turns to keep
+#   exclude_tools: [memory, skill_manage, todo]  # Never clear these tool calls
+#   clear_tool_inputs: false   # Also clear tool input params (default: false)
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

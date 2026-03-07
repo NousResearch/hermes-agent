@@ -296,6 +296,17 @@ class AIAgent:
         is_openrouter = "openrouter" in self.base_url.lower()
         is_claude = "claude" in self.model.lower()
         self._use_prompt_caching = is_openrouter and is_claude
+
+        # Provider flags for downstream feature toggles (context editing, etc.).
+        self._is_openrouter = is_openrouter
+        self._is_nous_portal = "nousresearch" in self.base_url.lower()
+        # Treat both direct Anthropic base URLs and Anthropic/Claude models as
+        # eligible for context editing configuration.
+        self._is_anthropic_model = (
+            "anthropic" in self.model.lower()
+            or "claude" in self.model.lower()
+            or self.model.lower().startswith("anthropic/")
+        )
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
@@ -389,6 +400,13 @@ class AIAgent:
                 "X-OpenRouter-Title": "Hermes Agent",
                 "X-OpenRouter-Categories": "productivity,cli-agent",
             }
+        else:
+            # For direct Anthropic API usage, opt into the Context Management
+            # beta so we can send context_management edits when enabled.
+            if "anthropic" in effective_base.lower():
+                headers = client_kwargs.get("default_headers", {}).copy()
+                headers["anthropic-beta"] = "context-management-2025-06-27"
+                client_kwargs["default_headers"] = headers
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:
@@ -2230,6 +2248,109 @@ class AIAgent:
         # Nous Portal product attribution
         if _is_nous:
             extra_body["tags"] = ["product=hermes-agent"]
+
+        # Anthropic Context Editing API (server-side context management).
+        #
+        # When enabled via config/env, add a context_management block with two
+        # edits:
+        #   1) clear_thinking_20251015  - trims old thinking turns
+        #   2) clear_tool_uses_20250919 - trims old tool use/result pairs
+        #
+        # This is only applied for Anthropic/Claude models. Configuration is
+        # provided via environment variables (wired from cli-config.yaml):
+        #
+        #   CONTEXT_EDITING_ENABLED
+        #   CONTEXT_EDITING_TRIGGER_TOKENS
+        #   CONTEXT_EDITING_KEEP_TOOL_USES
+        #   CONTEXT_EDITING_KEEP_THINKING_TURNS
+        #   CONTEXT_EDITING_CLEAR_AT_LEAST_TOKENS
+        #   CONTEXT_EDITING_EXCLUDE_TOOLS   (comma-separated)
+        #   CONTEXT_EDITING_CLEAR_TOOL_INPUTS
+        #
+        try:
+            enabled_raw = os.getenv("CONTEXT_EDITING_ENABLED", "").strip().lower()
+            context_editing_enabled = enabled_raw in ("1", "true", "yes", "on")
+        except Exception:
+            context_editing_enabled = False
+
+        if context_editing_enabled and self._is_anthropic_model:
+            # Fetch the model's context window for proportional defaults.
+            try:
+                context_length = get_model_context_length(self.model)
+            except Exception:
+                context_length = 128_000
+
+            def _int_from_env(name: str, default: int) -> int:
+                raw = os.getenv(name)
+                if not raw:
+                    return default
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return default
+
+            trigger_tokens = _int_from_env(
+                "CONTEXT_EDITING_TRIGGER_TOKENS",
+                int(context_length * 0.60),
+            )
+            keep_tool_uses = _int_from_env(
+                "CONTEXT_EDITING_KEEP_TOOL_USES",
+                5,
+            )
+            keep_thinking_turns = _int_from_env(
+                "CONTEXT_EDITING_KEEP_THINKING_TURNS",
+                2,
+            )
+            clear_at_least = _int_from_env(
+                "CONTEXT_EDITING_CLEAR_AT_LEAST_TOKENS",
+                int(context_length * 0.10),
+            )
+
+            exclude_env = os.getenv("CONTEXT_EDITING_EXCLUDE_TOOLS", "")
+            if exclude_env:
+                exclude_tools = [
+                    t.strip()
+                    for t in exclude_env.split(",")
+                    if t.strip()
+                ]
+            else:
+                exclude_tools = ["memory", "skill_manage", "todo"]
+
+            clear_inputs_raw = os.getenv(
+                "CONTEXT_EDITING_CLEAR_TOOL_INPUTS",
+                "",
+            ).strip().lower()
+            clear_tool_inputs = clear_inputs_raw in ("1", "true", "yes", "on")
+
+            context_edits = [
+                {
+                    "type": "clear_thinking_20251015",
+                    "keep": {
+                        "type": "thinking_turns",
+                        "value": keep_thinking_turns,
+                    },
+                },
+                {
+                    "type": "clear_tool_uses_20250919",
+                    "trigger": {
+                        "type": "input_tokens",
+                        "value": trigger_tokens,
+                    },
+                    "keep": {
+                        "type": "tool_uses",
+                        "value": keep_tool_uses,
+                    },
+                    "clear_at_least": {
+                        "type": "input_tokens",
+                        "value": clear_at_least,
+                    },
+                    "exclude_tools": exclude_tools,
+                    "clear_tool_inputs": clear_tool_inputs,
+                },
+            ]
+
+            if context_edits:
+                extra_body.setdefault("context_management", {})["edits"] = context_edits
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

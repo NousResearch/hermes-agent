@@ -156,19 +156,31 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    hermes_home = Path.home() / ".hermes"
     
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main gateway run
+# Use --replace for idempotent startup: if a previous instance crashed
+# and left a stale PID file, this ensures the new instance starts cleanly.
+ExecStart={python_path} -m hermes_cli.main gateway run --replace
+ExecStop={python_path} -m hermes_cli.main gateway stop
 WorkingDirectory={working_dir}
+# Only restart on actual failures, not clean exits.
+# Use 'always' if you want the gateway to restart even after /update commands.
 Restart=on-failure
-RestartSec=10
+RestartSec=15
+# Limit restart bursts to prevent aggressive loops
+StartLimitIntervalSec=300
+StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
+# Set HERMES_HOME explicitly in case user's environment isn't loaded
+Environment=HERMES_HOME={hermes_home}
 
 [Install]
 WantedBy=default.target
@@ -271,6 +283,7 @@ def generate_launchd_plist() -> str:
     working_dir = str(PROJECT_ROOT)
     log_dir = Path.home() / ".hermes" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    hermes_home = Path.home() / ".hermes"
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -286,10 +299,17 @@ def generate_launchd_plist() -> str:
         <string>hermes_cli.main</string>
         <string>gateway</string>
         <string>run</string>
+        <string>--replace</string>
     </array>
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>
@@ -299,6 +319,9 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
+    
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -377,9 +400,30 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
-def run_gateway(verbose: bool = False):
-    """Run the gateway in foreground."""
+def run_gateway(verbose: bool = False, replace: bool = False):
+    """Run the gateway in foreground.
+    
+    Args:
+        verbose: Enable verbose logging.
+        replace: If True, forcibly remove any existing PID lock before starting.
+                 Useful for systemd units to achieve idempotent startup.
+    """
     sys.path.insert(0, str(PROJECT_ROOT))
+    
+    # Handle --replace: clean up stale PID lock before starting
+    if replace:
+        from gateway.status import get_running_pid, remove_pid_file
+        existing_pid = get_running_pid()
+        if existing_pid is not None and existing_pid != os.getpid():
+            print(f"⚠ Replacing existing gateway (PID {existing_pid})...")
+            try:
+                os.kill(existing_pid, signal.SIGTERM)
+                # Give it a moment to exit gracefully
+                import time
+                time.sleep(2)
+            except (ProcessLookupError, PermissionError):
+                pass
+            remove_pid_file()
     
     from gateway.run import start_gateway
     
@@ -765,7 +809,8 @@ def gateway_command(args):
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         verbose = getattr(args, 'verbose', False)
-        run_gateway(verbose)
+        replace = getattr(args, 'replace', False)
+        run_gateway(verbose=verbose, replace=replace)
         return
 
     if subcmd == "setup":

@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -2432,10 +2433,53 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     logger.info("Cron ticker stopped")
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
+def _terminate_existing_gateway(existing_pid: int, timeout_seconds: float = 5.0) -> bool:
+    """Terminate a running gateway process for replace-on-start workflows."""
+    try:
+        os.kill(existing_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        logger.error("Permission denied while trying to stop existing gateway PID %d", existing_pid)
+        return False
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            os.kill(existing_pid, 0)
+            time.sleep(0.1)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            logger.error("Permission denied while checking gateway PID %d", existing_pid)
+            return False
+
+    try:
+        os.kill(existing_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        logger.error("Permission denied while force-killing gateway PID %d", existing_pid)
+        return False
+
+    for _ in range(20):
+        try:
+            os.kill(existing_pid, 0)
+            time.sleep(0.05)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            logger.error("Permission denied while confirming gateway PID %d exit", existing_pid)
+            return False
+
+    logger.error("Gateway PID %d did not exit after SIGTERM/SIGKILL", existing_pid)
+    return False
+
+
+async def start_gateway(config: Optional[GatewayConfig] = None, replace_existing: bool = False) -> bool:
     """
     Start the gateway and run until interrupted.
-    
+
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
@@ -2449,17 +2493,35 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
-        logger.error(
-            "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-            "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
-            existing_pid, hermes_home,
-        )
-        print(
-            f"\n❌ Gateway already running (PID {existing_pid}).\n"
-            f"   Use 'hermes gateway restart' to replace it,\n"
-            f"   or 'hermes gateway stop' to kill it first.\n"
-        )
-        return False
+        if replace_existing:
+            logger.warning(
+                "Replacing existing gateway instance (PID %d, HERMES_HOME=%s).",
+                existing_pid,
+                hermes_home,
+            )
+            print(f"\n⚠ Existing gateway detected (PID {existing_pid}). Replacing it...\n")
+            if not _terminate_existing_gateway(existing_pid):
+                print(
+                    f"\n❌ Failed to stop existing gateway (PID {existing_pid}).\n"
+                    f"   Try 'hermes gateway stop' and retry.\n"
+                )
+                return False
+
+            from gateway.status import remove_pid_file
+            remove_pid_file()
+        else:
+            logger.error(
+                "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+                "Use 'hermes gateway run --replace', 'hermes gateway restart', "
+                "or 'hermes gateway stop' first.",
+                existing_pid, hermes_home,
+            )
+            print(
+                f"\n❌ Gateway already running (PID {existing_pid}).\n"
+                f"   Use 'hermes gateway run --replace' to replace it,\n"
+                f"   or 'hermes gateway stop' to kill it first.\n"
+            )
+            return False
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:

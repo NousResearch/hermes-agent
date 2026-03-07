@@ -1315,6 +1315,11 @@ For more help on a command:
     # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="store_true")
+    gateway_run.add_argument(
+        "--replace",
+        action="store_true",
+        help="If another gateway is already running, stop it and replace it"
+    )
     
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
@@ -1845,6 +1850,14 @@ For more help on a command:
     
     # Default to chat if no command specified
     if args.command is None:
+        # Non-interactive service contexts (systemd, etc.) should run gateway
+        # mode instead of launching interactive chat and immediately exiting.
+        if not sys.stdin.isatty() and any(os.getenv(k) for k in ("INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET")):
+            from hermes_cli.gateway import run_gateway
+            print("Detected non-interactive service context; starting gateway mode with --replace.")
+            run_gateway(verbose=False, replace_existing=True)
+            return
+
         args.query = None
         args.model = None
         args.provider = None

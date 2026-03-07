@@ -60,6 +60,18 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Running Hermes under systemd (Linux)
+
+Use gateway mode for long-running services:
+
+```ini
+ExecStart=/path/to/hermes gateway run --replace
+Restart=on-failure
+```
+
+`--replace` makes startup idempotent if a previous gateway PID is still running.
+If your unit uses `ExecStart=/path/to/hermes` with no subcommand, Hermes now auto-switches to gateway mode in systemd service contexts.
+
 ---
 
 ## Documentation

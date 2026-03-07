@@ -163,7 +163,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main gateway run
+ExecStart={python_path} -m hermes_cli.main gateway run --replace
 WorkingDirectory={working_dir}
 Restart=on-failure
 RestartSec=10
@@ -377,12 +377,17 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
-def run_gateway(verbose: bool = False):
+def _is_service_context() -> bool:
+    """Best-effort check for service manager context (e.g., systemd)."""
+    return any(os.getenv(key) for key in ("INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"))
+
+
+def run_gateway(verbose: bool = False, replace_existing: bool = False):
     """Run the gateway in foreground."""
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+
     from gateway.run import start_gateway
-    
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -390,10 +395,10 @@ def run_gateway(verbose: bool = False):
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
-    
+
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    success = asyncio.run(start_gateway())
+    success = asyncio.run(start_gateway(replace_existing=replace_existing))
     if not success:
         sys.exit(1)
 
@@ -765,7 +770,11 @@ def gateway_command(args):
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         verbose = getattr(args, 'verbose', False)
-        run_gateway(verbose)
+        replace_existing = getattr(args, 'replace', False)
+        # In service contexts, default to idempotent startup.
+        if _is_service_context() and not replace_existing:
+            replace_existing = True
+        run_gateway(verbose, replace_existing=replace_existing)
         return
 
     if subcmd == "setup":

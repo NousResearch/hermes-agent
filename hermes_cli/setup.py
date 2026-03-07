@@ -729,6 +729,10 @@ def run_setup_wizard(args):
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
+        "Z.AI / GLM (Zhipu AI models)",
+        "Kimi / Moonshot (Kimi coding models)",
+        "MiniMax (global endpoint)",
+        "MiniMax China (mainland China endpoint)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -864,14 +868,143 @@ def run_setup_wizard(args):
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
         print_success("Custom endpoint configured")
-    # else: provider_idx == 4 (Keep current) — only shown when a provider already exists
+
+    elif provider_idx == 4:  # Z.AI / GLM
+        selected_provider = "zai"
+        print()
+        print_header("Z.AI / GLM API Key")
+        pconfig = PROVIDER_REGISTRY["zai"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://open.bigmodel.cn/")
+        print()
+
+        existing_key = get_env_value("GLM_API_KEY") or get_env_value("ZAI_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  GLM API key", password=True)
+                if api_key:
+                    save_env_value("GLM_API_KEY", api_key)
+                    print_success("GLM API key updated")
+        else:
+            api_key = prompt("  GLM API key", password=True)
+            if api_key:
+                save_env_value("GLM_API_KEY", api_key)
+                print_success("GLM API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("zai", pconfig.inference_base_url)
+
+    elif provider_idx == 5:  # Kimi / Moonshot
+        selected_provider = "kimi-coding"
+        print()
+        print_header("Kimi / Moonshot API Key")
+        pconfig = PROVIDER_REGISTRY["kimi-coding"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://platform.moonshot.cn/")
+        print()
+
+        existing_key = get_env_value("KIMI_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  Kimi API key", password=True)
+                if api_key:
+                    save_env_value("KIMI_API_KEY", api_key)
+                    print_success("Kimi API key updated")
+        else:
+            api_key = prompt("  Kimi API key", password=True)
+            if api_key:
+                save_env_value("KIMI_API_KEY", api_key)
+                print_success("Kimi API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
+
+    elif provider_idx == 6:  # MiniMax
+        selected_provider = "minimax"
+        print()
+        print_header("MiniMax API Key")
+        pconfig = PROVIDER_REGISTRY["minimax"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://platform.minimaxi.com/")
+        print()
+
+        existing_key = get_env_value("MINIMAX_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  MiniMax API key", password=True)
+                if api_key:
+                    save_env_value("MINIMAX_API_KEY", api_key)
+                    print_success("MiniMax API key updated")
+        else:
+            api_key = prompt("  MiniMax API key", password=True)
+            if api_key:
+                save_env_value("MINIMAX_API_KEY", api_key)
+                print_success("MiniMax API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("minimax", pconfig.inference_base_url)
+
+    elif provider_idx == 7:  # MiniMax China
+        selected_provider = "minimax-cn"
+        print()
+        print_header("MiniMax China API Key")
+        pconfig = PROVIDER_REGISTRY["minimax-cn"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://platform.minimaxi.com/")
+        print()
+
+        existing_key = get_env_value("MINIMAX_CN_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  MiniMax CN API key", password=True)
+                if api_key:
+                    save_env_value("MINIMAX_CN_API_KEY", api_key)
+                    print_success("MiniMax CN API key updated")
+        else:
+            api_key = prompt("  MiniMax CN API key", password=True)
+            if api_key:
+                save_env_value("MINIMAX_CN_API_KEY", api_key)
+                print_success("MiniMax CN API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
+
+    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
 
     # =========================================================================
     # Step 1b: OpenRouter API Key for tools (if not already set)
     # =========================================================================
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "openai-codex", "custom") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -944,6 +1077,60 @@ def run_setup_wizard(args):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        elif selected_provider == "zai":
+            zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            model_choices = list(zai_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(zai_models):
+                config['model'] = zai_models[model_idx]
+                save_env_value("LLM_MODEL", zai_models[model_idx])
+            elif model_idx == len(zai_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: keep current
+        elif selected_provider == "kimi-coding":
+            kimi_models = ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]
+            model_choices = list(kimi_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(kimi_models):
+                config['model'] = kimi_models[model_idx]
+                save_env_value("LLM_MODEL", kimi_models[model_idx])
+            elif model_idx == len(kimi_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: keep current
+        elif selected_provider in ("minimax", "minimax-cn"):
+            minimax_models = ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]
+            model_choices = list(minimax_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(minimax_models):
+                config['model'] = minimax_models[model_idx]
+                save_env_value("LLM_MODEL", minimax_models[model_idx])
+            elif model_idx == len(minimax_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: keep current
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

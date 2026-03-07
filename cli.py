@@ -833,7 +833,7 @@ class HermesCLI:
         Args:
             model: Model to use (default: from env or claude-sonnet)
             toolsets: List of toolsets to enable (default: all)
-            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex")
+            provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations (default: 60)
@@ -3229,7 +3229,7 @@ def main(
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto", "openrouter", "nous")
+        provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)

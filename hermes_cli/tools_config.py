@@ -178,8 +178,14 @@ TOOL_CATEGORIES = {
         "icon": "🌐",
         "providers": [
             {
+                "name": "Local Browser",
+                "tag": "Free headless Chromium (no API key needed)",
+                "env_vars": [],
+                "post_setup": "browserbase",  # Same npm install for agent-browser
+            },
+            {
                 "name": "Browserbase",
-                "tag": "Cloud browser with stealth mode",
+                "tag": "Cloud browser with stealth & proxies",
                 "env_vars": [
                     {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
                     {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},

@@ -84,7 +84,7 @@ def show_status(args):
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
-        "Browserbase": "BROWSERBASE_API_KEY",
+        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",

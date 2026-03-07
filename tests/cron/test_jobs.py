@@ -75,8 +75,9 @@ class TestParseSchedule:
         run_at_str = result["run_at"]
         assert isinstance(run_at_str, str)
         run_at = datetime.fromisoformat(run_at_str)
-        assert run_at > datetime.now()
-        assert run_at < datetime.now() + timedelta(minutes=31)
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=31)
 
     def test_every_becomes_interval(self):
         result = parse_schedule("every 2h")
@@ -129,15 +130,15 @@ class TestComputeNextRun:
         result = compute_next_run(schedule)
         next_dt = datetime.fromisoformat(result)
         # Should be ~60 minutes from now
-        assert next_dt > datetime.now() + timedelta(minutes=59)
+        assert next_dt > datetime.now().astimezone() + timedelta(minutes=59)
 
     def test_interval_subsequent_run(self):
         schedule = {"kind": "interval", "minutes": 30}
-        last = datetime.now().isoformat()
+        last = datetime.now().astimezone().isoformat()
         result = compute_next_run(schedule, last_run_at=last)
         next_dt = datetime.fromisoformat(result)
         # Should be ~30 minutes from last run
-        assert next_dt > datetime.now() + timedelta(minutes=29)
+        assert next_dt > datetime.now().astimezone() + timedelta(minutes=29)
 
     def test_cron_returns_future(self):
         pytest.importorskip("croniter")
@@ -147,7 +148,7 @@ class TestComputeNextRun:
         assert len(result) > 0
         next_dt = datetime.fromisoformat(result)
         assert isinstance(next_dt, datetime)
-        assert next_dt > datetime.now()
+        assert next_dt > datetime.now().astimezone()
 
     def test_unknown_kind_returns_none(self):
         assert compute_next_run({"kind": "unknown"}) is None

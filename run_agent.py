@@ -3142,10 +3142,13 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            compression_attempts = 0
+            max_compression_attempts = 3
             codex_auth_retry_attempted = False
             nous_auth_retry_attempted = False
 
             finish_reason = "stop"
+            response = None  # Guard against UnboundLocalError if all retries fail
 
             while retry_count < max_retries:
                 try:
@@ -3441,7 +3444,19 @@ class AIAgent:
                     )
 
                     if is_payload_too_large:
-                        print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
+                        compression_attempts += 1
+                        if compression_attempts > max_compression_attempts:
+                            print(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.")
+                            logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
+                                "partial": True
+                            }
+                        print(f"{self.log_prefix}⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -3450,6 +3465,7 @@ class AIAgent:
 
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            time.sleep(2)  # Brief pause between compression retries
                             continue  # Retry with compressed messages
                         else:
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
@@ -3495,6 +3511,20 @@ class AIAgent:
                         else:
                             print(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...")
 
+                        compression_attempts += 1
+                        if compression_attempts > max_compression_attempts:
+                            print(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.")
+                            logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                "partial": True
+                            }
+                        print(f"{self.log_prefix}   🗜️  Context compression attempt {compression_attempts}/{max_compression_attempts}...")
+
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens
@@ -3503,6 +3533,7 @@ class AIAgent:
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
                                 print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            time.sleep(2)  # Brief pause between compression retries
                             continue  # Retry with compressed messages or new tier
                         else:
                             # Can't compress further and already at minimum tier
@@ -3579,6 +3610,14 @@ class AIAgent:
             
             # If the API call was interrupted, skip response processing
             if interrupted:
+                break
+
+            # Guard: if all retries exhausted without a successful response
+            # (e.g. repeated context-length errors that exhausted retry_count),
+            # the `response` variable is still None. Break out cleanly.
+            if response is None:
+                print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
+                self._persist_session(messages, conversation_history)
                 break
 
             try:

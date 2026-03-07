@@ -325,6 +325,9 @@ description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
 license: MIT
+platforms: [macos, linux]          # Optional — restrict to specific OS platforms
+                                   #   Valid: macos, linux, windows
+                                   #   Omit to load on all platforms (default)
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -350,6 +353,18 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+### Platform-specific skills
+
+Skills can declare which OS platforms they support via the `platforms` frontmatter field. Skills with this field are automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms.
+
+```yaml
+platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders)
+platforms: [macos, linux]     # macOS and Linux
+platforms: [windows]          # Windows only
+```
+
+If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
 
 ### Skill guidelines
 

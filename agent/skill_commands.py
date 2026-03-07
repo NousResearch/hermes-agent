@@ -22,7 +22,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform
         if not SKILLS_DIR.exists():
             return _skill_commands
         for skill_md in SKILLS_DIR.rglob("SKILL.md"):
@@ -31,6 +31,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
             try:
                 content = skill_md.read_text(encoding='utf-8')
                 frontmatter, body = _parse_frontmatter(content)
+                # Skip skills incompatible with the current OS platform
+                if not skill_matches_platform(frontmatter):
+                    continue
                 name = frontmatter.get('name', skill_md.parent.name)
                 description = frontmatter.get('description', '')
                 if not description:

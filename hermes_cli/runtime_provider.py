@@ -72,12 +72,25 @@ def _resolve_openrouter_runtime(
         or OPENROUTER_BASE_URL
     ).rstrip("/")
 
-    api_key = (
-        explicit_api_key
-        or os.getenv("OPENROUTER_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or ""
-    )
+    # Choose API key based on whether the resolved base_url targets OpenRouter.
+    # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
+    # When hitting a custom endpoint, prefer OPENAI_API_KEY so the OpenRouter
+    # key doesn't leak to an unrelated provider (issue #560).
+    _is_openrouter_url = "openrouter.ai" in base_url
+    if _is_openrouter_url:
+        api_key = (
+            explicit_api_key
+            or os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
+        )
+    else:
+        api_key = (
+            explicit_api_key
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+            or ""
+        )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 

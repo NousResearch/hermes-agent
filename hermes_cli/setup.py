@@ -930,6 +930,14 @@ def run_setup_wizard(args):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        elif selected_provider == "nous" and not nous_models:
+            # Nous was selected but model fetch failed — warn and prompt for manual entry
+            print_warning("Could not fetch Nous Portal model list (network issue or token expiry).")
+            print_info("Please enter a Nous-format model name manually (e.g. claude-opus-4-6)")
+            custom = prompt("Enter Nous model name")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

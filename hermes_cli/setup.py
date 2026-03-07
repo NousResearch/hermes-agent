@@ -636,7 +636,8 @@ def setup_model_provider(config: dict):
 
         current_url = get_env_value("OPENAI_BASE_URL") or ""
         current_key = get_env_value("OPENAI_API_KEY")
-        current_model = config.get('model', '')
+        _raw_model = config.get('model', '')
+        current_model = _raw_model.get('default', '') if isinstance(_raw_model, dict) else (_raw_model or '')
 
         if current_url:
             print_info(f"  Current URL: {current_url}")
@@ -807,7 +808,8 @@ def setup_model_provider(config: dict):
     if selected_provider != "custom":  # Custom already prompted for model name
         print_header("Default Model")
 
-        current_model = config.get('model', 'anthropic/claude-opus-4.6')
+        _raw_model = config.get('model', 'anthropic/claude-opus-4.6')
+        current_model = _raw_model.get('default', 'anthropic/claude-opus-4.6') if isinstance(_raw_model, dict) else (_raw_model or 'anthropic/claude-opus-4.6')
         print_info(f"Current: {current_model}")
 
         if selected_provider == "nous" and nous_models:
@@ -929,8 +931,10 @@ def setup_model_provider(config: dict):
                     save_env_value("LLM_MODEL", custom)
             # else: Keep current
 
-        if config.get('model'):
-            print_success(f"Model set to: {config['model']}")
+        _final_model = config.get('model', '')
+        if _final_model:
+            _display = _final_model.get('default', _final_model) if isinstance(_final_model, dict) else _final_model
+            print_success(f"Model set to: {_display}")
 
     save_config(config)
 

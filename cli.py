@@ -1866,6 +1866,8 @@ class HermesCLI:
             self._show_usage()
         elif cmd_lower.startswith("/insights"):
             self._show_insights(cmd_original)
+        elif cmd_lower.startswith("/play"):
+            self._handle_play_command(cmd_original)
         elif cmd_lower == "/paste":
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
@@ -1889,6 +1891,41 @@ class HermesCLI:
         
         return True
     
+    def _handle_play_command(self, command: str):
+        """Handle /play <game> command."""
+        parts = command.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            print("  Usage: /play tictactoe")
+            print("  Available games: tictactoe")
+            return
+
+        game_name = parts[1].strip().lower()
+        if game_name not in ("tictactoe", "ttt", "tic-tac-toe"):
+            print(f"  Unknown game: {game_name}")
+            print("  Available games: tictactoe")
+            return
+
+        from hermes_cli.games.tictactoe import start_game
+
+        # Build a lightweight LLM move function using the auxiliary client
+        def agent_move_fn(prompt: str) -> str:
+            from agent.auxiliary_client import get_text_auxiliary_client
+            client, model = get_text_auxiliary_client()
+            if client is None:
+                return ""
+            import os as _os
+            game_model = _os.getenv("LLM_MODEL", model)
+            try:
+                response = client.chat.completions.create(
+                    model=game_model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content or ""
+            except Exception:
+                return ""
+
+        start_game(agent_move_fn=agent_move_fn)
+
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]

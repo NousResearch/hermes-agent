@@ -209,8 +209,58 @@ compression:
   threshold: 0.85
   
   # Model to use for generating summaries (fast/cheap recommended)
-  # This model compresses the middle turns into a concise summary
+  # This model compresses the middle turns into a concise summary.
+  # IMPORTANT: it receives the full middle section of the conversation, so it
+  # MUST support a context length at least as large as your main model's.
   summary_model: "google/gemini-3-flash-preview"
+  
+  # Provider for the summary model (default: "auto")
+  # Options: "auto", "openrouter", "nous", "main"
+  # summary_provider: "auto"
+
+# =============================================================================
+# Auxiliary Models (Advanced — Experimental)
+# =============================================================================
+# Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
+# browser screenshot analysis, web page summarization, and context compression.
+#
+# By default these use Gemini Flash via OpenRouter or Nous Portal and are
+# auto-detected from your credentials.  You do NOT need to change anything
+# here for normal usage.
+#
+# WARNING: Overriding these with providers other than OpenRouter or Nous Portal
+# is EXPERIMENTAL and may not work.  Not all models/providers support vision,
+# produce usable summaries, or accept the same API format.  Change at your own
+# risk — if things break, reset to "auto" / empty values.
+#
+# Each task has its own provider + model pair so you can mix providers.
+# For example: OpenRouter for vision (needs multimodal), but your main
+# local endpoint for compression (just needs text).
+#
+# Provider options:
+#   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
+#   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
+#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "main"       - Use the same provider & credentials as your main chat model.
+#                  Skips OpenRouter/Nous and uses your custom endpoint
+#                  (OPENAI_BASE_URL), Codex OAuth, or API-key provider directly.
+#                  Useful if you run a local model and want auxiliary tasks to
+#                  use it too.
+#
+# Model: leave empty to use the provider's default.  When empty, OpenRouter
+# uses "google/gemini-3-flash-preview" and Nous uses "gemini-3-flash".
+# Other providers pick a sensible default automatically.
+#
+# auxiliary:
+#   # Image analysis: vision_analyze tool + browser screenshots
+#   vision:
+#     provider: "auto"
+#     model: ""              # e.g. "google/gemini-2.5-flash", "openai/gpt-4o"
+#
+#   # Web page scraping / summarization + browser page text extraction
+#   web_extract:
+#     provider: "auto"
+#     model: ""
 
 # =============================================================================
 # Persistent Memory

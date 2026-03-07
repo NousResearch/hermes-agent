@@ -87,6 +87,20 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "threshold": 0.85,
         "summary_model": "google/gemini-3-flash-preview",
+        "summary_provider": "auto",
+    },
+    
+    # Auxiliary model overrides (advanced).  By default Hermes auto-selects
+    # the provider and model for each side task.  Set these to override.
+    "auxiliary": {
+        "vision": {
+            "provider": "auto",    # auto | openrouter | nous | main
+            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+        },
+        "web_extract": {
+            "provider": "auto",
+            "model": "",
+        },
     },
     
     "display": {
@@ -913,6 +927,31 @@ def show_config():
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
+        comp_provider = compression.get('summary_provider', 'auto')
+        if comp_provider != 'auto':
+            print(f"  Provider:     {comp_provider}")
+    
+    # Auxiliary models
+    auxiliary = config.get('auxiliary', {})
+    aux_tasks = {
+        "Vision":      auxiliary.get('vision', {}),
+        "Web extract": auxiliary.get('web_extract', {}),
+    }
+    has_overrides = any(
+        t.get('provider', 'auto') != 'auto' or t.get('model', '')
+        for t in aux_tasks.values()
+    )
+    if has_overrides:
+        print()
+        print(color("◆ Auxiliary Models (overrides)", Colors.CYAN, Colors.BOLD))
+        for label, task_cfg in aux_tasks.items():
+            prov = task_cfg.get('provider', 'auto')
+            mdl = task_cfg.get('model', '')
+            if prov != 'auto' or mdl:
+                parts = [f"provider={prov}"]
+                if mdl:
+                    parts.append(f"model={mdl}")
+                print(f"  {label:12s}  {', '.join(parts)}")
     
     # Messaging
     print()

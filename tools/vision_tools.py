@@ -468,7 +468,9 @@ def _handle_vision_analyze(args, **kw):
     image_url = args.get("image_url", "")
     question = args.get("question", "")
     full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
-    model = DEFAULT_VISION_MODEL or "google/gemini-3-flash-preview"
+    model = (os.getenv("AUXILIARY_VISION_MODEL", "").strip()
+             or DEFAULT_VISION_MODEL
+             or "google/gemini-3-flash-preview")
     return vision_analyze_tool(image_url, full_prompt, model)
 
 

@@ -295,6 +295,6 @@ def check_dangerous_command(command: str, env_type: str,
     elif choice == "always":
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
-        save_permanent_allowlist(load_permanent_allowlist() | {pattern_key})
+        save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}

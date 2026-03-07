@@ -1,10 +1,15 @@
-"""Welcome banner, ASCII art, and skills summary for the CLI.
+"""Welcome banner, ASCII art, skills summary, and update check for the CLI.
 
 Pure display functions with no HermesCLI state dependency.
 """
 
+import json
+import logging
+import os
+import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -12,6 +17,8 @@ from rich.table import Table
 
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================
@@ -93,6 +100,72 @@ def get_available_skills() -> Dict[str, List[str]]:
         skills_by_category.setdefault(category, []).append(skill_name)
 
     return skills_by_category
+
+
+# =========================================================================
+# Update check
+# =========================================================================
+
+# Cache update check results for 6 hours to avoid repeated git fetches
+_UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+
+
+def check_for_updates() -> Optional[int]:
+    """Check how many commits behind origin/main the local repo is.
+
+    Does a ``git fetch`` at most once every 6 hours (cached to
+    ``~/.hermes/.update_check``).  Returns the number of commits behind,
+    or ``None`` if the check fails or isn't applicable.
+    """
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    repo_dir = hermes_home / "hermes-agent"
+    cache_file = hermes_home / ".update_check"
+
+    # Must be a git repo
+    if not (repo_dir / ".git").exists():
+        return None
+
+    # Read cache
+    now = time.time()
+    try:
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text())
+            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+                return cached.get("behind")
+    except Exception:
+        pass
+
+    # Fetch latest refs (fast — only downloads ref metadata, no files)
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", "--quiet"],
+            capture_output=True, timeout=10,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        pass  # Offline or timeout — use stale refs, that's fine
+
+    # Count commits behind
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            behind = int(result.stdout.strip())
+        else:
+            behind = None
+    except Exception:
+        behind = None
+
+    # Write cache
+    try:
+        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+    except Exception:
+        pass
+
+    return behind
 
 
 # =========================================================================
@@ -258,6 +331,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
     right_lines.append(f"[dim #B8860B]{' · '.join(summary_parts)}[/]")
+
+    # Update check — show if behind origin/main
+    try:
+        behind = check_for_updates()
+        if behind and behind > 0:
+            commits_word = "commit" if behind == 1 else "commits"
+            right_lines.append(
+                f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                f"[dim yellow] — run [bold]hermes update[/bold] to update[/]"
+            )
+    except Exception:
+        pass  # Never break the banner over an update check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

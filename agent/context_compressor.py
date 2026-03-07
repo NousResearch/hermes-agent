@@ -7,7 +7,7 @@ protecting head and tail context.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import get_text_auxiliary_client
 from agent.model_metadata import (
@@ -16,6 +16,48 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+NEVER_PRUNE_TOOLS = {"clarify", "memory", "skill_view", "todo", "read_file"}
+
+COMPACTION_TEMPLATE = """Summarize the compressed conversation turns into a structured resumption context.
+Use EXACTLY this format:
+
+## Goal
+[What is the user trying to accomplish?]
+
+## Standing Instructions
+[Any persistent instructions or constraints from the user]
+
+## Key Discoveries
+[Important findings, relevant code, data, error messages discovered]
+
+## Accomplished So Far
+[What has been completed -- files changed, commands run, tests passed]
+
+## Relevant Files & Paths
+[All file paths, URLs, and resources that matter for the ongoing task]
+
+## Next Steps
+[What was the agent about to do when compression triggered?]
+
+Keep each section concise but complete. Omit sections that have no content.
+"""
+
+
+def _adaptive_prune_protect(context_length: int) -> int:
+    """Scale PRUNE_PROTECT tokens based on model context window."""
+    if context_length >= 500_000:
+        return 100_000
+    if context_length >= 128_000:
+        return 40_000
+    if context_length >= 64_000:
+        return 20_000
+    return 10_000
+
+
+def _adaptive_prune_minimum(context_length: int) -> int:
+    """Minimum tokens to reclaim before pruning is worthwhile."""
+    return max(5_000, context_length // 20)
 
 
 class ContextCompressor:
@@ -55,6 +97,8 @@ class ContextCompressor:
 
         self.client, default_model = get_text_auxiliary_client()
         self.summary_model = summary_model_override or default_model
+        self._prune_protect_tokens = _adaptive_prune_protect(self.context_length)
+        self._prune_minimum_tokens = _adaptive_prune_minimum(self.context_length)
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -82,6 +126,47 @@ class ContextCompressor:
             "compression_count": self.compression_count,
         }
 
+    def _is_protected_tool(self, message: Dict[str, Any]) -> bool:
+        """Return True if this tool message should never be pruned."""
+        name = message.get("name", "") or ""
+        return name in NEVER_PRUNE_TOOLS
+
+    def _prune_tool_outputs(self, messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+        """Phase 1: Replace old tool outputs with short placeholders. No LLM call needed.
+
+        Walks backwards through messages, keeping recent tool outputs within
+        _prune_protect_tokens. Older tool outputs beyond that window are replaced
+        with a short placeholder. Protected tools (memory, clarify, etc.) are
+        never pruned.
+
+        Returns:
+            (pruned_messages, chars_saved)
+        """
+        pruned = list(messages)
+        chars_saved = 0
+        recent_tool_tokens = 0
+        prune_protect = self._prune_protect_tokens
+
+        for i in range(len(pruned) - 1, self.protect_first_n - 1, -1):
+            msg = pruned[i]
+            if msg.get("role") != "tool":
+                continue
+            if self._is_protected_tool(msg):
+                continue
+            content = msg.get("content") or ""
+            token_estimate = len(content) // 4
+            if recent_tool_tokens < prune_protect:
+                # Still within the protected recent window — keep as-is
+                recent_tool_tokens += token_estimate
+            else:
+                # Beyond protected window — prune this tool output
+                original_len = len(content)
+                placeholder = f"[Tool output pruned — was {original_len:,} chars]"
+                pruned[i] = {**msg, "content": placeholder}
+                chars_saved += original_len - len(placeholder)
+
+        return pruned, chars_saved
+
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
         """Generate a concise summary of conversation turns.
 
@@ -103,22 +188,12 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
-        prompt = f"""Summarize these conversation turns concisely. This summary will replace these turns in the conversation history.
-
-Write from a neutral perspective describing:
-1. What actions were taken (tool calls, searches, file operations)
-2. Key information or results obtained
-3. Important decisions or findings
-4. Relevant data, file names, or outputs
-
-Keep factual and informative. Target ~{self.summary_target_tokens} tokens.
-
----
-TURNS TO SUMMARIZE:
-{content_to_summarize}
----
-
-Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
+        prompt = (
+            COMPACTION_TEMPLATE
+            + f"\nTarget ~{self.summary_target_tokens} tokens total.\n"
+            + f"\n---\nTURNS TO SUMMARIZE:\n{content_to_summarize}"
+            + "\n---\n\nWrite only the structured summary starting with [CONTEXT SUMMARY]: prefix."
+        )
 
         # 1. Try the auxiliary model (cheap/fast)
         if self.client:
@@ -322,15 +397,43 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if compress_start >= compress_end:
             return messages
 
-        turns_to_summarize = messages[compress_start:compress_end]
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         if not self.quiet_mode:
             print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
             print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
 
+        # Phase 1: prune old tool outputs — free, no LLM call needed
+        pruned_messages, chars_saved = self._prune_tool_outputs(messages)
+        pruned_tokens = estimate_messages_tokens_rough(pruned_messages)
+        tokens_saved_phase1 = max(0, display_tokens - pruned_tokens)
+
+        if chars_saved > 0 and not self.quiet_mode:
+            print(f"   ✂️  Phase 1 (prune): removed {chars_saved:,} chars of old tool outputs (~{tokens_saved_phase1:,} tokens saved)")
+
+        if chars_saved > 0 and pruned_tokens < self.threshold_tokens:
+            self.compression_count += 1
+            if not self.quiet_mode:
+                print(f"   ✅ Phase 1 sufficient: {n_messages} → {len(pruned_messages)} messages, now {pruned_tokens:,} tokens")
+                print(f"   💡 Compression #{self.compression_count} complete (prune only — no LLM call needed)")
+            return self._sanitize_tool_pairs(pruned_messages)
+
+        # Phase 2: LLM summarization of middle turns
+        messages = pruned_messages
+        n_messages = len(messages)
+        compress_start = self.protect_first_n
+        compress_end = n_messages - self.protect_last_n
+        if compress_start >= compress_end:
+            return messages
+        compress_start = self._align_boundary_forward(messages, compress_start)
+        compress_end = self._align_boundary_backward(messages, compress_end)
+        if compress_start >= compress_end:
+            return messages
+
+        turns_to_summarize = messages[compress_start:compress_end]
+
         if not self.quiet_mode:
-            print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
+            print(f"   🗜️  Phase 2 (compact): summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
 
         summary = self._generate_summary(turns_to_summarize)
 

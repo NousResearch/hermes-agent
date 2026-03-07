@@ -21,9 +21,12 @@ from typing import Iterable
 
 
 DEFAULT_SKIN = "hermes"
-VALID_SKINS = {"hermes", "ares"}
-
-ARES_MOD_DIR = Path(__file__).resolve().parent.parent / "ares agent mod"
+VALID_SKINS = {"hermes", "ares", "posideon"}
+MOD_SKINS = {"ares", "posideon"}
+MOD_DIRS = {
+    "ares": Path(__file__).resolve().parent.parent / "ares agent mod",
+    "posideon": Path(__file__).resolve().parent.parent / "posideon agent mod",
+}
 
 _DEFAULT_ARES_CRIMSON = "#9F1C1C"
 _DEFAULT_ARES_BLOOD = "#6B1717"
@@ -63,6 +66,33 @@ _DEFAULT_PIXEL_FONT = {
         "1    ",
         "1    ",
         "11111",
+    ),
+    "D": (
+        "1111 ",
+        "1   1",
+        "1   1",
+        "1   1",
+        "1   1",
+        "1   1",
+        "1111 ",
+    ),
+    "I": (
+        "11111",
+        "  1  ",
+        "  1  ",
+        "  1  ",
+        "  1  ",
+        "  1  ",
+        "11111",
+    ),
+    "O": (
+        " 111 ",
+        "1   1",
+        "1   1",
+        "1   1",
+        "1   1",
+        "1   1",
+        " 111 ",
     ),
     "S": (
         " 1111",
@@ -121,12 +151,37 @@ _DEFAULT_PIXEL_FONT = {
 }
 
 
-@lru_cache(maxsize=1)
-def _load_ares_mod():
-    path = ARES_MOD_DIR / "mod.py"
+def _normalize_skin_token(name: str | None) -> str:
+    if not name:
+        return DEFAULT_SKIN
+    normalized = str(name).strip().lower().replace("-", "_")
+    aliases = {
+        "default": DEFAULT_SKIN,
+        "classic": "hermes",
+        "classic_gold": "hermes",
+        "winged": "ares",
+        "holographic": "ares",
+        "poseidon": "posideon",
+        "ocean": "posideon",
+        "trident": "posideon",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _active_mod_skin(name: str | None = None) -> str | None:
+    normalized = _normalize_skin_token(name if name is not None else os.getenv("HERMES_CLI_SKIN"))
+    return normalized if normalized in MOD_SKINS else None
+
+
+@lru_cache(maxsize=3)
+def _load_mod(skin_name: str | None = None):
+    resolved_skin = _active_mod_skin(skin_name)
+    if resolved_skin is None:
+        return None
+    path = MOD_DIRS[resolved_skin] / "mod.py"
     if not path.exists():
         return None
-    spec = importlib.util.spec_from_file_location("ares_agent_mod_payload", path)
+    spec = importlib.util.spec_from_file_location(f"{resolved_skin}_agent_mod_payload", path)
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
@@ -134,15 +189,15 @@ def _load_ares_mod():
     return module
 
 
-def _mod_attr(name: str, default):
-    mod = _load_ares_mod()
+def _mod_attr(name: str, default, skin_name: str | None = None):
+    mod = _load_mod(_active_mod_skin(skin_name))
     if mod is None:
         return default
     return getattr(mod, name, default)
 
 
-def _call_mod(name: str, *args, **kwargs):
-    mod = _load_ares_mod()
+def _call_mod(name: str, *args, skin_name: str | None = None, **kwargs):
+    mod = _load_mod(_active_mod_skin(skin_name))
     if mod is None:
         return None
     func = getattr(mod, name, None)
@@ -322,8 +377,11 @@ def _is_near_white(red: int, green: int, blue: int) -> bool:
     return luminance >= 220 and spread <= 40
 
 
-def build_ares_masthead() -> str:
-    """Render a readable pixel-font masthead for the CLI banner."""
+def build_mod_masthead() -> str:
+    """Render a readable pixel-font masthead for the active mod banner."""
+    payload = _call_mod("build_masthead")
+    if payload:
+        return payload
     payload = _call_mod("build_ares_masthead")
     if payload:
         return payload
@@ -345,7 +403,7 @@ def build_ares_masthead() -> str:
         ARES_PATINA,
         "#775735",
     )
-    text = "ARES-AGENT"
+    text = get_mod_brand_name().upper().replace(" ", "-")
     lines: list[str] = []
 
     for row_index in range(7):
@@ -383,6 +441,11 @@ def build_ares_masthead() -> str:
     return "\n".join(lines)
 
 
+def build_ares_masthead() -> str:
+    """Backward-compatible alias for the active mod masthead."""
+    return build_mod_masthead()
+
+
 def get_mod_brand_name() -> str:
     return str(_mod_attr("BRAND_NAME", "Ares Agent"))
 
@@ -398,7 +461,10 @@ def get_mod_asset_dir() -> Path:
     payload = _call_mod("get_asset_dir")
     if payload:
         return Path(payload)
-    return ARES_MOD_DIR
+    active_mod = _active_mod_skin()
+    if active_mod:
+        return MOD_DIRS[active_mod]
+    return MOD_DIRS["ares"]
 
 
 def get_mod_help_footer(tool_count: int, skill_count: int) -> str:
@@ -499,20 +565,83 @@ def get_mod_thinking_verbs() -> tuple[str, ...]:
     )
 
 
+def get_mod_assistant_name() -> str:
+    return str(_mod_attr("ASSISTANT_NAME", get_mod_brand_name().split()[0]))
+
+
+def get_mod_agent_glyph() -> str:
+    return str(_mod_attr("AGENT_GLYPH", "⚔"))
+
+
+def get_mod_compact_tagline() -> str:
+    return str(_mod_attr("COMPACT_TAGLINE", "Spartan CLI Skin"))
+
+
+def get_mod_compact_description() -> str:
+    return str(_mod_attr("COMPACT_DESCRIPTION", "War-forged terminal interface"))
+
+
+def get_mod_progress_labels() -> tuple[str, str, str]:
+    return tuple(_mod_attr("PROGRESS_LABELS", ("Shield rise", "Ember glow", "Scroll orbit")))
+
+
+def get_mod_next_labels() -> tuple[str, str]:
+    return tuple(_mod_attr("NEXT_PROGRESS_LABELS", ("Next shield rise", "Next glow")))
+
+
+def set_active_skin_globals(skin_name: str | None = None) -> str:
+    """Refresh cached palette and animation globals after a runtime skin switch."""
+    resolved_skin = _active_mod_skin(skin_name)
+
+    global ARES_CRIMSON, ARES_BLOOD, ARES_EMBER, ARES_BRONZE, ARES_SAND
+    global ARES_ASH, ARES_STEEL, ARES_OBSIDIAN, ARES_INK, ARES_PATINA
+    global PIXEL_FONT, MESSENGER_TITLES, TRICKSTER_CORRECTIONS, COIN_SPIN_FRAMES
+    global DI20_GLYPHS
+
+    ARES_CRIMSON = _mod_attr("ARES_CRIMSON", _DEFAULT_ARES_CRIMSON, skin_name=resolved_skin)
+    ARES_BLOOD = _mod_attr("ARES_BLOOD", _DEFAULT_ARES_BLOOD, skin_name=resolved_skin)
+    ARES_EMBER = _mod_attr("ARES_EMBER", _DEFAULT_ARES_EMBER, skin_name=resolved_skin)
+    ARES_BRONZE = _mod_attr("ARES_BRONZE", _DEFAULT_ARES_BRONZE, skin_name=resolved_skin)
+    ARES_SAND = _mod_attr("ARES_SAND", _DEFAULT_ARES_SAND, skin_name=resolved_skin)
+    ARES_ASH = _mod_attr("ARES_ASH", _DEFAULT_ARES_ASH, skin_name=resolved_skin)
+    ARES_STEEL = _mod_attr("ARES_STEEL", _DEFAULT_ARES_STEEL, skin_name=resolved_skin)
+    ARES_OBSIDIAN = _mod_attr("ARES_OBSIDIAN", _DEFAULT_ARES_OBSIDIAN, skin_name=resolved_skin)
+    ARES_INK = _mod_attr("ARES_INK", _DEFAULT_ARES_INK, skin_name=resolved_skin)
+    ARES_PATINA = _mod_attr("ARES_PATINA", _DEFAULT_ARES_PATINA, skin_name=resolved_skin)
+    PIXEL_FONT = _mod_attr("PIXEL_FONT", _DEFAULT_PIXEL_FONT, skin_name=resolved_skin)
+    MESSENGER_TITLES = tuple(
+        _mod_attr("MESSENGER_TITLES", ("Ares Dispatch", "War Scroll", "Iron Decree"), skin_name=resolved_skin)
+    )
+    TRICKSTER_CORRECTIONS = dict(
+        _mod_attr(
+            "TRICKSTER_CORRECTIONS",
+            {
+                "teh": "the",
+                "adn": "and",
+                "heremes": "Ares",
+                "definately": "definitely",
+                "wierd": "weird",
+            },
+            skin_name=resolved_skin,
+        )
+    )
+    COIN_SPIN_FRAMES = tuple(_mod_attr("COIN_SPIN_FRAMES", ("◐", "◓", "◑", "◒", "◐", "◎"), skin_name=resolved_skin))
+    DI20_GLYPHS = tuple(_mod_attr("DI20_GLYPHS", ("◢", "◣", "◤", "◥", "⬢", "⬡"), skin_name=resolved_skin))
+    return normalize_skin_name(skin_name)
+
+
 def normalize_skin_name(name: str | None) -> str:
     """Normalize user-facing skin names."""
-    if not name:
-        return DEFAULT_SKIN
-    normalized = str(name).strip().lower().replace("-", "_")
-    aliases = {
-        "default": DEFAULT_SKIN,
-        "classic": "hermes",
-        "classic_gold": "hermes",
-        "winged": "ares",
-        "holographic": "ares",
-    }
-    normalized = aliases.get(normalized, normalized)
-    return normalized if normalized in VALID_SKINS else DEFAULT_SKIN
+    normalized = resolve_skin_request(name)
+    return normalized if normalized is not None else DEFAULT_SKIN
+
+
+def resolve_skin_request(name: str | None) -> str | None:
+    """Resolve a requested skin name or alias without falling back silently."""
+    if name is None:
+        return None
+    normalized = _normalize_skin_token(name)
+    return normalized if normalized in VALID_SKINS else None
 
 
 def is_hermes_skin(name: str | None) -> bool:
@@ -523,6 +652,16 @@ def is_hermes_skin(name: str | None) -> bool:
 def is_ares_skin(name: str | None) -> bool:
     """Return True when the Ares visual skin is active."""
     return normalize_skin_name(name) == "ares"
+
+
+def is_posideon_skin(name: str | None) -> bool:
+    """Return True when the Posideon visual skin is active."""
+    return normalize_skin_name(name) == "posideon"
+
+
+def is_mod_skin(name: str | None) -> bool:
+    """Return True when a custom mod skin is active."""
+    return normalize_skin_name(name) in MOD_SKINS
 
 
 def get_hermes_home() -> Path:
@@ -691,6 +830,9 @@ def build_relay_telemetry(
     active: bool = False,
 ) -> str:
     """Build a plain-text telemetry ribbon for banner and prompt UI."""
+    payload = _call_mod("build_relay_telemetry", lore, phase, width, active=active)
+    if payload:
+        return payload
     width = max(width, 28)
     courier = "▲" if active else "△"
     beacons = ["•", "◦", "•"]
@@ -703,7 +845,7 @@ def build_relay_telemetry(
         track[(marker - 4) % track_width] = "╼"
         track[(track_width // 3)] = beacons[(phase // 2) % len(beacons)]
         track[(2 * track_width // 3)] = beacons[(phase // 3 + 1) % len(beacons)]
-    status = "warpath active" if active else "warpath primed"
+    status = _mod_attr("ACTIVE_STATUS", "warpath active") if active else _mod_attr("IDLE_STATUS", "warpath primed")
     orbit = len(lore.orbiting_skills)
     return f"{''.join(track)}  {status}  orbit {orbit}"
 
@@ -1427,8 +1569,13 @@ def get_caduceus_frame(
     height: int = 22,
 ) -> str:
     """Select the active hero art for the banner."""
+    payload = _call_mod("get_hero_art", width, height, phase, lore=lore)
+    if payload:
+        return str(payload)
+
     del lore, phase
-    for asset_name in ("pixel_art_large-2.png", "pixel_art_large.png"):
+    hero_assets = tuple(_mod_attr("HERO_ASSETS", ("pixel_art_large-2.png", "pixel_art_large.png")))
+    for asset_name in hero_assets:
         hero_rows = _render_sprite_asset(asset_name, width=width, height=height)
         if hero_rows:
             return "\n".join(hero_rows)
@@ -1452,6 +1599,9 @@ def get_banner_title(lore: HermesLoreState) -> str:
 
 def get_lore_lines(lore: HermesLoreState) -> list[str]:
     """Right-panel lore lines for the Hermes banner."""
+    payload = _call_mod("get_lore_lines", lore)
+    if payload:
+        return list(payload)
     lore_heading = _mod_attr("LORE_HEADING", "Ares Lore")
     empty_orbit = _mod_attr("EMPTY_ORBITING_SCROLLS", "none yet")
     lines = [
@@ -1470,6 +1620,9 @@ def get_lore_lines(lore: HermesLoreState) -> list[str]:
 
 def build_speed_line(width: int, phase: int = 0) -> str:
     """Ambient separator rendered before and after scroll content."""
+    payload = _call_mod("build_speed_line", width, phase)
+    if payload:
+        return str(payload)
     width = max(width, 24)
     trails = ("▲┄┄", "┄▲┄", "┄┄▲", "▼┄┄")
     trail = trails[phase % len(trails)]
@@ -1479,6 +1632,9 @@ def build_speed_line(width: int, phase: int = 0) -> str:
 
 def build_scroll_frame(width: int, lore: HermesLoreState, phase: int = 0) -> tuple[str, str, str]:
     """Return (top, subtitle, bottom) frame strings for Hermes responses."""
+    payload = _call_mod("build_scroll_frame", width, lore, phase)
+    if payload and len(payload) == 3:
+        return tuple(payload)
     width = max(width, 36)
     title = MESSENGER_TITLES[phase % len(MESSENGER_TITLES)]
     accent = "bronze seal"
@@ -1494,6 +1650,9 @@ def build_scroll_frame(width: int, lore: HermesLoreState, phase: int = 0) -> tup
 
 def maybe_create_trickster_note(message: str, enabled: bool = True, chance: float = 0.01) -> str | None:
     """Rare Hermes-only note that steals a letter or fixes a typo."""
+    payload = _call_mod("maybe_create_trickster_note", message, enabled=enabled, chance=chance)
+    if payload is not None:
+        return str(payload) if payload else None
     if not enabled or not message or random.random() > chance:
         return None
     lowered = message.lower()
@@ -1510,6 +1669,9 @@ def maybe_create_trickster_note(message: str, enabled: bool = True, chance: floa
 
 def format_flip_result(result: str) -> str:
     """Narration for the coin flip easter egg."""
+    payload = _call_mod("format_flip_result", result)
+    if payload:
+        return str(payload)
     if result == "heads":
         return "heads · the shield face lands forward"
     if result == "tails":

@@ -190,60 +190,12 @@ def get_asset_dir() -> Path:
 
 
 def build_ares_masthead() -> str:
-    red_rows = (
-        "#C42E2E",
-        "#B52727",
-        ARES_CRIMSON,
-        ARES_CRIMSON,
-        "#861C1C",
-        ARES_BLOOD,
-        ARES_BLOOD,
-    )
-    bronze_rows = (
-        "#E1C98E",
-        "#D5B978",
-        ARES_BRONZE,
-        ARES_BRONZE,
-        "#B48E58",
-        ARES_PATINA,
-        "#775735",
-    )
-    text = "ARES-AGENT"
-    lines: list[str] = []
-
-    for row_index in range(7):
-        line: list[str] = []
-        active_color: str | None = None
-        for char_index, char in enumerate(text):
-            glyph = PIXEL_FONT.get(char, PIXEL_FONT[" "])[row_index]
-            if char == " ":
-                if active_color is not None:
-                    line.append("[/]")
-                    active_color = None
-                line.append("   ")
-            else:
-                palette = red_rows if char_index < 4 else bronze_rows
-                color = palette[row_index]
-                for pixel in glyph:
-                    if pixel == " ":
-                        if active_color is not None:
-                            line.append("[/]")
-                            active_color = None
-                        line.append(" ")
-                        continue
-                    if color != active_color:
-                        if active_color is not None:
-                            line.append("[/]")
-                        line.append(f"[{color}]")
-                        active_color = color
-                    line.append("█")
-            if active_color is not None:
-                line.append("[/]")
-                active_color = None
-            line.append(" ")
-        lines.append("".join(line).rstrip())
-
-    return "\n".join(lines)
+    return """[bold #A3261F] █████╗ ██████╗ ███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #B73122]██╔══██╗██╔══██╗██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#C93C24]███████║██████╔╝█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#D84A28]██╔══██║██╔══██╗██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#E15A2D]██║  ██║██║  ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#EB6C32]╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
 
 
 def get_banner_title(glow_enabled: bool) -> str:

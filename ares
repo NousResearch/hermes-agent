@@ -7,6 +7,9 @@ Usage: ./ares [options]
 """
 
 if __name__ == "__main__":
+    import os
+
+    os.environ["HERMES_CLI_SKIN"] = "ares"
     from cli import main
     import fire
 

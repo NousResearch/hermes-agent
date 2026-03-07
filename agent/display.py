@@ -17,11 +17,11 @@ _RESET = "\033[0m"
 
 
 def _hermes_skin_enabled() -> bool:
-    """Return True when the CLI requested the Hermes visual skin."""
+    """Return True when the CLI requested a custom visual mod skin."""
     try:
-        from hermes_cli.skin import is_ares_skin
+        from hermes_cli.skin import is_mod_skin
 
-        return is_ares_skin(os.getenv("HERMES_CLI_SKIN"))
+        return is_mod_skin(os.getenv("HERMES_CLI_SKIN"))
     except Exception:
         return False
 

@@ -446,7 +446,7 @@ delegation:
 display:
   # Use compact banner mode
   compact: false
-  # Active visual skin: hermes | ares
+  # Active visual skin: hermes | ares | posideon
   skin: hermes
   # Brief animated banner flourish on startup
   animate_banner: false

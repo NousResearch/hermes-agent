@@ -140,6 +140,9 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    if getattr(args, "skin", None):
+        os.environ["HERMES_CLI_SKIN"] = args.skin
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -847,7 +850,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--skin",
-        choices=["hermes", "ares"],
+        choices=["hermes", "ares", "posideon"],
         help="Visual skin to use for the CLI"
     )
     chat_parser.add_argument(

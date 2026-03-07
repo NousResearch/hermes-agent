@@ -1862,6 +1862,7 @@ class GatewayRunner:
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
+            Platform.HOMEASSISTANT: "hermes-homeassistant",
         }
         
         # Try to load platform_toolsets from config
@@ -1883,6 +1884,7 @@ class GatewayRunner:
             Platform.DISCORD: "discord",
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
+            Platform.HOMEASSISTANT: "homeassistant",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

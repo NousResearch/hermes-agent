@@ -6,6 +6,7 @@ and resumed on next creation, preserving the filesystem across sessions.
 """
 
 import logging
+import time
 import math
 import shlex
 import threading
@@ -142,10 +143,9 @@ class DaytonaEnvironment(BaseEnvironment):
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         # Wait for timeout + generous buffer for network/SDK overhead
-        deadline = timeout + 10
+        deadline = time.monotonic() + timeout + 10
         while t.is_alive():
             t.join(timeout=0.2)
-            deadline -= 0.2
             if is_interrupted():
                 with self._lock:
                     try:
@@ -156,7 +156,7 @@ class DaytonaEnvironment(BaseEnvironment):
                     "output": "[Command interrupted - Daytona sandbox stopped]",
                     "returncode": 130,
                 }
-            if deadline <= 0:
+            if time.monotonic() > deadline:
                 # Shell timeout didn't fire and SDK is hung — force stop
                 with self._lock:
                     try:

@@ -37,7 +37,7 @@ env:
 
 openai:
   base_url: "https://openrouter.ai/api/v1"
-  model_name: "anthropic/claude-sonnet-4-20250514"
+  model_name: "anthropic/claude-sonnet-4.6"
   server_type: "openai"
   health_check: false
   # api_key loaded from OPENROUTER_API_KEY in .env

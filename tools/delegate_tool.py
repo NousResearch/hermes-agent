@@ -194,6 +194,10 @@ def _run_single_child(
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
+        # Share the parent's iteration budget so subagent tool calls
+        # count toward the session-wide limit.
+        shared_budget = getattr(parent_agent, "iteration_budget", None)
+
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
@@ -215,6 +219,7 @@ def _run_single_child(
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
             tool_progress_callback=child_progress_cb,
+            iteration_budget=shared_budget,
         )
 
         # Set delegation depth so children can't spawn grandchildren

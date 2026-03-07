@@ -169,7 +169,7 @@ def load_cli_config() -> Dict[str, Any]:
             "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
         },
         "agent": {
-            "max_turns": 60,  # Default max tool-calling iterations
+            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -836,7 +836,7 @@ class HermesCLI:
             provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            max_turns: Maximum tool-calling iterations (default: 60)
+            max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
@@ -889,7 +889,7 @@ class HermesCLI:
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
-            self.max_turns = 60
+            self.max_turns = 90
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets

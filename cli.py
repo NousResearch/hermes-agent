@@ -447,6 +447,25 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
 
+
+def _ansi_fg_hex(color: str) -> str:
+    """Return a truecolor ANSI foreground escape for a hex color."""
+    color = color.lstrip("#")
+    if len(color) != 6:
+        return ""
+    try:
+        r = int(color[0:2], 16)
+        g = int(color[2:4], 16)
+        b = int(color[4:6], 16)
+    except ValueError:
+        return ""
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def _ansi_dim_hex(color: str) -> str:
+    """Return a dimmed truecolor ANSI foreground escape for a hex color."""
+    return f"\033[2m{_ansi_fg_hex(color)}"
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -1358,14 +1377,24 @@ class HermesCLI:
         """Decorate assistant text with a cleaner gutter inside the Hermes scroll."""
         marker_cycle = ["╎", "┆", "╎", "┊"]
         marker = marker_cycle[self._ui_phase % len(marker_cycle)]
+        gutter_color = _ansi_fg_hex(ARES_ASH) if self._ares_skin_active() else _DIM
+        body_color = _ansi_fg_hex(ARES_SAND) if self._ares_skin_active() else ""
         lines = response.splitlines() or [response]
         formatted_lines = []
         for line in lines:
             if line.strip():
-                formatted_lines.append(f"{_DIM}{marker}{_RST} {line}")
+                formatted_lines.append(f"{gutter_color}{marker}{_RST} {body_color}{line}{_RST}")
             else:
-                formatted_lines.append(f"{_DIM}{marker}{_RST}")
+                formatted_lines.append(f"{gutter_color}{marker}{_RST}")
         return "\n".join(formatted_lines)
+
+    def _mod_response_frame_color(self) -> str:
+        """ANSI color for response frame chrome on custom skins."""
+        return _ansi_fg_hex(ARES_EMBER)
+
+    def _mod_response_subtle_color(self) -> str:
+        """ANSI color for response subtitles and secondary notes on custom skins."""
+        return _ansi_dim_hex(ARES_ASH)
 
     def show_omens(self):
         """Display active skin lore progression and ritual status."""
@@ -2233,7 +2262,8 @@ class HermesCLI:
         
         w = self.console.width
         separator = build_speed_line(w, self._banner_phase) if self._ares_skin_active() else ("─" * w)
-        _cprint(f"{_GOLD}{separator}{_RST}")
+        separator_color = self._mod_response_frame_color() if self._ares_skin_active() else _GOLD
+        _cprint(f"{separator_color}{separator}{_RST}")
         print(flush=True)
         
         try:
@@ -2316,10 +2346,12 @@ class HermesCLI:
                         message,
                         enabled=self.easter_eggs,
                     )
-                    rendered = f"\n{_GOLD}{top}{_RST}\n{_DIM}{subtitle}{_RST}\n{body}"
+                    frame_color = self._mod_response_frame_color()
+                    subtle_color = self._mod_response_subtle_color()
+                    rendered = f"\n{frame_color}{top}{_RST}\n{subtle_color}{subtitle}{_RST}\n{body}"
                     if trickster_note:
-                        rendered += f"\n\n{_DIM}╎ {trickster_note}{_RST}"
-                    rendered += f"\n\n{_GOLD}{bot}{_RST}"
+                        rendered += f"\n\n{subtle_color}╎ {trickster_note}{_RST}"
+                    rendered += f"\n\n{frame_color}{bot}{_RST}"
                     _cprint(rendered)
                 else:
                     if self._ares_skin_active():

@@ -960,31 +960,19 @@ def setup_terminal_backend(config: dict):
     terminal_choices = [
         "Local - run directly on this machine (default)",
         "Docker - isolated container with configurable resources",
+        "Modal - serverless cloud sandbox",
+        "SSH - run on a remote machine",
+        "Daytona - persistent cloud development environment",
     ]
-    idx_to_backend = {0: "local", 1: "docker"}
-    backend_to_idx = {"local": 0, "docker": 1}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
 
-    next_idx = 2
+    next_idx = 5
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
-
-    terminal_choices.append("Modal - serverless cloud sandbox")
-    idx_to_backend[next_idx] = "modal"
-    backend_to_idx["modal"] = next_idx
-    next_idx += 1
-
-    terminal_choices.append("Daytona - persistent cloud development environment")
-    idx_to_backend[next_idx] = "daytona"
-    backend_to_idx["daytona"] = next_idx
-    next_idx += 1
-
-    terminal_choices.append("SSH - run on a remote machine")
-    idx_to_backend[next_idx] = "ssh"
-    backend_to_idx["ssh"] = next_idx
-    next_idx += 1
 
     # Add keep current option
     keep_current_idx = next_idx

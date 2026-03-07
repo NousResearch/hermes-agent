@@ -1112,7 +1112,7 @@ def main(
     batch_size: int = None,
     run_name: str = None,
     distribution: str = "default",
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str = "anthropic/claude-sonnet-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,

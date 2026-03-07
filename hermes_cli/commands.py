@@ -29,6 +29,7 @@ COMMANDS = {
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
     "/insights": "Show usage insights and analytics (last 30 days)",
+    "/play": "Play a game against Hermes (e.g. /play tictactoe)",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

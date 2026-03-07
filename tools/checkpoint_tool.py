@@ -65,6 +65,17 @@ DEFAULT_EXCLUDES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Configurable timeout
+# ---------------------------------------------------------------------------
+
+# Base timeout (seconds) for git subprocesses. Longer operations (git add,
+# git commit, git checkout) use 2× or 4× this value respectively.
+# Override with HERMES_CHECKPOINT_TIMEOUT (clamped to 10–60 seconds).
+CHECKPOINT_TIMEOUT: int = max(
+    10, min(60, int(os.getenv("HERMES_CHECKPOINT_TIMEOUT", "30")))
+)
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -101,7 +112,7 @@ def _run_git(
     args: List[str],
     shadow_repo: Path,
     working_dir: str,
-    timeout: int = 30,
+    timeout: int = CHECKPOINT_TIMEOUT,
 ) -> Tuple[bool, str, str]:
     """Run a git subcommand with the shadow repo environment.
 
@@ -186,6 +197,41 @@ def _has_project_git(working_dir: str) -> bool:
     index, and restoring checkpoint files cannot corrupt staged changes.
     """
     return (Path(working_dir) / ".git").exists()
+
+
+def _sync_project_gitignore(shadow_repo: Path, working_dir: str) -> None:
+    """Configure the shadow repo to honour the project's .gitignore rules.
+
+    Sets core.excludesFile in the shadow repo's local git config to the
+    absolute path of working_dir/.gitignore. Called on every take() so that
+    a .gitignore added or moved after shadow repo initialisation is picked up
+    automatically without any manual reset.
+
+    Short-circuits cheaply (file read, no subprocess) when core.excludesFile
+    already points at the correct path, so the extra call on every take() has
+    negligible overhead in the steady-state case.
+
+    If no .gitignore exists in working_dir the setting is left unchanged and
+    the shadow repo continues to use only info/exclude (DEFAULT_EXCLUDES).
+    """
+    gitignore = Path(working_dir) / ".gitignore"
+    if not gitignore.exists():
+        return
+
+    abs_path = str(gitignore.resolve())
+
+    # Cheap short-circuit: read the local config file directly rather than
+    # spawning a git subprocess on every take() call.
+    config_file = shadow_repo / "config"
+    if config_file.exists() and abs_path in config_file.read_text(encoding="utf-8"):
+        return
+
+    _run_git(
+        ["config", "core.excludesFile", abs_path],
+        shadow_repo,
+        working_dir,
+    )
+    logger.debug("Shadow repo core.excludesFile set to %s", abs_path)
 
 
 # ---------------------------------------------------------------------------
@@ -278,12 +324,16 @@ class CheckpointStore:
             if err:
                 return {"success": False, "error": err}
 
-            # Stage all files — respects shadow repo's info/exclude
+            # Sync project .gitignore into shadow repo's core.excludesFile so
+            # the project's own ignore rules are applied alongside info/exclude.
+            _sync_project_gitignore(self.shadow_repo, self.working_dir)
+
+            # Stage all files — respects info/exclude and project .gitignore
             ok, _, err = _run_git(
                 ["add", "-A"],
                 self.shadow_repo,
                 self.working_dir,
-                timeout=60,
+                timeout=CHECKPOINT_TIMEOUT * 2,
             )
             if not ok:
                 return {"success": False, "error": f"git add failed: {err}"}
@@ -324,7 +374,7 @@ class CheckpointStore:
                 ["commit", "-m", reason],
                 self.shadow_repo,
                 self.working_dir,
-                timeout=60,
+                timeout=CHECKPOINT_TIMEOUT * 2,
             )
             if not ok:
                 return {"success": False, "error": f"git commit failed: {err}"}
@@ -417,7 +467,7 @@ class CheckpointStore:
                 ["checkout", commit_hash, "--", "."],
                 self.shadow_repo,
                 self.working_dir,
-                timeout=120,
+                timeout=CHECKPOINT_TIMEOUT * 4,
             )
             if not ok:
                 return {"success": False, "error": f"git checkout failed: {restore_err}"}

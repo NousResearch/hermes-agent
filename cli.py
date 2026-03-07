@@ -19,6 +19,7 @@ import sys
 import json
 import atexit
 import uuid
+from io import StringIO
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -343,7 +344,9 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
+from rich import box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -443,6 +446,38 @@ class ChatConsole:
         output = self._buffer.getvalue()
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
+
+
+def _render_plain_response_box(response: str, width: int) -> str:
+    """Render a plain-text Hermes response box as an ANSI string."""
+    label = " ⚕ Hermes "
+    fill = width - 2 - len(label)  # 2 for ╭ and ╮
+    top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
+    bot = f"{_GOLD}╰{'─' * (width - 2)}╯{_RST}"
+    return f"\n{top}\n{response}\n\n{bot}"
+
+
+def _render_markdown_response_box(response: str, width: int) -> str:
+    """Render assistant markdown inside a Rich panel and return ANSI text."""
+    buffer = StringIO()
+    console = Console(
+        file=buffer,
+        force_terminal=True,
+        color_system="truecolor",
+        highlight=False,
+        width=max(width, 20),
+    )
+    panel = Panel(
+        Markdown(str(response), code_theme="monokai", hyperlinks=False),
+        title="⚕ Hermes",
+        title_align="left",
+        border_style="#FFD700",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+    console.print()
+    console.print(panel)
+    return buffer.getvalue().rstrip("\n")
 
 # ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
@@ -954,6 +989,16 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _print_assistant_response(self, response: str) -> None:
+        """Render the final assistant response with markdown support."""
+        width = shutil.get_terminal_size().columns
+        try:
+            rendered = _render_markdown_response_box(response, width)
+        except Exception:
+            logger.warning("Markdown render failed; falling back to plain text", exc_info=True)
+            rendered = _render_plain_response_box(response, width)
+        _cprint(rendered)
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -2360,15 +2405,7 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = shutil.get_terminal_size().columns
-                label = " ⚕ Hermes "
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
-
-                # Render box + response as a single _cprint call so
-                # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                self._print_assistant_response(response)
             
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop

@@ -376,6 +376,76 @@ class TestSyncSkills:
             "user_modified": [], "cleaned": [], "total_bundled": 0,
         }
 
+    def test_failed_copy_does_not_poison_manifest(self, tmp_path):
+        """If copytree fails, the skill must NOT be added to the manifest.
+
+        Otherwise the next sync treats it as 'user deleted' and never retries.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            # Patch copytree to fail for new-skill
+            original_copytree = __import__("shutil").copytree
+
+            def failing_copytree(src, dst, *a, **kw):
+                if "new-skill" in str(src):
+                    raise OSError("Simulated disk full")
+                return original_copytree(src, dst, *a, **kw)
+
+            with patch("shutil.copytree", side_effect=failing_copytree):
+                result = sync_skills(quiet=True)
+
+            # new-skill should NOT be in copied (it failed)
+            assert "new-skill" not in result["copied"]
+
+            # Critical: new-skill must NOT be in the manifest
+            manifest = _read_manifest()
+            assert "new-skill" not in manifest, (
+                "Failed copy was recorded in manifest — next sync will "
+                "treat it as 'user deleted' and never retry"
+            )
+
+            # Now run sync again (copytree works this time) — it should retry
+            result2 = sync_skills(quiet=True)
+            assert "new-skill" in result2["copied"]
+            assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+    def test_failed_update_does_not_destroy_user_copy(self, tmp_path):
+        """If copytree fails during update, the user's existing copy must survive."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Start with old synced version
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old v1")
+        old_hash = _dir_hash(user_skill)
+        manifest_file.write_text(f"old-skill:{old_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            # Patch copytree to fail (rmtree succeeds, copytree fails)
+            original_copytree = __import__("shutil").copytree
+
+            def failing_copytree(src, dst, *a, **kw):
+                if "old-skill" in str(src):
+                    raise OSError("Simulated write failure")
+                return original_copytree(src, dst, *a, **kw)
+
+            with patch("shutil.copytree", side_effect=failing_copytree):
+                result = sync_skills(quiet=True)
+
+            # old-skill should NOT be in updated (it failed)
+            assert "old-skill" not in result.get("updated", [])
+
+            # The skill directory should still exist (rmtree destroyed it
+            # but copytree failed to replace it — this is data loss)
+            assert user_skill.exists(), (
+                "Update failure destroyed user's skill copy without replacing it"
+            )
+
     def test_update_records_new_origin_hash(self, tmp_path):
         """After updating a skill, the manifest should record the new bundled hash."""
         bundled = self._setup_bundled(tmp_path)

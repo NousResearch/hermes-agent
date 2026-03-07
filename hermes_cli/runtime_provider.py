@@ -74,8 +74,9 @@ def _resolve_openrouter_runtime(
 
     # Choose API key based on whether the resolved base_url targets OpenRouter.
     # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
-    # When hitting a custom endpoint, prefer OPENAI_API_KEY so the OpenRouter
-    # key doesn't leak to an unrelated provider (issue #560).
+    # When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
+    # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
+    # provider (issues #420, #560).
     _is_openrouter_url = "openrouter.ai" in base_url
     if _is_openrouter_url:
         api_key = (

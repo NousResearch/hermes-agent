@@ -176,3 +176,94 @@ class TestCompressWithClient:
         contents = [m.get("content", "") for m in result]
         assert any("CONTEXT SUMMARY" in c for c in contents)
         assert len(result) < len(msgs)
+
+
+class TestPruneToolOutputs:
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(None, None)):
+            return ContextCompressor(model="test/model", quiet_mode=True)
+
+    def test_prune_replaces_old_tool_outputs(self):
+        c = self._make_compressor()
+        big_content = "x" * (c._prune_protect_tokens * 4 * 2)
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "tool", "content": big_content, "name": "terminal"},
+            {"role": "assistant", "content": "ok2"},
+            {"role": "tool", "content": big_content, "name": "terminal"},
+            {"role": "assistant", "content": "still going"},
+            {"role": "tool", "content": big_content, "name": "terminal"},
+            {"role": "assistant", "content": "done"},
+        ]
+        pruned, chars_saved = c._prune_tool_outputs(messages)
+        assert chars_saved > 0
+        pruned_tool_contents = [m["content"] for m in pruned if m.get("role") == "tool"]
+        assert any("pruned" in c for c in pruned_tool_contents)
+
+    def test_protected_tools_never_pruned(self):
+        c = self._make_compressor()
+        big_content = "x" * (c._prune_protect_tokens * 4 * 2)
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "tool", "content": big_content, "name": "memory"},
+            {"role": "tool", "content": big_content, "name": "terminal"},
+            {"role": "assistant", "content": "done"},
+        ]
+        pruned, chars_saved = c._prune_tool_outputs(messages)
+        memory_msg = next(m for m in pruned if m.get("name") == "memory")
+        assert memory_msg["content"] == big_content
+
+    def test_no_tool_outputs_no_change(self):
+        c = self._make_compressor()
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        pruned, chars_saved = c._prune_tool_outputs(messages)
+        assert chars_saved == 0
+        assert pruned == messages
+
+
+class TestAdaptiveThresholds:
+    def _make_compressor(self, context_length):
+        with patch("agent.context_compressor.get_model_context_length", return_value=context_length), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(None, None)):
+            return ContextCompressor(model="test/model", quiet_mode=True)
+
+    def test_large_context_gets_large_protect(self):
+        c = self._make_compressor(1_000_000)
+        assert c._prune_protect_tokens == 100_000
+
+    def test_128k_context_gets_40k_protect(self):
+        c = self._make_compressor(128_000)
+        assert c._prune_protect_tokens == 40_000
+
+    def test_small_context_gets_small_protect(self):
+        c = self._make_compressor(32_000)
+        assert c._prune_protect_tokens == 10_000
+
+
+class TestCompactionTemplate:
+    def test_summary_uses_structured_template(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: ## Goal\ntest goal"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        msgs = [{"role": "user", "content": "do something"}]
+        c._generate_summary(msgs)
+
+        call_args = mock_client.chat.completions.create.call_args
+        prompt = call_args[1]["messages"][0]["content"]
+        assert "## Goal" in prompt
+        assert "## Accomplished So Far" in prompt
+        assert "## Next Steps" in prompt

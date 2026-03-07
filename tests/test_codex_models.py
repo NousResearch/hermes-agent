@@ -1,6 +1,33 @@
 import json
+import sys
+from types import SimpleNamespace
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _fetch_models_from_api,
+    get_codex_model_ids,
+)
+
+
+def test_fetch_models_from_api_filters_hidden_models(monkeypatch):
+    class DummyResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "models": [
+                    {"slug": "gpt-5-visible-codex", "priority": 10, "visibility": "public"},
+                    {"slug": "gpt-5-hidden-codex", "priority": 1, "visibility": "hidden"},
+                ]
+            }
+
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(get=lambda *args, **kwargs: DummyResponse()))
+
+    models = _fetch_models_from_api("test-token")
+
+    assert "gpt-5-hidden-codex" not in models
+    assert "gpt-5-visible-codex" in models
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):

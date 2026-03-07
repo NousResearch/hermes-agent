@@ -592,9 +592,55 @@ def _load_config() -> dict:
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
-EXECUTE_CODE_SCHEMA = {
-    "name": "execute_code",
-    "description": (
+# Per-tool documentation lines for the execute_code description.
+# Ordered to match the canonical display order.
+_TOOL_DOC_LINES = [
+    ("web_search",
+     "  web_search(query: str, limit: int = 5) -> dict\n"
+     "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
+    ("web_extract",
+     "  web_extract(urls: list[str]) -> dict\n"
+     "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown"),
+    ("read_file",
+     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
+     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+    ("write_file",
+     "  write_file(path: str, content: str) -> dict\n"
+     "    Always overwrites the entire file."),
+    ("search_files",
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
+     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+    ("patch",
+     "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
+     "    Replaces old_string with new_string in the file."),
+    ("terminal",
+     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
+     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+]
+
+
+def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
+    """Build the execute_code schema with description listing only enabled tools.
+
+    When tools are disabled via ``hermes tools`` (e.g. web is turned off),
+    the schema description should NOT mention web_search / web_extract —
+    otherwise the model thinks they are available and keeps trying to use them.
+    """
+    if enabled_sandbox_tools is None:
+        enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+
+    # Build tool documentation lines for only the enabled tools
+    tool_lines = "\n".join(
+        doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools
+    )
+
+    # Build example import list from enabled tools
+    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
+    if not import_examples:
+        import_examples = sorted(enabled_sandbox_tools)[:2]
+    import_str = ", ".join(import_examples) + ", ..."
+
+    description = (
         "Run a Python script that can call Hermes tools programmatically. "
         "Use this when you need 3+ tool calls with processing logic between them, "
         "need to filter/reduce large tool outputs before they enter your context, "
@@ -603,21 +649,8 @@ EXECUTE_CODE_SCHEMA = {
         "Use normal tool calls instead when: single tool call with no processing, "
         "you need to see the full result and apply complex reasoning, "
         "or the task requires interactive user input.\n\n"
-        "Available via `from hermes_tools import ...`:\n\n"
-        "  web_search(query: str, limit: int = 5) -> dict\n"
-        "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}\n"
-        "  web_extract(urls: list[str]) -> dict\n"
-        "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown\n"
-        "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-        "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}\n"
-        "  write_file(path: str, content: str) -> dict\n"
-        "    Always overwrites the entire file.\n"
-        "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-        "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}\n"
-        "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-        "    Replaces old_string with new_string in the file.\n"
-        "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-        "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}\n\n"
+        f"Available via `from hermes_tools import ...`:\n\n"
+        f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
@@ -626,22 +659,30 @@ EXECUTE_CODE_SCHEMA = {
         "  json_parse(text: str) — json.loads with strict=False; use for terminal() output with control chars\n"
         "  shell_quote(s: str) — shlex.quote(); use when interpolating dynamic strings into shell commands\n"
         "  retry(fn, max_attempts=3, delay=2) — retry with exponential backoff for transient failures"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "code": {
-                "type": "string",
-                "description": (
-                    "Python code to execute. Import tools with "
-                    "`from hermes_tools import web_search, terminal, ...` "
-                    "and print your final result to stdout."
-                ),
+    )
+
+    return {
+        "name": "execute_code",
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Python code to execute. Import tools with "
+                        f"`from hermes_tools import {import_str}` "
+                        "and print your final result to stdout."
+                    ),
+                },
             },
+            "required": ["code"],
         },
-        "required": ["code"],
-    },
-}
+    }
+
+
+# Default schema used at registration time (all sandbox tools listed)
+EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---

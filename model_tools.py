@@ -225,6 +225,18 @@ def get_tool_definitions(
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    # Rebuild execute_code schema to only list sandbox tools that are actually
+    # enabled.  Without this, the model sees "web_search is available in
+    # execute_code" even when the user disabled the web toolset (#560-discord).
+    if "execute_code" in tools_to_include:
+        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
+        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
+        dynamic_schema = build_execute_code_schema(sandbox_enabled)
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "execute_code":
+                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]

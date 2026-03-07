@@ -174,7 +174,14 @@ def _run_single_child(
 
     child_start = time.monotonic()
 
-    child_toolsets = _strip_blocked_tools(toolsets or DEFAULT_TOOLSETS)
+    # When no explicit toolsets given, inherit from parent's enabled toolsets
+    # so disabled tools (e.g. web) don't leak to subagents.
+    if toolsets:
+        child_toolsets = _strip_blocked_tools(toolsets)
+    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
+        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
+    else:
+        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     child_prompt = _build_child_system_prompt(goal, context)
 
@@ -493,7 +500,7 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Toolsets to enable for this subagent. "
-                    "Default: ['terminal', 'file', 'web']. "
+                    "Default: inherits your enabled toolsets. "
                     "Common patterns: ['terminal', 'file'] for code work, "
                     "['web'] for research, ['terminal', 'file', 'web'] for "
                     "full-stack tasks."

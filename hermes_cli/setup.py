@@ -306,11 +306,15 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Web Search & Extract", False, "FIRECRAWL_API_KEY"))
     
-    # Browserbase (browser tools)
+    # Browser tools (local Chromium or Browserbase cloud)
+    import shutil
+    _ab_found = shutil.which("agent-browser") or (Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser").exists()
     if get_env_value('BROWSERBASE_API_KEY'):
-        tool_status.append(("Browser Automation", True, None))
+        tool_status.append(("Browser Automation (Browserbase)", True, None))
+    elif _ab_found:
+        tool_status.append(("Browser Automation (local)", True, None))
     else:
-        tool_status.append(("Browser Automation", False, "BROWSERBASE_API_KEY"))
+        tool_status.append(("Browser Automation", False, "npm install -g agent-browser"))
     
     # FAL (image generation)
     if get_env_value('FAL_KEY'):

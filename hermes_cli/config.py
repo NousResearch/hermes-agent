@@ -273,7 +273,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for browser automation",
+        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
@@ -281,7 +281,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID",
+        "description": "Browserbase project ID (optional — only needed for cloud browser)",
         "prompt": "Browserbase project ID",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],

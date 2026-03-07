@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import cli as cli_module
 from cli import HermesCLI
 from hermes_cli.skin import (
     HermesLoreState,
@@ -193,3 +194,20 @@ class TestCliSkinSwitching:
 
         assert "You are Ares Agent" in composed
         assert "Answer like a terse staff officer." in composed
+
+    def test_mod_scroll_body_uses_skin_specific_response_colors(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.skin = "posideon"
+        cli._ui_phase = 0
+        cli._ares_skin_active = lambda: True
+
+        with patch.object(cli_module, "ARES_SAND", "#EAF7FF"), patch.object(cli_module, "ARES_ASH", "#6FA6C8"):
+            body = cli._format_hermes_scroll_body("hold the line")
+
+        assert "\033[38;2;234;247;255mhold the line\033[0m" in body
+        assert "\033[38;2;111;166;200m╎\033[0m" in body
+
+    def test_mod_response_frame_color_uses_skin_accent(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        with patch.object(cli_module, "ARES_EMBER", "#5DB8F5"):
+            assert cli._mod_response_frame_color() == "\033[38;2;93;184;245m"

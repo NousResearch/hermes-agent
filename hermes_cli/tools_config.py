@@ -260,7 +260,7 @@ def _run_post_setup(post_setup_key: str):
                 uv_bin = shutil.which("uv")
                 if uv_bin:
                     result = subprocess.run(
-                        [uv_bin, "pip", "install", "-e", str(tinker_dir)],
+                        [uv_bin, "pip", "install", "--python", sys.executable, "-e", str(tinker_dir)],
                         capture_output=True, text=True
                     )
                 else:

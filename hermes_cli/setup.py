@@ -1080,7 +1080,7 @@ def setup_terminal_backend(config: dict):
             uv_bin = shutil.which("uv")
             if uv_bin:
                 result = subprocess.run(
-                    [uv_bin, "pip", "install", "swe-rex[modal]"],
+                    [uv_bin, "pip", "install", "--python", sys.executable, "swe-rex[modal]"],
                     capture_output=True, text=True
                 )
             else:
@@ -1132,7 +1132,7 @@ def setup_terminal_backend(config: dict):
             uv_bin = shutil.which("uv")
             if uv_bin:
                 result = subprocess.run(
-                    [uv_bin, "pip", "install", "daytona"],
+                    [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
                     capture_output=True, text=True
                 )
             else:
@@ -1144,6 +1144,8 @@ def setup_terminal_backend(config: dict):
                 print_success("daytona SDK installed")
             else:
                 print_warning("Install failed — run manually: pip install daytona")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         # Daytona API key
         print()

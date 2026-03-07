@@ -573,7 +573,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if current_ver < 5:
         config = load_config()
         if "timezone" not in config:
-            old_tz = get_env_value("HERMES_TIMEZONE") if "get_env_value" in dir() else os.getenv("HERMES_TIMEZONE", "")
+            old_tz = os.getenv("HERMES_TIMEZONE", "")
             if old_tz and old_tz.strip():
                 config["timezone"] = old_tz.strip()
                 results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")

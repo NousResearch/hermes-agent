@@ -172,7 +172,11 @@ class TestBuildSkillsSystemPrompt:
 
 class TestBuildContextFilesPrompt:
     def test_empty_dir_returns_empty(self, tmp_path):
-        result = build_context_files_prompt(cwd=str(tmp_path))
+        from unittest.mock import patch
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
     def test_loads_agents_md(self, tmp_path):

@@ -60,12 +60,15 @@ Usage:
 """
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
@@ -226,7 +229,11 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                 "category": category,
             })
             
-        except Exception:
+        except (UnicodeDecodeError, PermissionError) as e:
+            logger.warning("Failed to read skill file %s: %s", skill_md, e)
+            continue
+        except Exception as e:
+            logger.warning("Error parsing skill %s: %s", skill_md, e, exc_info=True)
             continue
     
     return skills
@@ -265,7 +272,11 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
         
         return description if description else None
-    except Exception:
+    except (UnicodeDecodeError, PermissionError) as e:
+        logger.debug("Failed to read category description %s: %s", desc_file, e)
+        return None
+    except Exception as e:
+        logger.warning("Error parsing category description %s: %s", desc_file, e, exc_info=True)
         return None
 
 

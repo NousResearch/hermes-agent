@@ -12,6 +12,7 @@ from hermes_cli.skin import (
     get_banner_title,
     get_caduceus_frame,
     get_mod_brand_name,
+    get_mod_system_prompt,
     is_ares_skin,
     is_hermes_skin,
     is_mod_skin,
@@ -121,13 +122,23 @@ class TestTelemetryHelpers:
             set_active_skin_globals("posideon")
             lore = HermesLoreState(sessions=5, clever_replies=2, published_skills=["undertow"])
             brand = get_mod_brand_name()
+            system_prompt = get_mod_system_prompt()
             title = get_banner_title(lore)
             telemetry = build_relay_telemetry(lore, phase=2, width=40, active=True)
             hero = get_caduceus_frame(lore, width=24, height=16)
             assert brand == "Posideon Agent"
+            assert "You are Posideon Agent" in system_prompt
             assert "Posideon Agent" in title
             assert "tidewatch active" in telemetry
             assert hero
+
+        set_active_skin_globals("hermes")
+
+    def test_ares_payload_exposes_skin_system_prompt(self):
+        with patch.dict("os.environ", {"HERMES_CLI_SKIN": "ares"}):
+            set_active_skin_globals("ares")
+            system_prompt = get_mod_system_prompt()
+            assert "You are Ares Agent" in system_prompt
 
         set_active_skin_globals("hermes")
 
@@ -172,3 +183,13 @@ class TestCliSkinSwitching:
         cprint.assert_called_once_with("\033[2J\033[Hbanner")
         cli._app.invalidate.assert_called_once()
         cli.show_banner.assert_not_called()
+
+    def test_compose_system_prompt_layers_skin_persona_and_user_prompt(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.skin = "ares"
+        cli.user_system_prompt = "Answer like a terse staff officer."
+
+        composed = cli._compose_system_prompt()
+
+        assert "You are Ares Agent" in composed
+        assert "Answer like a terse staff officer." in composed

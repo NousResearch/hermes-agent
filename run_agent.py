@@ -2619,7 +2619,6 @@ class AIAgent:
                         context=function_args.get("context"),
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
-                        model=function_args.get("model"),
                         max_iterations=function_args.get("max_iterations"),
                         parent_agent=self,
                     )

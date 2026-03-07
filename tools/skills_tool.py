@@ -31,6 +31,9 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     description: Brief description # Required, max 1024 chars
     version: 1.0.0                # Optional
     license: MIT                  # Optional (agentskills.io)
+    platforms: [macos]            # Optional — restrict to specific OS platforms
+                                  #   Valid: macos, linux, windows
+                                  #   Omit to load on all platforms (default)
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
       hermes:
@@ -62,6 +65,7 @@ Usage:
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -77,6 +81,41 @@ SKILLS_DIR = HERMES_HOME / "skills"
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+
+# Platform identifiers for the 'platforms' frontmatter field.
+# Maps user-friendly names to sys.platform prefixes.
+_PLATFORM_MAP = {
+    "macos": "darwin",
+    "linux": "linux",
+    "windows": "win32",
+}
+
+
+def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
+    """Check if a skill is compatible with the current OS platform.
+
+    Skills declare platform requirements via a top-level ``platforms`` list
+    in their YAML frontmatter::
+
+        platforms: [macos]          # macOS only
+        platforms: [macos, linux]   # macOS and Linux
+
+    Valid values: ``macos``, ``linux``, ``windows``.
+
+    If the field is absent or empty the skill is compatible with **all**
+    platforms (backward-compatible default).
+    """
+    platforms = frontmatter.get("platforms")
+    if not platforms:
+        return True  # No restriction → loads everywhere
+    if not isinstance(platforms, list):
+        platforms = [platforms]
+    current = sys.platform
+    for p in platforms:
+        mapped = _PLATFORM_MAP.get(str(p).lower().strip(), str(p).lower().strip())
+        if current.startswith(mapped):
+            return True
+    return False
 
 
 def check_skills_requirements() -> bool:
@@ -204,6 +243,10 @@ def _find_all_skills() -> List[Dict[str, Any]]:
         try:
             content = skill_md.read_text(encoding='utf-8')
             frontmatter, body = _parse_frontmatter(content)
+
+            # Skip skills incompatible with the current OS platform
+            if not skill_matches_platform(frontmatter):
+                continue
             
             name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
             

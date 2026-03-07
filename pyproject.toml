@@ -46,6 +46,7 @@ cron = ["croniter"]
 slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
 cli = ["simple-term-menu"]
 tts-premium = ["elevenlabs"]
+voice = ["sounddevice>=0.4.6", "numpy>=1.24.0"]
 pty = ["ptyprocess>=0.7.0"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
@@ -63,6 +64,7 @@ all = [
   "hermes-agent[pty]",
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
+  "hermes-agent[voice]",
   "hermes-agent[homeassistant]",
 ]
 

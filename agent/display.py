@@ -6,7 +6,6 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 
 import json
 import os
-import random
 import sys
 import threading
 import time

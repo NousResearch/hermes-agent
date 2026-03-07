@@ -2,17 +2,23 @@
 """
 Browser Tool Module
 
-This module provides browser automation tools using agent-browser CLI with
-Browserbase cloud execution. It enables AI agents to navigate websites,
-interact with page elements, and extract information in a text-based format.
+This module provides browser automation tools using agent-browser CLI.  It
+supports two backends — **Browserbase** (cloud) and **local Chromium** — with
+identical agent-facing behaviour.  The backend is auto-detected: if
+``BROWSERBASE_API_KEY`` is set the cloud service is used; otherwise a local
+headless Chromium instance is launched automatically.
 
 The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
 page representation, making it ideal for LLM agents without vision capabilities.
 
 Features:
-- Cloud browser execution via Browserbase (no local browser needed)
-- Basic Stealth Mode always active (random fingerprints, CAPTCHA solving)
-- Proxies enabled by default for better CAPTCHA solving and anti-bot avoidance
+- **Local mode** (default): zero-cost headless Chromium via agent-browser.
+  Works on Linux servers without a display.  One-time setup:
+  ``agent-browser install`` (downloads Chromium) or
+  ``agent-browser install --with-deps`` (also installs system libraries for
+  Debian/Ubuntu/Docker).
+- **Cloud mode**: Browserbase cloud execution with stealth features, proxies,
+  and CAPTCHA solving.  Activated when BROWSERBASE_API_KEY is set.
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
@@ -20,8 +26,8 @@ Features:
 - Automatic cleanup of browser sessions
 
 Environment Variables:
-- BROWSERBASE_API_KEY: API key for Browserbase (required)
-- BROWSERBASE_PROJECT_ID: Project ID for Browserbase (required)
+- BROWSERBASE_API_KEY: API key for Browserbase (enables cloud mode)
+- BROWSERBASE_PROJECT_ID: Project ID for Browserbase (required for cloud mode)
 - BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
 - BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
   requires Scale Plan (default: "false")
@@ -77,9 +83,20 @@ SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 # Resolve vision auxiliary client for extraction/vision tasks
 _aux_vision_client, EXTRACTION_MODEL = get_vision_auxiliary_client()
 
+
+def _is_local_mode() -> bool:
+    """Return True when no Browserbase credentials are configured.
+
+    In local mode the browser tools launch a headless Chromium instance via
+    ``agent-browser --session`` instead of connecting to a remote Browserbase
+    session via ``--cdp``.
+    """
+    return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
+
+
 # Track active sessions per task
-# Now stores tuple of (session_name, browserbase_session_id, cdp_url)
-_active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, bb_session_id, cdp_url}
+# Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
+_active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -120,35 +137,56 @@ def _emergency_cleanup_all_sessions():
     logger.info("Emergency cleanup: closing %s active session(s)...", len(_active_sessions))
     
     try:
-        api_key = os.environ.get("BROWSERBASE_API_KEY")
-        project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-        
-        if not api_key or not project_id:
-            logger.warning("Cannot cleanup - missing BROWSERBASE credentials")
-            return
-        
-        for task_id, session_info in list(_active_sessions.items()):
-            bb_session_id = session_info.get("bb_session_id")
-            if bb_session_id:
-                try:
-                    response = requests.post(
-                        f"https://api.browserbase.com/v1/sessions/{bb_session_id}",
-                        headers={
-                            "X-BB-API-Key": api_key,
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "projectId": project_id,
-                            "status": "REQUEST_RELEASE"
-                        },
-                        timeout=5  # Short timeout for cleanup
-                    )
-                    if response.status_code in (200, 201, 204):
-                        logger.info("Closed session %s", bb_session_id)
-                    else:
-                        logger.warning("Failed to close session %s: HTTP %s", bb_session_id, response.status_code)
-                except Exception as e:
-                    logger.error("Error closing session %s: %s", bb_session_id, e)
+        if _is_local_mode():
+            # Local mode: just close agent-browser sessions via CLI
+            for task_id, session_info in list(_active_sessions.items()):
+                session_name = session_info.get("session_name")
+                if session_name:
+                    try:
+                        browser_cmd = _find_agent_browser()
+                        task_socket_dir = os.path.join(
+                            tempfile.gettempdir(),
+                            f"agent-browser-{session_name}"
+                        )
+                        env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+                        subprocess.run(
+                            browser_cmd.split() + ["--session", session_name, "--json", "close"],
+                            capture_output=True, timeout=5, env=env,
+                        )
+                        logger.info("Closed local session %s", session_name)
+                    except Exception as e:
+                        logger.debug("Error closing local session %s: %s", session_name, e)
+        else:
+            # Cloud mode: release Browserbase sessions via API
+            api_key = os.environ.get("BROWSERBASE_API_KEY")
+            project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
+
+            if not api_key or not project_id:
+                logger.warning("Cannot cleanup - missing BROWSERBASE credentials")
+                return
+
+            for task_id, session_info in list(_active_sessions.items()):
+                bb_session_id = session_info.get("bb_session_id")
+                if bb_session_id:
+                    try:
+                        response = requests.post(
+                            f"https://api.browserbase.com/v1/sessions/{bb_session_id}",
+                            headers={
+                                "X-BB-API-Key": api_key,
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "projectId": project_id,
+                                "status": "REQUEST_RELEASE"
+                            },
+                            timeout=5  # Short timeout for cleanup
+                        )
+                        if response.status_code in (200, 201, 204):
+                            logger.info("Closed session %s", bb_session_id)
+                        else:
+                            logger.warning("Failed to close session %s: HTTP %s", bb_session_id, response.status_code)
+                    except Exception as e:
+                        logger.error("Error closing session %s: %s", bb_session_id, e)
         
         _active_sessions.clear()
     except Exception as e:
@@ -184,7 +222,7 @@ def _cleanup_inactive_browser_sessions():
     
     This function is called periodically by the background cleanup thread to
     automatically close sessions that haven't been used recently, preventing
-    orphaned Browserbase sessions from accumulating.
+    orphaned sessions (local or Browserbase) from accumulating.
     """
     current_time = time.time()
     sessions_to_cleanup = []
@@ -560,11 +598,29 @@ def _create_browserbase_session(task_id: str) -> Dict[str, str]:
     }
 
 
+def _create_local_session(task_id: str) -> Dict[str, str]:
+    """Create a lightweight local browser session (no cloud API call).
+
+    Returns the same dict shape as ``_create_browserbase_session`` so the rest
+    of the code can treat both modes uniformly.
+    """
+    import uuid
+    session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+    logger.info("Created local browser session %s", session_name)
+    return {
+        "session_name": session_name,
+        "bb_session_id": None,   # Not applicable in local mode
+        "cdp_url": None,         # Not applicable in local mode
+        "features": {"local": True},
+    }
+
+
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
     
-    Creates a Browserbase session with proxies enabled if one doesn't exist.
+    In cloud mode, creates a Browserbase session with proxies enabled.
+    In local mode, generates a session name for agent-browser --session.
     Also starts the inactivity cleanup thread and updates activity tracking.
     Thread-safe: multiple subagents can call this concurrently.
     
@@ -572,7 +628,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         task_id: Unique identifier for the task
         
     Returns:
-        Dict with session_name, bb_session_id, and cdp_url
+        Dict with session_name (always), bb_session_id + cdp_url (cloud only)
     """
     if task_id is None:
         task_id = "default"
@@ -588,8 +644,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         if task_id in _active_sessions:
             return _active_sessions[task_id]
     
-    # Create session outside the lock (network call - don't hold lock during I/O)
-    session_info = _create_browserbase_session(task_id)
+    # Create session outside the lock (network call in cloud mode)
+    if _is_local_mode():
+        session_info = _create_local_session(task_id)
+    else:
+        session_info = _create_browserbase_session(task_id)
     
     with _cleanup_lock:
         _active_sessions[task_id] = session_info
@@ -708,12 +767,20 @@ def _run_browser_command(
     except Exception as e:
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     
-    # Connect via CDP to our pre-created Browserbase session.
-    # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
-    # --session creates a local browser instance and silently ignores --cdp.
-    # Per-task isolation is handled by AGENT_BROWSER_SOCKET_DIR instead.
-    cmd_parts = browser_cmd.split() + [
-        "--cdp", session_info["cdp_url"],
+    # Build the command with the appropriate backend flag.
+    # Cloud mode: --cdp <websocket_url> connects to Browserbase.
+    # Local mode: --session <name> launches a local headless Chromium.
+    # The rest of the command (--json, command, args) is identical.
+    if session_info.get("cdp_url"):
+        # Cloud mode — connect to remote Browserbase browser via CDP
+        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
+        # --session creates a local browser instance and silently ignores --cdp.
+        backend_args = ["--cdp", session_info["cdp_url"]]
+    else:
+        # Local mode — launch a headless Chromium instance
+        backend_args = ["--session", session_info["session_name"]]
+
+    cmd_parts = browser_cmd.split() + backend_args + [
         "--json",
         command
     ] + args
@@ -1131,12 +1198,13 @@ def browser_close(task_id: Optional[str] = None) -> str:
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "close", [])
     
-    # Close the BrowserBase session via API
+    # Close the backend session (Browserbase API in cloud mode, nothing extra in local mode)
     session_key = task_id if task_id and task_id in _active_sessions else "default"
     if session_key in _active_sessions:
         session_info = _active_sessions[session_key]
         bb_session_id = session_info.get("bb_session_id")
         if bb_session_id:
+            # Cloud mode: release the Browserbase session via API
             try:
                 config = _get_browserbase_config()
                 _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
@@ -1404,14 +1472,15 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
         
-        # Close the Browserbase session immediately via API
-        try:
-            config = _get_browserbase_config()
-            success = _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
-            if not success:
-                logger.warning("Could not close BrowserBase session %s", bb_session_id)
-        except Exception as e:
-            logger.error("Exception during BrowserBase session close: %s", e)
+        # Cloud mode: close the Browserbase session via API
+        if bb_session_id and not _is_local_mode():
+            try:
+                config = _get_browserbase_config()
+                success = _close_browserbase_session(bb_session_id, config["api_key"], config["project_id"])
+                if not success:
+                    logger.warning("Could not close BrowserBase session %s", bb_session_id)
+            except Exception as e:
+                logger.error("Exception during BrowserBase session close: %s", e)
         
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
@@ -1464,23 +1533,30 @@ def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
+
+    In **local mode** (no Browserbase credentials): only the ``agent-browser``
+    CLI must be findable.
+
+    In **cloud mode** (BROWSERBASE_API_KEY set): the CLI *and* both
+    ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` must be present.
     
     Returns:
         True if all requirements are met, False otherwise
     """
-    # Check for Browserbase credentials
-    api_key = os.environ.get("BROWSERBASE_API_KEY")
-    project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
-    
-    if not api_key or not project_id:
-        return False
-    
-    # Check for agent-browser CLI
+    # The agent-browser CLI is always required
     try:
         _find_agent_browser()
-        return True
     except FileNotFoundError:
         return False
+
+    # In cloud mode, also require Browserbase credentials
+    if not _is_local_mode():
+        api_key = os.environ.get("BROWSERBASE_API_KEY")
+        project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
+        if not api_key or not project_id:
+            return False
+
+    return True
 
 
 # ============================================================================
@@ -1493,20 +1569,26 @@ if __name__ == "__main__":
     """
     print("🌐 Browser Tool Module")
     print("=" * 40)
+
+    mode = "local" if _is_local_mode() else "cloud (Browserbase)"
+    print(f"   Mode: {mode}")
     
     # Check requirements
     if check_browser_requirements():
         print("✅ All requirements met")
     else:
         print("❌ Missing requirements:")
-        if not os.environ.get("BROWSERBASE_API_KEY"):
-            print("   - BROWSERBASE_API_KEY not set")
-        if not os.environ.get("BROWSERBASE_PROJECT_ID"):
-            print("   - BROWSERBASE_PROJECT_ID not set")
         try:
             _find_agent_browser()
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
+            print("     Install: npm install -g agent-browser && agent-browser install --with-deps")
+        if not _is_local_mode():
+            if not os.environ.get("BROWSERBASE_API_KEY"):
+                print("   - BROWSERBASE_API_KEY not set (required for cloud mode)")
+            if not os.environ.get("BROWSERBASE_PROJECT_ID"):
+                print("   - BROWSERBASE_PROJECT_ID not set (required for cloud mode)")
+            print("   Tip: unset BROWSERBASE_API_KEY to use free local mode instead")
     
     print("\n📋 Available Browser Tools:")
     for schema in BROWSER_TOOL_SCHEMAS:
@@ -1531,7 +1613,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_snapshot",
@@ -1540,7 +1621,6 @@ registry.register(
     handler=lambda args, **kw: browser_snapshot(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_click",
@@ -1548,7 +1628,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
     handler=lambda args, **kw: browser_click(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_type",
@@ -1556,7 +1635,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
     handler=lambda args, **kw: browser_type(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_scroll",
@@ -1564,7 +1642,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
     handler=lambda args, **kw: browser_scroll(**args, task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_back",
@@ -1572,7 +1649,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
     handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_press",
@@ -1580,7 +1656,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
     handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_close",
@@ -1588,7 +1663,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_close"],
     handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_get_images",
@@ -1596,7 +1670,6 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
     handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )
 registry.register(
     name="browser_vision",
@@ -1604,5 +1677,4 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
-    requires_env=["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
 )

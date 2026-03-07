@@ -2018,6 +2018,49 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
+        if self.api_mode != "chat_completions" or self.provider != "nous":
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_nous_runtime_credentials
+
+            creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                force_mint=force,
+            )
+        except Exception as exc:
+            logger.debug("Nous credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        # Nous requests should not inherit OpenRouter-only attribution headers.
+        self._client_kwargs.pop("default_headers", None)
+
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        try:
+            self.client = OpenAI(**self._client_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to rebuild OpenAI client after Nous refresh: %s", exc)
+            return False
+
+        return True
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -3044,6 +3087,7 @@ class AIAgent:
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
             codex_auth_retry_attempted = False
+            nous_auth_retry_attempted = False
 
             finish_reason = "stop"
 
@@ -3292,6 +3336,16 @@ class AIAgent:
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            continue
+                    if (
+                        self.api_mode == "chat_completions"
+                        and self.provider == "nous"
+                        and status_code == 401
+                        and not nous_auth_retry_attempted
+                    ):
+                        nous_auth_retry_attempted = True
+                        if self._try_refresh_nous_client_credentials(force=True):
+                            print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
                             continue
 
                     retry_count += 1

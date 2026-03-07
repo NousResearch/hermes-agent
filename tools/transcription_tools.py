@@ -113,7 +113,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 
-        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
+        voice_base_url = os.getenv("VOICE_TOOLS_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        client = OpenAI(api_key=api_key, base_url=voice_base_url)
 
         with open(file_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(

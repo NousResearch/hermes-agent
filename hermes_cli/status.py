@@ -67,7 +67,8 @@ def show_status(args):
     print(f"  Python:       {sys.version.split()[0]}")
     
     env_path = get_env_path()
-    print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    env_exists = env_path.exists()
+    print(f"  .env file:    {check_mark(env_exists)} {'exists' if env_exists else 'not found'}")
     
     # =========================================================================
     # API Keys

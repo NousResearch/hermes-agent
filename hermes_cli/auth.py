@@ -72,15 +72,19 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 @dataclass
 class ProviderConfig:
-    """Describes a known OAuth provider."""
+    """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code" or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
     scope: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
+    # For API-key providers: env vars to check (in priority order)
+    api_key_env_vars: tuple = ()
+    # Optional env var for base URL override
+    base_url_env_var: str = ""
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -98,6 +102,38 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenAI Codex",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
+    "zai": ProviderConfig(
+        id="zai",
+        name="Z.AI / GLM",
+        auth_type="api_key",
+        inference_base_url="https://api.z.ai/api/paas/v4",
+        api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        base_url_env_var="GLM_BASE_URL",
+    ),
+    "kimi-coding": ProviderConfig(
+        id="kimi-coding",
+        name="Kimi / Moonshot",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.ai/v1",
+        api_key_env_vars=("KIMI_API_KEY",),
+        base_url_env_var="KIMI_BASE_URL",
+    ),
+    "minimax": ProviderConfig(
+        id="minimax",
+        name="MiniMax",
+        auth_type="api_key",
+        inference_base_url="https://api.minimax.io/v1",
+        api_key_env_vars=("MINIMAX_API_KEY",),
+        base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-cn": ProviderConfig(
+        id="minimax-cn",
+        name="MiniMax (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.minimaxi.com/v1",
+        api_key_env_vars=("MINIMAX_CN_API_KEY",),
+        base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
 }
 
@@ -355,9 +391,18 @@ def resolve_provider(
     1. active_provider in auth.json with valid credentials
     2. Explicit CLI api_key/base_url -> "openrouter"
     3. OPENAI_API_KEY or OPENROUTER_API_KEY env vars -> "openrouter"
-    4. Fallback: "openrouter"
+    4. Provider-specific API keys (GLM, Kimi, MiniMax) -> that provider
+    5. Fallback: "openrouter"
     """
     normalized = (requested or "auto").strip().lower()
+
+    # Normalize provider aliases
+    _PROVIDER_ALIASES = {
+        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "kimi": "kimi-coding", "moonshot": "kimi-coding",
+        "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+    }
+    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
     if normalized in {"openrouter", "custom"}:
         return "openrouter"
@@ -386,6 +431,14 @@ def resolve_provider(
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
+
+    # Auto-detect API-key providers by checking their env vars
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        for env_var in pconfig.api_key_env_vars:
+            if os.getenv(env_var, "").strip():
+                return pid
 
     return "openrouter"
 
@@ -1230,6 +1283,37 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
+    """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "api_key":
+        return {"configured": False}
+
+    api_key = ""
+    key_source = ""
+    for env_var in pconfig.api_key_env_vars:
+        val = os.getenv(env_var, "").strip()
+        if val:
+            api_key = val
+            key_source = env_var
+            break
+
+    base_url = pconfig.inference_base_url
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        if env_url:
+            base_url = env_url
+
+    return {
+        "configured": bool(api_key),
+        "provider": provider_id,
+        "name": pconfig.name,
+        "key_source": key_source,
+        "base_url": base_url,
+        "logged_in": bool(api_key),  # compat with OAuth status shape
+    }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
@@ -1237,7 +1321,47 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    # API-key providers
+    pconfig = PROVIDER_REGISTRY.get(target)
+    if pconfig and pconfig.auth_type == "api_key":
+        return get_api_key_provider_status(target)
     return {"logged_in": False}
+
+
+def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+    """Resolve API key and base URL for an API-key provider.
+
+    Returns dict with: provider, api_key, base_url, source.
+    """
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "api_key":
+        raise AuthError(
+            f"Provider '{provider_id}' is not an API-key provider.",
+            provider=provider_id,
+            code="invalid_provider",
+        )
+
+    api_key = ""
+    key_source = ""
+    for env_var in pconfig.api_key_env_vars:
+        val = os.getenv(env_var, "").strip()
+        if val:
+            api_key = val
+            key_source = env_var
+            break
+
+    base_url = pconfig.inference_base_url
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        if env_url:
+            base_url = env_url.rstrip("/")
+
+    return {
+        "provider": provider_id,
+        "api_key": api_key,
+        "base_url": base_url.rstrip("/"),
+        "source": key_source or "default",
+    }
 
 
 # =============================================================================

@@ -62,14 +62,22 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
     if not config_path.exists():
         return None
     try:
-        import tomllib
+        text = config_path.read_text(encoding="utf-8")
     except Exception:
         return None
     try:
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        try:
+            import tomllib  # Python 3.11+
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]  # backport
+        payload = tomllib.loads(text)
+        model = payload.get("model") if isinstance(payload, dict) else None
     except Exception:
-        return None
-    model = payload.get("model") if isinstance(payload, dict) else None
+        # tomllib/tomli not available -- fall back to a simple regex parse
+        # sufficient for the single `model = "..."` key we care about
+        import re
+        m = re.search(r'^model\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        model = m.group(1) if m else None
     if isinstance(model, str) and model.strip():
         return model.strip()
     return None

@@ -475,13 +475,13 @@ TOOL_CATEGORIES = [
         "providers": [
             {
                 "name": "Microsoft Edge TTS",
-                "tag": "Free — no API key needed",
+                "tag": "Free - no API key needed",
                 "env_vars": [],
                 "tts_provider": "edge",
             },
             {
                 "name": "OpenAI TTS",
-                "tag": "Premium — high quality voices",
+                "tag": "Premium - high quality voices",
                 "env_vars": [
                     {"key": "VOICE_TOOLS_OPENAI_KEY", "prompt": "OpenAI API key", "url": "https://platform.openai.com/api-keys"},
                 ],
@@ -489,7 +489,7 @@ TOOL_CATEGORIES = [
             },
             {
                 "name": "ElevenLabs",
-                "tag": "Premium — most natural voices",
+                "tag": "Premium - most natural voices",
                 "env_vars": [
                     {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
                 ],
@@ -504,14 +504,14 @@ TOOL_CATEGORIES = [
         "providers": [
             {
                 "name": "Firecrawl Cloud",
-                "tag": "Recommended — hosted service",
+                "tag": "Recommended - hosted service",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
             },
             {
                 "name": "Firecrawl Self-Hosted",
-                "tag": "Free — run your own instance",
+                "tag": "Free - run your own instance",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_URL", "prompt": "Your Firecrawl instance URL (e.g., http://localhost:3002)"},
                 ],
@@ -1136,30 +1136,30 @@ def setup_terminal_backend(config: dict):
 
     # Build backend choices with descriptions
     terminal_choices = [
-        "Local — run directly on this machine (default)",
-        "Docker — isolated container with configurable resources",
+        "Local - run directly on this machine (default)",
+        "Docker - isolated container with configurable resources",
     ]
     idx_to_backend = {0: "local", 1: "docker"}
     backend_to_idx = {"local": 0, "docker": 1}
 
     next_idx = 2
     if is_linux:
-        terminal_choices.append("Singularity/Apptainer — HPC-friendly container")
+        terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
-    terminal_choices.append("Modal — serverless cloud sandbox")
+    terminal_choices.append("Modal - serverless cloud sandbox")
     idx_to_backend[next_idx] = "modal"
     backend_to_idx["modal"] = next_idx
     next_idx += 1
 
-    terminal_choices.append("Daytona — persistent cloud development environment")
+    terminal_choices.append("Daytona - persistent cloud development environment")
     idx_to_backend[next_idx] = "daytona"
     backend_to_idx["daytona"] = next_idx
     next_idx += 1
 
-    terminal_choices.append("SSH — run on a remote machine")
+    terminal_choices.append("SSH - run on a remote machine")
     idx_to_backend[next_idx] = "ssh"
     backend_to_idx["ssh"] = next_idx
     next_idx += 1
@@ -1478,7 +1478,7 @@ def setup_agent_settings(config: dict):
     print_info("")
     
     reset_choices = [
-        "Inactivity + daily reset (recommended — reset whichever comes first)",
+        "Inactivity + daily reset (recommended - reset whichever comes first)",
         "Inactivity only (reset after N minutes of no messages)",
         "Daily only (reset at a fixed hour each day)",
         "Never auto-reset (context lives until /reset or context compression)",
@@ -1822,17 +1822,19 @@ def setup_tools(config: dict):
     print()
 
     # Build checklist from TOOL_CATEGORIES
+    # NOTE: Do NOT use color() / ANSI codes in menu labels —
+    # simple_term_menu miscalculates widths and causes garbled redraws.
     checklist_labels = []
     for cat in TOOL_CATEGORIES:
         icon = cat.get("icon", "")
         name = cat["name"]
         desc = cat.get("description", "")
 
-        # Check if already configured
+        # Check if already configured — plain text only (no ANSI codes)
         configured = _is_tool_configured(cat)
-        status = color(" ✓", Colors.GREEN) if configured else ""
+        status = " [configured]" if configured else ""
 
-        checklist_labels.append(f"{icon} {name} — {desc}{status}")
+        checklist_labels.append(f"{icon} {name} - {desc}{status}")
 
     # Pre-select tools that are already configured
     pre_selected = [i for i, cat in enumerate(TOOL_CATEGORIES) if _is_tool_configured(cat)]
@@ -1901,6 +1903,8 @@ def _configure_tool_category(cat: dict, config: dict):
         print(color(f"  ─── {icon} {name} — Choose a provider ───", Colors.CYAN))
         print()
 
+        # NOTE: Do NOT use color() / ANSI codes in menu labels —
+        # simple_term_menu miscalculates widths and causes garbled redraws.
         provider_choices = []
         for p in providers:
             tag = f" ({p['tag']})" if p.get("tag") else ""
@@ -1910,11 +1914,11 @@ def _configure_tool_category(cat: dict, config: dict):
                 # Check TTS provider match for edge
                 if p.get("tts_provider"):
                     if config.get("tts", {}).get("provider") == p["tts_provider"]:
-                        configured = color(" ✓ active", Colors.GREEN)
+                        configured = " [active]"
                 elif not env_vars:
-                    configured = color(" ✓ active", Colors.GREEN)
+                    configured = " [active]"
                 else:
-                    configured = color(" ✓ configured", Colors.GREEN)
+                    configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
         # Detect current provider as default
@@ -2057,15 +2061,15 @@ def run_setup_wizard(args):
         print()
 
         menu_choices = [
-            "Quick Setup — configure missing items only",
-            "Full Setup — reconfigure everything",
-            "─────────────────────────────",
+            "Quick Setup - configure missing items only",
+            "Full Setup - reconfigure everything",
+            "---",
             "Model & Provider",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
-            "─────────────────────────────",
+            "---",
             "Exit",
         ]
 

@@ -151,10 +151,10 @@ class TestGetTextAuxiliaryClient:
         assert model is None
 
 
-class TestCodexNotInVisionClient:
-    """Codex fallback should NOT apply to vision tasks."""
+class TestVisionClientFallback:
+    """Vision client uses the same full fallback chain as text."""
 
-    def test_vision_returns_none_without_openrouter_nous(self):
+    def test_vision_returns_none_without_any_credentials(self):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             client, model = get_vision_auxiliary_client()
         assert client is None

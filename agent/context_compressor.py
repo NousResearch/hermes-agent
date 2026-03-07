@@ -53,7 +53,7 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, default_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client("compression")
         self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):

@@ -165,6 +165,52 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
+        """Skills with platforms: [macos] should not appear on Linux."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "apple"
+        skills_dir.mkdir(parents=True)
+
+        # macOS-only skill
+        mac_skill = skills_dir / "imessage"
+        mac_skill.mkdir()
+        (mac_skill / "SKILL.md").write_text(
+            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
+        )
+
+        # Universal skill
+        uni_skill = skills_dir / "web-search"
+        uni_skill.mkdir()
+        (uni_skill / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web\n---\n"
+        )
+
+        from unittest.mock import patch
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = build_skills_system_prompt()
+
+        assert "web-search" in result
+        assert "imessage" not in result
+
+    def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
+        """Skills with platforms: [macos] should appear on macOS."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "apple"
+        mac_skill = skills_dir / "imessage"
+        mac_skill.mkdir(parents=True)
+        (mac_skill / "SKILL.md").write_text(
+            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
+        )
+
+        from unittest.mock import patch
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            result = build_skills_system_prompt()
+
+        assert "imessage" in result
+        assert "Send iMessages" in result
+
 
 # =========================================================================
 # Context files prompt builder

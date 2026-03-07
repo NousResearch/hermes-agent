@@ -204,7 +204,7 @@ Every installed skill in `~/.hermes/skills/` is automatically registered as a sl
 The skill name (from frontmatter or folder name) becomes the command: `axolotl` → `/axolotl`.
 
 Implementation (`agent/skill_commands.py`, shared between CLI and gateway):
-1. `scan_skill_commands()` scans all SKILL.md files at startup
+1. `scan_skill_commands()` scans all SKILL.md files at startup, filtering out skills incompatible with the current OS platform (via the `platforms` frontmatter field)
 2. `build_skill_invocation_message()` loads the SKILL.md content and builds a user-turn message
 3. The message includes the full skill content, a list of supporting files (not loaded), and the user's instruction
 4. Supporting files can be loaded on demand via the `skill_view` tool
@@ -657,6 +657,7 @@ SKILL.md files use YAML frontmatter (agentskills.io format):
 name: skill-name
 description: Brief description for listing
 version: 1.0.0
+platforms: [macos]              # Optional — restrict to specific OS (macos/linux/windows)
 metadata:
   hermes:
     tags: [tag1, tag2]
@@ -664,6 +665,8 @@ metadata:
 ---
 # Skill Content...
 ```
+
+**Platform filtering** — Skills with a `platforms` field are automatically excluded from the system prompt index, `skills_list()`, and slash commands on incompatible platforms. Skills without the field load everywhere (backward compatible). See `skills/apple/` for macOS-only examples (iMessage, Reminders, Notes, FindMy).
 
 **Skills Hub** — user-driven skill search/install from online registries and official optional skills. Sources: official optional skills (shipped with repo, labeled "official"), GitHub (openai/skills, anthropics/skills, custom taps), ClawHub, Claude marketplace, LobeHub. Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills browse/search/install` CLI commands or the `/skills` slash command in chat.
 

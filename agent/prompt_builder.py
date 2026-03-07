@@ -142,12 +142,28 @@ def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
     return ""
 
 
+def _skill_is_platform_compatible(skill_file: Path) -> bool:
+    """Quick check if a SKILL.md is compatible with the current OS platform.
+
+    Reads just enough to parse the ``platforms`` frontmatter field.
+    Skills without the field (the vast majority) are always compatible.
+    """
+    try:
+        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        return skill_matches_platform(frontmatter)
+    except Exception:
+        return True  # Err on the side of showing the skill
+
+
 def build_skills_system_prompt() -> str:
     """Build a compact skill index for the system prompt.
 
     Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
     Includes per-skill descriptions from frontmatter so the model can
     match skills by meaning, not just name.
+    Filters out skills incompatible with the current OS platform.
     """
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     skills_dir = hermes_home / "skills"
@@ -159,6 +175,9 @@ def build_skills_system_prompt() -> str:
     # Each entry: (skill_name, description)
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
+        # Skip skills incompatible with the current OS platform
+        if not _skill_is_platform_compatible(skill_file):
+            continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:

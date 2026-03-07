@@ -3059,6 +3059,13 @@ class AIAgent:
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
             
+            # Safety net: strip orphaned tool results / add stubs for missing
+            # results before sending to the API.  The compressor handles this
+            # during compression, but orphans can also sneak in from session
+            # loading or manual message manipulation.
+            if hasattr(self, 'context_compressor') and self.context_compressor:
+                api_messages = self.context_compressor._sanitize_tool_pairs(api_messages)
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token

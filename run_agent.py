@@ -99,6 +99,46 @@ from agent.trajectory import (
 )
 
 
+class IterationBudget:
+    """Thread-safe shared iteration counter for parent and child agents.
+
+    Tracks total LLM-call iterations consumed across a parent agent and all
+    its subagents.  A single ``IterationBudget`` is created by the parent
+    and passed to every child so they share the same cap.
+
+    ``execute_code`` (programmatic tool calling) iterations are refunded via
+    :meth:`refund` so they don't eat into the budget.
+    """
+
+    def __init__(self, max_total: int):
+        self.max_total = max_total
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def consume(self) -> bool:
+        """Try to consume one iteration.  Returns True if allowed."""
+        with self._lock:
+            if self._used >= self.max_total:
+                return False
+            self._used += 1
+            return True
+
+    def refund(self) -> None:
+        """Give back one iteration (e.g. for execute_code turns)."""
+        with self._lock:
+            if self._used > 0:
+                self._used -= 1
+
+    @property
+    def used(self) -> int:
+        return self._used
+
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.max_total - self._used)
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -114,7 +154,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 60,  # Default tool-calling iterations
+        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -142,6 +182,7 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         honcho_session_key: str = None,
+        iteration_budget: "IterationBudget" = None,
     ):
         """
         Initialize the AI Agent.
@@ -152,7 +193,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 60)
+            max_iterations (int): Maximum number of tool calling iterations (default: 90)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -186,6 +227,9 @@ class AIAgent:
         """
         self.model = model
         self.max_iterations = max_iterations
+        # Shared iteration budget — parent creates, children inherit.
+        # Consumed by every LLM turn across parent + all subagents.
+        self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
@@ -2974,7 +3018,7 @@ class AIAgent:
         # Clear any stale interrupt state at start
         self.clear_interrupt()
         
-        while api_call_count < self.max_iterations:
+        while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True
@@ -2983,6 +3027,10 @@ class AIAgent:
                 break
             
             api_call_count += 1
+            if not self.iteration_budget.consume():
+                if not self.quiet_mode:
+                    print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
+                break
 
             # Fire step_callback for gateway hooks (agent:step event)
             if self.step_callback is not None:
@@ -3749,6 +3797,13 @@ class AIAgent:
                     self._log_msg_to_db(assistant_msg)
                     
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
+
+                    # Refund the iteration if the ONLY tool(s) called were
+                    # execute_code (programmatic tool calling).  These are
+                    # cheap RPC-style calls that shouldn't eat the budget.
+                    _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                    if _tc_names == {"execute_code"}:
+                        self.iteration_budget.refund()
                     
                     if self.compression_enabled and self.context_compressor.should_compress():
                         messages, active_system_prompt = self._compress_context(

@@ -1050,6 +1050,15 @@ def run_setup_wizard(args):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
+        elif selected_provider == "nous":
+            # Nous login succeeded but model fetch failed — prompt manually
+            # instead of falling through to the OpenRouter static list.
+            print_warning("Could not fetch available models from Nous Portal.")
+            print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
+            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
             from hermes_cli.codex_models import get_codex_model_ids
             # Try to get the access token for live model discovery

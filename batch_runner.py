@@ -606,7 +606,7 @@ class BatchRunner:
         # Create batches
         self.batches = self._create_batches()
         
-        print(f"📊 Batch Runner Initialized")
+        print("📊 Batch Runner Initialized")
         print(f"   Dataset: {self.dataset_file} ({len(self.dataset)} prompts)")
         print(f"   Batch size: {self.batch_size}")
         print(f"   Total batches: {len(self.batches)}")
@@ -827,7 +827,7 @@ class BatchRunner:
             print("=" * 70)
             print(f"   Original dataset size:     {len(self.dataset):,} prompts")
             print(f"   Already completed:         {len(skipped_indices):,} prompts")
-            print(f"   ─────────────────────────────────────────")
+            print("   ─────────────────────────────────────────")
             print(f"   🎯 RESUMING WITH:          {len(filtered_entries):,} prompts")
             print(f"   New batches created:       {len(batches_to_process)}")
             print("=" * 70 + "\n")
@@ -884,7 +884,7 @@ class BatchRunner:
             ]
             
             print(f"✅ Created {len(tasks)} batch tasks")
-            print(f"🚀 Starting parallel batch processing...\n")
+            print("🚀 Starting parallel batch processing...\n")
             
             # Use rich Progress for better visual tracking with persistent bottom bar
             # redirect_stdout/stderr lets rich manage all output so progress bar stays clean
@@ -1031,7 +1031,7 @@ class BatchRunner:
         print(f"✅ Total trajectories in merged file: {total_entries - filtered_entries}")
         print(f"✅ Total batch files merged: {batch_files_found}")
         print(f"⏱️  Total duration: {round(time.time() - start_time, 2)}s")
-        print(f"\n📈 Tool Usage Statistics:")
+        print("\n📈 Tool Usage Statistics:")
         print("-" * 70)
         
         if total_tool_stats:
@@ -1058,7 +1058,7 @@ class BatchRunner:
         # Print reasoning coverage stats
         total_discarded = sum(r.get("discarded_no_reasoning", 0) for r in results)
         
-        print(f"\n🧠 Reasoning Coverage:")
+        print("\n🧠 Reasoning Coverage:")
         print("-" * 70)
         total_turns = total_reasoning_stats["total_assistant_turns"]
         with_reasoning = total_reasoning_stats["turns_with_reasoning"]
@@ -1075,8 +1075,8 @@ class BatchRunner:
             print(f"   🚫 Samples discarded (zero reasoning): {total_discarded:,}")
         
         print(f"\n💾 Results saved to: {self.output_dir}")
-        print(f"   - Trajectories: trajectories.jsonl (combined)")
-        print(f"   - Individual batches: batch_*.jsonl (for debugging)")
+        print("   - Trajectories: trajectories.jsonl (combined)")
+        print("   - Individual batches: batch_*.jsonl (for debugging)")
         print(f"   - Statistics: {self.stats_file.name}")
         print(f"   - Checkpoint: {self.checkpoint_file.name}")
 
@@ -1212,7 +1212,7 @@ def main(
             with open(prefill_messages_file, 'r', encoding='utf-8') as f:
                 prefill_messages = json.load(f)
             if not isinstance(prefill_messages, list):
-                print(f"❌ Error: prefill_messages_file must contain a JSON array of messages")
+                print("❌ Error: prefill_messages_file must contain a JSON array of messages")
                 return
             print(f"💬 Loaded {len(prefill_messages)} prefill messages from {prefill_messages_file}")
         except Exception as e:

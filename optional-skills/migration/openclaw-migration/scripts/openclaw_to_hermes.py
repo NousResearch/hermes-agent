@@ -32,8 +32,66 @@ SKILL_CATEGORY_DIRNAME = "openclaw-imports"
 SKILL_CATEGORY_DESCRIPTION = (
     "Skills migrated from an OpenClaw workspace."
 )
+SKILL_CONFLICT_MODES = {"skip", "overwrite", "rename"}
 SUPPORTED_SECRET_TARGETS = {
     "TELEGRAM_BOT_TOKEN",
+}
+WORKSPACE_INSTRUCTIONS_FILENAME = "AGENTS" + ".md"
+MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
+    "soul": {
+        "label": "SOUL.md",
+        "description": "Import the OpenClaw persona file into Hermes.",
+    },
+    "workspace-agents": {
+        "label": "Workspace instructions",
+        "description": "Copy the OpenClaw workspace instructions file into a chosen workspace.",
+    },
+    "memory": {
+        "label": "MEMORY.md",
+        "description": "Import long-term memory entries into Hermes memories.",
+    },
+    "user-profile": {
+        "label": "USER.md",
+        "description": "Import user profile entries into Hermes memories.",
+    },
+    "messaging-settings": {
+        "label": "Messaging settings",
+        "description": "Import Hermes-compatible messaging settings such as allowlists and working directory.",
+    },
+    "secret-settings": {
+        "label": "Allowlisted secrets",
+        "description": "Import the small allowlist of Hermes-compatible secrets when explicitly enabled.",
+    },
+    "command-allowlist": {
+        "label": "Command allowlist",
+        "description": "Merge OpenClaw exec approval patterns into Hermes command_allowlist.",
+    },
+    "skills": {
+        "label": "User skills",
+        "description": "Copy OpenClaw skills into ~/.hermes/skills/openclaw-imports/.",
+    },
+    "tts-assets": {
+        "label": "TTS assets",
+        "description": "Copy compatible workspace TTS assets into ~/.hermes/tts/.",
+    },
+    "archive": {
+        "label": "Archive unmapped docs",
+        "description": "Archive compatible-but-unmapped docs for later manual review.",
+    },
+}
+MIGRATION_PRESETS: Dict[str, set[str]] = {
+    "user-data": {
+        "soul",
+        "workspace-agents",
+        "memory",
+        "user-profile",
+        "messaging-settings",
+        "command-allowlist",
+        "skills",
+        "tts-assets",
+        "archive",
+    },
+    "full": set(MIGRATION_OPTION_METADATA),
 }
 
 
@@ -45,6 +103,56 @@ class ItemResult:
     status: str
     reason: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
+
+
+def parse_selection_values(values: Optional[Sequence[str]]) -> List[str]:
+    parsed: List[str] = []
+    for value in values or ():
+        for part in str(value).split(","):
+            part = part.strip().lower()
+            if part:
+                parsed.append(part)
+    return parsed
+
+
+def resolve_selected_options(
+    include: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+    preset: Optional[str] = None,
+) -> set[str]:
+    include_values = parse_selection_values(include)
+    exclude_values = parse_selection_values(exclude)
+    valid = set(MIGRATION_OPTION_METADATA)
+    preset_name = (preset or "").strip().lower()
+
+    if preset_name and preset_name not in MIGRATION_PRESETS:
+        raise ValueError(
+            "Unknown migration preset: "
+            + preset_name
+            + ". Valid presets: "
+            + ", ".join(sorted(MIGRATION_PRESETS))
+        )
+
+    unknown = (set(include_values) - {"all"} - valid) | (set(exclude_values) - {"all"} - valid)
+    if unknown:
+        raise ValueError(
+            "Unknown migration option(s): "
+            + ", ".join(sorted(unknown))
+            + ". Valid options: "
+            + ", ".join(sorted(valid))
+        )
+
+    if preset_name:
+        selected = set(MIGRATION_PRESETS[preset_name])
+    elif not include_values or "all" in include_values:
+        selected = set(valid)
+    else:
+        selected = set(include_values)
+
+    if "all" in exclude_values:
+        selected.clear()
+    selected -= (set(exclude_values) - {"all"})
+    return selected
 
 
 def sha256_file(path: Path) -> str:
@@ -294,6 +402,9 @@ class Migrator:
         overwrite: bool,
         migrate_secrets: bool,
         output_dir: Optional[Path],
+        selected_options: Optional[set[str]] = None,
+        preset_name: str = "",
+        skill_conflict_mode: str = "skip",
     ):
         self.source_root = source_root
         self.target_root = target_root
@@ -301,18 +412,33 @@ class Migrator:
         self.workspace_target = workspace_target
         self.overwrite = overwrite
         self.migrate_secrets = migrate_secrets
+        self.selected_options = set(selected_options or MIGRATION_OPTION_METADATA.keys())
+        self.preset_name = preset_name.strip().lower()
+        self.skill_conflict_mode = skill_conflict_mode.strip().lower() or "skip"
         self.timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         self.output_dir = output_dir or (
             target_root / "migration" / "openclaw" / self.timestamp if execute else None
         )
         self.archive_dir = self.output_dir / "archive" if self.output_dir else None
         self.backup_dir = self.output_dir / "backups" if self.output_dir else None
+        self.overflow_dir = self.output_dir / "overflow" if self.output_dir else None
         self.items: List[ItemResult] = []
 
         config = load_yaml_file(self.target_root / "config.yaml")
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
         self.user_limit = int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT))
+
+        if self.skill_conflict_mode not in SKILL_CONFLICT_MODES:
+            raise ValueError(
+                "Unknown skill conflict mode: "
+                + self.skill_conflict_mode
+                + ". Valid modes: "
+                + ", ".join(sorted(SKILL_CONFLICT_MODES))
+            )
+
+    def is_selected(self, option_id: str) -> bool:
+        return option_id in self.selected_options
 
     def record(
         self,
@@ -341,36 +467,67 @@ class Migrator:
                 return candidate
         return None
 
+    def resolve_skill_destination(self, destination: Path) -> Path:
+        if self.skill_conflict_mode != "rename" or not destination.exists():
+            return destination
+
+        suffix = "-imported"
+        candidate = destination.with_name(destination.name + suffix)
+        counter = 2
+        while candidate.exists():
+            candidate = destination.with_name(f"{destination.name}{suffix}-{counter}")
+            counter += 1
+        return candidate
+
     def migrate(self) -> Dict[str, Any]:
         if not self.source_root.exists():
             self.record("source", self.source_root, None, "error", "OpenClaw directory does not exist")
             return self.build_report()
 
-        self.migrate_soul()
-        self.migrate_workspace_agents()
-        self.migrate_memory(
-            self.source_candidate("workspace/MEMORY.md", "workspace.default/MEMORY.md"),
-            self.target_root / "memories" / "MEMORY.md",
-            self.memory_limit,
-            kind="memory",
+        config = self.load_openclaw_config()
+
+        self.run_if_selected("soul", self.migrate_soul)
+        self.run_if_selected("workspace-agents", self.migrate_workspace_agents)
+        self.run_if_selected(
+            "memory",
+            lambda: self.migrate_memory(
+                self.source_candidate("workspace/MEMORY.md", "workspace.default/MEMORY.md"),
+                self.target_root / "memories" / "MEMORY.md",
+                self.memory_limit,
+                kind="memory",
+            ),
         )
-        self.migrate_memory(
-            self.source_candidate("workspace/USER.md", "workspace.default/USER.md"),
-            self.target_root / "memories" / "USER.md",
-            self.user_limit,
-            kind="user-profile",
+        self.run_if_selected(
+            "user-profile",
+            lambda: self.migrate_memory(
+                self.source_candidate("workspace/USER.md", "workspace.default/USER.md"),
+                self.target_root / "memories" / "USER.md",
+                self.user_limit,
+                kind="user-profile",
+            ),
         )
-        self.migrate_messaging_settings()
-        self.migrate_command_allowlist()
-        self.migrate_skills()
-        self.copy_tree_non_destructive(
-            self.source_candidate("workspace/tts"),
-            self.target_root / "tts",
-            kind="tts-assets",
-            ignore_dir_names={".venv", "generated", "__pycache__"},
+        self.run_if_selected("messaging-settings", lambda: self.migrate_messaging_settings(config))
+        self.run_if_selected("secret-settings", lambda: self.handle_secret_settings(config))
+        self.run_if_selected("command-allowlist", self.migrate_command_allowlist)
+        self.run_if_selected("skills", self.migrate_skills)
+        self.run_if_selected(
+            "tts-assets",
+            lambda: self.copy_tree_non_destructive(
+                self.source_candidate("workspace/tts"),
+                self.target_root / "tts",
+                kind="tts-assets",
+                ignore_dir_names={".venv", "generated", "__pycache__"},
+            ),
         )
-        self.archive_docs()
+        self.run_if_selected("archive", self.archive_docs)
         return self.build_report()
+
+    def run_if_selected(self, option_id: str, func) -> None:
+        if self.is_selected(option_id):
+            func()
+            return
+        meta = MIGRATION_OPTION_METADATA[option_id]
+        self.record(option_id, None, None, "skipped", "Not selected for this run", option_label=meta["label"])
 
     def build_report(self) -> Dict[str, Any]:
         summary: Dict[str, int] = {
@@ -391,6 +548,21 @@ class Migrator:
             "workspace_target": str(self.workspace_target) if self.workspace_target else None,
             "output_dir": str(self.output_dir) if self.output_dir else None,
             "migrate_secrets": self.migrate_secrets,
+            "preset": self.preset_name or None,
+            "skill_conflict_mode": self.skill_conflict_mode,
+            "selection": {
+                "selected": sorted(self.selected_options),
+                "preset": self.preset_name or None,
+                "skill_conflict_mode": self.skill_conflict_mode,
+                "available": [
+                    {"id": option_id, **meta}
+                    for option_id, meta in MIGRATION_OPTION_METADATA.items()
+                ],
+                "presets": [
+                    {"id": preset_id, "selected": sorted(option_ids)}
+                    for preset_id, option_ids in MIGRATION_PRESETS.items()
+                ],
+            },
             "summary": summary,
             "items": [asdict(item) for item in self.items],
         }
@@ -404,6 +576,15 @@ class Migrator:
         if not self.execute or not self.backup_dir or not path.exists():
             return None
         return backup_existing(path, self.backup_dir)
+
+    def write_overflow_entries(self, kind: str, entries: Sequence[str]) -> Optional[Path]:
+        if not entries or not self.overflow_dir:
+            return None
+        self.overflow_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{kind.replace('-', '_')}_overflow.txt"
+        path = self.overflow_dir / filename
+        path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        return path
 
     def copy_file(self, source: Path, destination: Path, kind: str) -> None:
         if not source or not source.exists():
@@ -433,13 +614,16 @@ class Migrator:
         self.copy_file(source, self.target_root / "SOUL.md", kind="soul")
 
     def migrate_workspace_agents(self) -> None:
-        source = self.source_candidate("workspace/AGENTS.md", "workspace.default/AGENTS.md")
+        source = self.source_candidate(
+            f"workspace/{WORKSPACE_INSTRUCTIONS_FILENAME}",
+            f"workspace.default/{WORKSPACE_INSTRUCTIONS_FILENAME}",
+        )
         if not source:
             return
         if not self.workspace_target:
             self.record("workspace-agents", source, None, "skipped", "No workspace target was provided")
             return
-        destination = self.workspace_target / "AGENTS.md"
+        destination = self.workspace_target / WORKSPACE_INSTRUCTIONS_FILENAME
         self.copy_file(source, destination, kind="workspace-agents")
 
     def migrate_memory(self, source: Optional[Path], destination: Path, limit: int, kind: str) -> None:
@@ -462,6 +646,9 @@ class Migrator:
             "char_limit": limit,
             "final_char_count": len(ENTRY_DELIMITER.join(merged)) if merged else 0,
         }
+        overflow_file = self.write_overflow_entries(kind, overflowed)
+        if overflow_file is not None:
+            details["overflow_file"] = str(overflow_file)
 
         if self.execute:
             if stats["added"] == 0 and not overflowed:
@@ -597,10 +784,9 @@ class Migrator:
                 conflicting_keys=conflicts,
             )
 
-    def migrate_messaging_settings(self) -> None:
-        config = self.load_openclaw_config()
+    def migrate_messaging_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
         additions: Dict[str, str] = {}
-        sources: List[str] = []
 
         workspace = (
             config.get("agents", {})
@@ -609,7 +795,6 @@ class Migrator:
         )
         if isinstance(workspace, str) and workspace.strip():
             additions["MESSAGING_CWD"] = workspace.strip()
-            sources.append("openclaw.json:agents.defaults.workspace")
 
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():
@@ -623,30 +808,40 @@ class Migrator:
                     users = [str(user).strip() for user in allow_from if str(user).strip()]
                     if users:
                         additions["TELEGRAM_ALLOWED_USERS"] = ",".join(users)
-                        sources.append("credentials/telegram-default-allowFrom.json")
 
         if additions:
             self.merge_env_values(additions, "messaging-settings", self.source_root / "openclaw.json")
         else:
             self.record("messaging-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Hermes-compatible messaging settings found")
 
+    def handle_secret_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
         if self.migrate_secrets:
             self.migrate_secret_settings(config)
+            return
+
+        config_path = self.source_root / "openclaw.json"
+        if config_path.exists():
+            self.record(
+                "secret-settings",
+                config_path,
+                self.target_root / ".env",
+                "skipped",
+                "Secret migration disabled. Re-run with --migrate-secrets to import allowlisted secrets.",
+                supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
+            )
         else:
-            config_path = self.source_root / "openclaw.json"
-            if config_path.exists():
-                self.record(
-                    "secret-settings",
-                    config_path,
-                    self.target_root / ".env",
-                    "skipped",
-                    "Secret migration disabled. Re-run with --migrate-secrets to import allowlisted secrets.",
-                    supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
-                )
+            self.record(
+                "secret-settings",
+                config_path,
+                self.target_root / ".env",
+                "skipped",
+                "OpenClaw config file not found",
+                supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
+            )
 
     def migrate_secret_settings(self, config: Dict[str, Any]) -> None:
         secret_additions: Dict[str, str] = {}
-        sources: List[str] = []
 
         telegram_token = (
             config.get("channels", {})
@@ -655,7 +850,6 @@ class Migrator:
         )
         if isinstance(telegram_token, str) and telegram_token.strip():
             secret_additions["TELEGRAM_BOT_TOKEN"] = telegram_token.strip()
-            sources.append("openclaw.json:channels.telegram.botToken")
 
         if secret_additions:
             self.merge_env_values(secret_additions, "secret-settings", self.source_root / "openclaw.json")
@@ -683,18 +877,37 @@ class Migrator:
 
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
-            if destination.exists() and not self.overwrite:
-                self.record("skill", skill_dir, destination, "conflict", "Destination skill already exists")
-                continue
+            final_destination = destination
+            if destination.exists():
+                if self.skill_conflict_mode == "skip":
+                    self.record("skill", skill_dir, destination, "conflict", "Destination skill already exists")
+                    continue
+                if self.skill_conflict_mode == "rename":
+                    final_destination = self.resolve_skill_destination(destination)
             if self.execute:
-                backup_path = self.maybe_backup(destination)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.exists():
+                backup_path = None
+                if final_destination == destination and destination.exists():
+                    backup_path = self.maybe_backup(destination)
+                final_destination.parent.mkdir(parents=True, exist_ok=True)
+                if final_destination == destination and destination.exists():
                     shutil.rmtree(destination)
-                shutil.copytree(skill_dir, destination)
-                self.record("skill", skill_dir, destination, "migrated", backup=str(backup_path) if backup_path else "")
+                shutil.copytree(skill_dir, final_destination)
+                details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
+                if final_destination != destination:
+                    details["renamed_from"] = str(destination)
+                self.record("skill", skill_dir, final_destination, "migrated", **details)
             else:
-                self.record("skill", skill_dir, destination, "migrated", "Would copy skill directory")
+                if final_destination != destination:
+                    self.record(
+                        "skill",
+                        skill_dir,
+                        final_destination,
+                        "migrated",
+                        "Would copy skill directory under a renamed folder",
+                        renamed_from=str(destination),
+                    )
+                else:
+                    self.record("skill", skill_dir, final_destination, "migrated", "Would copy skill directory")
 
         desc_path = destination_root / "DESCRIPTION.md"
         if self.execute:
@@ -810,16 +1023,53 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into Hermes Agent.")
     parser.add_argument("--source", default=str(Path.home() / ".openclaw"), help="OpenClaw home directory")
     parser.add_argument("--target", default=str(Path.home() / ".hermes"), help="Hermes home directory")
-    parser.add_argument("--workspace-target", help="Optional workspace root where AGENTS.md should be copied")
+    parser.add_argument(
+        "--workspace-target",
+        help="Optional workspace root where the workspace instructions file should be copied",
+    )
     parser.add_argument("--execute", action="store_true", help="Apply changes instead of reporting a dry run")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing Hermes targets after backing them up")
-    parser.add_argument("--migrate-secrets", action="store_true", help="Import a narrow allowlist of Hermes-compatible secrets into ~/.hermes/.env")
+    parser.add_argument(
+        "--migrate-secrets",
+        action="store_true",
+        help="Import a narrow allowlist of Hermes-compatible secrets into the target env file",
+    )
+    parser.add_argument(
+        "--skill-conflict",
+        choices=sorted(SKILL_CONFLICT_MODES),
+        default="skip",
+        help="How to handle imported skill directory conflicts: skip, overwrite, or rename the imported copy.",
+    )
+    parser.add_argument(
+        "--preset",
+        choices=sorted(MIGRATION_PRESETS),
+        help="Apply a named migration preset. 'user-data' excludes allowlisted secrets; 'full' includes all compatible groups.",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        help="Comma-separated migration option ids to include (default: all). "
+             f"Valid ids: {', '.join(sorted(MIGRATION_OPTION_METADATA))}",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Comma-separated migration option ids to skip. "
+             f"Valid ids: {', '.join(sorted(MIGRATION_OPTION_METADATA))}",
+    )
     parser.add_argument("--output-dir", help="Where to write report, backups, and archived docs")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    try:
+        selected_options = resolve_selected_options(args.include, args.exclude, preset=args.preset)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2, ensure_ascii=False))
+        return 2
     migrator = Migrator(
         source_root=Path(os.path.expanduser(args.source)).resolve(),
         target_root=Path(os.path.expanduser(args.target)).resolve(),
@@ -828,6 +1078,9 @@ def main() -> int:
         overwrite=bool(args.overwrite),
         migrate_secrets=bool(args.migrate_secrets),
         output_dir=Path(os.path.expanduser(args.output_dir)).resolve() if args.output_dir else None,
+        selected_options=selected_options,
+        preset_name=args.preset or "",
+        skill_conflict_mode=args.skill_conflict,
     )
     report = migrator.migrate()
     print(json.dumps(report, indent=2, ensure_ascii=False))

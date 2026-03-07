@@ -373,9 +373,17 @@ def launchd_status(deep: bool = False):
 def run_gateway(verbose: bool = False):
     """Run the gateway in foreground."""
     sys.path.insert(0, str(PROJECT_ROOT))
-    
+
     from gateway.run import start_gateway
-    
+    from gateway.status import is_gateway_running
+
+    # If gateway is already running, treat this as success to avoid restart
+    # loops for service managers with Restart=on-failure.
+    if is_gateway_running():
+        print("✓ Gateway is already running")
+        print("  Use 'hermes gateway status' to inspect the active process")
+        return
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -383,7 +391,7 @@ def run_gateway(verbose: bool = False):
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
-    
+
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
     success = asyncio.run(start_gateway())

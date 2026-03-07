@@ -7,7 +7,7 @@ protecting head and tail context.
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import get_text_auxiliary_client
 from agent.model_metadata import (
@@ -82,11 +82,14 @@ class ContextCompressor:
             "compression_count": self.compression_count,
         }
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> str:
-        """Generate a concise summary of conversation turns using a fast model."""
-        if not self.client:
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed to save space. The assistant performed various actions and received responses."
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
+        """Generate a concise summary of conversation turns.
 
+        Tries the auxiliary model first, then falls back to the user's main
+        model.  Returns None if all attempts fail — the caller should drop
+        the middle turns without a summary rather than inject a useless
+        placeholder.
+        """
         parts = []
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
@@ -117,28 +120,28 @@ TURNS TO SUMMARIZE:
 
 Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
-        try:
-            return self._call_summary_model(self.client, self.summary_model, prompt)
-        except Exception as e:
-            logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
+        # 1. Try the auxiliary model (cheap/fast)
+        if self.client:
+            try:
+                return self._call_summary_model(self.client, self.summary_model, prompt)
+            except Exception as e:
+                logging.warning(f"Failed to generate context summary with auxiliary model: {e}")
 
-            # Fallback: try the main model's endpoint.  This handles the common
-            # case where the user switched providers (e.g. OpenRouter → local LLM)
-            # but a stale API key causes the auxiliary client to pick the old
-            # provider which then fails (402, auth error, etc.).
-            fallback_client, fallback_model = self._get_fallback_client()
-            if fallback_client is not None:
-                try:
-                    logger.info("Retrying context summary with fallback client (%s)", fallback_model)
-                    summary = self._call_summary_model(fallback_client, fallback_model, prompt)
-                    # Success — swap in the working client for future compressions
-                    self.client = fallback_client
-                    self.summary_model = fallback_model
-                    return summary
-                except Exception as fallback_err:
-                    logging.warning(f"Fallback summary model also failed: {fallback_err}")
+        # 2. Fallback: try the user's main model endpoint
+        fallback_client, fallback_model = self._get_fallback_client()
+        if fallback_client is not None:
+            try:
+                logger.info("Retrying context summary with main model (%s)", fallback_model)
+                summary = self._call_summary_model(fallback_client, fallback_model, prompt)
+                self.client = fallback_client
+                self.summary_model = fallback_model
+                return summary
+            except Exception as fallback_err:
+                logging.warning(f"Main model summary also failed: {fallback_err}")
 
-            return "[CONTEXT SUMMARY]: Previous conversation turns have been compressed. The assistant performed tool calls and received responses."
+        # 3. All models failed — return None so the caller drops turns without a summary
+        logging.warning("Context compression: no model available for summary. Middle turns will be dropped without summary.")
+        return None
 
     def _call_summary_model(self, client, model: str, prompt: str) -> str:
         """Make the actual LLM call to generate a summary. Raises on failure."""
@@ -326,25 +329,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             print(f"\n📦 Context compression triggered ({display_tokens:,} tokens ≥ {self.threshold_tokens:,} threshold)")
             print(f"   📊 Model context limit: {self.context_length:,} tokens ({self.threshold_percent*100:.0f}% = {self.threshold_tokens:,})")
 
-        # Truncation fallback when no auxiliary model is available
-        if self.client is None:
-            print("⚠️  Context compression: no auxiliary model available. Falling back to message truncation.")
-            # Keep system message(s) at the front and the protected tail;
-            # simply drop the oldest non-system messages until under threshold.
-            kept = []
-            for msg in messages:
-                if msg.get("role") == "system":
-                    kept.append(msg.copy())
-                else:
-                    break
-            tail = messages[-self.protect_last_n:]
-            kept.extend(m.copy() for m in tail)
-            self.compression_count += 1
-            kept = self._sanitize_tool_pairs(kept)
-            if not self.quiet_mode:
-                print(f"   ✂️  Truncated: {len(messages)} → {len(kept)} messages (dropped middle turns)")
-            return kept
-
         if not self.quiet_mode:
             print(f"   🗜️  Summarizing turns {compress_start+1}-{compress_end} ({len(turns_to_summarize)} turns)")
 
@@ -357,7 +341,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 msg["content"] = (msg.get("content") or "") + "\n\n[Note: Some earlier conversation turns may be summarized to preserve context space.]"
             compressed.append(msg)
 
-        compressed.append({"role": "user", "content": summary})
+        if summary:
+            compressed.append({"role": "user", "content": summary})
+        else:
+            if not self.quiet_mode:
+                print("   ⚠️  No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
             compressed.append(messages[i].copy())

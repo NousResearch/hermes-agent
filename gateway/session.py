@@ -342,12 +342,26 @@ class SessionStore:
     
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
+        import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
-        
+
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w") as f:
-            json.dump(data, f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, sessions_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""

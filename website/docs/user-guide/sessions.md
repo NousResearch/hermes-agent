@@ -159,6 +159,8 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#insights).
+
 ## Session Search Tool
 
 The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine.

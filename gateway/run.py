@@ -2437,6 +2437,20 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     logger.info("Cron ticker stopped")
 
 
+def _is_noninteractive_service_context() -> bool:
+    """Return True when running without a TTY under a service manager.
+
+    We only auto-adopt an already-running gateway when execution clearly looks
+    service-managed/non-interactive (systemd/supervisor style) to avoid
+    surprising behavior for normal interactive CLI runs.
+    """
+    has_service_env = any(
+        os.getenv(k)
+        for k in ("INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "SUPERVISOR_ENABLED")
+    )
+    return has_service_env and not sys.stdin.isatty()
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -2454,6 +2468,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None) -> bool:
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+        if _is_noninteractive_service_context():
+            logger.warning(
+                "Gateway already running (PID %d, HERMES_HOME=%s); "
+                "non-interactive service context detected, treating as healthy.",
+                existing_pid,
+                hermes_home,
+            )
+            print(
+                f"\n✅ Gateway already running (PID {existing_pid}).\n"
+                f"   Non-interactive service context detected; keeping existing instance.\n"
+            )
+            return True
+
         logger.error(
             "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
             "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",

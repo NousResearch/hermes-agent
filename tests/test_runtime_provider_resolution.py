@@ -121,6 +121,43 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     assert resolved["api_key"] == "sk-openai-fallback"
 
 
+def test_custom_endpoint_prefers_openai_key(monkeypatch):
+    """Custom endpoint should use OPENAI_API_KEY, not OPENROUTER_API_KEY.
+
+    Regression test for #560: when base_url is a non-OpenRouter endpoint,
+    OPENROUTER_API_KEY was being sent as the auth header instead of OPENAI_API_KEY.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-zai-correct-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-wrong-key-for-zai")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+    assert resolved["api_key"] == "sk-zai-correct-key"
+
+
+def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
+    """Auto provider with non-OpenRouter base_url should prefer OPENAI_API_KEY.
+
+    Same as #560 but via 'hermes model' flow which sets provider to 'auto'.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://my-vllm-server.example.com/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-vllm-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-should-not-leak")
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["base_url"] == "https://my-vllm-server.example.com/v1"
+    assert resolved["api_key"] == "sk-vllm-key"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

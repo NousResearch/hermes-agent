@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -377,6 +378,31 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     }
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text content to a file atomically using temp file + rename.
+    
+    This ensures the target file is never left in a partially-written state.
+    If the process crashes mid-write, the previous version remains intact.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))  # Atomic on same filesystem
+    except BaseException:
+        # Clean up temp file on any failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     err = _validate_file_path(file_path)
@@ -391,16 +417,23 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
     target = existing["path"] / file_path
-    target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    target.write_text(file_content, encoding="utf-8")
+    
+    try:
+        _atomic_write_text(target, file_content)
+    except (OSError, IOError) as e:
+        return {"success": False, "error": f"Failed to write file '{file_path}': {e}"}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            target.write_text(original_content, encoding="utf-8")
+            try:
+                _atomic_write_text(target, original_content)
+            except (OSError, IOError):
+                # If rollback fails, at least try to remove the file
+                target.unlink(missing_ok=True)
         else:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}

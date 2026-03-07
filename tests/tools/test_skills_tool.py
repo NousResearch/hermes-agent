@@ -11,6 +11,7 @@ from tools.skills_tool import (
     _estimate_tokens,
     _find_all_skills,
     _load_category_description,
+    skill_matches_platform,
     skills_list,
     skills_categories,
     skill_view,
@@ -332,3 +333,134 @@ class TestSkillsCategories:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["categories"] == []
+
+
+# ---------------------------------------------------------------------------
+# skill_matches_platform
+# ---------------------------------------------------------------------------
+
+
+class TestSkillMatchesPlatform:
+    """Tests for the platforms frontmatter field filtering."""
+
+    def test_no_platforms_field_matches_everything(self):
+        """Skills without a platforms field should load on any OS."""
+        assert skill_matches_platform({}) is True
+        assert skill_matches_platform({"name": "foo"}) is True
+
+    def test_empty_platforms_matches_everything(self):
+        """Empty platforms list should load on any OS."""
+        assert skill_matches_platform({"platforms": []}) is True
+        assert skill_matches_platform({"platforms": None}) is True
+
+    def test_macos_on_darwin(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert skill_matches_platform({"platforms": ["macos"]}) is True
+
+    def test_macos_on_linux(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": ["macos"]}) is False
+
+    def test_linux_on_linux(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": ["linux"]}) is True
+
+    def test_linux_on_darwin(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert skill_matches_platform({"platforms": ["linux"]}) is False
+
+    def test_windows_on_win32(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            assert skill_matches_platform({"platforms": ["windows"]}) is True
+
+    def test_windows_on_linux(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": ["windows"]}) is False
+
+    def test_multi_platform_match(self):
+        """Skills listing multiple platforms should match any of them."""
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
+            mock_sys.platform = "win32"
+            assert skill_matches_platform({"platforms": ["macos", "linux"]}) is False
+
+    def test_string_instead_of_list(self):
+        """A single string value should be treated as a one-element list."""
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert skill_matches_platform({"platforms": "macos"}) is True
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": "macos"}) is False
+
+    def test_case_insensitive(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            assert skill_matches_platform({"platforms": ["MacOS"]}) is True
+            assert skill_matches_platform({"platforms": ["MACOS"]}) is True
+
+    def test_unknown_platform_no_match(self):
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            assert skill_matches_platform({"platforms": ["freebsd"]}) is False
+
+
+# ---------------------------------------------------------------------------
+# _find_all_skills — platform filtering integration
+# ---------------------------------------------------------------------------
+
+
+class TestFindAllSkillsPlatformFiltering:
+    """Test that _find_all_skills respects the platforms field."""
+
+    def test_excludes_incompatible_platform(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            _make_skill(tmp_path, "universal-skill")
+            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
+            skills = _find_all_skills()
+        names = {s["name"] for s in skills}
+        assert "universal-skill" in names
+        assert "mac-only" not in names
+
+    def test_includes_matching_platform(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
+            skills = _find_all_skills()
+        names = {s["name"] for s in skills}
+        assert "mac-only" in names
+
+    def test_no_platforms_always_included(self, tmp_path):
+        """Skills without platforms field should appear on any platform."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            _make_skill(tmp_path, "generic-skill")
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["name"] == "generic-skill"
+
+    def test_multi_platform_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("tools.skills_tool.sys") as mock_sys:
+            _make_skill(tmp_path, "cross-plat", frontmatter_extra="platforms: [macos, linux]\n")
+            mock_sys.platform = "darwin"
+            skills_darwin = _find_all_skills()
+            mock_sys.platform = "linux"
+            skills_linux = _find_all_skills()
+            mock_sys.platform = "win32"
+            skills_win = _find_all_skills()
+        assert len(skills_darwin) == 1
+        assert len(skills_linux) == 1
+        assert len(skills_win) == 0

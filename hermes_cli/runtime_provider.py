@@ -7,10 +7,12 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.auth import (
     AuthError,
+    PROVIDER_REGISTRY,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
+    resolve_api_key_provider_credentials,
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
@@ -143,6 +145,19 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "hermes-auth-store"),
             "last_refresh": creds.get("last_refresh"),
+            "requested_provider": requested_provider,
+        }
+
+    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "api_key":
+        creds = resolve_api_key_provider_credentials(provider)
+        return {
+            "provider": provider,
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
 

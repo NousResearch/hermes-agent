@@ -13,6 +13,10 @@ model:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
+  #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
+  #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
+  #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
+  #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   

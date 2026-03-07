@@ -64,7 +64,13 @@ def _has_any_provider_configured() -> bool:
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
     # often don't require an API key.
-    provider_env_vars = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL")
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    # Collect all provider env vars
+    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "api_key":
+            provider_env_vars.update(pconfig.api_key_env_vars)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
@@ -411,6 +417,10 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "zai": "Z.AI / GLM",
+        "kimi-coding": "Kimi / Moonshot",
+        "minimax": "MiniMax",
+        "minimax-cn": "MiniMax (China)",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -425,11 +435,16 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
+        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
+        ("minimax", "MiniMax (global direct API)"),
+        ("minimax-cn", "MiniMax China (domestic direct API)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous", "openai-codex") else "custom"
+    known_keys = {k for k, _ in providers}
+    active_key = active if active in known_keys else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -454,6 +469,8 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
+    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+        _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
 def _prompt_provider_choice(choices):
@@ -721,6 +738,117 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+
+# Curated model lists for direct API-key providers
+_PROVIDER_MODELS = {
+    "zai": [
+        "glm-5",
+        "glm-4.7",
+        "glm-4.5",
+        "glm-4.5-flash",
+    ],
+    "kimi-coding": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
+    "minimax": [
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ],
+    "minimax-cn": [
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ],
+}
+
+
+def _model_flow_api_key_provider(config, provider_id, current_model=""):
+    """Generic flow for API-key providers (z.ai, Kimi, MiniMax)."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    # Check / prompt for API key
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                new_key = input(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    # Optional base URL override
+    current_base = ""
+    if base_url_env:
+        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    effective_base = current_base or pconfig.inference_base_url
+
+    try:
+        override = input(f"Base URL [{effective_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+    if override and base_url_env:
+        save_env_value(base_url_env, override)
+        effective_base = override
+
+    # Model selection
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        # Clear custom endpoint if set (avoid confusion)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        _save_model_choice(selected)
+
+        # Update config with provider and base URL
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = provider_id
+            model["base_url"] = effective_base
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
 
 
 def cmd_login(args):
@@ -1141,7 +1269,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn"],
         default=None,
         help="Inference provider (default: auto)"
     )

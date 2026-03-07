@@ -19,7 +19,7 @@ These are commands you run from your shell.
 | `hermes chat --continue` / `-c` | Resume the most recent session |
 | `hermes chat --resume <id>` / `-r <id>` | Resume a specific session |
 | `hermes chat --model <name>` | Use a specific model |
-| `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`) |
+| `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`) |
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
 | `hermes chat --verbose` | Enable verbose/debug output |
 

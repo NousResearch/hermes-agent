@@ -153,16 +153,18 @@ def sync_skills(quiet: bool = False) -> dict:
                 if dest.exists():
                     # User already has a skill with the same name — don't overwrite
                     skipped += 1
+                    manifest[skill_name] = bundled_hash
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)
                     copied.append(skill_name)
+                    manifest[skill_name] = bundled_hash
                     if not quiet:
                         print(f"  + {skill_name}")
             except (OSError, IOError) as e:
                 if not quiet:
                     print(f"  ! Failed to copy {skill_name}: {e}")
-            manifest[skill_name] = bundled_hash
+                # Do NOT add to manifest — next sync should retry
 
         elif dest.exists():
             # ── Existing skill — in manifest AND on disk ──
@@ -190,12 +192,22 @@ def sync_skills(quiet: bool = False) -> dict:
             # User copy matches origin — check if bundled has a newer version
             if bundled_hash != origin_hash:
                 try:
-                    shutil.rmtree(dest)
-                    shutil.copytree(skill_src, dest)
-                    manifest[skill_name] = bundled_hash
-                    updated.append(skill_name)
-                    if not quiet:
-                        print(f"  ↑ {skill_name} (updated)")
+                    # Move old copy to a backup so we can restore on failure
+                    backup = dest.with_suffix(".bak")
+                    shutil.move(str(dest), str(backup))
+                    try:
+                        shutil.copytree(skill_src, dest)
+                        manifest[skill_name] = bundled_hash
+                        updated.append(skill_name)
+                        if not quiet:
+                            print(f"  ↑ {skill_name} (updated)")
+                        # Remove backup after successful copy
+                        shutil.rmtree(backup, ignore_errors=True)
+                    except (OSError, IOError):
+                        # Restore from backup
+                        if backup.exists() and not dest.exists():
+                            shutil.move(str(backup), str(dest))
+                        raise
                 except (OSError, IOError) as e:
                     if not quiet:
                         print(f"  ! Failed to update {skill_name}: {e}")

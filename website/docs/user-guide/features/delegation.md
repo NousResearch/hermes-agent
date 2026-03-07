@@ -6,7 +6,11 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_task` tool can delegate to:
+- Internal Hermes subagents (default)
+- External ACP-style coding agents (`codex`, `claude-code`)
+
+Delegated agents run in isolated contexts, and only final summaries are returned to the parent.
 
 ## Single Task
 
@@ -144,6 +148,26 @@ delegate_task(
 
 If omitted, subagents use the same model as the parent.
 
+## ACP Agent Targets
+
+By default, delegation uses an internal Hermes child (`agent="hermes"`).
+You can explicitly target external coding agents:
+
+```python
+delegate_task(
+    goal="Implement the fix and run tests",
+    context="Repo root is /workspace/project. Keep patch minimal.",
+    agent="codex"
+)
+```
+
+```python
+delegate_task(tasks=[
+    {"goal": "Find regression risks", "agent": "claude-code"},
+    {"goal": "Apply patch and validate", "agent": "codex"},
+])
+```
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:
@@ -209,6 +233,8 @@ Delegation has a **depth limit of 2** — a parent (depth 0) can spawn children 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets
+  external_timeout_seconds: 900             # Timeout for external agents (codex/claude-code)
+  external_max_output_chars: 24000          # Truncate external agent output above this limit
 ```
 
 :::tip

@@ -2574,6 +2574,7 @@ class AIAgent:
                         goal=function_args.get("goal"),
                         context=function_args.get("context"),
                         toolsets=function_args.get("toolsets"),
+                        agent=function_args.get("agent"),
                         tasks=tasks_arg,
                         model=function_args.get("model"),
                         max_iterations=function_args.get("max_iterations"),

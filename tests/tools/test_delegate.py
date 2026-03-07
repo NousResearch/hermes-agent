@@ -19,8 +19,10 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     MAX_CONCURRENT_CHILDREN,
     MAX_DEPTH,
+    SUPPORTED_AGENTS,
     check_delegate_requirements,
     delegate_task,
+    _normalize_delegate_agent,
     _build_child_system_prompt,
     _strip_blocked_tools,
 )
@@ -56,9 +58,24 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("agent", props)
         self.assertIn("model", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("agent", props["tasks"]["items"]["properties"])
         self.assertEqual(props["tasks"]["maxItems"], 3)
+
+
+class TestAgentNormalization(unittest.TestCase):
+    def test_defaults_to_hermes(self):
+        self.assertEqual(_normalize_delegate_agent(None), "hermes")
+
+    def test_aliases(self):
+        self.assertEqual(_normalize_delegate_agent("claude"), "claude-code")
+        self.assertEqual(_normalize_delegate_agent("claude_code"), "claude-code")
+        self.assertEqual(_normalize_delegate_agent("codex"), "codex")
+
+    def test_invalid_returns_empty(self):
+        self.assertEqual(_normalize_delegate_agent("foo-agent"), "")
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -120,6 +137,21 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
 
+    def test_invalid_top_level_agent(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="x", agent="bad-agent", parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Unsupported agent", result["error"])
+
+    def test_invalid_task_agent(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(
+            tasks=[{"goal": "x", "agent": "bad-agent"}],
+            parent_agent=parent,
+        ))
+        self.assertIn("error", result)
+        self.assertIn("unsupported agent", result["error"].lower())
+
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
         mock_run.return_value = {
@@ -133,6 +165,30 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args.kwargs["agent"], "hermes")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_mode_with_external_agent(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "Done!", "api_calls": 0, "duration_seconds": 2.0
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Fix tests", agent="codex", parent_agent=parent))
+        self.assertIn("results", result)
+        self.assertEqual(mock_run.call_args.kwargs["agent"], "codex")
+
+    @patch("tools.delegate_tool._run_external_child")
+    def test_external_agent_dispatch(self, mock_external):
+        mock_external.return_value = {
+            "task_index": 0, "agent": "codex", "status": "completed",
+            "summary": "external done", "api_calls": 0, "duration_seconds": 1.0
+        }
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(goal="Use codex", agent="codex", parent_agent=parent))
+        self.assertEqual(result["results"][0]["agent"], "codex")
+        self.assertEqual(result["results"][0]["summary"], "external done")
+        mock_external.assert_called_once()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):
@@ -151,6 +207,23 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["summary"], "Result A")
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
+        self.assertEqual(mock_run.call_args_list[0].kwargs["agent"], "hermes")
+        self.assertEqual(mock_run.call_args_list[1].kwargs["agent"], "hermes")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_agent_override(self, mock_run):
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 0, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 0, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": "Task A", "agent": "codex"},
+            {"goal": "Task B", "agent": "claude"},
+        ]
+        json.loads(delegate_task(tasks=tasks, agent="hermes", parent_agent=parent))
+        self.assertEqual(mock_run.call_args_list[0].kwargs["agent"], "codex")
+        self.assertEqual(mock_run.call_args_list[1].kwargs["agent"], "claude-code")
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_capped_at_3(self, mock_run):
@@ -254,6 +327,9 @@ class TestBlockedTools(unittest.TestCase):
     def test_constants(self):
         self.assertEqual(MAX_CONCURRENT_CHILDREN, 3)
         self.assertEqual(MAX_DEPTH, 2)
+        self.assertIn("hermes", SUPPORTED_AGENTS)
+        self.assertIn("codex", SUPPORTED_AGENTS)
+        self.assertIn("claude-code", SUPPORTED_AGENTS)
 
 
 if __name__ == "__main__":

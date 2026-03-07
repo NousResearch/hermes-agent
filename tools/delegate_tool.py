@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Delegate Tool -- Subagent Architecture
+Delegate Tool -- Subagent Architecture + ACP Delegation
 
 Spawns child AIAgent instances with isolated context, restricted toolsets,
-and their own terminal sessions. Supports single-task and batch (parallel)
-modes. The parent blocks until all children complete.
+and their own terminal sessions. Also supports ACP-style delegation to
+external coding agents (Codex / Claude Code). Supports single-task and batch
+(parallel) modes. The parent blocks until all children complete.
 
 Each child gets:
   - A fresh conversation (no parent history)
@@ -21,7 +22,10 @@ import io
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -40,11 +44,269 @@ MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+DEFAULT_AGENT = "hermes"
+SUPPORTED_AGENTS = frozenset(["hermes", "codex", "claude-code"])
+DEFAULT_EXTERNAL_TIMEOUT_SECONDS = 900
+DEFAULT_EXTERNAL_MAX_OUTPUT_CHARS = 24_000
+
+AGENT_ALIASES = {
+    "hermes": "hermes",
+    "codex": "codex",
+    "claude": "claude-code",
+    "claude-code": "claude-code",
+    "claude_code": "claude-code",
+}
 
 
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _normalize_delegate_agent(agent: Optional[str]) -> str:
+    """Normalize user-provided agent labels to canonical names."""
+    if agent is None:
+        return DEFAULT_AGENT
+    key = str(agent).strip().lower().replace("_", "-")
+    return AGENT_ALIASES.get(key, "")
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return (
+        value[:limit]
+        + f"\n\n[Truncated: response was {len(value):,} chars, exceeding {limit:,} char limit]"
+    )
+
+
+def _build_external_child_prompt(goal: str, context: Optional[str] = None) -> str:
+    parts = [
+        "You are an ACP subagent called by Hermes Agent.",
+        "",
+        f"TASK:\n{goal}",
+    ]
+    if context and context.strip():
+        parts.append(f"\nCONTEXT:\n{context}")
+    parts.append(
+        "\nReturn only your final answer. Keep it concise and include:\n"
+        "- What you completed\n"
+        "- Files changed (if any)\n"
+        "- Any blockers or follow-ups"
+    )
+    return "\n".join(parts)
+
+
+def _run_external_child(
+    task_index: int,
+    agent: str,
+    goal: str,
+    context: Optional[str],
+    model: Optional[str],
+    max_iterations: int,
+    parent_agent,
+) -> Dict[str, Any]:
+    """Run an external coding agent (codex/claude-code) in non-interactive mode."""
+    _ = max_iterations, parent_agent
+    cfg = _load_config()
+    timeout_s = int(cfg.get("external_timeout_seconds", DEFAULT_EXTERNAL_TIMEOUT_SECONDS))
+    max_chars = int(cfg.get("external_max_output_chars", DEFAULT_EXTERNAL_MAX_OUTPUT_CHARS))
+    workdir = os.getcwd()
+    prompt = _build_external_child_prompt(goal, context)
+    start = time.monotonic()
+
+    if agent == "codex":
+        if shutil.which("codex") is None:
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": "Codex CLI not found in PATH.",
+                "api_calls": 0,
+                "duration_seconds": 0.0,
+            }
+
+        out_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="hermes-acp-codex-", suffix=".txt", delete=False) as tmp:
+                out_path = tmp.name
+
+            cmd = [
+                "codex",
+                "-a", "never",
+                "exec",
+                "--skip-git-repo-check",
+                "--color", "never",
+                "-C", workdir,
+                "--output-last-message", out_path,
+            ]
+            if model:
+                cmd.extend(["-m", model])
+            cmd.append("-")
+
+            completed = subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=timeout_s,
+                check=False,
+            )
+            duration = round(time.monotonic() - start, 2)
+
+            summary = ""
+            if out_path and os.path.exists(out_path):
+                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                    summary = (f.read() or "").strip()
+            if not summary:
+                summary = (completed.stdout or "").strip()
+            if not summary and completed.stderr:
+                summary = completed.stderr.strip()
+            summary = _truncate_text(summary or "", max_chars)
+
+            if completed.returncode == 0 and summary:
+                return {
+                    "task_index": task_index,
+                    "agent": agent,
+                    "status": "completed",
+                    "summary": summary,
+                    "api_calls": 0,
+                    "duration_seconds": duration,
+                }
+            stderr_preview = _truncate_text((completed.stderr or "").strip(), 4_000)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": summary or None,
+                "error": (
+                    f"Codex exited with code {completed.returncode}."
+                    + (f" stderr: {stderr_preview}" if stderr_preview else "")
+                ),
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+        except subprocess.TimeoutExpired:
+            duration = round(time.monotonic() - start, 2)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": f"Codex timed out after {timeout_s} seconds.",
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+        except Exception as exc:
+            duration = round(time.monotonic() - start, 2)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": f"Codex execution failed: {exc}",
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+        finally:
+            if out_path and os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+
+    if agent == "claude-code":
+        binary = "claude"
+        if shutil.which(binary) is None:
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": "Claude Code CLI not found in PATH.",
+                "api_calls": 0,
+                "duration_seconds": 0.0,
+            }
+
+        cmd = [
+            binary,
+            "-p",
+            "--output-format", "text",
+            "--permission-mode", "acceptEdits",
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append(prompt)
+
+        try:
+            completed = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                timeout=timeout_s,
+                check=False,
+            )
+            duration = round(time.monotonic() - start, 2)
+            summary = (completed.stdout or "").strip()
+            if not summary and completed.stderr:
+                summary = completed.stderr.strip()
+            summary = _truncate_text(summary or "", max_chars)
+
+            if completed.returncode == 0 and summary:
+                return {
+                    "task_index": task_index,
+                    "agent": agent,
+                    "status": "completed",
+                    "summary": summary,
+                    "api_calls": 0,
+                    "duration_seconds": duration,
+                }
+            stderr_preview = _truncate_text((completed.stderr or "").strip(), 4_000)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": summary or None,
+                "error": (
+                    f"Claude Code exited with code {completed.returncode}."
+                    + (f" stderr: {stderr_preview}" if stderr_preview else "")
+                ),
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+        except subprocess.TimeoutExpired:
+            duration = round(time.monotonic() - start, 2)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": f"Claude Code timed out after {timeout_s} seconds.",
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+        except Exception as exc:
+            duration = round(time.monotonic() - start, 2)
+            return {
+                "task_index": task_index,
+                "agent": agent,
+                "status": "error",
+                "summary": None,
+                "error": f"Claude Code execution failed: {exc}",
+                "api_calls": 0,
+                "duration_seconds": duration,
+            }
+
+    return {
+        "task_index": task_index,
+        "agent": agent,
+        "status": "error",
+        "summary": None,
+        "error": f"Unsupported agent '{agent}'.",
+        "api_calls": 0,
+        "duration_seconds": round(time.monotonic() - start, 2),
+    }
 
 
 def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
@@ -161,6 +423,7 @@ def _run_single_child(
     goal: str,
     context: Optional[str],
     toolsets: Optional[List[str]],
+    agent: str,
     model: Optional[str],
     max_iterations: int,
     parent_agent,
@@ -173,6 +436,17 @@ def _run_single_child(
     from run_agent import AIAgent
 
     child_start = time.monotonic()
+
+    if agent != DEFAULT_AGENT:
+        return _run_external_child(
+            task_index=task_index,
+            agent=agent,
+            goal=goal,
+            context=context,
+            model=model,
+            max_iterations=max_iterations,
+            parent_agent=parent_agent,
+        )
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -252,6 +526,7 @@ def _run_single_child(
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
+            "agent": agent,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -267,6 +542,7 @@ def _run_single_child(
         logging.exception(f"[subagent-{task_index}] failed")
         return {
             "task_index": task_index,
+            "agent": agent,
             "status": "error",
             "summary": None,
             "error": str(exc),
@@ -287,6 +563,7 @@ def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    agent: Optional[str] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     model: Optional[str] = None,
     max_iterations: Optional[int] = None,
@@ -298,6 +575,10 @@ def delegate_task(
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+    Supports agent targets:
+      - hermes (default in-process subagent)
+      - codex (external Codex CLI)
+      - claude-code (external Claude Code CLI)
 
     Returns JSON with results array, one entry per task.
     """
@@ -318,6 +599,14 @@ def delegate_task(
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
+    default_agent = _normalize_delegate_agent(agent)
+    if not default_agent:
+        return json.dumps({
+            "error": (
+                f"Unsupported agent '{agent}'. "
+                f"Supported agents: {', '.join(sorted(SUPPORTED_AGENTS))}."
+            )
+        })
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
@@ -334,6 +623,14 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return json.dumps({"error": f"Task {i} is missing a 'goal'."})
+        task_agent = _normalize_delegate_agent(task.get("agent", default_agent))
+        if not task_agent:
+            return json.dumps({
+                "error": (
+                    f"Task {i} has unsupported agent '{task.get('agent')}'. "
+                    f"Supported agents: {', '.join(sorted(SUPPORTED_AGENTS))}."
+                )
+            })
 
     overall_start = time.monotonic()
     results = []
@@ -350,6 +647,7 @@ def delegate_task(
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
+            agent=_normalize_delegate_agent(t.get("agent", default_agent)),
             model=model,
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
@@ -375,6 +673,7 @@ def delegate_task(
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
+                    agent=_normalize_delegate_agent(t.get("agent", default_agent)),
                     model=model,
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
@@ -513,6 +812,10 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {"type": "string", "description": "Task-specific context"},
+                        "agent": {
+                            "type": "string",
+                            "description": "Delegation target: hermes (default), codex, or claude-code",
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -526,6 +829,14 @@ DELEGATE_TASK_SCHEMA = {
                     "Batch mode: up to 3 tasks to run in parallel. Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
+                ),
+            },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "Delegation target agent. "
+                    "Supported: hermes (default), codex, claude-code. "
+                    "Can be overridden per item in tasks[]."
                 ),
             },
             "model": {
@@ -559,6 +870,7 @@ registry.register(
         goal=args.get("goal"),
         context=args.get("context"),
         toolsets=args.get("toolsets"),
+        agent=args.get("agent"),
         tasks=args.get("tasks"),
         model=args.get("model"),
         max_iterations=args.get("max_iterations"),

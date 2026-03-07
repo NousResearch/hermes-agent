@@ -498,6 +498,8 @@ delegation:
     - terminal
     - file
     - web
+  external_timeout_seconds: 900  # Timeout (seconds) for codex/claude-code delegation
+  external_max_output_chars: 24000 # Truncate external agent output above this size
 ```
 
 ## Clarify

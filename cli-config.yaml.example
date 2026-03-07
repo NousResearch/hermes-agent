@@ -546,6 +546,8 @@ code_execution:
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+  external_timeout_seconds: 900               # Max seconds for external agents (codex/claude-code)
+  external_max_output_chars: 24000            # Truncate external agent output above this size
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _make_cli(**kwargs):
+def _make_cli(env_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
     import cli as _cli_mod
     from cli import HermesCLI
@@ -24,8 +24,11 @@ def _make_cli(**kwargs):
         "agent": {},
         "terminal": {"env_type": "local"},
     }
+    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
+    if env_overrides:
+        clean_env.update(env_overrides)
     with patch("cli.get_tool_definitions", return_value=[]), \
-         patch.dict("os.environ", {"LLM_MODEL": ""}, clear=False), \
+         patch.dict("os.environ", clean_env, clear=False), \
          patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
         return HermesCLI(**kwargs)
 
@@ -36,7 +39,7 @@ class TestMaxTurnsResolution:
     def test_default_max_turns_is_integer(self):
         cli = _make_cli()
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 60
+        assert cli.max_turns == 90
 
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
@@ -45,29 +48,17 @@ class TestMaxTurnsResolution:
     def test_none_max_turns_gets_default(self):
         cli = _make_cli(max_turns=None)
         assert isinstance(cli.max_turns, int)
-        assert cli.max_turns == 60
+        assert cli.max_turns == 90
 
-    def test_env_var_max_turns(self, monkeypatch):
+    def test_env_var_max_turns(self):
         """Env var is used when config file doesn't set max_turns."""
-        monkeypatch.setenv("HERMES_MAX_ITERATIONS", "42")
-        import cli as cli_module
-        original_agent = cli_module.CLI_CONFIG["agent"].get("max_turns")
-        original_root = cli_module.CLI_CONFIG.get("max_turns")
-        cli_module.CLI_CONFIG["agent"]["max_turns"] = None
-        cli_module.CLI_CONFIG.pop("max_turns", None)
-        try:
-            cli_obj = _make_cli()
-            assert cli_obj.max_turns == 42
-        finally:
-            if original_agent is not None:
-                cli_module.CLI_CONFIG["agent"]["max_turns"] = original_agent
-            if original_root is not None:
-                cli_module.CLI_CONFIG["max_turns"] = original_root
+        cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "42"})
+        assert cli_obj.max_turns == 42
 
     def test_max_turns_never_none_for_agent(self):
         """The value passed to AIAgent must never be None (causes TypeError in run_conversation)."""
         cli = _make_cli()
-        assert isinstance(cli.max_turns, int) and cli.max_turns == 60
+        assert isinstance(cli.max_turns, int) and cli.max_turns == 90
 
 
 class TestVerboseAndToolProgress:

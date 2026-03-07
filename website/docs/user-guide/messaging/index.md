@@ -72,6 +72,7 @@ hermes gateway status       # Check service status
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/insights [days]` | Show usage insights and analytics |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |

@@ -108,6 +108,14 @@ These are commands you run from your shell.
 | `hermes sessions prune` | Remove old sessions |
 | `hermes sessions stats` | Show session statistics |
 
+### Insights
+
+| Command | Description |
+|---------|-------------|
+| `hermes insights` | Show usage analytics for the last 30 days |
+| `hermes insights --days 7` | Analyze a custom time window |
+| `hermes insights --source telegram` | Filter by platform |
+
 ---
 
 ## Slash Commands (Inside Chat)
@@ -145,6 +153,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/save` | Save the current conversation |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
 
 ### Media & Input
 

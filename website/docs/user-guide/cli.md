@@ -106,6 +106,7 @@ Type `/` to see an autocomplete dropdown of all available commands.
 | `/save` | Save the current conversation |
 | `/compress` | Manually compress conversation context |
 | `/usage` | Show token usage for this session |
+| `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
 
 ### Skills & Scheduling
 

@@ -12,8 +12,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _make_cli(**kwargs):
     """Create a HermesCLI instance with minimal mocking."""
+    import cli as _cli_mod
     from cli import HermesCLI
-    with patch("cli.get_tool_definitions", return_value=[]):
+    _clean_config = {
+        "model": {
+            "default": "anthropic/claude-opus-4.6",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "auto",
+        },
+        "display": {"compact": False, "tool_progress": "all"},
+        "agent": {},
+        "terminal": {"env_type": "local"},
+    }
+    with patch("cli.get_tool_definitions", return_value=[]), \
+         patch.dict("os.environ", {"LLM_MODEL": ""}, clear=False), \
+         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
         return HermesCLI(**kwargs)
 
 

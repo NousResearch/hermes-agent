@@ -943,37 +943,35 @@ class ShellFileOperations(FileOperations):
             # rg match lines:   "file:lineno:content"  (colon separator)
             # rg context lines: "file-lineno-content"   (dash separator)
             # rg group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
+            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
                 # Try match line first (colon-separated: file:line:content)
-                parts = line.split(':', 2)
-                if len(parts) >= 3:
-                    try:
-                        matches.append(SearchMatch(
-                            path=parts[0],
-                            line_number=int(parts[1]),
-                            content=parts[2][:500]
-                        ))
-                        continue
-                    except ValueError:
-                        pass
+                m = _match_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+                    continue
                 
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    parts = line.split('-', 2)
-                    if len(parts) >= 3:
-                        try:
-                            matches.append(SearchMatch(
-                                path=parts[0],
-                                line_number=int(parts[1]),
-                                content=parts[2][:500]
-                            ))
-                        except ValueError:
-                            pass
+                    m = _ctx_re.match(line)
+                    if m:
+                        matches.append(SearchMatch(
+                            path=(m.group(1) or '') + m.group(2),
+                            line_number=int(m.group(3)),
+                            content=m.group(4)[:500]
+                        ))
             
             total = len(matches)
             page = matches[offset:offset + limit]
@@ -1035,34 +1033,33 @@ class ShellFileOperations(FileOperations):
             # grep match lines:   "file:lineno:content" (colon)
             # grep context lines: "file-lineno-content"  (dash)
             # grep group seps:    "--"
+            # Note: on Windows, paths contain drive letters (e.g. C:\path),
+            # so naive split(":") breaks. Use regex to handle both platforms.
+            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
-                parts = line.split(':', 2)
-                if len(parts) >= 3:
-                    try:
-                        matches.append(SearchMatch(
-                            path=parts[0],
-                            line_number=int(parts[1]),
-                            content=parts[2][:500]
-                        ))
-                        continue
-                    except ValueError:
-                        pass
+                m = _match_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+                    continue
                 
                 if context > 0:
-                    parts = line.split('-', 2)
-                    if len(parts) >= 3:
-                        try:
-                            matches.append(SearchMatch(
-                                path=parts[0],
-                                line_number=int(parts[1]),
-                                content=parts[2][:500]
-                            ))
-                        except ValueError:
-                            pass
+                    m = _ctx_re.match(line)
+                    if m:
+                        matches.append(SearchMatch(
+                            path=(m.group(1) or '') + m.group(2),
+                            line_number=int(m.group(3)),
+                            content=m.group(4)[:500]
+                        ))
+
             
             total = len(matches)
             page = matches[offset:offset + limit]

@@ -132,7 +132,11 @@ def run_doctor(args):
         
         # Check for common issues
         content = env_path.read_text()
-        if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
+        if any(k in content for k in (
+            "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+            "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+            "KIMI_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+        )):
             check_ok("API key configured")
         else:
             check_warn("No API key found in ~/.hermes/.env")
@@ -468,7 +472,42 @@ def run_doctor(args):
                 print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
-    
+
+    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    _apikey_providers = [
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL"),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL"),
+        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL"),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL"),
+    ]
+    for _pname, _env_vars, _default_url, _base_env in _apikey_providers:
+        _key = ""
+        for _ev in _env_vars:
+            _key = os.getenv(_ev, "")
+            if _key:
+                break
+        if _key:
+            _label = _pname.ljust(20)
+            print(f"  Checking {_pname} API...", end="", flush=True)
+            try:
+                import httpx
+                _base = os.getenv(_base_env, "")
+                _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                _resp = httpx.get(
+                    _url,
+                    headers={"Authorization": f"Bearer {_key}"},
+                    timeout=10,
+                )
+                if _resp.status_code == 200:
+                    print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
+                elif _resp.status_code == 401:
+                    print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
+                    issues.append(f"Check {_env_vars[0]} in .env")
+                else:
+                    print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
+            except Exception as _e:
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
     # =========================================================================
     # Check: Submodules
     # =========================================================================

@@ -137,6 +137,10 @@ class ModalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
+        # Check if _inner was ever set (init may have failed)
+        if not hasattr(self, '_inner') or self._inner is None:
+            return
+
         if self._persistent:
             try:
                 sandbox = getattr(self._inner, 'deployment', None)

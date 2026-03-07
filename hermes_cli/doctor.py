@@ -508,6 +508,32 @@ def run_doctor(args):
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
 
+    # Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
+    _custom_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    _custom_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if _custom_base_url:
+        _label = "Custom Endpoint"
+        print(f"  Checking {_label}...", end="", flush=True)
+        try:
+            import httpx
+            _models_url = _custom_base_url.rstrip("/") + "/models"
+            _headers = {}
+            if _custom_api_key:
+                _headers["Authorization"] = f"Bearer {_custom_api_key}"
+            _resp = httpx.get(_models_url, headers=_headers, timeout=10)
+            if _resp.status_code == 200:
+                print(f"\r  {color('✓', Colors.GREEN)} {_label.ljust(20)}                          ")
+            elif _resp.status_code == 401:
+                print(f"\r  {color('✗', Colors.RED)} {_label.ljust(20)} {color('(invalid API key)', Colors.DIM)}           ")
+                issues.append("Check OPENAI_API_KEY in .env for custom endpoint")
+            else:
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label.ljust(20)} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
+        except Exception as _e:
+            print(f"\r  {color('⚠', Colors.YELLOW)} {_label.ljust(20)} {color(f'({_e})', Colors.DIM)}           ")
+    elif _custom_api_key:
+        check_warn("Custom Endpoint", "(OPENAI_API_KEY set but OPENAI_BASE_URL is missing)")
+        issues.append("Set OPENAI_BASE_URL in .env to use a custom endpoint")
+
     # =========================================================================
     # Check: Submodules
     # =========================================================================

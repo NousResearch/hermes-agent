@@ -3043,6 +3043,8 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            compression_attempts = 0
+            max_compression_attempts = 3
             codex_auth_retry_attempted = False
 
             finish_reason = "stop"
@@ -3384,7 +3386,19 @@ class AIAgent:
                             print(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens")
                         else:
                             print(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...")
-
+                        compression_attempts += 1
+                        if compression_attempts > max_compression_attempts:
+                            print(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.")
+                            logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                "partial": True
+                            }
+                        print(f"{self.log_prefix}   🗜️  Context compression attempt {compression_attempts}/{max_compression_attempts}...")
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens
@@ -3393,6 +3407,7 @@ class AIAgent:
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
                                 print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            time.sleep(2)  # Brief pause between compression retries
                             continue  # Retry with compressed messages or new tier
                         else:
                             # Can't compress further and already at minimum tier

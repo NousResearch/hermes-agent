@@ -333,11 +333,35 @@ def load_cli_config() -> Dict[str, Any]:
         "enabled": "CONTEXT_COMPRESSION_ENABLED",
         "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
         "summary_model": "CONTEXT_COMPRESSION_MODEL",
+        "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
     }
     
     for config_key, env_var in compression_env_mappings.items():
         if config_key in compression_config:
             os.environ[env_var] = str(compression_config[config_key])
+    
+    # Apply auxiliary model overrides to environment variables.
+    # Vision and web_extract each have their own provider + model pair.
+    # (Compression is handled in the compression section above.)
+    # Only set env vars for non-empty / non-default values so auto-detection
+    # still works.
+    auxiliary_config = defaults.get("auxiliary", {})
+    auxiliary_task_env = {
+        # config key → (provider env var, model env var)
+        "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
+        "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+    }
+    
+    for task_key, (prov_env, model_env) in auxiliary_task_env.items():
+        task_cfg = auxiliary_config.get(task_key, {})
+        if not isinstance(task_cfg, dict):
+            continue
+        prov = str(task_cfg.get("provider", "")).strip()
+        model = str(task_cfg.get("model", "")).strip()
+        if prov and prov != "auto":
+            os.environ[prov_env] = prov
+        if model:
+            os.environ[model_env] = model
     
     return defaults
 

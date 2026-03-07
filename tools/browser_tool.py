@@ -63,7 +63,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from agent.auxiliary_client import get_vision_auxiliary_client
+from agent.auxiliary_client import get_vision_auxiliary_client, get_text_auxiliary_client
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,28 @@ DEFAULT_SESSION_TIMEOUT = 300
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
-# Resolve vision auxiliary client for extraction/vision tasks
-_aux_vision_client, EXTRACTION_MODEL = get_vision_auxiliary_client()
+# Vision client — for browser_vision (screenshot analysis)
+_aux_vision_client, _DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
+
+# Text client — for page snapshot summarization (same config as web_extract)
+_aux_text_client, _DEFAULT_TEXT_MODEL = get_text_auxiliary_client("web_extract")
+
+# Module-level alias for availability checks
+EXTRACTION_MODEL = _DEFAULT_TEXT_MODEL or _DEFAULT_VISION_MODEL
+
+
+def _get_vision_model() -> str:
+    """Model for browser_vision (screenshot analysis — multimodal)."""
+    return (os.getenv("AUXILIARY_VISION_MODEL", "").strip()
+            or _DEFAULT_VISION_MODEL
+            or "google/gemini-3-flash-preview")
+
+
+def _get_extraction_model() -> str:
+    """Model for page snapshot text summarization — same as web_extract."""
+    return (os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip()
+            or _DEFAULT_TEXT_MODEL
+            or "google/gemini-3-flash-preview")
 
 
 def _is_local_mode() -> bool:
@@ -860,9 +880,9 @@ def _extract_relevant_content(
 ) -> str:
     """Use LLM to extract relevant content from a snapshot based on the user's task.
 
-    Falls back to simple truncation when no auxiliary vision model is configured.
+    Falls back to simple truncation when no auxiliary text model is configured.
     """
-    if _aux_vision_client is None or EXTRACTION_MODEL is None:
+    if _aux_text_client is None:
         return _truncate_snapshot(snapshot_text)
 
     if user_task:
@@ -890,8 +910,8 @@ def _extract_relevant_content(
 
     try:
         from agent.auxiliary_client import auxiliary_max_tokens_param
-        response = _aux_vision_client.chat.completions.create(
-            model=EXTRACTION_MODEL,
+        response = _aux_text_client.chat.completions.create(
+            model=_get_extraction_model(),
             messages=[{"role": "user", "content": extraction_prompt}],
             **auxiliary_max_tokens_param(4000),
             temperature=0.1,
@@ -1316,7 +1336,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
     effective_task_id = task_id or "default"
     
     # Check auxiliary vision client
-    if _aux_vision_client is None or EXTRACTION_MODEL is None:
+    if _aux_vision_client is None or _DEFAULT_VISION_MODEL is None:
         return json.dumps({
             "success": False,
             "error": "Browser vision unavailable: no auxiliary vision model configured. "
@@ -1372,7 +1392,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         # Use the sync auxiliary vision client directly
         from agent.auxiliary_client import auxiliary_max_tokens_param
         response = _aux_vision_client.chat.completions.create(
-            model=EXTRACTION_MODEL,
+            model=_get_vision_model(),
             messages=[
                 {
                     "role": "user",

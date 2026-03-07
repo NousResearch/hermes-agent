@@ -4,7 +4,7 @@ Provides a single resolution chain so every consumer (context compression,
 session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
-Resolution order for text tasks:
+Resolution order (same for text and vision tasks):
   1. OpenRouter  (OPENROUTER_API_KEY)
   2. Nous Portal (~/.hermes/auth.json active provider)
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
@@ -14,10 +14,10 @@ Resolution order for text tasks:
      — checked via PROVIDER_REGISTRY entries with auth_type='api_key'
   6. None
 
-Resolution order for vision/multimodal tasks:
-  1. OpenRouter
-  2. Nous Portal
-  3. None  (custom endpoints can't substitute for Gemini multimodal)
+Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
+CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task:
+"openrouter", "nous", or "main" (= steps 3-5).
+Default "auto" follows the full chain above.
 """
 
 import json
@@ -337,59 +337,122 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     return None, None
 
 
-# ── Public API ──────────────────────────────────────────────────────────────
+# ── Provider resolution helpers ─────────────────────────────────────────────
 
-def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, model_slug) for text-only auxiliary tasks.
+def _get_auxiliary_provider(task: str = "") -> str:
+    """Read the provider override for a specific auxiliary task.
 
-    Falls through OpenRouter -> Nous Portal -> custom endpoint -> Codex OAuth
-    -> direct API-key providers -> (None, None).
+    Checks AUXILIARY_{TASK}_PROVIDER first (e.g. AUXILIARY_VISION_PROVIDER),
+    then CONTEXT_{TASK}_PROVIDER (for the compression section's summary_provider),
+    then falls back to "auto".  Returns one of: "auto", "openrouter", "nous", "main".
     """
-    # 1. OpenRouter
+    if task:
+        for prefix in ("AUXILIARY_", "CONTEXT_"):
+            val = os.getenv(f"{prefix}{task.upper()}_PROVIDER", "").strip().lower()
+            if val and val != "auto":
+                return val
+    return "auto"
+
+
+def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
     or_key = os.getenv("OPENROUTER_API_KEY")
-    if or_key:
-        logger.debug("Auxiliary text client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+    if not or_key:
+        return None, None
+    logger.debug("Auxiliary client: OpenRouter")
+    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
-    # 2. Nous Portal
+
+def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
-    if nous:
-        global auxiliary_is_nous
-        auxiliary_is_nous = True
-        logger.debug("Auxiliary text client: Nous Portal")
-        return (
-            OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
-            _NOUS_MODEL,
-        )
+    if not nous:
+        return None, None
+    global auxiliary_is_nous
+    auxiliary_is_nous = True
+    logger.debug("Auxiliary client: Nous Portal")
+    return (
+        OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
+        _NOUS_MODEL,
+    )
 
-    # 3. Custom endpoint (both base URL and key must be set)
+
+def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base = os.getenv("OPENAI_BASE_URL")
     custom_key = os.getenv("OPENAI_API_KEY")
-    if custom_base and custom_key:
-        model = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini"
-        logger.debug("Auxiliary text client: custom endpoint (%s)", model)
-        return OpenAI(api_key=custom_key, base_url=custom_base), model
+    if not custom_base or not custom_key:
+        return None, None
+    model = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini"
+    logger.debug("Auxiliary client: custom endpoint (%s)", model)
+    return OpenAI(api_key=custom_key, base_url=custom_base), model
 
-    # 4. Codex OAuth -- uses the Responses API (only endpoint the token
-    # can access), wrapped to look like a chat.completions client.
+
+def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     codex_token = _read_codex_access_token()
-    if codex_token:
-        logger.debug("Auxiliary text client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-        real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
-        return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
+    if not codex_token:
+        return None, None
+    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
+    real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+    return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
-    # 5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, etc.)
-    api_client, api_model = _resolve_api_key_provider()
-    if api_client is not None:
-        return api_client, api_model
 
-    # 6. Nothing available
-    logger.debug("Auxiliary text client: none available")
+def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
+    if forced == "openrouter":
+        client, model = _try_openrouter()
+        if client is None:
+            logger.warning("auxiliary.provider=openrouter but OPENROUTER_API_KEY not set")
+        return client, model
+
+    if forced == "nous":
+        client, model = _try_nous()
+        if client is None:
+            logger.warning("auxiliary.provider=nous but Nous Portal not configured (run: hermes login)")
+        return client, model
+
+    if forced == "main":
+        # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
+        for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
+            client, model = try_fn()
+            if client is not None:
+                return client, model
+        logger.warning("auxiliary.provider=main but no main endpoint credentials found")
+        return None, None
+
+    # Unknown provider name — fall through to auto
+    logger.warning("Unknown auxiliary.provider=%r, falling back to auto", forced)
     return None, None
 
 
-def get_async_text_auxiliary_client():
+def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
+    for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
+                   _try_codex, _resolve_api_key_provider):
+        client, model = try_fn()
+        if client is not None:
+            return client, model
+    logger.debug("Auxiliary client: none available")
+    return None, None
+
+
+# ── Public API ──────────────────────────────────────────────────────────────
+
+def get_text_auxiliary_client(task: str = "") -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Return (client, default_model_slug) for text-only auxiliary tasks.
+
+    Args:
+        task: Optional task name ("compression", "web_extract") to check
+              for a task-specific provider override.
+
+    Callers may override the returned model with a per-task env var
+    (e.g. CONTEXT_COMPRESSION_MODEL, AUXILIARY_WEB_EXTRACT_MODEL).
+    """
+    forced = _get_auxiliary_provider(task)
+    if forced != "auto":
+        return _resolve_forced_provider(forced)
+    return _resolve_auto()
+
+
+def get_async_text_auxiliary_client(task: str = ""):
     """Return (async_client, model_slug) for async consumers.
 
     For standard providers returns (AsyncOpenAI, model). For Codex returns
@@ -398,7 +461,7 @@ def get_async_text_auxiliary_client():
     """
     from openai import AsyncOpenAI
 
-    sync_client, model = get_text_auxiliary_client()
+    sync_client, model = get_text_auxiliary_client(task)
     if sync_client is None:
         return None, None
 
@@ -417,30 +480,16 @@ def get_async_text_auxiliary_client():
 
 
 def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, model_slug) for vision/multimodal auxiliary tasks.
+    """Return (client, default_model_slug) for vision/multimodal auxiliary tasks.
 
-    Only OpenRouter and Nous Portal qualify — custom endpoints cannot
-    substitute for Gemini multimodal.
+    Checks AUXILIARY_VISION_PROVIDER for a forced provider, otherwise
+    auto-detects.  Callers may override the returned model with
+    AUXILIARY_VISION_MODEL.
     """
-    # 1. OpenRouter
-    or_key = os.getenv("OPENROUTER_API_KEY")
-    if or_key:
-        logger.debug("Auxiliary vision client: OpenRouter")
-        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
-
-    # 2. Nous Portal
-    nous = _read_nous_auth()
-    if nous:
-        logger.debug("Auxiliary vision client: Nous Portal")
-        return (
-            OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
-            _NOUS_MODEL,
-        )
-
-    # 3. Nothing suitable
-    logger.debug("Auxiliary vision client: none available")
-    return None, None
+    forced = _get_auxiliary_provider("vision")
+    if forced != "auto":
+        return _resolve_forced_provider(forced)
+    return _resolve_auto()
 
 
 def get_auxiliary_extra_body() -> dict:

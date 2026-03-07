@@ -1347,7 +1347,15 @@ For more help on a command:
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard"
+        description="Configure Hermes Agent with an interactive wizard. "
+                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+    )
+    setup_parser.add_argument(
+        "section",
+        nargs="?",
+        choices=["model", "terminal", "gateway", "tools", "agent"],
+        default=None,
+        help="Run a specific setup section instead of the full wizard"
     )
     setup_parser.add_argument(
         "--non-interactive",

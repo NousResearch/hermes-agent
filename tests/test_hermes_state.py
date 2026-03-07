@@ -179,6 +179,54 @@ class TestFTS5Search:
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
 
+    def test_search_special_chars_do_not_crash(self, db):
+        """FTS5 special characters in queries must not raise OperationalError."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="How do I use C++ templates?")
+
+        # Each of these previously caused sqlite3.OperationalError
+        dangerous_queries = [
+            'C++',              # + is FTS5 column filter
+            '"unterminated',    # unbalanced double-quote
+            '(problem',         # unbalanced parenthesis
+            'hello AND',        # dangling boolean operator
+            '***',              # repeated wildcard
+            '{test}',           # curly braces (column reference)
+            'OR hello',         # leading boolean operator
+            'a AND OR b',       # adjacent operators
+        ]
+        for query in dangerous_queries:
+            # Must not raise — should return list (possibly empty)
+            results = db.search_messages(query)
+            assert isinstance(results, list), f"Query {query!r} did not return a list"
+
+    def test_search_sanitized_query_still_finds_content(self, db):
+        """Sanitization must not break normal keyword search."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Learning C++ templates today")
+
+        # "C++" sanitized to "C" should still match "C++"
+        results = db.search_messages("C++")
+        # The word "C" appears in the content, so FTS5 should find it
+        assert isinstance(results, list)
+
+    def test_sanitize_fts5_query_strips_dangerous_chars(self):
+        """Unit test for _sanitize_fts5_query static method."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        assert s('hello world') == 'hello world'
+        assert '+' not in s('C++')
+        assert '"' not in s('"unterminated')
+        assert '(' not in s('(problem')
+        assert '{' not in s('{test}')
+        # Dangling operators removed
+        assert s('hello AND') == 'hello'
+        assert s('OR world') == 'world'
+        # Leading bare * removed
+        assert s('***') == ''
+        # Valid prefix kept
+        assert s('deploy*') == 'deploy*'
+
 
 # =========================================================================
 # Session search and listing

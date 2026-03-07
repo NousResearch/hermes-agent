@@ -195,8 +195,12 @@ environments/
 │   └── hermes_swe_env.py
 │
 └── benchmarks/                   # Evaluation benchmarks
-    └── terminalbench_2/
-        └── terminalbench2_env.py
+    ├── terminalbench_2/          # 89 terminal tasks, Modal sandboxes
+    │   └── terminalbench2_env.py
+    ├── tblite/                   # 100 calibrated tasks (fast TB2 proxy)
+    │   └── tblite_env.py
+    └── yc_bench/                 # Long-horizon strategic benchmark
+        └── yc_bench_env.py
 ```
 
 ## Concrete Environments

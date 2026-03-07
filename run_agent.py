@@ -3707,13 +3707,33 @@ class AIAgent:
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
-                        # Track retries for empty-after-think responses
+                        # If the previous turn already delivered real content alongside
+                        # tool calls (e.g. "You're welcome!" + memory save), the model
+                        # has nothing more to say. Use the earlier content immediately
+                        # instead of wasting API calls on retries that won't help.
+                        fallback = getattr(self, '_last_content_with_tools', None)
+                        if fallback:
+                            logger.debug("Empty follow-up after tool calls — using prior turn content as final response")
+                            self._last_content_with_tools = None
+                            self._empty_content_retries = 0
+                            for i in range(len(messages) - 1, -1, -1):
+                                msg = messages[i]
+                                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                                    tool_names = []
+                                    for tc in msg["tool_calls"]:
+                                        fn = tc.get("function", {})
+                                        tool_names.append(fn.get("name", "unknown"))
+                                    msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
+                                    break
+                            final_response = self._strip_think_blocks(fallback).strip()
+                            break
+
+                        # No fallback available — this is a genuine empty response.
+                        # Retry in case the model just had a bad generation.
                         if not hasattr(self, '_empty_content_retries'):
                             self._empty_content_retries = 0
                         self._empty_content_retries += 1
                         
-                        # Show the reasoning/thinking content so the user can see
-                        # what the model was thinking even though content is empty
                         reasoning_text = self._extract_reasoning(assistant_message)
                         print(f"{self.log_prefix}⚠️  Response only contains think block with no content after it")
                         if reasoning_text:

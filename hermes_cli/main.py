@@ -864,6 +864,8 @@ def _update_via_zip(args):
             print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
         if result.get("updated"):
             print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
         if not result["copied"] and not result.get("updated"):
@@ -982,6 +984,8 @@ def cmd_update(args):
                 print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
             if result.get("updated"):
                 print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+            if result.get("user_modified"):
+                print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
             if not result["copied"] and not result.get("updated"):

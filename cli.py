@@ -108,7 +108,7 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
     
     Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
-    Returns None to use the default (xhigh), or a config dict to override.
+    Returns None to use the default (medium), or a config dict to override.
     """
     if not effort or not effort.strip():
         return None
@@ -118,7 +118,7 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     valid = ("xhigh", "high", "medium", "low", "minimal")
     if effort in valid:
         return {"enabled": True, "effort": effort}
-    logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
+    logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return None
 
 

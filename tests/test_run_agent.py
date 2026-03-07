@@ -498,12 +498,12 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
     def test_reasoning_config_default_openrouter(self, agent):
-        """Default reasoning config for OpenRouter should be xhigh."""
+        """Default reasoning config for OpenRouter should be medium."""
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         reasoning = kwargs["extra_body"]["reasoning"]
         assert reasoning["enabled"] is True
-        assert reasoning["effort"] == "xhigh"
+        assert reasoning["effort"] == "medium"
 
     def test_reasoning_config_custom(self, agent):
         agent.reasoning_config = {"enabled": False}

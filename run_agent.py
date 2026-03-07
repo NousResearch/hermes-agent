@@ -3062,7 +3062,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                
+
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
                 if msg.get("role") == "assistant":
@@ -3070,7 +3070,7 @@ class AIAgent:
                     if reasoning_text:
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
-                
+
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
@@ -3081,7 +3081,7 @@ class AIAgent:
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
-            
+
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)
             # so it stays out of the session DB and logs.
@@ -3092,21 +3092,21 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            
+
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
-            
+
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
             # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
             # inject cache_control breakpoints (system + last 3 messages) to reduce
             # input token costs by ~75% on multi-turn conversations.
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
-            
+
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  The compressor handles this
             # during compression, but orphans can also sneak in from session
@@ -3146,6 +3146,7 @@ class AIAgent:
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            restart_with_compressed_messages = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -3466,7 +3467,8 @@ class AIAgent:
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
-                            continue  # Retry with compressed messages
+                            restart_with_compressed_messages = True
+                            break
                         else:
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
@@ -3534,7 +3536,8 @@ class AIAgent:
                             if len(messages) < original_len:
                                 print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
-                            continue  # Retry with compressed messages or new tier
+                            restart_with_compressed_messages = True
+                            break
                         else:
                             # Can't compress further and already at minimum tier
                             print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
@@ -3611,6 +3614,11 @@ class AIAgent:
             # If the API call was interrupted, skip response processing
             if interrupted:
                 break
+
+            if restart_with_compressed_messages:
+                api_call_count -= 1
+                self.iteration_budget.refund()
+                continue
 
             # Guard: if all retries exhausted without a successful response
             # (e.g. repeated context-length errors that exhausted retry_count),

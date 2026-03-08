@@ -2034,11 +2034,15 @@ class HermesCLI:
                 except Exception:
                     provider_for_validation = self.provider or self.requested_provider
 
-                validation = validate_requested_model(
-                    new_model,
-                    provider_for_validation,
-                    base_url=self.base_url,
-                )
+                try:
+                    validation = validate_requested_model(
+                        new_model,
+                        provider_for_validation,
+                        base_url=self.base_url,
+                    )
+                except Exception:
+                    # Validation itself failed — fall back to old behavior (accept + save)
+                    validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
                 if not validation.get("accepted"):
                     print(f"(^_^) Warning: {validation.get('message')}")

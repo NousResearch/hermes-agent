@@ -1811,13 +1811,46 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
-            # Clear terminal screen using Rich (portable, no shell needed)
-            self.console.clear()
+            # Clear terminal screen.  Inside the TUI, Rich's console.clear()
+            # goes through patch_stdout's StdoutProxy which swallows the
+            # screen-clear escape sequences.  Use prompt_toolkit's output
+            # object directly to actually clear the terminal.
+            if self._app:
+                out = self._app.output
+                out.erase_screen()
+                out.cursor_goto(0, 0)
+                out.flush()
+            else:
+                self.console.clear()
             # Reset conversation
             self.conversation_history = []
-            # Show fresh banner
-            self.show_banner()
-            print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+            # Show fresh banner.  Inside the TUI we must route Rich output
+            # through ChatConsole (which uses prompt_toolkit's native ANSI
+            # renderer) instead of self.console (which writes raw to stdout
+            # and gets mangled by patch_stdout).
+            if self._app:
+                cc = ChatConsole()
+                if self.compact:
+                    cc.print(COMPACT_BANNER)
+                else:
+                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                    ctx_len = None
+                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                        ctx_len = self.agent.context_compressor.context_length
+                    build_welcome_banner(
+                        console=cc,
+                        model=self.model,
+                        cwd=cwd,
+                        tools=tools,
+                        enabled_toolsets=self.enabled_toolsets,
+                        session_id=self.session_id,
+                        context_length=ctx_len,
+                    )
+                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+            else:
+                self.show_banner()
+                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
         elif cmd_lower == "/history":
             self.show_history()
         elif cmd_lower in ("/reset", "/new"):

@@ -2463,7 +2463,7 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
@@ -2477,6 +2477,25 @@ class AIAgent:
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
+
+        # Preserve file-read history so the model doesn't re-read files
+        # it already examined before compression.
+        try:
+            from tools.file_tools import get_read_files_summary
+            read_files = get_read_files_summary(task_id)
+            if read_files:
+                file_list = "\n".join(
+                    f"  - {f['path']} ({', '.join(f['regions'])})"
+                    for f in read_files
+                )
+                compressed.append({"role": "user", "content": (
+                    "[Files already read in this session — do NOT re-read these]\n"
+                    f"{file_list}\n"
+                    "Use the information from the context summary above. "
+                    "Proceed with writing, editing, or responding."
+                )})
+        except Exception:
+            pass  # Don't break compression if file tracking fails
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -2999,7 +3018,8 @@ class AIAgent:
                 for _pass in range(3):
                     _orig_len = len(messages)
                     messages, active_system_prompt = self._compress_context(
-                        messages, system_message, approx_tokens=_preflight_tokens
+                        messages, system_message, approx_tokens=_preflight_tokens,
+                        task_id=effective_task_id,
                     )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
@@ -3461,7 +3481,8 @@ class AIAgent:
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
-                            messages, system_message, approx_tokens=approx_tokens
+                            messages, system_message, approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
                         )
 
                         if len(messages) < original_len:
@@ -3528,7 +3549,8 @@ class AIAgent:
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
-                            messages, system_message, approx_tokens=approx_tokens
+                            messages, system_message, approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
                         )
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
@@ -3848,7 +3870,8 @@ class AIAgent:
                     if self.compression_enabled and self.context_compressor.should_compress():
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens
+                            approx_tokens=self.context_compressor.last_prompt_tokens,
+                            task_id=effective_task_id,
                         )
                     
                     # Save session log incrementally (so progress is visible even if interrupted)

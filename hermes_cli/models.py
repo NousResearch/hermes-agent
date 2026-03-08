@@ -124,10 +124,13 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
 
 
 def normalize_provider(provider: Optional[str]) -> str:
-    """Normalize provider aliases to Hermes' canonical provider ids."""
+    """Normalize provider aliases to Hermes' canonical provider ids.
+
+    Note: ``"auto"`` passes through unchanged — use
+    ``hermes_cli.auth.resolve_provider()`` to resolve it to a concrete
+    provider based on credentials and environment.
+    """
     normalized = (provider or "openrouter").strip().lower()
-    if normalized == "auto":
-        return "openrouter"
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
 

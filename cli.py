@@ -39,7 +39,7 @@ import yaml
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
@@ -875,6 +875,8 @@ class HermesCLI:
         self._banner_phase = 0
         self._ui_phase = 0
         self._managed_banner_frozen = False
+        self._pending_banner_redraw = False
+        self._pending_banner_redraw_animated = False
         self._lore_state = load_lore_state()
         self._sync_skin_env()
         
@@ -1216,8 +1218,9 @@ class HermesCLI:
         """Animate the hero asset in place during startup without repainting the terminal."""
         phase = self._banner_phase
         current_ansi = self._build_banner_ansi(phase=phase)
-        sys.stdout.write(current_ansi)
-        sys.stdout.flush()
+        stream = sys.__stdout__
+        stream.write(current_ansi)
+        stream.flush()
 
         current_lines = current_ansi.splitlines()
         total_lines = len(current_lines)
@@ -1252,6 +1255,14 @@ class HermesCLI:
     def _build_managed_banner_ansi(self) -> str:
         """Build the prompt-toolkit-managed banner block."""
         return self._build_banner_ansi(phase=self._banner_phase)
+
+    def _render_live_banner_redraw(self) -> None:
+        """Redraw the banner safely while prompt_toolkit owns the terminal."""
+        banner_ansi = self._build_banner_ansi(phase=self._banner_phase)
+        stream = sys.__stdout__
+        stream.write("\033[2J\033[H")
+        stream.flush()
+        _pt_print(_PT_ANSI(banner_ansi), end="")
 
     def _managed_banner_height(self) -> int:
         """Return the current line height for the managed banner block."""
@@ -1357,6 +1368,8 @@ class HermesCLI:
         self._banner_last_refresh = 0.0
         self._ui_phase = 0
         self._managed_banner_frozen = False
+        self._pending_banner_redraw = False
+        self._pending_banner_redraw_animated = False
         _sync_runtime_skin_theme(normalized)
         self._sync_skin_env()
         self._refresh_effective_system_prompt()
@@ -1394,17 +1407,35 @@ class HermesCLI:
     def _reload_skin_ui(self):
         """Redraw the terminal UI after a skin change like a fresh launcher boot."""
         if self._app is not None and getattr(self._app, "is_running", False):
-            if self._uses_managed_banner():
-                _cprint("\033[2J\033[H")
-                self._app.invalidate()
-                return
-            banner_ansi = self._build_banner_ansi()
-            self._store_banner_snapshot(banner_ansi)
-            _cprint("\033[2J\033[H" + banner_ansi)
+            self._pending_banner_redraw = True
+            self._pending_banner_redraw_animated = self._uses_startup_banner_animation()
             self._app.invalidate()
             return
         self.console.clear()
         self.show_banner()
+
+    def _relaunch_with_skin(self, skin_name: str) -> None:
+        """Relaunch the current process through the matching skin launcher."""
+        launcher = Path(__file__).parent / normalize_skin_name(skin_name)
+        os.environ["HERMES_CLI_SKIN"] = normalize_skin_name(skin_name)
+        try:
+            sys.__stdout__.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, str(launcher)])
+
+    def _reset_for_skin_change(self):
+        """Reset session state so a new skin behaves like a fresh launcher boot."""
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
+        self.conversation_history = []
 
     def _build_prompt_style(self):
         """Build the prompt_toolkit style object for the active skin."""
@@ -2189,9 +2220,14 @@ class HermesCLI:
                 if requested_skin not in VALID_SKINS:
                     print(f"(._.) Unknown skin: {parts[1]}")
                 else:
+                    if requested_skin == "sisyphus":
+                        self._set_skin(requested_skin, persist=True)
+                        self._relaunch_with_skin(requested_skin)
+                        return True
+                    self._reset_for_skin_change()
                     self._set_skin(requested_skin, persist=True)
                     self._reload_skin_ui()
-                    print(f"  ✨ Skin set to {requested_skin} (saved to config)\n")
+                    print(f"  ✨ Skin set to {requested_skin} (saved to config, conversation reset)\n")
         elif cmd_lower.startswith("/flip"):
             self._play_coin_flip()
         elif cmd_lower.startswith("/roll"):
@@ -3196,41 +3232,58 @@ class HermesCLI:
         )
         self._app = app  # Store reference for clarify_callback
 
-        if self._ares_skin_active():
-            async def animation_loop():
-                while not self._should_exit:
-                    managed_frozen = self._uses_managed_banner() and self._managed_banner_frozen
-                    if self.ambient_motion or self._agent_running:
-                        self._ui_phase = (self._ui_phase + 1) % 10_000
+        async def animation_loop():
+            while not self._should_exit:
+                managed_frozen = self._uses_managed_banner() and self._managed_banner_frozen
+
+                if self._pending_banner_redraw and app.is_running:
+                    try:
+                        redraw = (
+                            self._show_animated_startup_banner
+                            if self._pending_banner_redraw_animated
+                            else self._render_live_banner_redraw
+                        )
+                        run_in_terminal(redraw, in_executor=False)
+                    except Exception:
+                        pass
+                    self._pending_banner_redraw = False
+                    self._pending_banner_redraw_animated = False
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
+
+                if self._ares_skin_active() and (self.ambient_motion or self._agent_running):
+                    self._ui_phase = (self._ui_phase + 1) % 10_000
+                    try:
+                        if app.is_running:
+                            app.invalidate()
+                    except Exception:
+                        pass
+                if (
+                    app.is_running
+                    and self.ambient_motion
+                    and self._uses_managed_banner()
+                    and mod_has_animated_hero(self.skin)
+                    and not self._agent_running
+                    and not self._clarify_state
+                    and not self._clarify_freetext
+                    and not self._sudo_state
+                    and not self._approval_state
+                    and not managed_frozen
+                ):
+                    now = time.monotonic()
+                    interval = get_mod_hero_animation_interval(self.skin)
+                    if now - self._banner_last_refresh >= interval:
                         try:
-                            if app.is_running:
-                                app.invalidate()
+                            self._banner_phase += 1
+                            app.invalidate()
                         except Exception:
                             pass
-                    if (
-                        app.is_running
-                        and self.ambient_motion
-                        and self._uses_managed_banner()
-                        and mod_has_animated_hero(self.skin)
-                        and not self._agent_running
-                        and not self._clarify_state
-                        and not self._clarify_freetext
-                        and not self._sudo_state
-                        and not self._approval_state
-                        and not managed_frozen
-                    ):
-                        now = time.monotonic()
-                        interval = get_mod_hero_animation_interval(self.skin)
-                        if now - self._banner_last_refresh >= interval:
-                            try:
-                                self._banner_phase += 1
-                                app.invalidate()
-                            except Exception:
-                                pass
-                            self._banner_last_refresh = now
-                    await asyncio.sleep(0.12 if self._agent_running else 0.22)
+                        self._banner_last_refresh = now
+                await asyncio.sleep(0.12 if self._agent_running else 0.22)
 
-            app.pre_run_callables.append(lambda: app.create_background_task(animation_loop()))
+        app.pre_run_callables.append(lambda: app.create_background_task(animation_loop()))
         
         # Background thread to process inputs and run agent
         def process_loop():

@@ -1012,6 +1012,11 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Track whether model was explicitly chosen by the user or fell back to the
+        # global default. Provider-specific normalisation may override the default
+        # at credential-resolution time but must never silently override an explicit
+        # user choice.
+        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -1161,8 +1166,35 @@ class HermesCLI:
         self.api_key = api_key
         self.base_url = base_url
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
-        if (credentials_changed or routing_changed) and self.agent is not None:
+        # If the resolved provider is Codex, ensure the active model is
+        # Codex-compatible.  The Codex Responses API rejects non-Codex models
+        # (e.g. anthropic/claude-opus-4.6) with a 400 error — the root cause
+        # of issue #651.  We always normalise here regardless of whether the
+        # model came from a CLI arg, env-var, or the global config default.
+        if resolved_provider == "openai-codex":
+            current_model = (self.model or "").strip()
+            current_slug = current_model.split("/")[-1]
+            is_codex_model = "codex" in current_slug.lower()
+            if not is_codex_model:
+                try:
+                    from hermes_cli.codex_models import get_codex_model_ids
+                    codex_models = get_codex_model_ids(access_token=api_key)
+                    codex_default = codex_models[0] if codex_models else None
+                except Exception:
+                    codex_default = None
+                if codex_default:
+                    if not getattr(self, "_model_is_default", True):
+                        self.console.print(
+                            f"[yellow]⚠️  Model '{current_model}' is not supported with "
+                            f"OpenAI Codex; switching to '{codex_default}'.[/]"
+                        )
+                    self.model = codex_default
+
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
+        # routing, or effective model changed.
+        model_changed = getattr(self, "_last_agent_model", None) != self.model
+        self._last_agent_model = self.model
+        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
 
         return True

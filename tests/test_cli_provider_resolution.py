@@ -185,3 +185,105 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "Warning:" in output
     assert "falling back to auto provider detection" in output.lower()
     assert "No change." in output
+
+
+def test_incompatible_model_replaced_with_codex_model_from_config_default(monkeypatch):
+    """Root cause fix for #651 (config default path): when provider resolves to
+    openai-codex and no model was explicitly chosen, the global default
+    (anthropic/claude-opus-4.6) must be replaced with a Codex-compatible model."""
+    cli = _import_cli()
+
+    # Clear env-var model overrides so HermesCLI falls back to the config default
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+    )
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    assert shell._model_is_default is True
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    assert "anthropic" not in shell.model
+    assert "claude" not in shell.model
+    assert shell.model == "gpt-5.2-codex"
+
+
+def test_incompatible_model_replaced_with_codex_model_from_env_var(monkeypatch):
+    """Root cause fix for #651 (env-var path): when LLM_MODEL is set to a
+    non-Codex model and provider resolves to openai-codex, the model must
+    still be replaced — this is the exact user scenario reported in #651."""
+    cli = _import_cli()
+
+    # Simulate the exact #651 scenario: LLM_MODEL set to an Anthropic model
+    monkeypatch.setenv("LLM_MODEL", "claude-opus-4-6")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
+    )
+
+    shell = cli.HermesCLI(compact=True, max_turns=1)
+
+    assert shell._model_is_default is False  # came from env var
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    assert "claude" not in shell.model
+    assert shell.model == "gpt-5.2-codex"
+
+
+def test_explicit_codex_model_not_overridden(monkeypatch):
+    """If the user explicitly passes a Codex-compatible model, it must be
+    preserved even when the provider resolves to openai-codex."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.2-codex"],
+    )
+
+    shell = cli.HermesCLI(model="gpt-5.1-codex-mini", compact=True, max_turns=1)
+
+    assert shell._model_is_default is False
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "gpt-5.1-codex-mini"

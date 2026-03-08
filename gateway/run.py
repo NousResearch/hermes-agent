@@ -734,6 +734,9 @@ class GatewayRunner:
         if command == "model":
             return await self._handle_model_command(event)
         
+        if command == "provider":
+            return await self._handle_provider_command(event)
+        
         if command == "personality":
             return await self._handle_personality_command(event)
         
@@ -1292,6 +1295,7 @@ class GatewayRunner:
             "`/status` — Show session info",
             "`/stop` — Interrupt the running agent",
             "`/model [provider:model]` — Show/change model (or switch provider)",
+            "`/provider` — Show available providers and auth status",
             "`/personality [name]` — Set a personality",
             "`/retry` — Retry your last message",
             "`/undo` — Remove the last exchange",
@@ -1412,23 +1416,27 @@ class GatewayRunner:
         if not validation.get("accepted"):
             return f"⚠️ {validation.get('message')}"
 
-        # Write to config.yaml
-        try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path) as f:
-                    user_config = yaml.safe_load(f) or {}
-            if "model" not in user_config or not isinstance(user_config["model"], dict):
-                user_config["model"] = {}
-            user_config["model"]["default"] = new_model
-            if provider_changed:
-                user_config["model"]["provider"] = target_provider
-            with open(config_path, 'w') as f:
-                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
-        except Exception as e:
-            return f"⚠️ Failed to save model change: {e}"
+        # Persist to config only if validation approves
+        if validation.get("persist"):
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path) as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = new_model
+                if provider_changed:
+                    user_config["model"]["provider"] = target_provider
+                with open(config_path, 'w') as f:
+                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            except Exception as e:
+                return f"⚠️ Failed to save model change: {e}"
 
+        # Set env vars so the next agent run picks up the change
         os.environ["HERMES_MODEL"] = new_model
+        if provider_changed:
+            os.environ["HERMES_INFERENCE_PROVIDER"] = target_provider
 
         provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
         provider_note = f"\n**Provider:** {provider_label}" if provider_changed else ""
@@ -1439,6 +1447,56 @@ class GatewayRunner:
 
         persist_note = "saved to config" if validation.get("persist") else "session only"
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
+
+    async def _handle_provider_command(self, event: MessageEvent) -> str:
+        """Handle /provider command - show available providers."""
+        import yaml
+        from hermes_cli.models import (
+            list_available_providers,
+            normalize_provider,
+            _PROVIDER_LABELS,
+        )
+
+        # Resolve current provider from config
+        current_provider = "openrouter"
+        config_path = _hermes_home / 'config.yaml'
+        try:
+            if config_path.exists():
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+
+        current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
+
+        current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+
+        lines = [
+            f"🔌 **Current provider:** {current_label} (`{current_provider}`)",
+            "",
+            "**Available providers:**",
+        ]
+
+        providers = list_available_providers()
+        for p in providers:
+            marker = " ← active" if p["id"] == current_provider else ""
+            auth = "✅" if p["authenticated"] else "❌"
+            aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
+            lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
+
+        lines.append("")
+        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Setup: `hermes setup`")
+        return "\n".join(lines)
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""

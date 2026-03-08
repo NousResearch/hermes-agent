@@ -91,6 +91,51 @@ def menu_labels() -> list[str]:
     return labels
 
 
+# All provider IDs and aliases that are valid for the provider:model syntax.
+_KNOWN_PROVIDER_NAMES: set[str] = (
+    set(_PROVIDER_LABELS.keys())
+    | set(_PROVIDER_ALIASES.keys())
+    | {"openrouter", "custom"}
+)
+
+
+def list_available_providers() -> list[dict[str, str]]:
+    """Return info about all providers the user could use with ``provider:model``.
+
+    Each dict has ``id``, ``label``, and ``aliases``.
+    Checks which providers have valid credentials configured.
+    """
+    # Canonical providers in display order
+    _PROVIDER_ORDER = [
+        "openrouter", "nous", "openai-codex",
+        "zai", "kimi-coding", "minimax", "minimax-cn",
+    ]
+    # Build reverse alias map
+    aliases_for: dict[str, list[str]] = {}
+    for alias, canonical in _PROVIDER_ALIASES.items():
+        aliases_for.setdefault(canonical, []).append(alias)
+
+    result = []
+    for pid in _PROVIDER_ORDER:
+        label = _PROVIDER_LABELS.get(pid, pid)
+        alias_list = aliases_for.get(pid, [])
+        # Check if this provider has credentials available
+        has_creds = False
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(requested=pid)
+            has_creds = bool(runtime.get("api_key"))
+        except Exception:
+            pass
+        result.append({
+            "id": pid,
+            "label": label,
+            "aliases": alias_list,
+            "authenticated": has_creds,
+        })
+    return result
+
+
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``.
 
@@ -101,6 +146,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         anthropic/claude-sonnet-4.5             →  (current_provider, "anthropic/claude-sonnet-4.5")
         gpt-5.4                                 →  (current_provider, "gpt-5.4")
 
+    The colon is only treated as a provider delimiter if the left side is a
+    recognized provider name or alias.  This avoids misinterpreting model names
+    that happen to contain colons (e.g. ``anthropic/claude-3.5-sonnet:beta``).
+
     Returns ``(provider, model)`` where *provider* is either the explicit
     provider from the input or *current_provider* if none was specified.
     """
@@ -109,7 +158,7 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part:
+        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

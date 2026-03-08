@@ -67,6 +67,17 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == ":something"
 
+    def test_unknown_prefix_colon_not_treated_as_provider(self):
+        """Colons are only provider delimiters if the left side is a known provider."""
+        provider, model = parse_model_input("anthropic/claude-3.5-sonnet:beta", "openrouter")
+        assert provider == "openrouter"
+        assert model == "anthropic/claude-3.5-sonnet:beta"
+
+    def test_http_url_not_treated_as_provider(self):
+        provider, model = parse_model_input("http://localhost:8080/model", "openrouter")
+        assert provider == "openrouter"
+        assert model == "http://localhost:8080/model"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

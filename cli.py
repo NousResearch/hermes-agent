@@ -2161,6 +2161,35 @@ class HermesCLI:
                 print("  Usage: /model <model-name>")
                 print("         /model provider:model-name  (to switch provider)")
                 print("  Example: /model openrouter:anthropic/claude-sonnet-4.5")
+                print("  See /provider for available providers")
+        elif cmd_lower == "/provider":
+            from hermes_cli.models import list_available_providers, normalize_provider, _PROVIDER_LABELS
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+            # Resolve current provider
+            raw_provider = normalize_provider(self.provider)
+            if raw_provider == "auto":
+                try:
+                    current = _resolve_provider(
+                        self.requested_provider,
+                        explicit_api_key=self._explicit_api_key,
+                        explicit_base_url=self._explicit_base_url,
+                    )
+                except Exception:
+                    current = "openrouter"
+            else:
+                current = raw_provider
+            current_label = _PROVIDER_LABELS.get(current, current)
+            print(f"\n  Current provider: {current_label} ({current})\n")
+            providers = list_available_providers()
+            print("  Available providers:")
+            for p in providers:
+                marker = " ← active" if p["id"] == current else ""
+                auth = "✓" if p["authenticated"] else "✗"
+                aliases = f"  (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
+                print(f"    [{auth}] {p['id']:<14} {p['label']}{aliases}{marker}")
+            print()
+            print("  Switch: /model provider:model-name")
+            print("  Setup:  hermes setup")
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

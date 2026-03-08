@@ -8,10 +8,11 @@ from hermes_cli.commands import COMMANDS, SlashCommandCompleter
 
 # All commands that must be present in the shared COMMANDS dict.
 EXPECTED_COMMANDS = {
-    "/help", "/tools", "/toolsets", "/model", "/prompt", "/personality",
-    "/clear", "/history", "/new", "/reset", "/retry", "/undo", "/save",
-    "/config", "/cron", "/skills", "/platforms", "/verbose", "/compress",
-    "/usage", "/insights", "/paste", "/reload-mcp", "/quit",
+    "/help", "/tools", "/toolsets", "/model", "/provider", "/prompt",
+    "/personality", "/clear", "/history", "/new", "/reset", "/retry",
+    "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
+    "/verbose", "/compress", "/usage", "/insights", "/paste",
+    "/reload-mcp", "/quit",
 }
 
 

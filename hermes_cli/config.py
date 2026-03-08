@@ -622,11 +622,11 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    from utils import atomic_yaml_write
+
     ensure_hermes_home()
     config_path = get_config_path()
-    
-    with open(config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    atomic_yaml_write(config_path, config)
 
 
 def load_env() -> Dict[str, str]:

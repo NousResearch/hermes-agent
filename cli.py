@@ -2131,15 +2131,13 @@ class HermesCLI:
                     if message:
                         print(f"  Warning: {message}")
             else:
-                from hermes_cli.models import curated_models_for_provider, _PROVIDER_LABELS
-                provider_label = _PROVIDER_LABELS.get(
-                    self.provider or "openrouter",
-                    self.provider or "openrouter",
-                )
+                from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
+                display_provider = normalize_provider(self.provider)
+                provider_label = _PROVIDER_LABELS.get(display_provider, display_provider)
                 print(f"\n  Current model:    {self.model}")
                 print(f"  Current provider: {provider_label}")
                 print()
-                curated = curated_models_for_provider(self.provider)
+                curated = curated_models_for_provider(display_provider)
                 if curated:
                     print(f"  Available models ({provider_label}):")
                     for mid, desc in curated:

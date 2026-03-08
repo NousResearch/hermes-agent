@@ -730,7 +730,8 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "insights", "reload-mcp", "update"}
+                          "compress", "usage", "insights", "reload-mcp", "update",
+                          "fallback"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -783,7 +784,10 @@ class GatewayRunner:
 
         if command == "update":
             return await self._handle_update_command(event)
-        
+
+        if command == "fallback":
+            return await self._handle_fallback_command(event)
+
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
             try:
@@ -1316,6 +1320,7 @@ class GatewayRunner:
             "`/stop` — Interrupt the running agent",
             "`/model [provider:model]` — Show/change model (or switch provider)",
             "`/provider` — Show available providers and auth status",
+            "`/fallback [auto|off|on|reset]` — Show/toggle fallback chain",
             "`/personality [name]` — Set a personality",
             "`/retry` — Retry your last message",
             "`/undo` — Remove the last exchange",
@@ -1523,6 +1528,69 @@ class GatewayRunner:
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
+    async def _handle_fallback_command(self, event: MessageEvent) -> str:
+        """Handle /fallback command — show status or toggle fallback chain."""
+        import yaml
+
+        args = event.get_command_args().strip().lower()
+        chain = self._fallback_chain
+        config_path = _hermes_home / "config.yaml"
+
+        if not args:
+            # Show current status
+            if chain is None or not chain.entries:
+                return (
+                    "🔄 **Fallback Chain:** not configured\n\n"
+                    "Add providers in `~/.hermes/config.yaml` under `fallback.chain`:\n"
+                    "```yaml\nfallback:\n  enabled: true\n  mode: auto\n  chain:\n"
+                    "    - provider: openrouter\n      model: anthropic/claude-opus-4.6\n"
+                    "    - provider: lmstudio\n      base_url: http://localhost:1234/v1\n"
+                    "      model: qwen3-30b-a3b\n```"
+                )
+
+            status = "✅ enabled" if chain.enabled else "❌ disabled"
+            lines = [
+                f"🔄 **Fallback Chain:** {status}",
+                f"**Mode:** `{chain.mode}` | **Timeout:** {chain.timeout}s",
+                "",
+            ]
+            for i, entry in enumerate(chain.entries, 1):
+                model_str = f" → `{entry.model}`" if entry.model else ""
+                exhausted = " _(exhausted)_" if i - 1 in chain._exhausted else ""
+                lines.append(f"  {i}. **{entry.display_name}**{model_str}{exhausted}")
+
+            lines.append("")
+            lines.append("Toggle: `/fallback auto` · `/fallback off` · `/fallback on` · `/fallback reset`")
+            return "\n".join(lines)
+
+        if args == "off":
+            if chain:
+                chain.enabled = False
+                return "✅ Fallback chain **disabled** for this gateway session."
+            return "⚠️ No fallback chain configured."
+
+        if args in ("auto", "interactive"):
+            if chain:
+                chain.enabled = True
+                chain.mode = args
+                return f"✅ Fallback mode set to **{args}**."
+            return "⚠️ No fallback chain configured."
+
+        if args == "on":
+            if chain:
+                chain.enabled = True
+                return f"✅ Fallback chain **enabled** (mode: `{chain.mode}`)."
+            return "⚠️ No fallback chain configured."
+
+        if args == "reset":
+            if chain:
+                chain.reset()
+                n = len(chain.entries)
+                return f"✅ Fallback chain **reset** — all {n} provider{'s' if n > 1 else ''} available again."
+            return "⚠️ No fallback chain to reset."
+
+        return f"Unknown option: `{args}`\nUsage: `/fallback auto` · `/fallback off` · `/fallback on` · `/fallback reset`"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml

@@ -54,11 +54,8 @@ class TestDeliverResultMirrorLogging:
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-        async def fake_send(*args, **kwargs):
-            return None
-
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=fake_send), \
+             patch("asyncio.run", return_value=None), \
              patch("gateway.mirror.mirror_to_session", side_effect=ConnectionError("network down")):
             job = {
                 "id": "test-job",

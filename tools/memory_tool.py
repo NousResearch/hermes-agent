@@ -27,7 +27,10 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -37,6 +40,8 @@ logger = logging.getLogger(__name__)
 MEMORY_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+MEMORY_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+DEFAULT_TOKEN_BUDGET = 8000  # ~2000 tokens
 
 
 # ---------------------------------------------------------------------------
@@ -86,48 +91,157 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 class MemoryStore:
     """
-    Bounded curated memory with file persistence. One instance per AIAgent.
+    SQLite-backed curated memory. One instance per AIAgent.
 
     Maintains two parallel states:
       - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
         Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
+      - In-memory cache (memory_entries / user_entries): live state for tool responses.
+
+    On first run, auto-migrates existing MEMORY.md / USER.md entries to SQLite.
+    Old files kept as read-only backups.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, db_path: Path = None, token_budget: int = DEFAULT_TOKEN_BUDGET):
+        self.db_path = db_path or MEMORY_DB_PATH
+        self.token_budget = token_budget
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
-        self.memory_char_limit = memory_char_limit
-        self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
+    # ------------------------------------------------------------------
+    # DB helpers
+    # ------------------------------------------------------------------
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def _ensure_table(self, conn: sqlite3.Connection):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT 'memory',
+                scope TEXT NOT NULL DEFAULT '/',
+                categories TEXT DEFAULT '[]',
+                importance REAL NOT NULL DEFAULT 0.5,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                last_accessed_at REAL,
+                source TEXT,
+                forgotten INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_target ON memories(target)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)")
+        conn.commit()
+
+    # ------------------------------------------------------------------
+    # Migration: flat files -> SQLite (runs once)
+    # ------------------------------------------------------------------
+
+    def _migrate_from_files(self, conn: sqlite3.Connection):
+        """Import MEMORY.md and USER.md into SQLite if not already done."""
+        for target, filename in [("memory", "MEMORY.md"), ("user", "USER.md")]:
+            path = MEMORY_DIR / filename
+            if not path.exists():
+                continue
+            backup = MEMORY_DIR / (filename + ".bak")
+            if backup.exists():
+                continue  # Already migrated
+            entries = self._read_file(path)
+            now = time.time()
+            for entry in entries:
+                if not entry.strip():
+                    continue
+                # Skip if already in DB
+                row = conn.execute(
+                    "SELECT id FROM memories WHERE content = ? AND target = ? AND forgotten = 0",
+                    (entry, target)
+                ).fetchone()
+                if row:
+                    continue
+                conn.execute(
+                    """INSERT INTO memories (id, content, target, scope, importance, created_at, updated_at)
+                       VALUES (?, ?, ?, '/', 0.5, ?, ?)""",
+                    (str(uuid.uuid4()), entry, target, now, now)
+                )
+            conn.commit()
+            # Rename original to .bak (keep as backup)
+            try:
+                path.rename(backup)
+                logger.info("Migrated %s to SQLite, backup at %s", filename, backup)
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # Load / save
+    # ------------------------------------------------------------------
+
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """Load entries from SQLite (with auto-migration), capture system prompt snapshot."""
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
-        self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+        with self._get_conn() as conn:
+            self._ensure_table(conn)
+            self._migrate_from_files(conn)
+            self.memory_entries = self._load_entries(conn, "memory")
+            self.user_entries = self._load_entries(conn, "user")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
-
-        # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
         }
 
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    def _load_entries(self, conn: sqlite3.Connection, target: str) -> List[str]:
+        """Load active entries ordered by importance DESC."""
+        rows = conn.execute(
+            "SELECT content FROM memories WHERE target = ? AND forgotten = 0 ORDER BY importance DESC, created_at ASC",
+            (target,)
+        ).fetchall()
+        return [r["content"] for r in rows]
 
-        if target == "memory":
-            self._write_file(MEMORY_DIR / "MEMORY.md", self.memory_entries)
-        elif target == "user":
-            self._write_file(MEMORY_DIR / "USER.md", self.user_entries)
+    def _save_entry(self, target: str, content: str, entry_id: str = None,
+                    scope: str = "/", importance: float = 0.5):
+        """Insert a new entry into SQLite."""
+        now = time.time()
+        with self._get_conn() as conn:
+            self._ensure_table(conn)
+            conn.execute(
+                """INSERT INTO memories (id, content, target, scope, importance, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (entry_id or str(uuid.uuid4()), content, target, scope, importance, now, now)
+            )
+            conn.commit()
+
+    def _update_entry(self, old_content: str, new_content: str, target: str):
+        """Update an existing entry by content match."""
+        now = time.time()
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE memories SET content = ?, updated_at = ? WHERE content = ? AND target = ? AND forgotten = 0",
+                (new_content, now, old_content, target)
+            )
+            conn.commit()
+
+    def _soft_delete_entry(self, content: str, target: str):
+        """Soft-delete by setting forgotten=1."""
+        now = time.time()
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE memories SET forgotten = 1, updated_at = ? WHERE content = ? AND target = ? AND forgotten = 0",
+                (now, content, target)
+            )
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Core operations (same API as before)
+    # ------------------------------------------------------------------
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -140,60 +254,29 @@ class MemoryStore:
         else:
             self.memory_entries = entries
 
-    def _char_count(self, target: str) -> int:
-        entries = self._entries_for(target)
-        if not entries:
-            return 0
-        return len(ENTRY_DELIMITER.join(entries))
-
-    def _char_limit(self, target: str) -> int:
-        if target == "user":
-            return self.user_char_limit
-        return self.memory_char_limit
-
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    def add(self, target: str, content: str, scope: str = "/", importance: float = 0.5) -> Dict[str, Any]:
+        """Append a new entry to SQLite."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
         entries = self._entries_for(target)
-        limit = self._char_limit(target)
 
-        # Reject exact duplicates
         if content in entries:
             return self._success_response(target, "Entry already exists (no duplicate added).")
 
-        # Calculate what the new total would be
-        new_entries = entries + [content]
-        new_total = len(ENTRY_DELIMITER.join(new_entries))
-
-        if new_total > limit:
-            current = self._char_count(target)
-            return {
-                "success": False,
-                "error": (
-                    f"Memory at {current:,}/{limit:,} chars. "
-                    f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                    f"Replace or remove existing entries first."
-                ),
-                "current_entries": entries,
-                "usage": f"{current:,}/{limit:,}",
-            }
-
+        self._save_entry(target, content, scope=scope, importance=importance)
         entries.append(content)
         self._set_entries(target, entries)
-        self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Find entry containing old_text substring, replace it."""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -201,7 +284,6 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
@@ -213,42 +295,20 @@ class MemoryStore:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
 
         if len(matches) > 1:
-            # If all matches are identical (exact duplicates), operate on the first one
             unique_texts = set(e for _, e in matches)
             if len(unique_texts) > 1:
                 previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                return {
-                    "success": False,
-                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                    "matches": previews,
-                }
-            # All identical -- safe to replace just the first
+                return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-        idx = matches[0][0]
-        limit = self._char_limit(target)
-
-        # Check that replacement doesn't blow the budget
-        test_entries = entries.copy()
-        test_entries[idx] = new_content
-        new_total = len(ENTRY_DELIMITER.join(test_entries))
-
-        if new_total > limit:
-            return {
-                "success": False,
-                "error": (
-                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                    f"Shorten the new content or remove other entries first."
-                ),
-            }
-
+        idx, old_entry = matches[0]
+        self._update_entry(old_entry, new_content, target)
         entries[idx] = new_content
         self._set_entries(target, entries)
-        self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """Soft-delete the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
@@ -260,126 +320,80 @@ class MemoryStore:
             return {"success": False, "error": f"No entry matched '{old_text}'."}
 
         if len(matches) > 1:
-            # If all matches are identical (exact duplicates), remove the first one
             unique_texts = set(e for _, e in matches)
             if len(unique_texts) > 1:
                 previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                return {
-                    "success": False,
-                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                    "matches": previews,
-                }
-            # All identical -- safe to remove just the first
+                return {"success": False, "error": f"Multiple entries matched '{old_text}'. Be more specific.", "matches": previews}
 
-        idx = matches[0][0]
+        idx, old_entry = matches[0]
+        self._soft_delete_entry(old_entry, target)
         entries.pop(idx)
         self._set_entries(target, entries)
-        self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
-        """
-        Return the frozen snapshot for system prompt injection.
-
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
-
-        Returns None if the snapshot is empty (no entries at load time).
-        """
+        """Return frozen snapshot for system prompt injection."""
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
-        current = self._char_count(target)
-        limit = self._char_limit(target)
-        pct = int((current / limit) * 100) if limit > 0 else 0
-
+        total_chars = sum(len(e) for e in entries)
         resp = {
             "success": True,
             "target": target,
             "entries": entries,
-            "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
+            "total_chars": total_chars,
         }
         if message:
             resp["message"] = message
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header, respecting token budget."""
         if not entries:
             return ""
 
-        limit = self._char_limit(target)
-        content = ENTRY_DELIMITER.join(entries)
-        current = len(content)
-        pct = int((current / limit) * 100) if limit > 0 else 0
-
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = "USER PROFILE (who the user is)"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = "MEMORY (your personal notes)"
 
         separator = "═" * 46
+        lines = []
+        budget = self.token_budget
+        for entry in entries:
+            chunk = entry + ENTRY_DELIMITER
+            budget -= len(chunk)
+            if budget < 0:
+                break
+            lines.append(entry)
+
+        if not lines:
+            return ""
+
+        content = ENTRY_DELIMITER.join(lines)
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
-
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
-        """
+        """Read a legacy memory file and split into entries (migration only)."""
         if not path.exists():
             return []
         try:
             raw = path.read_text(encoding="utf-8")
         except (OSError, IOError):
             return []
-
         if not raw.strip():
             return []
-
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
-
-    @staticmethod
-    def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
-
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
-        """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
-        try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
-            except BaseException:
-                # Clean up temp file on any failure
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
 def memory_tool(

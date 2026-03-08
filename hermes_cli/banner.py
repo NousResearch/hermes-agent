@@ -154,7 +154,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     # Only include caduceus in the panel when the full block-letter logo is
     # shown above (>= 100 cols). At 40-99 cols the standalone CADUCEUS_BANNER
     # is printed before the panel, so omit it here to avoid repeating it.
-    if _cols_early >= 100:
+    if _cols_early >= 40:
         left_lines = ["", HERMES_CADUCEUS, ""]
     else:
         left_lines = [""]
@@ -259,9 +259,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     console.print()
     if cols >= 100:
         console.print(HERMES_AGENT_LOGO)
-    elif cols >= 40:
-        console.print(CADUCEUS_BANNER)
-    else:
+    elif cols < 40:
         console.print(COMPACT_BANNER)
     console.print()
     console.print(outer_panel)

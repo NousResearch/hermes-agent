@@ -144,6 +144,26 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str:
 
 
 # =========================================================================
+# TUI spinner bridge
+# =========================================================================
+# When running inside prompt_toolkit (HERMES_IN_TUI=1), raw \r-based writes
+# flood patch_stdout's output buffer. Instead, the spinner updates this dict
+# and calls the registered invalidate callback so the hint area redraws.
+
+_TUI_SPINNER: dict = {"text": "", "cb": None}
+
+
+def set_tui_invalidate_cb(cb) -> None:
+    """Register a prompt_toolkit repaint callback (called once by HermesCLI.run())."""
+    _TUI_SPINNER["cb"] = cb
+
+
+def get_tui_spinner_text() -> str:
+    """Return the current spinner frame for the TUI hint area."""
+    return _TUI_SPINNER["text"]
+
+
+# =========================================================================
 # KawaiiSpinner
 # =========================================================================
 
@@ -212,19 +232,25 @@ class KawaiiSpinner:
 
     def _animate(self):
         while self.running:
-            if os.getenv("HERMES_SPINNER_PAUSE") or os.getenv("HERMES_IN_TUI"):
+            if os.getenv("HERMES_SPINNER_PAUSE"):
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
-            if _hermes_skin_enabled():
-                left, right = _spinner_wings(self.frame_idx)
-                line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
+            line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+            if os.getenv("HERMES_IN_TUI"):
+                # Route animation through the hint area instead of raw stdout.
+                _TUI_SPINNER["text"] = line
+                cb = _TUI_SPINNER["cb"]
+                if cb:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
             else:
-                line = f"  {frame} {self.message} ({elapsed:.1f}s)"
-            clear = '\r' + ' ' * self.last_line_len + '\r'
-            self._write(clear + line, end='', flush=True)
-            self.last_line_len = len(line)
+                pad = max(self.last_line_len - len(line), 0)
+                self._write(f"\r{line}{' ' * pad}", end='', flush=True)
+                self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
 
@@ -265,7 +291,15 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        if not os.getenv("HERMES_IN_TUI"):
+        if os.getenv("HERMES_IN_TUI"):
+            _TUI_SPINNER["text"] = ""
+            cb = _TUI_SPINNER["cb"]
+            if cb:
+                try:
+                    cb()
+                except Exception:
+                    pass
+        else:
             # Clear the spinner line with spaces instead of \033[K to avoid
             # garbled escape codes when prompt_toolkit's patch_stdout is active.
             blanks = ' ' * max(self.last_line_len + 5, 40)

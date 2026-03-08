@@ -1344,7 +1344,14 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Resolve "auto" to the actual provider using credential detection
         current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
 
         if not args:
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)

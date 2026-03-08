@@ -2132,7 +2132,20 @@ class HermesCLI:
                         print(f"  Warning: {message}")
             else:
                 from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
-                display_provider = normalize_provider(self.provider)
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                # Resolve "auto" to the actual provider using credential detection
+                raw_provider = normalize_provider(self.provider)
+                if raw_provider == "auto":
+                    try:
+                        display_provider = _resolve_provider(
+                            self.requested_provider,
+                            explicit_api_key=self._explicit_api_key,
+                            explicit_base_url=self._explicit_base_url,
+                        )
+                    except Exception:
+                        display_provider = "openrouter"
+                else:
+                    display_provider = raw_provider
                 provider_label = _PROVIDER_LABELS.get(display_provider, display_provider)
                 print(f"\n  Current model:    {self.model}")
                 print(f"  Current provider: {provider_label}")

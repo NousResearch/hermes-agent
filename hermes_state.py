@@ -24,7 +24,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -66,6 +66,22 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT 'memory',
+    scope TEXT NOT NULL DEFAULT '/',
+    categories TEXT DEFAULT '[]',
+    importance REAL NOT NULL DEFAULT 0.5,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    last_accessed_at REAL,
+    source TEXT,
+    forgotten INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
+CREATE INDEX IF NOT EXISTS idx_memories_target ON memories(target);
+CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC);
 """
 
 FTS_SQL = """
@@ -133,6 +149,30 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 2")
+            if current_version < 3:
+                # v3: add memories table with scope, importance, timestamps
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS memories (
+                            id TEXT PRIMARY KEY,
+                            content TEXT NOT NULL,
+                            target TEXT NOT NULL DEFAULT 'memory',
+                            scope TEXT NOT NULL DEFAULT '/',
+                            categories TEXT DEFAULT '[]',
+                            importance REAL NOT NULL DEFAULT 0.5,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            last_accessed_at REAL,
+                            source TEXT,
+                            forgotten INTEGER DEFAULT 0
+                        )
+                    """)
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_target ON memories(target)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)")
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 3")
 
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)

@@ -408,10 +408,11 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing builtins from hub-installed."""
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
+    from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_tool import _find_all_skills
 
     c = console or _console
+    ensure_hub_dirs()
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
 

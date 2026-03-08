@@ -17,6 +17,7 @@ Every conversation — whether from the CLI, Telegram, Discord, WhatsApp, or Sla
 
 The SQLite database stores:
 - Session ID, source platform, user ID
+- **Session title** (unique, human-readable name)
 - Model name and configuration
 - System prompt snapshot
 - Full message history (role, content, tool calls, tool results)
@@ -54,12 +55,28 @@ hermes chat -c
 
 This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
 
+### Resume by Name
+
+If you've given a session a title (see [Session Naming](#session-naming) below), you can resume it by name:
+
+```bash
+# Resume a named session
+hermes -c "my project"
+
+# If there are lineage variants (my project, my project #2, my project #3),
+# this automatically resumes the most recent one
+hermes -c "my project"   # → resumes "my project #3"
+```
+
 ### Resume Specific Session
 
 ```bash
 # Resume a specific session by ID
 hermes --resume 20250305_091523_a1b2c3d4
 hermes -r 20250305_091523_a1b2c3d4
+
+# Resume by title
+hermes --resume "refactoring auth"
 
 # Or with the chat subcommand
 hermes chat --resume 20250305_091523_a1b2c3d4
@@ -68,8 +85,52 @@ hermes chat --resume 20250305_091523_a1b2c3d4
 Session IDs are shown when you exit a CLI session, and can be found with `hermes sessions list`.
 
 :::tip
-Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091523_a1b2c3d4`. You only need to provide enough of the ID to be unique.
+Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091523_a1b2c3d4`. You can resume by ID or by title — both work with `-c` and `-r`.
 :::
+
+## Session Naming
+
+Give sessions human-readable titles so you can find and resume them easily.
+
+### Setting a Title
+
+Use the `/title` slash command inside any chat session (CLI or gateway):
+
+```
+/title my research project
+```
+
+The title is applied immediately. If the session hasn't been created in the database yet (e.g., you run `/title` before sending your first message), it's queued and applied once the session starts.
+
+You can also rename existing sessions from the command line:
+
+```bash
+hermes sessions rename 20250305_091523_a1b2c3d4 "refactoring auth module"
+```
+
+### Title Rules
+
+- **Unique** — no two sessions can share the same title
+- **Max 100 characters** — keeps listing output clean
+- **Sanitized** — control characters, zero-width chars, and RTL overrides are stripped automatically
+- **Normal Unicode is fine** — emoji, CJK, accented characters all work
+
+### Auto-Lineage on Compression
+
+When a session's context is compressed (manually via `/compress` or automatically), Hermes creates a new continuation session. If the original had a title, the new session automatically gets a numbered title:
+
+```
+"my project" → "my project #2" → "my project #3"
+```
+
+When you resume by name (`hermes -c "my project"`), it automatically picks the most recent session in the lineage.
+
+### /title in Messaging Platforms
+
+The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp):
+
+- `/title My Research` — set the session title
+- `/title` — show the current title
 
 ## Session Management Commands
 
@@ -88,13 +149,23 @@ hermes sessions list --source telegram
 hermes sessions list --limit 50
 ```
 
-Output format:
+When sessions have titles, the output shows titles, previews, and relative timestamps:
 
 ```
-ID                             Source       Model                          Messages Started
+Title                  Preview                                  Last Active   ID
 ────────────────────────────────────────────────────────────────────────────────────────────────
-20250305_091523_a1b2c3d4       cli          anthropic/claude-opus-4.6          24 2025-03-05 09:15
-20250304_143022_e5f6g7h8       telegram     anthropic/claude-opus-4.6          12 2025-03-04 14:30 (ended)
+refactoring auth       Help me refactor the auth module please   2h ago        20250305_091523_a
+my project #3          Can you check the test failures?          yesterday     20250304_143022_e
+—                      What's the weather in Las Vegas?          3d ago        20250303_101500_f
+```
+
+When no sessions have titles, a simpler format is used:
+
+```
+Preview                                            Last Active   Src    ID
+──────────────────────────────────────────────────────────────────────────────────────
+Help me refactor the auth module please             2h ago        cli    20250305_091523_a
+What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
 ### Export Sessions
@@ -121,6 +192,18 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 # Delete without confirmation
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
+
+### Rename a Session
+
+```bash
+# Set or change a session's title
+hermes sessions rename 20250305_091523_a1b2c3d4 "debugging auth flow"
+
+# Multi-word titles don't need quotes in the CLI
+hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
+```
+
+If the title is already in use by another session, an error is shown.
 
 ### Prune Old Sessions
 
@@ -233,7 +316,7 @@ The SQLite database uses WAL mode for concurrent readers and a single writer, wh
 
 Key tables in `state.db`:
 
-- **sessions** — session metadata (id, source, user_id, model, timestamps, token counts)
+- **sessions** — session metadata (id, source, user_id, model, title, timestamps, token counts). Titles have a unique index (NULL titles allowed, only non-NULL must be unique).
 - **messages** — full message history (role, content, tool_calls, tool_name, token_count)
 - **messages_fts** — FTS5 virtual table for full-text search across message content
 

@@ -308,7 +308,9 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     platform_toolsets = config.get("platform_toolsets", {})
     toolset_names = platform_toolsets.get(platform)
 
-    if not toolset_names or not isinstance(toolset_names, list):
+    # Note: Empty list [] is a valid selection (user disabled all tools)
+    # Only fallback to default if key is missing or not a list
+    if toolset_names is None or not isinstance(toolset_names, list):
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 

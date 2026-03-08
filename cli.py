@@ -1319,32 +1319,68 @@ class HermesCLI:
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
-    def _build_multimodal_content(self, text: str, images: list) -> list:
-        """Convert text + image paths into OpenAI vision multimodal content.
+    def _preprocess_images_with_vision(self, text: str, images: list) -> str:
+        """Analyze attached images via the vision tool and return enriched text.
 
-        Returns a list of content parts suitable for the ``content`` field
-        of a ``user`` message.
+        Instead of embedding raw base64 ``image_url`` content parts in the
+        conversation (which only works with vision-capable models), this
+        pre-processes each image through the auxiliary vision model (Gemini
+        Flash) and prepends the descriptions to the user's message — the
+        same approach the messaging gateway uses.
+
+        The local file path is included so the agent can re-examine the
+        image later with ``vision_analyze`` if needed.
         """
-        import base64 as _b64
+        import asyncio as _asyncio
+        import json as _json
+        from tools.vision_tools import vision_analyze_tool
 
-        content_parts = []
-        text_part = text if isinstance(text, str) and text else "What do you see in this image?"
-        content_parts.append({"type": "text", "text": text_part})
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
 
-        _MIME = {
-            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "gif": "image/gif", "webp": "image/webp",
-        }
+        enriched_parts = []
         for img_path in images:
-            if img_path.exists():
-                data = _b64.b64encode(img_path.read_bytes()).decode()
-                ext = img_path.suffix.lower().lstrip(".")
-                mime = _MIME.get(ext, "image/png")
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{data}"}
-                })
-        return content_parts
+            if not img_path.exists():
+                continue
+            size_kb = img_path.stat().st_size // 1024
+            _cprint(f"  {_DIM}👁️  analyzing {img_path.name} ({size_kb}KB)...{_RST}")
+            try:
+                result_json = _asyncio.run(
+                    vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt)
+                )
+                result = _json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    enriched_parts.append(
+                        f"[The user attached an image. Here's what it contains:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {img_path}]"
+                    )
+                    _cprint(f"  {_DIM}✓ image analyzed{_RST}")
+                else:
+                    enriched_parts.append(
+                        f"[The user attached an image but it couldn't be analyzed. "
+                        f"You can try examining it with vision_analyze using "
+                        f"image_url: {img_path}]"
+                    )
+                    _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+            except Exception as e:
+                enriched_parts.append(
+                    f"[The user attached an image but analysis failed ({e}). "
+                    f"You can try examining it with vision_analyze using "
+                    f"image_url: {img_path}]"
+                )
+                _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+
+        # Combine: vision descriptions first, then the user's original text
+        user_text = text if isinstance(text, str) and text else ""
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            return f"{prefix}\n\n{user_text}" if user_text else prefix
+        return user_text or "What do you see in this image?"
 
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
@@ -2627,14 +2663,13 @@ class HermesCLI:
         if not self._init_agent():
             return None
         
-        # Convert attached images to OpenAI vision multimodal content
+        # Pre-process images through the vision tool (Gemini Flash) so the
+        # main model receives text descriptions instead of raw base64 image
+        # content — works with any model, not just vision-capable ones.
         if images:
-            message = self._build_multimodal_content(
+            message = self._preprocess_images_with_vision(
                 message if isinstance(message, str) else "", images
             )
-            for img_path in images:
-                if img_path.exists():
-                    _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})

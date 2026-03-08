@@ -922,12 +922,33 @@ def _preview_text(text: str, max_length: int = 96) -> str:
     return preview[: max_length - 3].rstrip() + "..."
 
 
+def _terminal_columns(default: int = 100) -> int:
+    """Return terminal width with a sane fallback for tests and non-TTY runs."""
+    try:
+        return shutil.get_terminal_size(fallback=(default, 24)).columns
+    except Exception:
+        return default
+
+
+def _dynamic_preview_length(*, command_width: int = 0, indent: int = 0,
+                            minimum: int = 36, maximum: int = 120) -> int:
+    """Choose a preview width based on the current terminal size."""
+    available = _terminal_columns() - command_width - indent
+    return max(minimum, min(maximum, available))
+
+
 def _cli_print_section(title: str, entries: list[tuple[str, str]], *, command_width: int | None = None) -> None:
     """Render an aligned command section in the interactive CLI."""
+    _cprint(_cli_render_section(title, entries, command_width=command_width))
+
+
+def _cli_render_section(title: str, entries: list[tuple[str, str]], *, command_width: int | None = None) -> str:
+    """Render an aligned command section as a single ANSI string."""
     width = command_width or (max(len(command) for command, _ in entries) + 2)
-    _cprint(f"\n  {_BOLD}{title}{_RST}")
+    lines = [f"", f"  {_BOLD}{title}{_RST}"]
     for command, description in entries:
-        _cprint(f"    {_GOLD}{command:<{width}}{_RST} {_DIM}-{_RST} {description}")
+        lines.append(f"    {_GOLD}{command:<{width}}{_RST} {_DIM}-{_RST} {description}")
+    return "\n".join(lines)
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -1454,9 +1475,13 @@ class HermesCLI:
     
     def show_help(self):
         """Display help information."""
-        _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
-        _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
-        _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
+        lines = [
+            "",
+            f"{_BOLD}+{'-' * 50}+{_RST}",
+            f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}",
+            f"{_BOLD}+{'-' * 50}+{_RST}",
+            "",
+        ]
 
         sections = [
             (
@@ -1507,20 +1532,35 @@ class HermesCLI:
         ]
 
         for title, entries in sections:
-            _cli_print_section(title, entries)
+            lines.append(_cli_render_section(title, entries))
 
         if _skill_commands:
+            skill_width = 24
+            skill_preview_length = _dynamic_preview_length(
+                command_width=skill_width,
+                indent=12,
+                minimum=48,
+                maximum=120,
+            )
             skill_entries = [
-                (cmd, _preview_text(info.get("description", "Skill command")))
+                (cmd, _preview_text(info.get("description", "Skill command"), skill_preview_length))
                 for cmd, info in sorted(_skill_commands.items())
             ]
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed)")
-            _cprint(f"    {_DIM}Use a skill command directly to run it.{_RST}")
-            _cli_print_section("Installed Skills", skill_entries, command_width=24)
+            lines.extend([
+                "",
+                f"  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed)",
+                f"    {_DIM}Use a skill command directly to run it.{_RST}",
+                _cli_render_section("Installed Skills", skill_entries, command_width=skill_width),
+            ])
 
-        _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        lines.extend([
+            "",
+            f"  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}",
+            f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}",
+            f"  {_DIM}Paste image: Alt+V (or /paste){_RST}",
+            "",
+        ])
+        _cprint("\n".join(lines))
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -1883,8 +1923,13 @@ class HermesCLI:
             print("+" + "-" * 50 + "+")
             print()
             names = sorted(self.personalities)
+            personality_preview_length = _dynamic_preview_length(
+                indent=8,
+                minimum=48,
+                maximum=100,
+            )
             for index, name in enumerate(names):
-                preview = _preview_text(self.personalities[name], max_length=76)
+                preview = _preview_text(self.personalities[name], max_length=personality_preview_length)
                 print(f"  {name}")
                 print(f"    {preview}")
                 if index != len(names) - 1:

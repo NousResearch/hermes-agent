@@ -50,19 +50,34 @@ class TestCLIHelpFormatting:
 
         with patch("cli._skill_commands", {
             "/gif-search": {"description": long_description},
-        }), patch("cli._cprint", lambda text: print(text)):
+        }), patch("cli._cprint", lambda text: print(text)), \
+             patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((80, 24))):
             cli_obj.show_help()
 
         output = _strip_ansi(capsys.readouterr().out)
         assert "..." in output
         assert long_description not in output
 
+    def test_show_help_uses_more_space_on_wider_terminals(self, capsys):
+        cli_obj = _make_cli()
+        description = "Search and download GIFs from Tenor using curl. No dependencies beyond curl and jq."
+
+        with patch("cli._skill_commands", {
+            "/gif-search": {"description": description},
+        }), patch("cli._cprint", lambda text: print(text)), \
+             patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((140, 24))):
+            cli_obj.show_help()
+
+        output = _strip_ansi(capsys.readouterr().out)
+        assert description in output
+
 
 class TestCLIPersonalityFormatting:
     def test_personality_list_is_sorted_and_separated(self, capsys):
         cli_obj = _make_cli()
 
-        cli_obj._handle_personality_command("/personality")
+        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((80, 24))):
+            cli_obj._handle_personality_command("/personality")
 
         output = capsys.readouterr().out
 
@@ -72,3 +87,15 @@ class TestCLIPersonalityFormatting:
         assert output.index("  alpha") < output.index("  zebra")
         assert "-" * 42 in output
         assert "Usage: /personality <name>" in output
+
+    def test_personality_preview_expands_on_wider_terminals(self, capsys):
+        cli_obj = _make_cli()
+        cli_obj.personalities = {
+            "builder": "very long prompt " * 10,
+        }
+
+        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((140, 24))):
+            cli_obj._handle_personality_command("/personality")
+
+        output = capsys.readouterr().out
+        assert "very long prompt very long prompt very long prompt" in output

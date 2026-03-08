@@ -2116,12 +2116,20 @@ class HermesCLI:
         elif cmd_lower.startswith("/title"):
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_title = parts[1].strip()
-                if new_title:
+                raw_title = parts[1].strip()
+                if raw_title:
                     if self._session_db:
-                        # Check if session exists in DB yet
-                        session = self._session_db.get_session(self.session_id)
-                        if session:
+                        # Sanitize the title early so feedback matches what gets stored
+                        try:
+                            from hermes_state import SessionDB
+                            new_title = SessionDB.sanitize_title(raw_title)
+                        except ValueError as e:
+                            _cprint(f"  {e}")
+                            new_title = None
+                        if not new_title:
+                            _cprint("  Title is empty after cleanup. Please use printable characters.")
+                        elif self._session_db.get_session(self.session_id):
+                            # Session exists in DB — set title directly
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
@@ -2131,7 +2139,7 @@ class HermesCLI:
                                 _cprint(f"  {e}")
                         else:
                             # Session not created yet — defer the title
-                            # Check uniqueness proactively
+                            # Check uniqueness proactively with the sanitized title
                             existing = self._session_db.get_session_by_title(new_title)
                             if existing:
                                 _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")

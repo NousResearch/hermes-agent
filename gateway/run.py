@@ -1707,10 +1707,17 @@ class GatewayRunner:
 
         title_arg = event.get_command_args().strip()
         if title_arg:
+            # Sanitize the title before setting
+            try:
+                sanitized = self._session_db.sanitize_title(title_arg)
+            except ValueError as e:
+                return f"⚠️ {e}"
+            if not sanitized:
+                return "⚠️ Title is empty after cleanup. Please use printable characters."
             # Set the title
             try:
-                if self._session_db.set_session_title(session_id, title_arg):
-                    return f"✏️ Session title set: **{title_arg}**"
+                if self._session_db.set_session_title(session_id, sanitized):
+                    return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."
             except ValueError as e:

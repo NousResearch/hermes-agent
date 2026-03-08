@@ -123,6 +123,48 @@ class TestHandleTitleCommand:
         assert "not available" in result
 
     @pytest.mark.asyncio
+    async def test_title_too_long(self, tmp_path):
+        """Setting a title that exceeds max length returns error."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        long_title = "A" * 150
+        event = _make_event(text=f"/title {long_title}")
+        result = await runner._handle_title_command(event)
+        assert "too long" in result
+        assert "⚠️" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_title_control_chars_sanitized(self, tmp_path):
+        """Control characters are stripped and sanitized title is stored."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        event = _make_event(text="/title hello\x00world")
+        result = await runner._handle_title_command(event)
+        assert "helloworld" in result
+        assert db.get_session_title("test_session_123") == "helloworld"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_title_only_control_chars(self, tmp_path):
+        """Title with only control chars returns empty error."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        event = _make_event(text="/title \x00\x01\x02")
+        result = await runner._handle_title_command(event)
+        assert "empty after cleanup" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_works_across_platforms(self, tmp_path):
         """The /title command works for Discord, Slack, and WhatsApp too."""
         from hermes_state import SessionDB

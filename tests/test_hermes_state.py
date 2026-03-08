@@ -435,6 +435,89 @@ class TestSessionTitle:
         assert session["ended_at"] is not None
 
 
+class TestSanitizeTitle:
+    """Tests for SessionDB.sanitize_title() validation and cleaning."""
+
+    def test_normal_title_unchanged(self):
+        assert SessionDB.sanitize_title("My Project") == "My Project"
+
+    def test_strips_whitespace(self):
+        assert SessionDB.sanitize_title("  hello world  ") == "hello world"
+
+    def test_collapses_internal_whitespace(self):
+        assert SessionDB.sanitize_title("hello   world") == "hello world"
+
+    def test_tabs_and_newlines_collapsed(self):
+        assert SessionDB.sanitize_title("hello\t\nworld") == "hello world"
+
+    def test_none_returns_none(self):
+        assert SessionDB.sanitize_title(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert SessionDB.sanitize_title("") is None
+
+    def test_whitespace_only_returns_none(self):
+        assert SessionDB.sanitize_title("   \t\n  ") is None
+
+    def test_control_chars_stripped(self):
+        # Null byte, bell, backspace, etc.
+        assert SessionDB.sanitize_title("hello\x00world") == "helloworld"
+        assert SessionDB.sanitize_title("\x07\x08test\x1b") == "test"
+
+    def test_del_char_stripped(self):
+        assert SessionDB.sanitize_title("hello\x7fworld") == "helloworld"
+
+    def test_zero_width_chars_stripped(self):
+        # Zero-width space (U+200B), zero-width joiner (U+200D)
+        assert SessionDB.sanitize_title("hello\u200bworld") == "helloworld"
+        assert SessionDB.sanitize_title("hello\u200dworld") == "helloworld"
+
+    def test_rtl_override_stripped(self):
+        # Right-to-left override (U+202E) — used in filename spoofing attacks
+        assert SessionDB.sanitize_title("hello\u202eworld") == "helloworld"
+
+    def test_bom_stripped(self):
+        # Byte order mark (U+FEFF)
+        assert SessionDB.sanitize_title("\ufeffhello") == "hello"
+
+    def test_only_control_chars_returns_none(self):
+        assert SessionDB.sanitize_title("\x00\x01\x02\u200b\ufeff") is None
+
+    def test_max_length_allowed(self):
+        title = "A" * 100
+        assert SessionDB.sanitize_title(title) == title
+
+    def test_exceeds_max_length_raises(self):
+        title = "A" * 101
+        with pytest.raises(ValueError, match="too long"):
+            SessionDB.sanitize_title(title)
+
+    def test_unicode_emoji_allowed(self):
+        assert SessionDB.sanitize_title("🚀 My Project 🎉") == "🚀 My Project 🎉"
+
+    def test_cjk_characters_allowed(self):
+        assert SessionDB.sanitize_title("我的项目") == "我的项目"
+
+    def test_accented_characters_allowed(self):
+        assert SessionDB.sanitize_title("Résumé éditing") == "Résumé éditing"
+
+    def test_special_punctuation_allowed(self):
+        title = "PR #438 — fixing the 'auth' middleware"
+        assert SessionDB.sanitize_title(title) == title
+
+    def test_sanitize_applied_in_set_session_title(self, db):
+        """set_session_title applies sanitize_title internally."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "  hello\x00  world  ")
+        assert db.get_session("s1")["title"] == "hello world"
+
+    def test_too_long_title_rejected_by_set(self, db):
+        """set_session_title raises ValueError for overly long titles."""
+        db.create_session("s1", "cli")
+        with pytest.raises(ValueError, match="too long"):
+            db.set_session_title("s1", "X" * 150)
+
+
 class TestSchemaInit:
     def test_wal_mode(self, db):
         cursor = db._conn.execute("PRAGMA journal_mode")

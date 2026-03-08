@@ -246,17 +246,64 @@ class SessionDB:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    # Maximum length for session titles
+    MAX_TITLE_LENGTH = 100
+
+    @staticmethod
+    def sanitize_title(title: Optional[str]) -> Optional[str]:
+        """Validate and sanitize a session title.
+
+        - Strips leading/trailing whitespace
+        - Removes ASCII control characters (0x00-0x1F, 0x7F) and problematic
+          Unicode control chars (zero-width, RTL/LTR overrides, etc.)
+        - Collapses internal whitespace runs to single spaces
+        - Normalizes empty/whitespace-only strings to None
+        - Enforces MAX_TITLE_LENGTH
+
+        Returns the cleaned title string or None.
+        Raises ValueError if the title exceeds MAX_TITLE_LENGTH after cleaning.
+        """
+        if not title:
+            return None
+
+        import re
+
+        # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
+        # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
+        # normalized to spaces by the whitespace collapsing step below
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+
+        # Remove problematic Unicode control characters:
+        # - Zero-width chars (U+200B-U+200F, U+FEFF)
+        # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
+        # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
+        cleaned = re.sub(
+            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
+            '', cleaned,
+        )
+
+        # Collapse internal whitespace runs and strip
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        if not cleaned:
+            return None
+
+        if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
+            raise ValueError(
+                f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})"
+            )
+
+        return cleaned
+
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set or update a session's title.
 
         Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session.
-        Empty strings are normalized to None (clearing the title).
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
         """
-        # Normalize empty string to None so it doesn't conflict with the
-        # unique index (only non-NULL values are constrained)
-        if not title:
-            title = None
+        title = self.sanitize_title(title)
         if title:
             # Check uniqueness (allow the same session to keep its own title)
             cursor = self._conn.execute(

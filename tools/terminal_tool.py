@@ -291,32 +291,50 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
 
-def _transform_sudo_command(command: str) -> str:
+def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
-    
+
     This is a shared helper used by all execution environments to provide
     consistent sudo handling across local, SSH, and container environments.
-    
-    If SUDO_PASSWORD is set (via env, config, or interactive prompt):
-      'sudo apt install curl' -> password piped via sudo -S
-      
+
+    Returns:
+        (transformed_command, sudo_stdin) where:
+        - transformed_command has every bare ``sudo`` replaced with
+          ``sudo -S -p ''`` so sudo reads its password from stdin.
+        - sudo_stdin is the password string with a trailing newline that the
+          caller must prepend to the process's stdin stream.  sudo -S reads
+          exactly one line (the password) and passes the rest of stdin to the
+          child command, so prepending is safe even when the caller also has
+          its own stdin_data to pipe.
+        - If no password is available, sudo_stdin is None and the command is
+          returned unchanged so it fails gracefully with
+          "sudo: a password is required".
+
+    Callers that drive a subprocess directly (local, ssh, docker, singularity)
+    should prepend sudo_stdin to their stdin_data and pass the merged bytes to
+    Popen's stdin pipe.
+
+    Callers that cannot pipe subprocess stdin (modal, daytona) must embed the
+    password in the command string themselves; see their execute() methods for
+    how they handle the non-None sudo_stdin case.
+
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
       Prompts user for password with 45s timeout, caches for session.
-      
+
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
     global _cached_sudo_password
     import re
-    
+
     # Check if command even contains sudo
     if not re.search(r'\bsudo\b', command):
-        return command  # No sudo in command, return as-is
-    
+        return command, None  # No sudo in command, nothing to do
+
     # Try to get password from: env var -> session cache -> interactive prompt
     sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
-    
+
     if not sudo_password:
         # No password configured - check if we're in interactive mode
         if os.getenv("HERMES_INTERACTIVE"):
@@ -324,21 +342,21 @@ def _transform_sudo_command(command: str) -> str:
             sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
             if sudo_password:
                 _cached_sudo_password = sudo_password  # Cache for session
-    
+
     if not sudo_password:
-        return command  # No password, let it fail gracefully
-    
+        return command, None  # No password, let it fail gracefully
+
     def replace_sudo(match):
-        # Replace 'sudo' with password-piped version
-        # The -S flag makes sudo read password from stdin
-        # The -p '' suppresses the password prompt
-        # Use shlex.quote() to prevent shell injection via password content
-        import shlex
-        return f"echo {shlex.quote(sudo_password)} | sudo -S -p ''"
-    
+        # Replace bare 'sudo' with 'sudo -S -p ""'.
+        # The password is returned as sudo_stdin and must be written to the
+        # process's stdin pipe by the caller — it never appears in any
+        # command-line argument or shell string.
+        return "sudo -S -p ''"
+
     # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
-    # This handles: sudo, sudo -flag, etc.
-    return re.sub(r'\bsudo\b', replace_sudo, command)
+    transformed = re.sub(r'\bsudo\b', replace_sudo, command)
+    # Trailing newline is required: sudo -S reads one line for the password.
+    return transformed, sudo_password + "\n"
 
 
 # Environment classes now live in tools/environments/

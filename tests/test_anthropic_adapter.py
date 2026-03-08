@@ -142,7 +142,7 @@ class TestBuildAnthropicKwargs:
             reasoning_config={"enabled": True, "effort": "high"},
         )
         assert kwargs["thinking"]["type"] == "adaptive"
-        assert kwargs["thinking"]["budget_tokens"] == 16000
+        assert "budget_tokens" not in kwargs["thinking"]
         assert kwargs["max_tokens"] >= 16000 + 4096
 
     def test_reasoning_disabled(self):

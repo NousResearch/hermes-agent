@@ -171,7 +171,8 @@ def build_anthropic_kwargs(
         if reasoning_config.get("enabled") is not False:
             effort = reasoning_config.get("effort", "medium")
             budget = THINKING_BUDGET.get(effort, 8000)
-            kwargs["thinking"] = {"type": "adaptive", "budget_tokens": budget}
+            kwargs["thinking"] = {"type": "adaptive"}
+            # adaptive thinking still needs max_tokens headroom for thinking output
             kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs

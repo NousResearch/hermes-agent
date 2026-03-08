@@ -17,7 +17,8 @@ These are commands you run from your shell.
 | `hermes` | Start interactive chat (default) |
 | `hermes chat -q "Hello"` | Single query mode (non-interactive) |
 | `hermes chat --continue` / `-c` | Resume the most recent session |
-| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session |
+| `hermes chat -c "my project"` | Resume a session by name (latest in lineage) |
+| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session by ID or title |
 | `hermes chat --model <name>` | Use a specific model |
 | `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`) |
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
@@ -103,7 +104,8 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
-| `hermes sessions list` | Browse past sessions |
+| `hermes sessions list` | Browse past sessions (shows title, preview, last active) |
+| `hermes sessions rename <id> <title>` | Set or change a session's title |
 | `hermes sessions export <id>` | Export a session |
 | `hermes sessions delete <id>` | Delete a specific session |
 | `hermes sessions prune` | Remove old sessions |
@@ -154,6 +156,7 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/undo` | Remove the last user/assistant exchange |
 | `/save` | Save the current conversation |
 | `/compress` | Manually compress conversation context |
+| `/title [name]` | Set or show the current session's title |
 | `/usage` | Show token usage for this session |
 | `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
 

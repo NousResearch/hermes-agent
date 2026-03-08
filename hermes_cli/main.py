@@ -1724,7 +1724,7 @@ For more help on a command:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete)",
         description="View and manage the SQLite session store"
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")

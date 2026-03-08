@@ -34,6 +34,7 @@ COMMANDS = {
     "/platforms": "Show gateway/messaging platform status",
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
+    "/title": "Set a title for the current session (usage: /title My Session Name)",
     "/usage": "Show token usage for the current session",
     "/insights": "Show usage insights and analytics (last 30 days)",
     "/paste": "Check clipboard for an image and attach it",

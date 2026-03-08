@@ -175,11 +175,19 @@ class LocalEnvironment(BaseEnvironment):
                 f" printf '{_OUTPUT_FENCE}';"
                 f" exit $__hermes_rc"
             )
+            # Ensure PATH always includes standard dirs — systemd services
+            # and some terminal multiplexers inherit a minimal PATH.
+            _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            run_env = dict(os.environ | self.env)
+            existing_path = run_env.get("PATH", "")
+            if "/usr/bin" not in existing_path.split(":"):
+                run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
             proc = subprocess.Popen(
                 [user_shell, "-lic", fenced_cmd],
                 text=True,
                 cwd=work_dir,
-                env=os.environ | self.env,
+                env=run_env,
                 encoding="utf-8",
                 errors="replace",
                 stdout=subprocess.PIPE,

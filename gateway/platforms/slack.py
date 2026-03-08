@@ -179,6 +179,35 @@ class SlackAdapter(BasePlatformAdapter):
         """Slack doesn't have a direct typing indicator API for bots."""
         pass
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a local image file to Slack by uploading it."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import os
+            if not os.path.exists(image_path):
+                return SendResult(success=False, error=f"Image file not found: {image_path}")
+
+            result = await self._app.client.files_upload_v2(
+                channel=chat_id,
+                file=image_path,
+                filename=os.path.basename(image_path),
+                initial_comment=caption or "",
+                thread_ts=reply_to,
+            )
+            return SendResult(success=True, raw_response=result)
+
+        except Exception as e:
+            print(f"[{self.name}] Failed to send local image: {e}")
+            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+
     async def send_image(
         self,
         chat_id: str,

@@ -139,6 +139,30 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 
 # =============================================================================
+# Kimi Code Endpoint Detection
+# =============================================================================
+
+# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# KIMI_BASE_URL explicitly.
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
+
+
+def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
+    """Return the correct Kimi base URL based on the API key prefix.
+
+    If the user has explicitly set KIMI_BASE_URL, that always wins.
+    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    """
+    if env_override:
+        return env_override
+    if api_key.startswith("sk-kimi-"):
+        return KIMI_CODE_BASE_URL
+    return default_url
+
+
+# =============================================================================
 # Z.AI Endpoint Detection
 # =============================================================================
 
@@ -1351,11 +1375,16 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
             key_source = env_var
             break
 
-    base_url = pconfig.inference_base_url
+    env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-        if env_url:
-            base_url = env_url
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url
+    else:
+        base_url = pconfig.inference_base_url
 
     return {
         "configured": bool(api_key),
@@ -1403,11 +1432,16 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             key_source = env_var
             break
 
-    base_url = pconfig.inference_base_url
+    env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-        if env_url:
-            base_url = env_url.rstrip("/")
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url.rstrip("/")
+    else:
+        base_url = pconfig.inference_base_url
 
     return {
         "provider": provider_id,

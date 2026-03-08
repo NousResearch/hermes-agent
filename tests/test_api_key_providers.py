@@ -20,6 +20,8 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
     get_auth_status,
     AuthError,
+    KIMI_CODE_BASE_URL,
+    _resolve_kimi_base_url,
 )
 
 
@@ -84,7 +86,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-    "KIMI_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "OPENAI_BASE_URL",
 )
 
@@ -340,3 +342,87 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
+
+
+# =============================================================================
+# Kimi Code auto-detection tests
+# =============================================================================
+
+MOONSHOT_DEFAULT_URL = "https://api.moonshot.ai/v1"
+
+
+class TestResolveKimiBaseUrl:
+    """Test _resolve_kimi_base_url() helper for key-prefix auto-detection."""
+
+    def test_sk_kimi_prefix_routes_to_kimi_code(self):
+        url = _resolve_kimi_base_url("sk-kimi-abc123", MOONSHOT_DEFAULT_URL, "")
+        assert url == KIMI_CODE_BASE_URL
+
+    def test_legacy_key_uses_default(self):
+        url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, "")
+        assert url == MOONSHOT_DEFAULT_URL
+
+    def test_empty_key_uses_default(self):
+        url = _resolve_kimi_base_url("", MOONSHOT_DEFAULT_URL, "")
+        assert url == MOONSHOT_DEFAULT_URL
+
+    def test_env_override_wins_over_sk_kimi(self):
+        """KIMI_BASE_URL env var should always take priority."""
+        custom = "https://custom.example.com/v1"
+        url = _resolve_kimi_base_url("sk-kimi-abc123", MOONSHOT_DEFAULT_URL, custom)
+        assert url == custom
+
+    def test_env_override_wins_over_legacy(self):
+        custom = "https://custom.example.com/v1"
+        url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, custom)
+        assert url == custom
+
+
+class TestKimiCodeStatusAutoDetect:
+    """Test that get_api_key_provider_status auto-detects sk-kimi- keys."""
+
+    def test_sk_kimi_key_gets_kimi_code_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key-123")
+        status = get_api_key_provider_status("kimi-coding")
+        assert status["configured"] is True
+        assert status["base_url"] == KIMI_CODE_BASE_URL
+
+    def test_legacy_key_gets_moonshot_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-legacy-test-key")
+        status = get_api_key_provider_status("kimi-coding")
+        assert status["configured"] is True
+        assert status["base_url"] == MOONSHOT_DEFAULT_URL
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
+        monkeypatch.setenv("KIMI_BASE_URL", "https://override.example/v1")
+        status = get_api_key_provider_status("kimi-coding")
+        assert status["base_url"] == "https://override.example/v1"
+
+
+class TestKimiCodeCredentialAutoDetect:
+    """Test that resolve_api_key_provider_credentials auto-detects sk-kimi- keys."""
+
+    def test_sk_kimi_key_gets_kimi_code_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-secret-key")
+        creds = resolve_api_key_provider_credentials("kimi-coding")
+        assert creds["api_key"] == "sk-kimi-secret-key"
+        assert creds["base_url"] == KIMI_CODE_BASE_URL
+
+    def test_legacy_key_gets_moonshot_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-legacy-secret-key")
+        creds = resolve_api_key_provider_credentials("kimi-coding")
+        assert creds["api_key"] == "sk-legacy-secret-key"
+        assert creds["base_url"] == MOONSHOT_DEFAULT_URL
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-secret-key")
+        monkeypatch.setenv("KIMI_BASE_URL", "https://override.example/v1")
+        creds = resolve_api_key_provider_credentials("kimi-coding")
+        assert creds["base_url"] == "https://override.example/v1"
+
+    def test_non_kimi_providers_unaffected(self, monkeypatch):
+        """Ensure the auto-detect logic doesn't leak to other providers."""
+        monkeypatch.setenv("GLM_API_KEY", "sk-kimi-looks-like-kimi-but-isnt")
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"

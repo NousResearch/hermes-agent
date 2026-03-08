@@ -508,10 +508,16 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "")
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                if not _base and _key.startswith("sk-kimi-"):
+                    _base = "https://api.kimi.com/coding/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                _headers = {"Authorization": f"Bearer {_key}"}
+                if "api.kimi.com" in _url.lower():
+                    _headers["User-Agent"] = "KimiCLI/1.0"
                 _resp = httpx.get(
                     _url,
-                    headers={"Authorization": f"Bearer {_key}"},
+                    headers=_headers,
                     timeout=10,
                 )
                 if _resp.status_code == 200:

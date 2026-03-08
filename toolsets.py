@@ -162,7 +162,7 @@ TOOLSETS = {
     
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "tools": ["memory", "cognitive_recall"],
         "includes": []
     },
     

@@ -293,6 +293,32 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Cognitive Memory (Semantic Recall)
+# =============================================================================
+# Vector-embedding-based memory with semantic search, auto-classification,
+# contradiction detection, and time-based forgetting. Requires an embedding
+# API (uses litellm -- same provider as your main LLM).
+#
+cognitive_memory:
+  enabled: false              # Set to true to activate cognitive memory
+
+  # Embedding model (any litellm-compatible model)
+  embedding:
+    model: "text-embedding-3-small"
+    api_key: null             # Uses OPENAI_API_KEY env var if not set
+    api_base: null            # Custom endpoint (e.g., local embedding server)
+
+  # Recall tuning
+  similarity_threshold: 0.3  # Min cosine similarity to consider a match
+  default_limit: 10          # Default number of results per recall
+
+  # Forgetting lifecycle
+  decay_half_life_days: 30.0  # Importance halves every N days without access
+  prune_threshold: 0.05      # Memories below this importance get forgotten
+
+  # db_path: null             # Custom SQLite path (default: ~/.hermes/cognitive_memory/)
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are

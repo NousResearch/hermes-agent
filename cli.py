@@ -43,7 +43,6 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 import threading
@@ -907,72 +906,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 
 
 # ============================================================================
-# CLI Commands
-# ============================================================================
-
-COMMANDS = {
-    "/help": "Show this help message",
-    "/tools": "List available tools",
-    "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
-    "/prompt": "View/set custom system prompt",
-    "/personality": "Set a predefined personality",
-    "/clear": "Clear screen and reset conversation (fresh start)",
-    "/history": "Show conversation history",
-    "/new": "Start a new conversation (reset history)",
-    "/reset": "Reset conversation only (keep screen)",
-    "/retry": "Retry the last message (resend to agent)",
-    "/undo": "Remove the last user/assistant exchange",
-    "/save": "Save the current conversation",
-    "/config": "Show current configuration",
-    "/cron": "Manage scheduled tasks (list, add, remove)",
-    "/skills": "Search, install, inspect, or manage skills from online registries",
-    "/platforms": "Show gateway/messaging platform status",
-    "/paste": "Check clipboard for an image and attach it",
-    "/reload-mcp": "Reload MCP servers from config.yaml",
-    "/quit": "Exit the CLI (also: /exit, /q)",
-}
-
-
-# ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
 
 from agent.skill_commands import scan_skill_commands, get_skill_commands, build_skill_invocation_message
 
 _skill_commands = scan_skill_commands()
-
-
-class SlashCommandCompleter(Completer):
-    """Autocomplete for /commands and /skill-name in the input area."""
-
-    def get_completions(self, document, complete_event):
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        word = text[1:]  # strip the leading /
-
-        # Built-in commands
-        for cmd, desc in COMMANDS.items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    cmd_name,
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=desc,
-                )
-
-        # Skill commands
-        for cmd, info in _skill_commands.items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    cmd_name,
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"⚡ {info['description'][:50]}{'...' if len(info['description']) > 50 else ''}",
-                )
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -2984,7 +2923,7 @@ class HermesCLI:
             multiline=True,
             wrap_lines=True,
             history=FileHistory(str(self._history_file)),
-            completer=SlashCommandCompleter(),
+            completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
             complete_while_typing=True,
         )
 

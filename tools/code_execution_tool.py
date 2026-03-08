@@ -311,6 +311,7 @@ def _rpc_server_loop(
                         sys.stderr.close()
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                 except Exception as exc:
+                    logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = json.dumps({"error": str(exc)})
 
                 tool_call_counter[0] += 1
@@ -327,9 +328,9 @@ def _rpc_server_loop(
                 conn.sendall((result + "\n").encode())
 
     except socket.timeout:
-        pass
-    except OSError:
-        pass
+        logger.debug("RPC listener socket timeout")
+    except OSError as e:
+        logger.debug("RPC listener socket error: %s", e, exc_info=True)
     finally:
         if conn:
             try:
@@ -468,8 +469,8 @@ def execute_code(
                         keep = max_bytes - total
                         chunks.append(data[:keep])
                     total += len(data)
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as e:
+                logger.debug("Error reading process output: %s", e, exc_info=True)
 
         stdout_reader = threading.Thread(
             target=_drain, args=(proc.stdout, stdout_chunks, MAX_STDOUT_BYTES), daemon=True
@@ -547,11 +548,11 @@ def execute_code(
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception as e:
-            logger.debug("Could not clean temp dir: %s", e)
+            logger.debug("Could not clean temp dir: %s", e, exc_info=True)
         try:
             os.unlink(sock_path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Could not remove socket file: %s", e, exc_info=True)
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -561,11 +562,12 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.terminate()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError) as e:
+        logger.debug("Could not kill process group: %s", e, exc_info=True)
         try:
             proc.kill()
-        except Exception as e:
-            logger.debug("Could not kill process: %s", e)
+        except Exception as e2:
+            logger.debug("Could not kill process: %s", e2, exc_info=True)
 
     if escalate:
         # Give the process 5s to exit after SIGTERM, then SIGKILL
@@ -577,11 +579,12 @@ def _kill_process_group(proc, escalate: bool = False):
                     proc.kill()
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError) as e:
+                logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
                 try:
                     proc.kill()
-                except Exception as e:
-                    logger.debug("Could not kill process: %s", e)
+                except Exception as e2:
+                    logger.debug("Could not kill process: %s", e2, exc_info=True)
 
 
 def _load_config() -> dict:

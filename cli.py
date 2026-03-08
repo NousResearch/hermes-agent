@@ -2081,6 +2081,29 @@ class HermesCLI:
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 new_model = parts[1]
+                
+                # Validate model name
+                try:
+                    from hermes_cli.models import model_ids
+                    known_models = model_ids()
+                    
+                    # Check if model is known (case-insensitive partial match)
+                    model_lower = new_model.lower()
+                    is_known = any(model_lower == m.lower() for m in known_models)
+                    
+                    if not is_known:
+                        # Try to find similar models for suggestion
+                        from difflib import get_close_matches
+                        suggestions = get_close_matches(model_lower, [m.lower() for m in known_models], n=3, cutoff=0.6)
+                        
+                        print(f"[yellow]⚠️  Model '{new_model}' not found in known models list.[/]")
+                        if suggestions:
+                            print(f"[dim]   Did you mean: {', '.join(suggestions[:3])}?[/]")
+                        print(f"[dim]   Saving anyway - API will validate on next call.[/]")
+                        print()
+                except Exception:
+                    pass  # Don't block model change if validation fails
+                
                 self.model = new_model
                 self.agent = None  # Force re-init
                 # Save to config

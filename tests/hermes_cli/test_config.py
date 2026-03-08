@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
@@ -41,9 +43,19 @@ class TestLoadConfigDefaults:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config = load_config()
             assert config["model"] == DEFAULT_CONFIG["model"]
-            assert config["max_turns"] == DEFAULT_CONFIG["max_turns"]
+            assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+            assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+
+    def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("max_turns: 42\n")
+
+            config = load_config()
+            assert config["agent"]["max_turns"] == 42
+            assert "max_turns" not in config
 
 
 class TestSaveAndLoadRoundtrip:
@@ -51,12 +63,24 @@ class TestSaveAndLoadRoundtrip:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config = load_config()
             config["model"] = "test/custom-model"
-            config["max_turns"] = 42
+            config["agent"]["max_turns"] = 42
             save_config(config)
 
             reloaded = load_config()
             assert reloaded["model"] == "test/custom-model"
-            assert reloaded["max_turns"] == 42
+            assert reloaded["agent"]["max_turns"] == 42
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert saved["agent"]["max_turns"] == 42
+            assert "max_turns" not in saved
+
+    def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config({"model": "test/custom-model", "max_turns": 37})
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert saved["agent"]["max_turns"] == 37
+            assert "max_turns" not in saved
 
     def test_nested_values_preserved(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

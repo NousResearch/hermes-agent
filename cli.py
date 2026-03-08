@@ -362,6 +362,7 @@ from hermes_cli.banner import (
 )
 from hermes_cli.commands import COMMANDS, SlashCommandCompleter
 from hermes_cli import callbacks as _callbacks
+from hermes_cli.model_validation import validate_model_name, format_validation_result
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
 # Cron job system for scheduled tasks (CRUD only — execution is handled by the gateway)
@@ -2080,7 +2081,19 @@ class HermesCLI:
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1]
+                new_model = parts[1].strip()
+                
+                # Validate model name against known patterns
+                is_valid, warning, suggestions = validate_model_name(new_model)
+                
+                if not is_valid:
+                    # Show warning but still allow setting the model
+                    validation_msg = format_validation_result(new_model, is_valid, warning, suggestions)
+                    if validation_msg:
+                        print()
+                        print(validation_msg)
+                        print()
+                
                 self.model = new_model
                 self.agent = None  # Force re-init
                 # Save to config
@@ -2091,6 +2104,7 @@ class HermesCLI:
             else:
                 print(f"Current model: {self.model}")
                 print("  Usage: /model <model-name> to change")
+                print("  Example: /model anthropic/claude-3.5-sonnet")
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

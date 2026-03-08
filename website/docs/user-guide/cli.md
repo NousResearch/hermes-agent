@@ -95,7 +95,8 @@ Type `/` to see an autocomplete dropdown of all available commands.
 |---------|-------------|
 | `/tools` | List all available tools grouped by toolset |
 | `/toolsets` | List available toolsets with descriptions |
-| `/model [name]` | Show or change the current model |
+| `/model [provider:model]` | Show or change the current model (supports `provider:model` syntax) |
+| `/provider` | Show available providers with auth status |
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set/clear custom system prompt |
 | `/personality [name]` | Set a predefined personality |

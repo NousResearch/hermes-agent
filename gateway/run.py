@@ -1414,7 +1414,9 @@ class GatewayRunner:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
         if not validation.get("accepted"):
-            return f"⚠️ {validation.get('message')}"
+            msg = validation.get("message", "Invalid model")
+            tip = "\n\nUse `/model` to see available models, `/provider` to see providers" if "Did you mean" not in msg else ""
+            return f"⚠️ {msg}{tip}"
 
         # Persist to config only if validation approves
         if validation.get("persist"):
@@ -1445,7 +1447,10 @@ class GatewayRunner:
         if validation.get("message"):
             warning = f"\n⚠️ {validation['message']}"
 
-        persist_note = "saved to config" if validation.get("persist") else "session only"
+        if validation.get("persist"):
+            persist_note = "saved to config"
+        else:
+            persist_note = "this session only — will revert on restart"
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:

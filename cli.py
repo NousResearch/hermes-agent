@@ -2101,8 +2101,10 @@ class HermesCLI:
                     validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
                 if not validation.get("accepted"):
-                    print(f"(^_^) Warning: {validation.get('message')}")
-                    print(f"(^_^) Current model unchanged: {self.model}")
+                    print(f"(>_<) {validation.get('message')}")
+                    print(f"  Model unchanged: {self.model}")
+                    if "Did you mean" not in (validation.get("message") or ""):
+                        print("  Tip: Use /model to see available models, /provider to see providers")
                 else:
                     self.model = new_model
                     self.agent = None  # Force re-init
@@ -2123,13 +2125,13 @@ class HermesCLI:
                         if saved_model:
                             print(f"(^_^)b Model changed to: {new_model}{provider_note} (saved to config)")
                         else:
-                            print(f"(^_^) Model changed to: {new_model}{provider_note} (session only)")
+                            print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
                     else:
-                        print(f"(^_^) Model changed to: {new_model}{provider_note} (session only)")
-
-                    message = validation.get("message")
-                    if message:
-                        print(f"  Warning: {message}")
+                        message = validation.get("message") or ""
+                        print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
+                        if message:
+                            print(f"  Reason: {message}")
+                        print("  Note: Model will revert on restart. Use a verified model to save to config.")
             else:
                 from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
                 from hermes_cli.auth import resolve_provider as _resolve_provider

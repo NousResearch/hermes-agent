@@ -139,7 +139,8 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 |---------|-------------|
 | `/tools` | List all available tools |
 | `/toolsets` | List available toolsets |
-| `/model [name]` | Show or change the current model |
+| `/model [provider:model]` | Show or change the current model (supports `provider:model` syntax to switch providers) |
+| `/provider` | Show available providers with auth status |
 | `/config` | Show current configuration |
 | `/prompt [text]` | View/set custom system prompt |
 | `/personality [name]` | Set a predefined personality |

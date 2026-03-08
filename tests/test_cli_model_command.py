@@ -41,10 +41,11 @@ class TestModelCommand:
 
         output = capsys.readouterr().out
         assert "not a valid model" in output
+        assert "Model unchanged" in output
         assert cli_obj.model == "anthropic/claude-opus-4.6"
         save_mock.assert_not_called()
 
-    def test_model_when_api_unreachable_falls_back_session_only(self, capsys):
+    def test_api_unreachable_falls_back_session_only(self, capsys):
         cli_obj = self._make_cli()
 
         with patch("hermes_cli.models.fetch_api_models", return_value=None), \
@@ -53,6 +54,7 @@ class TestModelCommand:
 
         output = capsys.readouterr().out
         assert "session only" in output
+        assert "will revert on restart" in output
         assert cli_obj.model == "anthropic/claude-sonnet-next"
         save_mock.assert_not_called()
 
@@ -66,8 +68,9 @@ class TestModelCommand:
 
         output = capsys.readouterr().out
         assert "not a valid model" in output
-        assert cli_obj.model == "anthropic/claude-opus-4.6"
-        fetch_mock.assert_called_once()
+        assert "Model unchanged" in output
+        assert cli_obj.model == "anthropic/claude-opus-4.6"  # unchanged
+        assert cli_obj.agent is not None  # not reset
         save_mock.assert_not_called()
 
     def test_validation_crash_falls_back_to_save(self, capsys):

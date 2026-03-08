@@ -25,7 +25,13 @@ def _find_shell() -> str:
     Raises RuntimeError if no suitable shell is found on Windows.
     """
     if not _IS_WINDOWS:
-        return os.environ.get("SHELL") or shutil.which("bash") or "/bin/bash"
+        return (
+            os.environ.get("SHELL")
+            or shutil.which("bash")
+            or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
+            or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+            or "/bin/sh"
+        )
 
     # Windows: look for Git Bash (installed with Git for Windows).
     # Allow override via env var (same pattern as Claude Code).

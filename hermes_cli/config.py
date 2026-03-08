@@ -63,7 +63,9 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    "agent": {
+        "max_turns": 90,
+    },
     
     "terminal": {
         "backend": "local",
@@ -758,6 +760,23 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy root-level max_turns into agent.max_turns."""
+    config = dict(config)
+    agent_config = dict(config.get("agent") or {})
+
+    if "max_turns" in config and "max_turns" not in agent_config:
+        agent_config["max_turns"] = config["max_turns"]
+
+    if "max_turns" not in agent_config:
+        agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+
+    config["agent"] = agent_config
+    config.pop("max_turns", None)
+    return config
+
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -770,11 +789,18 @@ def load_config() -> Dict[str, Any]:
             with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
 
+            if "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return config
+    return _normalize_max_turns_config(config)
 
 
 _COMMENTED_SECTIONS = """
@@ -811,17 +837,18 @@ def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     ensure_hermes_home()
     config_path = get_config_path()
+    normalized = _normalize_max_turns_config(config)
     
     with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(normalized, f, default_flow_style=False, sort_keys=False)
         # Append commented-out sections for features that are off by default
         # or only relevant when explicitly configured. Skip sections the
         # user has already uncommented and configured.
         sections = []
-        sec = config.get("security", {})
+        sec = normalized.get("security", {})
         if not sec or sec.get("redact_secrets") is None:
             sections.append("security")
-        fb = config.get("fallback_model", {})
+        fb = normalized.get("fallback_model", {})
         if not fb or not (fb.get("provider") and fb.get("model")):
             sections.append("fallback")
         if sections:
@@ -949,7 +976,7 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Terminal

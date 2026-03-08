@@ -257,8 +257,13 @@ def load_cli_config() -> Dict[str, Any]:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
             
-            # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
-            if "max_turns" in file_config and "agent" not in file_config:
+            # Handle legacy root-level max_turns (backwards compat) - copy to
+            # agent.max_turns whenever the nested key is missing.
+            agent_file_config = file_config.get("agent")
+            if "max_turns" in file_config and not (
+                isinstance(agent_file_config, dict)
+                and agent_file_config.get("max_turns") is not None
+            ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)

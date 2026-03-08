@@ -157,6 +157,22 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _format_gateway_section(title: str, entries: list[tuple[str, str]]) -> list[str]:
+    """Render a titled markdown section with one command per line."""
+    lines = [f"**{title}**"]
+    for command, description in entries:
+        lines.append(f"`{command}` — {description}")
+    return lines
+
+
+def _format_personality_preview(prompt: str, max_length: int = 72) -> str:
+    """Collapse whitespace so personality previews stay readable in chat."""
+    preview = " ".join(prompt.split())
+    if len(preview) <= max_length:
+        return preview
+    return preview[: max_length - 3].rstrip() + "..."
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1288,30 +1304,55 @@ class GatewayRunner:
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        lines = [
-            "📖 **Hermes Commands**\n",
-            "`/new` — Start a new conversation",
-            "`/reset` — Reset conversation history",
-            "`/status` — Show session info",
-            "`/stop` — Interrupt the running agent",
-            "`/model [provider:model]` — Show/change model (or switch provider)",
-            "`/provider` — Show available providers and auth status",
-            "`/personality [name]` — Set a personality",
-            "`/retry` — Retry your last message",
-            "`/undo` — Remove the last exchange",
-            "`/sethome` — Set this chat as the home channel",
-            "`/compress` — Compress conversation context",
-            "`/usage` — Show token usage for this session",
-            "`/insights [days]` — Show usage insights and analytics",
-            "`/reload-mcp` — Reload MCP servers from config",
-            "`/update` — Update Hermes Agent to the latest version",
-            "`/help` — Show this message",
+        sections = [
+            (
+                "Session",
+                [
+                    ("/new", "Start a new session with a fresh conversation"),
+                    ("/reset", "Clear the current session's conversation history"),
+                    ("/status", "Show session info"),
+                    ("/stop", "Interrupt the running agent"),
+                    ("/retry", "Retry your last message"),
+                    ("/undo", "Remove the last exchange"),
+                ],
+            ),
+            (
+                "Configuration",
+                [
+                    ("/model [provider:model]", "Show or change the current model"),
+                    ("/provider", "Show available providers and auth status"),
+                    ("/personality [name]", "List or switch personalities"),
+                    ("/sethome", "Set this chat as the home channel"),
+                    ("/reload-mcp", "Reload MCP servers from config"),
+                ],
+            ),
+            (
+                "Context",
+                [
+                    ("/compress", "Compress conversation context"),
+                    ("/usage", "Show token usage for this session"),
+                    ("/insights [days]", "Show usage insights and analytics"),
+                ],
+            ),
+            (
+                "Maintenance",
+                [
+                    ("/update", "Update Hermes Agent to the latest version"),
+                    ("/help", "Show this message"),
+                ],
+            ),
         ]
+
+        lines = ["📖 **Hermes Commands**"]
+        for title, entries in sections:
+            lines.append("")
+            lines.extend(_format_gateway_section(title, entries))
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
-                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} installed):")
+                lines.append("")
+                lines.append(f"⚡ **Skill Commands** ({len(skill_cmds)} installed)")
                 for cmd in sorted(skill_cmds):
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
         except Exception:
@@ -1526,11 +1567,13 @@ class GatewayRunner:
             return "No personalities configured in `~/.hermes/config.yaml`"
 
         if not args:
-            lines = ["🎭 **Available Personalities**\n"]
-            for name, prompt in personalities.items():
-                preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                lines.append(f"• `{name}` — {preview}")
-            lines.append(f"\nUsage: `/personality <name>`")
+            lines = ["🎭 **Available Personalities**"]
+            for name in sorted(personalities):
+                lines.append("")
+                lines.append(f"`{name}`")
+                lines.append(_format_personality_preview(str(personalities[name])))
+            lines.append("")
+            lines.append("Use `/personality <name>` to switch.")
             return "\n".join(lines)
 
         if args in personalities:

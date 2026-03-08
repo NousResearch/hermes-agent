@@ -795,10 +795,12 @@ def _run_browser_command(
         )
         os.makedirs(task_socket_dir, exist_ok=True)
         
-        browser_env = {
-            **os.environ,
-            "AGENT_BROWSER_SOCKET_DIR": task_socket_dir,
-        }
+        browser_env = {**os.environ}
+        # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
+        _SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        if "/usr/bin" not in browser_env.get("PATH", "").split(":"):
+            browser_env["PATH"] = f"{browser_env.get('PATH', '')}:{_SANE_PATH}"
+        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
         result = subprocess.run(
             cmd_parts,
@@ -808,9 +810,10 @@ def _run_browser_command(
             env=browser_env,
         )
         
-        # Log stderr for diagnostics (agent-browser may emit warnings there)
+        # Log stderr for diagnostics — use warning level on failure so it's visible
         if result.stderr and result.stderr.strip():
-            logger.debug("stderr from '%s': %s", command, result.stderr.strip()[:200])
+            level = logging.WARNING if result.returncode != 0 else logging.DEBUG
+            logger.log(level, "browser '%s' stderr: %s", command, result.stderr.strip()[:500])
         
         # Parse JSON output
         if result.stdout.strip():

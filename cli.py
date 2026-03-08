@@ -2079,6 +2079,7 @@ class HermesCLI:
                     validation = validate_requested_model(
                         new_model,
                         provider_for_validation,
+                        api_key=self.api_key,
                         base_url=self.base_url,
                     )
                 except Exception:

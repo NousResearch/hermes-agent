@@ -1,11 +1,34 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+from unittest.mock import patch
+
 from hermes_cli.models import (
+    fetch_api_models,
     normalize_provider,
     provider_model_ids,
     validate_requested_model,
 )
 
+
+# -- helpers -----------------------------------------------------------------
+
+# Simulated API model list for mocking fetch_api_models
+FAKE_API_MODELS = [
+    "anthropic/claude-opus-4.6",
+    "anthropic/claude-sonnet-4.5",
+    "openai/gpt-5.4-pro",
+    "openai/gpt-5.4",
+    "google/gemini-3-pro-preview",
+]
+
+
+def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
+    """Shortcut: call validate_requested_model with mocked API."""
+    with patch("hermes_cli.models.fetch_api_models", return_value=api_models):
+        return validate_requested_model(model, provider, **kw)
+
+
+# -- normalize_provider ------------------------------------------------------
 
 class TestNormalizeProvider:
     def test_defaults_to_openrouter(self):
@@ -31,6 +54,8 @@ class TestNormalizeProvider:
         assert normalize_provider("GLM") == "zai"
 
 
+# -- provider_model_ids ------------------------------------------------------
+
 class TestProviderModelIds:
     def test_openrouter_returns_curated_list(self):
         ids = provider_model_ids("openrouter")
@@ -48,120 +73,121 @@ class TestProviderModelIds:
         assert provider_model_ids("glm") == provider_model_ids("zai")
 
 
-class TestValidateRequestedModel:
-    # -- known models (happy path) ---------------------------------------
+# -- fetch_api_models --------------------------------------------------------
 
-    def test_known_openrouter_model_accepted_and_persisted(self):
-        result = validate_requested_model("anthropic/claude-opus-4.6", "openrouter")
+class TestFetchApiModels:
+    def test_returns_none_when_no_base_url(self):
+        assert fetch_api_models("key", None) is None
+        assert fetch_api_models("key", "") is None
 
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is True
-        assert result["message"] is None
+    def test_returns_none_on_network_error(self):
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
+            assert fetch_api_models("key", "https://example.com/v1") is None
 
-    # -- empty / whitespace ----------------------------------------------
 
+# -- validate_requested_model — format checks (no API needed) ----------------
+
+class TestValidateFormatChecks:
     def test_empty_model_rejected(self):
-        result = validate_requested_model("", "openrouter")
+        result = _validate("")
         assert result["accepted"] is False
         assert "empty" in result["message"]
 
     def test_whitespace_only_rejected(self):
-        result = validate_requested_model("   ", "openrouter")
+        result = _validate("   ")
         assert result["accepted"] is False
         assert "empty" in result["message"]
 
     def test_model_with_spaces_rejected(self):
-        result = validate_requested_model("anthropic/ claude-opus", "openrouter")
+        result = _validate("anthropic/ claude-opus")
         assert result["accepted"] is False
         assert "spaces" in result["message"].lower()
 
-    # -- OpenRouter format validation ------------------------------------
-
     def test_openrouter_requires_slash(self):
-        result = validate_requested_model("claude-opus-4.6", "openrouter")
-
+        result = _validate("claude-opus-4.6")
         assert result["accepted"] is False
-        assert result["persist"] is False
         assert "provider/model" in result["message"]
 
     def test_openrouter_rejects_leading_slash(self):
-        result = validate_requested_model("/claude-opus-4.6", "openrouter")
+        result = _validate("/claude-opus-4.6")
         assert result["accepted"] is False
 
     def test_openrouter_rejects_trailing_slash(self):
-        result = validate_requested_model("anthropic/", "openrouter")
+        result = _validate("anthropic/")
         assert result["accepted"] is False
 
-    def test_openrouter_unknown_but_plausible_is_session_only(self):
-        result = validate_requested_model("anthropic/claude-next-gen", "openrouter")
 
-        assert result["accepted"] is True
-        assert result["persist"] is False
-        assert result["recognized"] is False
-        assert "session only" in result["message"].lower()
+# -- validate_requested_model — API probe found model ------------------------
 
-    # -- custom endpoint -------------------------------------------------
-
-    def test_custom_base_url_accepts_anything(self):
-        result = validate_requested_model(
-            "my-local-model",
-            "openrouter",
-            base_url="http://localhost:11434/v1",
-        )
-
+class TestValidateApiFound:
+    def test_model_found_in_api_is_accepted_and_persisted(self):
+        result = _validate("anthropic/claude-opus-4.6")
         assert result["accepted"] is True
         assert result["persist"] is True
+        assert result["recognized"] is True
         assert result["message"] is None
 
-    # -- nous provider ---------------------------------------------------
-
-    def test_nous_provider_is_session_only(self):
-        result = validate_requested_model("hermes-3", "nous")
-
+    def test_model_found_in_api_for_custom_endpoint(self):
+        result = _validate(
+            "my-model",
+            provider="openrouter",
+            api_models=["my-model", "other-model"],
+            base_url="http://localhost:11434/v1",
+        )
         assert result["accepted"] is True
+        assert result["persist"] is True
+
+
+# -- validate_requested_model — API probe model not found --------------------
+
+class TestValidateApiNotFound:
+    def test_model_not_in_api_is_rejected(self):
+        result = _validate("anthropic/claude-nonexistent")
+        assert result["accepted"] is False
         assert result["persist"] is False
-        assert "Nous Portal" in result["message"]
+        assert "not a valid model" in result["message"]
 
-    # -- other providers with catalogs -----------------------------------
+    def test_rejection_includes_suggestions(self):
+        result = _validate("anthropic/claude-opus-4.5")  # close to claude-opus-4.6
+        assert result["accepted"] is False
+        assert "Did you mean" in result["message"]
 
-    def test_known_zai_model_accepted_and_persisted(self):
-        result = validate_requested_model("glm-5", "zai")
+    def test_completely_wrong_model_rejected(self):
+        result = _validate("totally/fake-model-xyz")
+        assert result["accepted"] is False
+        assert "not a valid model" in result["message"]
 
+
+# -- validate_requested_model — API unreachable (fallback) -------------------
+
+class TestValidateApiFallback:
+    def test_known_catalog_model_accepted_when_api_down(self):
+        """If API is unreachable, fall back to hardcoded catalog."""
+        result = _validate("anthropic/claude-opus-4.6", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is True
 
-    def test_unknown_zai_model_is_session_only(self):
-        result = validate_requested_model("glm-99", "zai")
-
+    def test_unknown_model_is_session_only_when_api_down(self):
+        result = _validate("anthropic/claude-next-gen", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is False
-        assert "Z.AI" in result["message"]
+        assert "Could not validate" in result["message"]
+        assert "session only" in result["message"].lower()
 
-    # -- provider with no catalog ----------------------------------------
+    def test_zai_known_model_accepted_when_api_down(self):
+        result = _validate("glm-5", provider="zai", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
 
-    def test_unknown_provider_is_session_only(self):
-        result = validate_requested_model("some-model", "totally-unknown")
+    def test_zai_unknown_model_session_only_when_api_down(self):
+        result = _validate("glm-99", provider="zai", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is False
 
+    def test_unknown_provider_session_only_when_api_down(self):
+        result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is False
         assert result["message"] is not None
-
-    # -- codex provider --------------------------------------------------
-
-    def test_unknown_codex_model_is_session_only(self):
-        result = validate_requested_model("totally-made-up", "openai-codex")
-
-        assert result["accepted"] is True
-        assert result["persist"] is False
-        assert "OpenAI Codex" in result["message"]
-
-    # -- fuzzy suggestions -----------------------------------------------
-
-    def test_close_match_gets_suggestion(self):
-        # Typo of a known model — should get a suggestion in the message
-        result = validate_requested_model("anthropic/claude-opus-4.5", "openrouter")
-        # May or may not match depending on cutoff, but should be session-only
-        assert result["accepted"] is True
-        assert result["persist"] is False

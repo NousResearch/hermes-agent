@@ -7,6 +7,9 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import json
+import urllib.request
+import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
@@ -106,14 +109,46 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 
+def fetch_api_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
+
+    Returns a list of model ID strings, or ``None`` if the endpoint could not
+    be reached (network error, timeout, auth failure, etc.).
+    """
+    if not base_url:
+        return None
+
+    url = base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            # Standard OpenAI format: {"data": [{"id": "model-name", ...}, ...]}
+            return [m.get("id", "") for m in data.get("data", [])]
+    except Exception:
+        return None
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
     *,
+    api_key: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """
-    Validate a `/model` value for the active provider.
+    Validate a ``/model`` value for the active provider.
+
+    Performs format checks first, then probes the live API to confirm
+    the model actually exists.
 
     Returns a dict with:
       - accepted: whether the CLI should switch to the requested model now
@@ -142,29 +177,12 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    known_models = provider_model_ids(normalized)
-    if requested in known_models:
-        return {
-            "accepted": True,
-            "persist": True,
-            "recognized": True,
-            "message": None,
-        }
-
-    suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
-    suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
-
-    if normalized == "custom":
-        return {
-            "accepted": True,
-            "persist": True,
-            "recognized": False,
-            "message": None,
-        }
-
+    # OpenRouter requires provider/model format
     if normalized == "openrouter":
         if "/" not in requested or requested.startswith("/") or requested.endswith("/"):
+            known_models = provider_model_ids(normalized)
+            suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
+            suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
             return {
                 "accepted": False,
                 "persist": False,
@@ -175,47 +193,57 @@ def validate_requested_model(
                     f"{suggestion_text}"
                 ),
             }
+
+    # Probe the live API to check if the model actually exists
+    api_models = fetch_api_models(api_key, base_url)
+
+    if api_models is not None:
+        if requested in set(api_models):
+            # API confirmed the model exists
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        else:
+            # API responded but model is not listed
+            suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Did you mean: " + ", ".join(f"`{s}`" for s in suggestions)
+
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"Error: `{requested}` is not a valid model for this provider."
+                    f"{suggestion_text}"
+                ),
+            }
+
+    # api_models is None — couldn't reach API, fall back to catalog check
+    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    known_models = provider_model_ids(normalized)
+
+    if requested in known_models:
         return {
             "accepted": True,
-            "persist": False,
-            "recognized": False,
-            "message": (
-                f"`{requested}` is not in Hermes' curated {provider_label} model list. "
-                "Using it for this session only; config unchanged."
-                f"{suggestion_text}"
-            ),
+            "persist": True,
+            "recognized": True,
+            "message": None,
         }
 
-    if normalized == "nous":
-        return {
-            "accepted": True,
-            "persist": False,
-            "recognized": False,
-            "message": (
-                f"Could not validate `{requested}` against the live {provider_label} catalog here. "
-                "Using it for this session only; config unchanged."
-                f"{suggestion_text}"
-            ),
-        }
-
-    if known_models:
-        return {
-            "accepted": True,
-            "persist": False,
-            "recognized": False,
-            "message": (
-                f"`{requested}` is not in the known {provider_label} model list. "
-                "Using it for this session only; config unchanged."
-                f"{suggestion_text}"
-            ),
-        }
-
+    # Can't validate — accept for session only
+    suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
+    suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
     return {
         "accepted": True,
         "persist": False,
         "recognized": False,
         "message": (
-            f"Could not validate `{requested}` for provider {provider_label}. "
+            f"Could not validate `{requested}` against the live {provider_label} API. "
             "Using it for this session only; config unchanged."
             f"{suggestion_text}"
         ),

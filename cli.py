@@ -361,6 +361,7 @@ from hermes_cli.banner import (
     build_welcome_banner,
 )
 from hermes_cli.commands import COMMANDS, SlashCommandCompleter
+from hermes_cli.colors import Colors
 from hermes_cli import callbacks as _callbacks
 from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
 
@@ -669,6 +670,17 @@ _SKIN_THEMES: Dict[str, Dict[str, str]] = {
         "approval-cmd": "#AAAAAA italic",
         "approval-choice": "#AAAAAA",
         "approval-selected": "#FFD700 bold",
+        "banner-border": "#CD7F32",
+        "banner-title": "#FFD700",
+        "banner-accent": "#FFBF00",
+        "banner-dim": "#B8860B",
+        "banner-text": "#FFF8DC",
+        "ui-accent": "#FFBF00",
+        "ui-label": "#4dd0e1",
+        "ui-ok": "#4caf50",
+        "ui-error": "#ef5350",
+        "ui-warn": "#ffa726",
+        "ui-text": "#FFF8DC",
     },
     "mono": {
         "input-area": "#e6edf3",
@@ -701,6 +713,17 @@ _SKIN_THEMES: Dict[str, Dict[str, str]] = {
         "approval-cmd": "#888888 italic",
         "approval-choice": "#888888",
         "approval-selected": "#ffffff bold",
+        "banner-border": "#555555",
+        "banner-title": "#e6edf3",
+        "banner-accent": "#aaaaaa",
+        "banner-dim": "#444444",
+        "banner-text": "#c9d1d9",
+        "ui-accent": "#aaaaaa",
+        "ui-label": "#888888",
+        "ui-ok": "#888888",
+        "ui-error": "#cccccc",
+        "ui-warn": "#999999",
+        "ui-text": "#c9d1d9",
     },
     "slate": {
         "input-area": "#c9d1d9",
@@ -733,6 +756,17 @@ _SKIN_THEMES: Dict[str, Dict[str, str]] = {
         "approval-cmd": "#4b5563 italic",
         "approval-choice": "#4b5563",
         "approval-selected": "#7eb8f6 bold",
+        "banner-border": "#4169e1",
+        "banner-title": "#7eb8f6",
+        "banner-accent": "#8EA8FF",
+        "banner-dim": "#4b5563",
+        "banner-text": "#c9d1d9",
+        "ui-accent": "#7eb8f6",
+        "ui-label": "#8EA8FF",
+        "ui-ok": "#63D0A6",
+        "ui-error": "#F7A072",
+        "ui-warn": "#e6a855",
+        "ui-text": "#c9d1d9",
     },
     "pink": {
         "input-area": "#FFB7C5",
@@ -765,6 +799,17 @@ _SKIN_THEMES: Dict[str, Dict[str, str]] = {
         "approval-cmd": "#E8A0BF italic",
         "approval-choice": "#E8A0BF",
         "approval-selected": "#FF69B4 bold",
+        "banner-border": "#FF69B4",
+        "banner-title": "#FF1493",
+        "banner-accent": "#FFB7C5",
+        "banner-dim": "#D4A0A0",
+        "banner-text": "#FFB7C5",
+        "ui-accent": "#FF69B4",
+        "ui-label": "#FFB7C5",
+        "ui-ok": "#FFB7C5",
+        "ui-error": "#FF1493",
+        "ui-warn": "#E8A0BF",
+        "ui-text": "#FFB7C5",
     },
 }
 
@@ -776,6 +821,48 @@ def _cprint(text: str):
     prompt_toolkit parse the escapes and render real colors.
     """
     _pt_print(_PT_ANSI(text))
+
+
+def _apply_banner_colors(s: str, colors: dict) -> str:
+    """Substitute hardcoded default banner palette with skin-aware values."""
+    return (s
+        .replace("#CD7F32", colors.get("banner-border", "#CD7F32"))
+        .replace("#FFBF00", colors.get("banner-accent", "#FFBF00"))
+        .replace("#FFD700", colors.get("banner-title", "#FFD700"))
+        .replace("#B8860B", colors.get("banner-dim",   "#B8860B"))
+        .replace("#FFF8DC", colors.get("banner-text",  "#FFF8DC"))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Skin-aware ANSI helpers — call sites use _sk() / _skr() so output tracks
+# the active skin without needing a reference to the HermesCLI instance.
+# ---------------------------------------------------------------------------
+_CURRENT_SKIN_NAME: str = "default"
+
+
+def _hex_to_ansi(hex_color: str) -> str:
+    """Convert #RRGGBB to a 24-bit ANSI foreground escape sequence."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return ""
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[38;2;{r};{g};{b}m"
+    except ValueError:
+        return ""
+
+
+def _sk(key: str) -> str:
+    """Return 24-bit ANSI foreground code for a skin key (for _cprint calls)."""
+    theme = _SKIN_THEMES.get(_CURRENT_SKIN_NAME, _SKIN_THEMES["default"])
+    return _hex_to_ansi(theme.get(key, "").split()[0])
+
+
+def _skr(key: str) -> str:
+    """Return the bare hex color for a skin key (for Rich markup)."""
+    theme = _SKIN_THEMES.get(_CURRENT_SKIN_NAME, _SKIN_THEMES["default"])
+    return theme.get(key, "").split()[0] or "#ffffff"
 
 
 class ChatConsole:
@@ -877,7 +964,7 @@ def _format_context_length(tokens: int) -> str:
     return str(tokens)
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None):
+def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None, context_length: int = None, skin_colors: dict = None):
     """
     Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
     
@@ -891,10 +978,17 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         context_length: Model's context window size in tokens
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-    
+
+    colors = skin_colors or _SKIN_THEMES.get("default", {})
+    bc = colors.get("banner-border", "#CD7F32")
+    bt = colors.get("banner-title",  "#FFD700")
+    ba = colors.get("banner-accent", "#FFBF00")
+    bd = colors.get("banner-dim",    "#B8860B")
+    bx = colors.get("banner-text",   "#FFF8DC")
+
     tools = tools or []
     enabled_toolsets = enabled_toolsets or []
-    
+
     # Get unavailable tools info for coloring
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
@@ -909,27 +1003,27 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Build left content: caduceus always in panel (at >= 40 cols) + model info
     _cols_panel = shutil.get_terminal_size().columns
     if _cols_panel >= 40:
-        left_lines = ["", HERMES_CADUCEUS, ""]
+        left_lines = ["", _apply_banner_colors(HERMES_CADUCEUS, colors), ""]
     else:
         left_lines = [""]
-    
+
     # Shorten model name for display
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
-    
-    ctx_str = f" [dim #B8860B]·[/] [dim #B8860B]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[#FFBF00]{model_short}[/]{ctx_str} [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
-    left_lines.append(f"[dim #B8860B]{cwd}[/]")
-    
+
+    ctx_str = f" [dim {bd}]·[/] [dim {bd}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    left_lines.append(f"[{ba}]{model_short}[/]{ctx_str} [dim {bd}]·[/] [dim {bd}]Nous Research[/]")
+    left_lines.append(f"[dim {bd}]{cwd}[/]")
+
     # Add session ID if provided
     if session_id:
-        left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")
+        left_lines.append(f"[dim {bd}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
-    
+
     # Build right content: tools list grouped by toolset
     right_lines = []
-    right_lines.append("[bold #FFBF00]Available Tools[/]")
+    right_lines.append(f"[bold {ba}]Available Tools[/]")
     
     # Group tools by toolset (include all possible tools, both enabled and disabled)
     toolsets_dict = {}
@@ -966,8 +1060,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
             else:
-                colored_names.append(f"[#FFF8DC]{name}[/]")
-        
+                colored_names.append(f"[{bx}]{name}[/]")
+
         tools_str = ", ".join(colored_names)
         # Truncate if too long (accounting for markup)
         if len(", ".join(sorted(tool_names))) > 45:
@@ -988,18 +1082,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
                 else:
-                    colored_names.append(f"[#FFF8DC]{name}[/]")
+                    colored_names.append(f"[{bx}]{name}[/]")
             tools_str = ", ".join(colored_names)
-        
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
-    
+
+        right_lines.append(f"[dim {bd}]{toolset}:[/] {tools_str}")
+
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
-    
+        right_lines.append(f"[dim {bd}](and {remaining_toolsets} more toolsets...)[/]")
+
     right_lines.append("")
-    
+
     # Add skills section
-    right_lines.append("[bold #FFBF00]Available Skills[/]")
+    right_lines.append(f"[bold {ba}]Available Skills[/]")
     skills_by_category = _get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
     
@@ -1015,35 +1109,35 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             # Truncate if still too long
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim #B8860B]{category}:[/] [#FFF8DC]{skills_str}[/]")
+            right_lines.append(f"[dim {bd}]{category}:[/] [{bx}]{skills_str}[/]")
     else:
-        right_lines.append("[dim #B8860B]No skills installed[/]")
-    
+        right_lines.append(f"[dim {bd}]No skills installed[/]")
+
     right_lines.append("")
-    right_lines.append(f"[dim #B8860B]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
-    
+    right_lines.append(f"[dim {bd}]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
+
     right_content = "\n".join(right_lines)
-    
+
     # Add to table
     layout_table.add_row(left_content, right_content)
-    
+
     # Wrap in a panel with the title
     outer_panel = Panel(
         layout_table,
-        title=f"[bold #FFD700]Hermes Agent {VERSION}[/]",
-        border_style="#CD7F32",
+        title=f"[bold {bt}]Hermes Agent {VERSION}[/]",
+        border_style=bc,
         padding=(0, 2),
     )
-    
+
     # Standalone branding: block logo at >= 100 cols only.
     # At 40-99 cols the caduceus lives inside the panel left column (no standalone).
     # Below 40 cols show a compact text box.
     console.print()
     _cols = shutil.get_terminal_size().columns
     if _cols >= 100:
-        console.print(HERMES_AGENT_LOGO)
+        console.print(_apply_banner_colors(HERMES_AGENT_LOGO, colors))
     elif _cols < 40:
-        console.print(COMPACT_BANNER)
+        console.print(_apply_banner_colors(COMPACT_BANNER, colors))
     console.print()
     
     # Print the panel with caduceus and info
@@ -1342,7 +1436,7 @@ class HermesCLI:
         if self._resumed and self._session_db:
             session_meta = self._session_db.get_session(self.session_id)
             if not session_meta:
-                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
+                _cprint(f"{_sk('ui-error')}Session not found: {self.session_id}{_RST}")
                 _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
                 return False
             restored = self._session_db.get_messages_as_conversation(self.session_id)
@@ -1350,12 +1444,12 @@ class HermesCLI:
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
                 _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
+                    f"{_sk('ui-accent')}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_sk('ui-accent')} "
                     f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                     f"{len(restored)} total messages){_RST}"
                 )
             else:
-                _cprint(f"{_GOLD}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
+                _cprint(f"{_sk('ui-accent')}Session {self.session_id} found but has no messages. Starting fresh.{_RST}")
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
@@ -1403,20 +1497,21 @@ class HermesCLI:
         
         if self.compact:
             _cols = shutil.get_terminal_size().columns
-            self.console.print(CADUCEUS_BANNER if _cols >= 40 else COMPACT_BANNER)
+            _sc = _SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"])
+            self.console.print(_apply_banner_colors(CADUCEUS_BANNER if _cols >= 40 else COMPACT_BANNER, _sc))
             self._show_status()
         else:
             # Get tools for display
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
+
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
+
             # Get context length for display
             ctx_len = None
             if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
                 ctx_len = self.agent.context_compressor.context_length
-            
+
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
@@ -1426,6 +1521,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                skin_colors=_SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"]),
             )
         
         # Show tool availability warnings if any tools are disabled
@@ -1567,22 +1663,22 @@ class HermesCLI:
         
         # Get API status indicator
         if self.api_key:
-            api_indicator = "[green bold]●[/]"
+            api_indicator = f"[{_skr('ui-ok')} bold]●[/]"
         else:
-            api_indicator = "[red bold]●[/]"
-        
+            api_indicator = f"[{_skr('ui-error')} bold]●[/]"
+
         # Build status line with proper markup
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim #B8860B]·[/] [#CD7F32]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+            toolsets_info = f" [dim {_skr('banner-dim')}]·[/] [{_skr('banner-border')}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
 
-        provider_info = f" [dim #B8860B]·[/] [dim]provider: {self.provider}[/]"
+        provider_info = f" [dim {_skr('banner-dim')}]·[/] [dim]provider: {self.provider}[/]"
         if self._provider_source:
-            provider_info += f" [dim #B8860B]·[/] [dim]auth: {self._provider_source}[/]"
+            provider_info += f" [dim {_skr('banner-dim')}]·[/] [dim]auth: {self._provider_source}[/]"
 
         self.console.print(
-            f"  {api_indicator} [#FFBF00]{model_short}[/] "
-            f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
+            f"  {api_indicator} [{_skr('ui-accent')}]{model_short}[/] "
+            f"[dim {_skr('banner-dim')}]·[/] [bold {_skr('ui-label')}]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
     
@@ -1593,8 +1689,8 @@ class HermesCLI:
         _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
         
         for cmd, desc in COMMANDS.items():
-            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
-        
+            _cprint(f"  {_sk('ui-accent')}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
+
         if _skill_commands:
             _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
             import shutil as _sh
@@ -1606,7 +1702,7 @@ class HermesCLI:
                 # Use first sentence only, then truncate to fit terminal width
                 first_sentence = desc.split('.')[0].strip()
                 display = first_sentence if len(first_sentence) <= _desc_max else first_sentence[:_desc_max - 3] + '...'
-                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {display}")
+                _cprint(f"  {_sk('ui-accent')}{cmd:<22}{_RST} {_DIM}-{_RST} {display}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -2228,7 +2324,8 @@ class HermesCLI:
                 cc = ChatConsole()
                 if self.compact:
                     _cols = shutil.get_terminal_size().columns
-                    cc.print(CADUCEUS_BANNER if _cols >= 40 else COMPACT_BANNER)
+                    _sc = _SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"])
+                    cc.print(_apply_banner_colors(CADUCEUS_BANNER if _cols >= 40 else COMPACT_BANNER, _sc))
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -2243,6 +2340,7 @@ class HermesCLI:
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
+                        skin_colors=_SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"]),
                     )
                 _cprint("  Screen cleared. Conversation reset.\n")
             else:
@@ -2436,8 +2534,8 @@ class HermesCLI:
                 else:
                     self.console.print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
-                self.console.print(f"[bold red]Unknown command: {cmd_lower}[/]")
-                self.console.print("[dim #B8860B]Type /help for available commands[/]")
+                self.console.print(f"[bold {_skr('ui-error')}]Unknown command: {cmd_lower}[/]")
+                self.console.print(f"[dim {_skr('banner-dim')}]Type /help for available commands[/]")
         
         return True
     
@@ -2663,7 +2761,10 @@ class HermesCLI:
 
     def _apply_skin(self, name: str, save: bool = True) -> None:
         """Apply a skin by name. Pass save=False for live preview without persisting."""
+        global _CURRENT_SKIN_NAME
+        _CURRENT_SKIN_NAME = name
         self._current_skin = name
+        Colors.set_skin(_SKIN_THEMES.get(name, _SKIN_THEMES["default"]))
         if self._app:
             self._app.style = PTStyle.from_dict(_SKIN_THEMES[name])
             self._app.invalidate()
@@ -2713,6 +2814,8 @@ class HermesCLI:
                     "sudo-prompt", "sudo-border", "sudo-title", "sudo-text",
                     "approval-border", "approval-title", "approval-desc", "approval-cmd",
                     "approval-choice", "approval-selected",
+                    "banner-border", "banner-title", "banner-accent", "banner-dim", "banner-text",
+                    "ui-accent", "ui-label", "ui-ok", "ui-error", "ui-warn", "ui-text",
                 ]
 
                 def _create_skin():
@@ -2730,7 +2833,9 @@ class HermesCLI:
                             f"- italic keys (placeholder, prompt-working, hint, clarify-active-other, approval-cmd): \"#RRGGBB italic\"\n"
                             f"- bold keys (image-badge, clarify-title, clarify-question, clarify-selected, "
                             f"sudo-prompt, sudo-title, approval-title, approval-desc, approval-selected): \"#RRGGBB bold\"\n"
-                            f"- completion-menu keys (5): \"bg:#RRGGBB #RRGGBB\" (bg then fg; *.current variants should contrast)\n\n"
+                            f"- completion-menu keys (5): \"bg:#RRGGBB #RRGGBB\" (bg then fg; *.current variants should contrast)\n"
+                            f"- banner-* keys (border, title, accent, dim, text): plain \"#RRGGBB\" — startup ASCII art and panel\n"
+                            f"- ui-* keys (accent, label, ok, error, warn, text): plain \"#RRGGBB\" — chat output, /help, status bar, response box borders\n\n"
                             f"Keys: {', '.join(_REQUIRED_KEYS)}"
                         )
                         resp = client.chat.completions.create(
@@ -2972,7 +3077,7 @@ class HermesCLI:
         self.conversation_history.append({"role": "user", "content": message})
         
         w = shutil.get_terminal_size().columns
-        _cprint(f"{_GOLD}{'─' * w}{_RST}")
+        _cprint(f"{_sk('ui-accent')}{'─' * w}{_RST}")
         print(flush=True)
         
         try:
@@ -3050,8 +3155,8 @@ class HermesCLI:
                 w = shutil.get_terminal_size().columns
                 label = " ⚕ Hermes "
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                top = f"{_sk('ui-accent')}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
+                bot = f"{_sk('ui-accent')}╰{'─' * (w - 2)}╯{_RST}"
 
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
@@ -3107,7 +3212,7 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
-        self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
+        self.console.print(f"[{_skr('ui-text')}]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
         self.console.print()
         
         # State for async operation
@@ -3838,6 +3943,9 @@ class HermesCLI:
         )
         
         # Style for the application — loaded from active skin theme
+        global _CURRENT_SKIN_NAME
+        _CURRENT_SKIN_NAME = self._current_skin
+        Colors.set_skin(_SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"]))
         style = PTStyle.from_dict(_SKIN_THEMES.get(self._current_skin, _SKIN_THEMES["default"]))
         
         # Create the application
@@ -3895,20 +4003,20 @@ class HermesCLI:
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
+                            _cprint(f"{_sk('ui-accent')}●{_RST} {_BOLD}[Pasted text: {line_count} lines]{_RST}")
                             user_input = full_text
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            _cprint(f"{_sk('ui-accent')}●{_RST} {_BOLD}{user_input}{_RST}")
                     else:
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
+                            _cprint(f"{_sk('ui-accent')}●{_RST} {_BOLD}{first_line}{_RST} {_DIM}(+{line_count - 1} lines){_RST}")
                         else:
                             print()
-                            _cprint(f"{_GOLD}●{_RST} {_BOLD}{user_input}{_RST}")
+                            _cprint(f"{_sk('ui-accent')}●{_RST} {_BOLD}{user_input}{_RST}")
                     
                     # Show image attachment count
                     if submit_images:

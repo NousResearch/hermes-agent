@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    format_telegram_markdownv2,
     split_telegram_markdownv2,
 )
 
@@ -156,32 +157,59 @@ class TestFormatMessageCodeBlocks:
 # =========================================================================
 
 
-class TestFormatMessageBoldItalic:
+class TestFormatMessageBasicEntities:
     def test_bold_converted(self, adapter):
         result = adapter.format_message("This is **bold** text")
-        # MarkdownV2 bold uses single *
         assert "*bold*" in result
-        # Original ** should be gone
         assert "**" not in result
 
     def test_italic_converted(self, adapter):
         result = adapter.format_message("This is *italic* text")
-        # MarkdownV2 italic uses _
         assert "_italic_" in result
+
+    def test_underline_converted(self, adapter):
+        result = adapter.format_message("This is __under__ text")
+        assert "__under__" in result
+
+    def test_strikethrough_converted(self, adapter):
+        result = adapter.format_message("This is ~~gone~~ text")
+        assert "~gone~" in result
+
+    def test_spoiler_converted(self, adapter):
+        result = adapter.format_message("This is ||secret|| text")
+        assert "||secret||" in result
 
     def test_bold_with_special_chars(self, adapter):
         result = adapter.format_message("**hello.world!**")
-        # Content inside bold should be escaped
         assert "*hello\\.world\\!*" in result
 
     def test_italic_with_special_chars(self, adapter):
         result = adapter.format_message("*hello.world*")
         assert "_hello\\.world_" in result
 
-    def test_bold_and_italic_in_same_line(self, adapter):
-        result = adapter.format_message("**bold** and *italic*")
+    def test_underline_with_special_chars(self, adapter):
+        result = adapter.format_message("__hello.world__")
+        assert "__hello\\.world__" in result
+
+    def test_strikethrough_with_special_chars(self, adapter):
+        result = adapter.format_message("~~hello.world~~")
+        assert "~hello\\.world~" in result
+
+    def test_spoiler_with_special_chars(self, adapter):
+        result = adapter.format_message("||hello.world||")
+        assert "||hello\\.world||" in result
+
+    def test_multiple_entities_in_same_line(self, adapter):
+        result = adapter.format_message("**bold** and *italic* and __under__ and ~~gone~~ and ||secret||")
         assert "*bold*" in result
         assert "_italic_" in result
+        assert "__under__" in result
+        assert "~gone~" in result
+        assert "||secret||" in result
+
+    def test_nested_entities_supported(self, adapter):
+        result = adapter.format_message("**bold and *italic* and __under__ and ~~gone~~ and ||secret||**")
+        assert "*bold and _italic_ and __under__ and ~gone~ and ||secret||*" in result
 
 
 # =========================================================================
@@ -229,19 +257,29 @@ class TestFormatMessageHeaders:
 # =========================================================================
 
 
-class TestFormatMessageLinks:
+class TestFormatMessageLinksAndSpecialEntities:
     def test_markdown_link_converted(self, adapter):
         result = adapter.format_message("[Click here](https://example.com)")
         assert "[Click here](https://example.com)" in result
 
+    def test_tg_user_mention_link_supported(self, adapter):
+        result = adapter.format_message("[mention](tg://user?id=123456789)")
+        assert "[mention](tg://user?id=123456789)" in result
+
+    def test_custom_emoji_supported(self, adapter):
+        result = format_telegram_markdownv2("![👍](tg://emoji?id=5368324170671202286)")
+        assert result == "![👍](tg://emoji?id=5368324170671202286)"
+
+    def test_datetime_entity_supported(self, adapter):
+        result = format_telegram_markdownv2("![22:45 tomorrow](tg://time?unix=1647531900&format=wDT)")
+        assert result == "![22:45 tomorrow](tg://time?unix=1647531900&format=wDT)"
+
     def test_link_display_text_escaped(self, adapter):
         result = adapter.format_message("[Hello!](https://example.com)")
-        # The ! in display text should be escaped
         assert "Hello\\!" in result
 
     def test_link_url_parentheses_escaped(self, adapter):
         result = adapter.format_message("[link](https://example.com/path_(1))")
-        # The ) in URL should be escaped
         assert "\\)" in result
 
     def test_link_with_surrounding_text(self, adapter):
@@ -312,7 +350,6 @@ class TestFormatMessageComplex:
         assert "```\ncode here\n```" in result
 
     def test_bold_inside_code_not_converted(self, adapter):
-        """Bold markers inside code blocks should not be converted."""
         text = "```\n**not bold**\n```"
         result = adapter.format_message(text)
         assert "**not bold**" in result
@@ -328,9 +365,19 @@ class TestFormatMessageComplex:
         assert "*Title*" in result
         assert "```\ncode\n```" in result
 
+    def test_blockquote_lines_preserved(self, adapter):
+        text = "> quote line 1\n> quote line 2"
+        result = adapter.format_message(text)
+        assert result == ">quote line 1\n>quote line 2"
+
+    def test_expandable_blockquote_sequence_preserved(self, adapter):
+        text = "**\n>Hidden quote\n>Visible tail||"
+        result = adapter.format_message(text)
+        assert result == "**\n>Hidden quote\n>Visible tail\\|\\|"
+
     def test_multiple_bold_segments(self, adapter):
         result = adapter.format_message("**a** and **b** and **c**")
-        assert result.count("*") >= 6  # 3 bold pairs = 6 asterisks
+        assert result.count("*") >= 6
 
     def test_special_chars_in_plain_text(self, adapter):
         result = adapter.format_message("Price: $5.00 (50% off!)")
@@ -340,7 +387,6 @@ class TestFormatMessageComplex:
         assert "\\!" in result
 
     def test_empty_bold(self, adapter):
-        """**** (empty bold) should not crash."""
         result = adapter.format_message("****")
         assert result is not None
 
@@ -349,21 +395,23 @@ class TestFormatMessageComplex:
         assert "```" in result
 
     def test_placeholder_collision(self, adapter):
-        """Many formatting elements should not cause placeholder collisions."""
         text = (
             "# Header\n"
-            "**bold1** *italic1* `code1`\n"
-            "**bold2** *italic2* `code2`\n"
+            "**bold1** *italic1* __under1__ ~~gone1~~ ||secret1|| `code1`\n"
+            "**bold2** *italic2* __under2__ ~~gone2~~ ||secret2|| `code2`\n"
+            "> quote\n"
             "```\nblock\n```\n"
-            "[link](https://url.com)"
+            "[link](https://url.com)\n"
+            "![👍](tg://emoji?id=5368324170671202286)\n"
+            "![22:45 tomorrow](tg://time?unix=1647531900&format=t)"
         )
         result = adapter.format_message(text)
-        # No placeholder tokens should leak into output
         assert "\x00" not in result
-        # All elements should be present
         assert "Header" in result
         assert "block" in result
         assert "url.com" in result
+        assert "tg://emoji?id=5368324170671202286" in result
+        assert "tg://time?unix=1647531900&format=t" in result
 
 
 class TestSplitTelegramMarkdownV2:
@@ -399,13 +447,18 @@ class TestSplitTelegramMarkdownV2:
         assert len(chunks) > 1
         assert all(chunk.startswith("```python\n") for chunk in chunks)
 
-    def test_long_bold_segment_remains_valid(self):
-        text = "**" + ("hello world " * 80).strip() + "**"
-        chunks = split_telegram_markdownv2(text, max_length=140)
+    @pytest.mark.parametrize("raw,marker", [
+        ("**" + ("hello world " * 80).strip() + "**", "*"),
+        ("__" + ("hello world " * 80).strip() + "__", "__"),
+        ("~~" + ("hello world " * 80).strip() + "~~", "~"),
+        ("||" + ("hello world " * 80).strip() + "||", "||"),
+    ])
+    def test_long_wrapped_segments_remain_balanced(self, raw, marker):
+        chunks = split_telegram_markdownv2(raw, max_length=140)
         assert len(chunks) > 1
         for chunk in chunks:
             body = re.sub(r" \\\([0-9]+/[0-9]+\\\)$", "", chunk)
-            assert body.count("*") % 2 == 0
+            assert body.count(marker) % 2 == 0
 
     def test_long_link_does_not_leak_placeholders(self):
         url = "https://example.com/" + ("path-" * 60)
@@ -413,3 +466,21 @@ class TestSplitTelegramMarkdownV2:
         chunks = split_telegram_markdownv2(text, max_length=140)
         assert len(chunks) > 1
         assert all("\x00" not in chunk for chunk in chunks)
+
+    def test_long_blockquote_chunks_preserve_line_prefix(self):
+        text = ("> quote line\n" * 120).strip()
+        chunks = split_telegram_markdownv2(text, max_length=140)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r" \\\([0-9]+/[0-9]+\\\)$", "", chunk)
+            for line in body.splitlines():
+                assert line.startswith(">")
+
+    def test_long_custom_emoji_and_datetime_do_not_leak_placeholders(self):
+        text = ("![👍](tg://emoji?id=5368324170671202286) " * 40) + ("![22:45 tomorrow](tg://time?unix=1647531900&format=t) " * 40)
+        chunks = split_telegram_markdownv2(text.strip(), max_length=220)
+        assert len(chunks) > 1
+        assert all("\x00" not in chunk for chunk in chunks)
+        joined = "\n".join(chunks)
+        assert "tg://emoji?id=5368324170671202286" in joined
+        assert "tg://time?unix=1647531900&format=t" in joined

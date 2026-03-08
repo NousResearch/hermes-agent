@@ -142,7 +142,7 @@ def _split_code_block_token(token: str, max_length: int) -> List[str]:
 
 
 def _split_wrapped_token(token: str, marker: str, max_length: int) -> List[str]:
-    """Split a token wrapped by symmetric one-char MarkdownV2 markers."""
+    """Split a token wrapped by symmetric MarkdownV2 markers."""
     if len(token) <= max_length:
         return [token]
 
@@ -161,6 +161,12 @@ def _split_mdv2_token(token: str, max_length: int) -> List[str]:
         return [token]
     if token.startswith("```") and token.endswith("```"):
         return _split_code_block_token(token, max_length)
+    if token.startswith("||") and token.endswith("||") and len(token) >= 4:
+        return _split_wrapped_token(token, "||", max_length)
+    if token.startswith("__") and token.endswith("__") and len(token) >= 4:
+        return _split_wrapped_token(token, "__", max_length)
+    if token.startswith("~") and token.endswith("~") and len(token) >= 2:
+        return _split_wrapped_token(token, "~", max_length)
     if token.startswith("*") and token.endswith("*") and len(token) >= 2:
         return _split_wrapped_token(token, "*", max_length)
     if token.startswith("_") and token.endswith("_") and len(token) >= 2:
@@ -204,43 +210,67 @@ def _format_markdownv2_with_placeholders(content: str) -> tuple[str, dict]:
         placeholders[key] = value
         return key
 
-    text = content
-    text = re.sub(
-        r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-        lambda m: _ph(m.group(0)),
-        text,
-    )
-    text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
+    def _escape_non_placeholders(text: str) -> str:
+        parts = _PLACEHOLDER_RE.split(text)
+        matches = _PLACEHOLDER_RE.findall(text)
+        out: List[str] = []
+        for i, part in enumerate(parts):
+            if part:
+                out.append(_escape_mdv2(part))
+            if i < len(matches):
+                out.append(matches[i])
+        return "".join(out)
 
-    def _convert_link(m):
-        display = _escape_mdv2(m.group(1))
+    def _escape_entity_inner(text: str) -> str:
+        return _escape_non_placeholders(text)
+
+    def _convert_standard_link(m):
+        display = _escape_entity_inner(m.group(1))
         url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
         return _ph(f'[{display}]({url})')
 
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
+    def _convert_special_link(m):
+        display = _escape_entity_inner(m.group(1))
+        url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+        return _ph(f'![{display}]({url})')
+
+    def _convert_wrapped(text: str, pattern: str, open_marker: str, close_marker: str | None = None) -> str:
+        close_marker = close_marker if close_marker is not None else open_marker
+
+        def repl(m):
+            inner = _escape_entity_inner(m.group(1))
+            return _ph(f"{open_marker}{inner}{close_marker}")
+
+        return re.sub(pattern, repl, text)
 
     def _convert_header(m):
         inner = m.group(1).strip()
         inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
-        return _ph(f'*{_escape_mdv2(inner)}*')
+        return _ph(f'*{_escape_entity_inner(inner)}*')
 
-    text = re.sub(
-        r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
-    )
+    def _convert_blockquote_line(m):
+        line = re.sub(r'^>\s?', '', m.group(1))
+        line = _escape_entity_inner(line)
+        return _ph(f'>{line}')
 
-    text = re.sub(
-        r'\*\*(.+?)\*\*',
-        lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
-        text,
-    )
+    text = content
+    text = re.sub(r'(```(?:[^\n]*\n)?[\s\S]*?```)', lambda m: _ph(m.group(0)), text)
+    text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
-    text = re.sub(
-        r'\*([^*\n]+)\*',
-        lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
-        text,
-    )
+    text = re.sub(r'!\[([^\]]+)\]\((tg://(?:emoji|time)[^)]+)\)', _convert_special_link, text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_standard_link, text)
 
-    text = _escape_mdv2(text)
+    text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
+    text = re.sub(r'^(>.*)$', _convert_blockquote_line, text, flags=re.MULTILINE)
+    text = re.sub(r'^\*\*$', lambda m: _ph('**'), text, flags=re.MULTILINE)
+
+    text = _convert_wrapped(text, r'\|\|([^|\n]+?)\|\|', '||')
+    text = _convert_wrapped(text, r'~~([^~\n]+?)~~', '~')
+    text = _convert_wrapped(text, r'__([^_\n]+?)__', '__')
+    text = _convert_wrapped(text, r'(?<!\*)\*([^*\n]+?)\*(?!\*)', '_')
+    text = _convert_wrapped(text, r'\*\*([\s\S]+?)\*\*', '*')
+
+    text = _escape_non_placeholders(text)
     return text, placeholders
 
 

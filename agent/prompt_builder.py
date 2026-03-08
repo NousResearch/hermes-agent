@@ -102,8 +102,9 @@ PLATFORM_HINTS = {
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
         "Telegram messages support formatting and are rendered with Telegram MarkdownV2. "
-        "Prefer well-structured, readable responses with tasteful formatting: short headings, bold for emphasis, italic sparingly, bullet lists, numbered lists, inline code, fenced code blocks, and links when helpful. "
-        "Use formatting carefully so it stays valid Telegram MarkdownV2; each message chunk must be a standalone valid message because long replies may be split across multiple messages. "
+        "Prefer well-structured, readable responses with tasteful formatting: short headings, bold, italic, underline, spoiler, block quotes, bullet lists, numbered lists, inline code, fenced code blocks, and links when helpful. "
+        "Telegram also supports strikethrough, custom emoji links like ![👍](tg://emoji?id=...), and date/time links like ![tomorrow](tg://time?unix=...&format=...). Use those only when they are genuinely useful and keep them valid. "
+        "Use formatting carefully so it stays valid Telegram MarkdownV2; each message chunk must be a standalone valid message because long replies may be split across multiple messages. Avoid malformed or ambiguous nesting, and keep block quote syntax line-based. "
         "You can send media files natively: to deliver a file to the user, include MEDIA:/absolute/path/to/file in your response. Audio (.ogg) sends as voice bubbles. You can also include image URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
 

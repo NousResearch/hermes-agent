@@ -167,6 +167,7 @@ def cmd_chat(args):
         "verbose": args.verbose,
         "query": args.query,
         "resume": getattr(args, "resume", None),
+        "worktree": getattr(args, "worktree", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1217,6 +1218,7 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
     hermes update                 Update to latest version
@@ -1243,6 +1245,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Resume the most recent CLI session"
+    )
+    parser.add_argument(
+        "--worktree", "-w",
+        action="store_true",
+        default=False,
+        help="Run in an isolated git worktree (for parallel agents)"
     )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -1289,6 +1297,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Resume the most recent CLI session"
+    )
+    chat_parser.add_argument(
+        "--worktree", "-w",
+        action="store_true",
+        default=False,
+        help="Run in an isolated git worktree (for parallel agents on the same repo)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -1850,6 +1864,8 @@ For more help on a command:
         args.provider = None
         args.toolsets = None
         args.verbose = False
+        if not hasattr(args, "worktree"):
+            args.worktree = False
         cmd_chat(args)
         return
     
@@ -1862,6 +1878,8 @@ For more help on a command:
         args.verbose = False
         args.resume = None
         args.continue_last = False
+        if not hasattr(args, "worktree"):
+            args.worktree = False
         cmd_chat(args)
         return
     

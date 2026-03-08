@@ -395,6 +395,227 @@ def _run_cleanup():
     except Exception:
         pass
 
+
+# =============================================================================
+# Git Worktree Isolation (#652)
+# =============================================================================
+
+# Tracks the active worktree for cleanup on exit
+_active_worktree: Optional[Dict[str, str]] = None
+
+
+def _git_repo_root() -> Optional[str]:
+    """Return the git repo root for CWD, or None if not in a repo."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
+    """Create an isolated git worktree for this CLI session.
+
+    Returns a dict with worktree metadata on success, None on failure.
+    The dict contains: path, branch, repo_root.
+    """
+    import subprocess
+
+    repo_root = repo_root or _git_repo_root()
+    if not repo_root:
+        print("\033[33m⚠ --worktree: not inside a git repository, skipping.\033[0m")
+        return None
+
+    short_id = uuid.uuid4().hex[:8]
+    wt_name = f"hermes-{short_id}"
+    branch_name = f"hermes/{wt_name}"
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    wt_path = worktrees_dir / wt_name
+
+    # Ensure .worktrees/ is in .gitignore
+    gitignore = Path(repo_root) / ".gitignore"
+    _ignore_entry = ".worktrees/"
+    try:
+        existing = gitignore.read_text() if gitignore.exists() else ""
+        if _ignore_entry not in existing.splitlines():
+            with open(gitignore, "a") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{_ignore_entry}\n")
+    except Exception as e:
+        logger.debug("Could not update .gitignore: %s", e)
+
+    # Create the worktree
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
+            return None
+    except Exception as e:
+        print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
+        return None
+
+    # Copy files listed in .worktreeinclude (gitignored files the agent needs)
+    include_file = Path(repo_root) / ".worktreeinclude"
+    if include_file.exists():
+        try:
+            for line in include_file.read_text().splitlines():
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                src = Path(repo_root) / entry
+                dst = wt_path / entry
+                if src.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(src), str(dst))
+                elif src.is_dir():
+                    # Symlink directories (faster, saves disk)
+                    if not dst.exists():
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        os.symlink(str(src.resolve()), str(dst))
+        except Exception as e:
+            logger.debug("Error copying .worktreeinclude entries: %s", e)
+
+    info = {
+        "path": str(wt_path),
+        "branch": branch_name,
+        "repo_root": repo_root,
+    }
+
+    print(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
+    print(f"  Branch: {branch_name}")
+
+    return info
+
+
+def _cleanup_worktree(info: Dict[str, str] = None) -> None:
+    """Remove a worktree and its branch on exit.
+
+    If the worktree has uncommitted changes, warn and keep it.
+    """
+    global _active_worktree
+    info = info or _active_worktree
+    if not info:
+        return
+
+    import subprocess
+
+    wt_path = info["path"]
+    branch = info["branch"]
+    repo_root = info["repo_root"]
+
+    if not Path(wt_path).exists():
+        return
+
+    # Check for uncommitted changes
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10, cwd=wt_path,
+        )
+        has_changes = bool(status.stdout.strip())
+    except Exception:
+        has_changes = True  # Assume dirty on error — don't delete
+
+    if has_changes:
+        print(f"\n\033[33m⚠ Worktree has uncommitted changes, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove {wt_path}")
+        _active_worktree = None
+        return
+
+    # Remove worktree
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", wt_path, "--force"],
+            capture_output=True, text=True, timeout=15, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("Failed to remove worktree: %s", e)
+
+    # Delete the branch (only if it was never pushed / has no upstream)
+    try:
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("Failed to delete branch %s: %s", branch, e)
+
+    _active_worktree = None
+    print(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
+
+
+def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
+    """Remove worktrees older than max_age_hours that have no uncommitted changes.
+
+    Runs silently on startup to clean up after crashed/killed sessions.
+    """
+    import subprocess
+    import time
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    if not worktrees_dir.exists():
+        return
+
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+
+    for entry in worktrees_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("hermes-"):
+            continue
+
+        # Check age
+        try:
+            mtime = entry.stat().st_mtime
+            if mtime > cutoff:
+                continue  # Too recent — skip
+        except Exception:
+            continue
+
+        # Check for uncommitted changes
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            if status.stdout.strip():
+                continue  # Has changes — skip
+        except Exception:
+            continue  # Can't check — skip
+
+        # Safe to remove
+        try:
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            branch = branch_result.stdout.strip()
+
+            subprocess.run(
+                ["git", "worktree", "remove", str(entry), "--force"],
+                capture_output=True, text=True, timeout=15, cwd=repo_root,
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root,
+                )
+            logger.debug("Pruned stale worktree: %s", entry.name)
+        except Exception as e:
+            logger.debug("Failed to prune worktree %s: %s", entry.name, e)
+
 # ============================================================================
 # ASCII Art & Branding
 # ============================================================================
@@ -3253,6 +3474,8 @@ def main(
     list_toolsets: bool = False,
     gateway: bool = False,
     resume: str = None,
+    worktree: bool = False,
+    w: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -3271,6 +3494,8 @@ def main(
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
+        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
+        w: Shorthand for --worktree
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -3278,7 +3503,11 @@ def main(
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
+        python cli.py -w                         # Start in isolated git worktree
+        python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    global _active_worktree
+
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
@@ -3290,6 +3519,26 @@ def main(
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())
         return
+
+    # Skip worktree for list commands (they exit immediately)
+    if not list_tools and not list_toolsets:
+        # ── Git worktree isolation (#652) ──
+        # Create an isolated worktree so this agent instance doesn't collide
+        # with other agents working on the same repo.
+        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        wt_info = None
+        if use_worktree:
+            # Prune stale worktrees from crashed/killed sessions
+            _repo = _git_repo_root()
+            if _repo:
+                _prune_stale_worktrees(_repo)
+            wt_info = _setup_worktree()
+            if wt_info:
+                _active_worktree = wt_info
+                os.environ["TERMINAL_CWD"] = wt_info["path"]
+                atexit.register(_cleanup_worktree, wt_info)
+    else:
+        wt_info = None
     
     # Handle query shorthand
     query = query or q
@@ -3328,6 +3577,17 @@ def main(
         compact=compact,
         resume=resume,
     )
+
+    # Inject worktree context into agent's system prompt
+    if wt_info:
+        wt_note = (
+            f"\n\n[System note: You are working in an isolated git worktree at "
+            f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
+            f"Changes here do not affect the main working tree or other agents. "
+            f"Remember to commit and push your changes, and create a PR if appropriate. "
+            f"The original repo is at {wt_info['repo_root']}.]"
+        )
+        cli.system_prompt = (cli.system_prompt or "") + wt_note
     
     # Handle list commands (don't init agent for these)
     if list_tools:

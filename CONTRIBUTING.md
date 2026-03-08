@@ -328,11 +328,14 @@ license: MIT
 platforms: [macos, linux]          # Optional — restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)
-prerequisites:                     # Optional — runtime requirements
-  env_vars: [MY_API_KEY]           #   Env vars that must be set
-  commands: [curl, jq]             #   CLI binaries that must be on PATH
-                                   #   Skills with unmet prerequisites are hidden
-                                   #   from the system prompt and flagged in skill_view.
+required_environment_variables:    # Optional — secure setup-on-load metadata
+  - name: MY_API_KEY
+    prompt: API key
+    help: Where to get it
+    required_for: full functionality
+prerequisites:                     # Optional legacy runtime requirements
+  env_vars: [MY_API_KEY]           #   Backward-compatible alias for required env vars
+  commands: [curl, jq]             #   Advisory only; does not hide the skill
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -371,22 +374,37 @@ platforms: [windows]          # Windows only
 
 If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
 
-### Skill prerequisites
+### Skill setup metadata
 
-Skills can declare runtime prerequisites via the `prerequisites` frontmatter field. Skills with unmet prerequisites are automatically hidden from the system prompt (the agent won't claim it can use them) and show a clear warning in `skill_view()` telling the agent what's missing.
+Skills can declare secure setup-on-load metadata via the `required_environment_variables` frontmatter field. Missing values do not hide the skill from discovery; they trigger a CLI-only secure prompt when the skill is actually loaded.
+
+```yaml
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+    required_for: full functionality
+```
+
+The user may skip setup and keep loading the skill. Hermes only exposes metadata (`stored_as`, `skipped`, `validated`) to the model — never the secret value.
+
+Legacy `prerequisites.env_vars` remains supported and is normalized into the new representation.
 
 ```yaml
 prerequisites:
-  env_vars: [TENOR_API_KEY]       # Env vars checked via os.getenv()
-  commands: [curl, jq]            # CLI binaries checked via shutil.which()
+  env_vars: [TENOR_API_KEY]       # Legacy alias for required_environment_variables
+  commands: [curl, jq]            # Advisory CLI checks
 ```
 
-Both sub-fields are optional — declare only what applies. If the field is omitted entirely, the skill is always available (backward compatible).
+Gateway and messaging sessions never collect secrets in-band; they instruct the user to run `hermes setup` or update `~/.hermes/.env` locally.
 
-**When to declare prerequisites:**
-- The skill uses a CLI tool that isn't universally installed (e.g., `himalaya`, `openhue`, `ddgs`)
-- The skill requires an API key in the environment (e.g., `NOTION_API_KEY`, `TENOR_API_KEY`)
-- Without these, the skill's commands will fail — not just degrade gracefully
+**When to declare required environment variables:**
+- The skill uses an API key or token that should be collected securely at load time
+- The skill can still be useful if the user skips setup, but may degrade gracefully
+
+**When to declare command prerequisites:**
+- The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
+- Treat command checks as guidance, not discovery-time hiding
 
 See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
 

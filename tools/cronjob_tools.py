@@ -387,9 +387,11 @@ def check_cronjob_requirements() -> bool:
     Available in interactive CLI mode and gateway/messaging platforms.
     Cronjobs are server-side scheduled tasks so they work from any interface.
     """
+    from tools.runtime import is_gateway_surface
+
     return bool(
         os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
+        or is_gateway_surface()
         or os.getenv("HERMES_EXEC_ASK")
     )
 

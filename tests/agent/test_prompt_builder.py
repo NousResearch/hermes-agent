@@ -1,14 +1,13 @@
 """Tests for agent/prompt_builder.py — context scanning, truncation, skills index."""
 
-import os
-import pytest
-from pathlib import Path
+import builtins
+import importlib
+import sys
 
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
-    _read_skill_description,
-    _skill_prerequisites_met,
+    _parse_skill_file,
     build_skills_system_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
@@ -102,35 +101,80 @@ class TestTruncateContent:
 
 
 # =========================================================================
-# Skill description reading
+# _parse_skill_file — single-pass skill file reading
 # =========================================================================
 
-class TestReadSkillDescription:
+class TestParseSkillFile:
     def test_reads_frontmatter_description(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
             "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
         )
-        desc = _read_skill_description(skill_file)
+        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        assert is_compat is True
+        assert frontmatter.get("name") == "test-skill"
         assert desc == "A useful test skill"
 
     def test_missing_description_returns_empty(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text("No frontmatter here")
-        desc = _read_skill_description(skill_file)
+        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
         assert desc == ""
 
     def test_long_description_truncated(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
-        desc = _read_skill_description(skill_file, max_chars=60)
+        _, _, desc = _parse_skill_file(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
 
-    def test_nonexistent_file_returns_empty(self, tmp_path):
-        desc = _read_skill_description(tmp_path / "missing.md")
+    def test_nonexistent_file_returns_defaults(self, tmp_path):
+        is_compat, frontmatter, desc = _parse_skill_file(tmp_path / "missing.md")
+        assert is_compat is True
+        assert frontmatter == {}
         assert desc == ""
+
+    def test_incompatible_platform_returns_false(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: mac-only\ndescription: Mac stuff\nplatforms: [macos]\n---\n"
+        )
+        from unittest.mock import patch
+
+        with patch("tools.skills_tool.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            is_compat, _, _ = _parse_skill_file(skill_file)
+        assert is_compat is False
+
+    def test_returns_frontmatter_with_prerequisites(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NONEXISTENT_KEY_ABC", raising=False)
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: gated\ndescription: Gated skill\n"
+            "prerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n"
+        )
+        _, frontmatter, _ = _parse_skill_file(skill_file)
+        assert frontmatter["prerequisites"]["env_vars"] == ["NONEXISTENT_KEY_ABC"]
+
+
+class TestPromptBuilderImports:
+    def test_module_import_does_not_eagerly_import_skills_tool(self, monkeypatch):
+        original_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "tools.skills_tool" or (
+                name == "tools" and fromlist and "skills_tool" in fromlist
+            ):
+                raise ModuleNotFoundError("simulated optional tool import failure")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.delitem(sys.modules, "agent.prompt_builder", raising=False)
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        module = importlib.import_module("agent.prompt_builder")
+
+        assert hasattr(module, "build_skills_system_prompt")
 
 
 # =========================================================================
@@ -212,8 +256,7 @@ class TestBuildSkillsSystemPrompt:
         assert "imessage" in result
         assert "Send iMessages" in result
 
-    def test_excludes_skills_with_unmet_prerequisites(self, monkeypatch, tmp_path):
-        """Skills with missing env var prerequisites should not appear."""
+    def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
         skills_dir = tmp_path / "skills" / "media"
@@ -233,7 +276,7 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "free-skill" in result
-        assert "gated-skill" not in result
+        assert "gated-skill" in result
 
     def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
         """Skills with satisfied prerequisites should appear normally."""
@@ -251,29 +294,48 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "ready-skill" in result
 
+    def test_non_local_backend_keeps_skill_visible_without_probe(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("BACKEND_ONLY_KEY", raising=False)
+        skills_dir = tmp_path / "skills" / "media"
 
-# =========================================================================
-# _skill_prerequisites_met
-# =========================================================================
+        skill = skills_dir / "backend-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: backend-skill\ndescription: Available in backend\n"
+            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n---\n"
+        )
 
+        result = build_skills_system_prompt()
+        assert "backend-skill" in result
 
-class TestSkillPrerequisitesMet:
-    def test_met_or_absent(self, tmp_path, monkeypatch):
-        """No prereqs, met prereqs, and missing file all return True."""
-        monkeypatch.setenv("PRESENT_KEY_123", "val")
-        basic = tmp_path / "basic.md"
-        basic.write_text("---\nname: basic\ndescription: basic\n---\n")
-        ready = tmp_path / "ready.md"
-        ready.write_text("---\nname: ready\ndescription: ready\nprerequisites:\n  env_vars: [PRESENT_KEY_123]\n---\n")
-        assert _skill_prerequisites_met(basic) is True
-        assert _skill_prerequisites_met(ready) is True
-        assert _skill_prerequisites_met(tmp_path / "nope.md") is True
+    def test_non_local_backend_does_not_boot_default_sandbox_for_prompt_builder(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        terminal_tool_module = importlib.import_module("tools.terminal_tool")
+        skills_dir = tmp_path / "skills" / "media"
 
-    def test_unmet_returns_false(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("NONEXISTENT_KEY_ABC", raising=False)
-        skill = tmp_path / "SKILL.md"
-        skill.write_text("---\nname: gated\ndescription: gated\nprerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n")
-        assert _skill_prerequisites_met(skill) is False
+        skill = skills_dir / "backend-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: backend-skill\ndescription: Available in backend\n"
+            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n---\n"
+        )
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("prompt builder should not boot a default sandbox")
+
+        monkeypatch.setattr(
+            terminal_tool_module, "get_or_create_environment", fail_if_called
+        )
+
+        result = build_skills_system_prompt()
+        assert "backend-skill" in result
 
 
 # =========================================================================

@@ -14,14 +14,12 @@ This module provides:
 
 import os
 import platform
-import re
 import sys
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 _IS_WINDOWS = platform.system() == "Windows"
-_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 import yaml
 
@@ -157,15 +155,6 @@ DEFAULT_CONFIG = {
 # =============================================================================
 # Config Migration System
 # =============================================================================
-
-# Track which env vars were introduced in each config version.
-# Migration only mentions vars new since the user's previous version.
-ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
-    5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
-        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
-}
 
 # Required environment variables with metadata for migration prompts.
 # LLM provider is required but handled in the setup wizard's provider
@@ -636,47 +625,34 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if v["name"] not in required_names and not v.get("advanced")
     ]
     
-    # Only offer to configure env vars that are NEW since the user's previous version
-    new_var_names = set()
-    for ver in range(current_ver + 1, latest_ver + 1):
-        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
-
-    if new_var_names and interactive and not quiet:
-        new_and_unset = [
-            (name, OPTIONAL_ENV_VARS[name])
-            for name in sorted(new_var_names)
-            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
-        ]
-        if new_and_unset:
-            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
-            for name, info in new_and_unset:
-                print(f"    • {name} — {info.get('description', '')}")
+    if interactive and missing_optional:
+        print("  Would you like to configure any optional keys now?")
+        try:
+            answer = input("  Configure optional keys? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        
+        if answer in ("y", "yes"):
             print()
-            try:
-                answer = input("  Configure new keys? [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                answer = "n"
-
-            if answer in ("y", "yes"):
+            for var in missing_optional:
+                desc = var.get("description", "")
+                if var.get("url"):
+                    print(f"  {desc}")
+                    print(f"  Get your key at: {var['url']}")
+                else:
+                    print(f"  {desc}")
+                
+                if var.get("password"):
+                    import getpass
+                    value = getpass.getpass(f"  {var['prompt']} (Enter to skip): ")
+                else:
+                    value = input(f"  {var['prompt']} (Enter to skip): ").strip()
+                
+                if value:
+                    save_env_value(var["name"], value)
+                    results["env_added"].append(var["name"])
+                    print(f"  ✓ Saved {var['name']}")
                 print()
-                for name, info in new_and_unset:
-                    if info.get("url"):
-                        print(f"  {info.get('description', name)}")
-                        print(f"  Get your key at: {info['url']}")
-                    else:
-                        print(f"  {info.get('description', name)}")
-                    if info.get("password"):
-                        import getpass
-                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
-                    else:
-                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
-                    if value:
-                        save_env_value(name, value)
-                        results["env_added"].append(name)
-                        print(f"  ✓ Saved {name}")
-                    print()
-            else:
-                print("  Set later with: hermes config set KEY VALUE")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
@@ -774,9 +750,6 @@ def load_env() -> Dict[str, str]:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
-    if not _ENV_VAR_NAME_RE.match(key):
-        raise ValueError(f"Invalid environment variable name: {key!r}")
-    value = value.replace("\n", "").replace("\r", "")
     ensure_hermes_home()
     env_path = get_env_path()
     
@@ -807,23 +780,6 @@ def save_env_value(key: str, value: str):
     with open(env_path, 'w', **write_kw) as f:
         f.writelines(lines)
 
-    os.environ[key] = value
-
-    if os.name != "nt":
-        try:
-            os.chmod(env_path, 0o600)
-        except OSError:
-            pass
-
-
-def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
-    save_env_value(key, value)
-    return {
-        "success": True,
-        "stored_as": key,
-        "validated": False,
-    }
-
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
@@ -852,6 +808,7 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
+    env_vars = load_env()
     
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -973,7 +930,7 @@ def edit_config():
                 break
     
     if not editor:
-        print("No editor found. Config file is at:")
+        print(f"No editor found. Config file is at:")
         print(f"  {config_path}")
         return
     
@@ -1047,7 +1004,6 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
-        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))
@@ -1178,7 +1134,7 @@ def config_command(args):
         if missing_config:
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
-            print("    Run 'hermes config migrate' to add them")
+            print(f"    Run 'hermes config migrate' to add them")
         
         print()
     

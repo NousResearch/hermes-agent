@@ -659,6 +659,14 @@ name: skill-name
 description: Brief description for listing
 version: 1.0.0
 platforms: [macos]              # Optional — restrict to specific OS (macos/linux/windows)
+required_environment_variables: # Optional — secure setup-on-load metadata
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get an API key from https://developers.google.com/tenor
+    required_for: full functionality
+prerequisites:                  # Optional legacy runtime requirements
+  env_vars: [TENOR_API_KEY]     # Backward-compatible alias for required env vars
+  commands: [curl]              # Advisory only; does not hide the skill
 metadata:
   hermes:
     tags: [tag1, tag2]
@@ -667,7 +675,11 @@ metadata:
 # Skill Content...
 ```
 
-**Platform filtering** — Skills with a `platforms` field are automatically excluded from the system prompt index, `skills_list()`, and slash commands on incompatible platforms. Skills without the field load everywhere (backward compatible). See `skills/apple/` for macOS-only examples (iMessage, Reminders, Notes, FindMy).
+**Load semantics**:
+- Platform mismatch is the only hard filter for discovery, system prompt indexing, and slash commands
+- Missing required environment variables do not hide a skill; they trigger secure setup only when the skill is actually loaded
+- Secure setup is CLI-only and skippable; the model only receives metadata, never the secret value
+- Gateway/messaging sessions never collect secrets in-band and instead guide users to local setup (`hermes setup` or `~/.hermes/.env`)
 
 **Skills Hub** — user-driven skill search/install from online registries and official optional skills. Sources: official optional skills (shipped with repo, labeled "official"), GitHub (openai/skills, anthropics/skills, custom taps), ClawHub, Claude marketplace, LobeHub. Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills browse/search/install` CLI commands or the `/skills` slash command in chat.
 

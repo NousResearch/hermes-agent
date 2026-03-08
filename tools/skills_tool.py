@@ -34,11 +34,10 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     platforms: [macos]            # Optional — restrict to specific OS platforms
                                   #   Valid: macos, linux, windows
                                   #   Omit to load on all platforms (default)
-    prerequisites:                # Optional — runtime requirements
-      env_vars: [API_KEY]         #   Env vars that must be set (checked via os.getenv)
-      commands: [curl, jq]        #   CLI binaries that must be on PATH (checked via shutil.which)
-                                  #   Skills with unmet prerequisites are hidden from the
-                                  #   system prompt and flagged with a warning in skill_view.
+    prerequisites:                # Optional — legacy runtime requirements
+      env_vars: [API_KEY]         #   Legacy env var names are normalized into
+                                  #   required_environment_variables on load.
+      commands: [curl, jq]        #   Command checks remain advisory only.
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
       hermes:
@@ -68,14 +67,24 @@ Usage:
 """
 
 import json
+import logging
 import os
 import re
 import shutil
+import shlex
+import subprocess
 import sys
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import yaml
+from hermes_cli.config import load_env, _ENV_VAR_NAME_RE
+from tools.registry import registry
+from tools.runtime import is_gateway_surface as _is_gateway_surface
+from tools.terminal_tool import get_or_create_environment
+
+logger = logging.getLogger(__name__)
 
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
@@ -95,6 +104,20 @@ _PLATFORM_MAP = {
     "linux": "linux",
     "windows": "win32",
 }
+_EXCLUDED_SKILL_DIRS = frozenset(('.git', '.github', '.hub'))
+_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_secret_capture_callback = None
+
+
+class SkillReadinessStatus(str, Enum):
+    AVAILABLE = "available"
+    SETUP_NEEDED = "setup_needed"
+    UNSUPPORTED = "unsupported"
+
+
+def set_secret_capture_callback(callback) -> None:
+    global _secret_capture_callback
+    _secret_capture_callback = callback
 
 
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
@@ -124,41 +147,457 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     return False
 
 
-def check_skill_prerequisites(frontmatter: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Check if a skill's declared prerequisites are satisfied.
+def _normalize_prerequisite_values(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    return [str(item) for item in value if str(item).strip()]
 
-    Skills declare prerequisites via a top-level ``prerequisites`` dict
-    in their YAML frontmatter::
 
-        prerequisites:
-          env_vars: [TENOR_API_KEY]
-          commands: [curl, jq]
-
-    Returns:
-        (all_met, missing) — True + empty list if all met, else False + list
-        of human-readable descriptions of what's missing.
-    """
+def _collect_prerequisite_values(
+    frontmatter: Dict[str, Any],
+) -> Tuple[List[str], List[str]]:
     prereqs = frontmatter.get("prerequisites")
     if not prereqs or not isinstance(prereqs, dict):
-        return True, []
+        return [], []
+    return (
+        _normalize_prerequisite_values(prereqs.get("env_vars")),
+        _normalize_prerequisite_values(prereqs.get("commands")),
+    )
 
-    missing: List[str] = []
 
-    env_vars = prereqs.get("env_vars") or []
-    if isinstance(env_vars, str):
-        env_vars = [env_vars]
-    for var in env_vars:
-        if not os.getenv(str(var)):
-            missing.append(f"env ${var}")
+def _normalize_setup_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    setup = frontmatter.get("setup")
+    if not isinstance(setup, dict):
+        return {"help": None, "collect_secrets": []}
 
-    commands = prereqs.get("commands") or []
-    if isinstance(commands, str):
-        commands = [commands]
-    for cmd in commands:
-        if not shutil.which(str(cmd)):
-            missing.append(f"command `{cmd}`")
+    help_text = setup.get("help")
+    normalized_help = (
+        str(help_text).strip()
+        if isinstance(help_text, str) and help_text.strip()
+        else None
+    )
 
-    return (len(missing) == 0), missing
+    collect_secrets_raw = setup.get("collect_secrets")
+    if isinstance(collect_secrets_raw, dict):
+        collect_secrets_raw = [collect_secrets_raw]
+    if not isinstance(collect_secrets_raw, list):
+        collect_secrets_raw = []
+
+    collect_secrets: List[Dict[str, Any]] = []
+    for item in collect_secrets_raw:
+        if not isinstance(item, dict):
+            continue
+
+        env_var = str(item.get("env_var") or "").strip()
+        if not env_var:
+            continue
+
+        prompt = str(item.get("prompt") or f"Enter value for {env_var}").strip()
+        provider_url = str(item.get("provider_url") or item.get("url") or "").strip()
+
+        entry: Dict[str, Any] = {
+            "env_var": env_var,
+            "prompt": prompt,
+            "secret": bool(item.get("secret", True)),
+        }
+        if provider_url:
+            entry["provider_url"] = provider_url
+        collect_secrets.append(entry)
+
+    return {
+        "help": normalized_help,
+        "collect_secrets": collect_secrets,
+    }
+
+
+def _get_required_environment_variables(
+    frontmatter: Dict[str, Any],
+    legacy_env_vars: List[str] | None = None,
+) -> List[Dict[str, Any]]:
+    setup = _normalize_setup_metadata(frontmatter)
+    required_raw = frontmatter.get("required_environment_variables")
+    if isinstance(required_raw, dict):
+        required_raw = [required_raw]
+    if not isinstance(required_raw, list):
+        required_raw = []
+
+    required: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append_required(entry: Dict[str, Any]) -> None:
+        env_name = str(entry.get("name") or entry.get("env_var") or "").strip()
+        if not env_name or env_name in seen:
+            return
+        if not _ENV_VAR_NAME_RE.match(env_name):
+            return
+
+        normalized: Dict[str, Any] = {
+            "name": env_name,
+            "prompt": str(entry.get("prompt") or f"Enter value for {env_name}").strip(),
+        }
+
+        help_text = (
+            entry.get("help")
+            or entry.get("provider_url")
+            or entry.get("url")
+            or setup.get("help")
+        )
+        if isinstance(help_text, str) and help_text.strip():
+            normalized["help"] = help_text.strip()
+
+        required_for = entry.get("required_for")
+        if isinstance(required_for, str) and required_for.strip():
+            normalized["required_for"] = required_for.strip()
+
+        seen.add(env_name)
+        required.append(normalized)
+
+    for item in required_raw:
+        if isinstance(item, str):
+            _append_required({"name": item})
+            continue
+        if isinstance(item, dict):
+            _append_required(item)
+
+    for item in setup["collect_secrets"]:
+        _append_required(
+            {
+                "name": item.get("env_var"),
+                "prompt": item.get("prompt"),
+                "help": item.get("provider_url") or setup.get("help"),
+            }
+        )
+
+    if legacy_env_vars is None:
+        legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
+    for env_var in legacy_env_vars:
+        _append_required({"name": env_var})
+
+    return required
+
+
+def _get_required_commands(legacy_commands: List[str]) -> List[str]:
+    """Deduplicate and normalize a pre-extracted list of required CLI commands."""
+    seen: set[str] = set()
+    required: List[str] = []
+    for command in legacy_commands:
+        normalized = command.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        required.append(normalized)
+    return required
+
+
+def _build_probe_script(
+    env_var_names: List[str],
+    command_names: List[str],
+    fence: str,
+) -> str:
+    lines = [f"printf {shlex.quote(fence + chr(10))}"]
+    for name in env_var_names:
+        quoted_name = shlex.quote(name)
+        lines.append(
+            f'if [ -n "${{{name}:-}}" ]; then printf \'ENV\\t%s\\t1\\n\' {quoted_name}; '
+            f"else printf 'ENV\\t%s\\t0\\n' {quoted_name}; fi"
+        )
+    for command in command_names:
+        quoted_command = shlex.quote(command)
+        quoted_label = shlex.quote(command)
+        lines.append(
+            f"if command -v -- {quoted_command} >/dev/null 2>&1; "
+            f"then printf 'CMD\\t%s\\t1\\n' {quoted_label}; "
+            f"else printf 'CMD\\t%s\\t0\\n' {quoted_label}; fi"
+        )
+    lines.append(f"printf {shlex.quote(fence + chr(10))}")
+    return "; ".join(lines)
+
+
+def _parse_probe_output(payload: str, fence: str) -> Dict[str, Dict[str, bool]]:
+    first = payload.find(fence)
+    last = payload.rfind(fence)
+    if first == -1 or last == -1 or last <= first:
+        return {"env_vars": {}, "commands": {}}
+
+    body = payload[first + len(fence) : last].strip()
+    env_results: Dict[str, bool] = {}
+    command_results: Dict[str, bool] = {}
+    for line in body.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        kind, name, present = parts
+        target = env_results if kind == "ENV" else command_results
+        target[name.strip("'\" ")] = present == "1"
+    return {"env_vars": env_results, "commands": command_results}
+
+
+def _probe_local_login_shell(
+    env_var_names: List[str],
+    command_names: List[str],
+) -> Dict[str, Dict[str, bool]]:
+    env_var_names = [name for name in env_var_names if _ENV_VAR_NAME_RE.match(name)]
+    command_names = [name for name in command_names if str(name).strip()]
+
+    if not env_var_names and not command_names:
+        return {"env_vars": {}, "commands": {}}
+
+    try:
+        from tools.environments.local import _find_shell
+
+        shell = _find_shell()
+    except Exception:
+        logger.debug("Failed to detect login shell", exc_info=True)
+        return {"env_vars": {}, "commands": {}}
+
+    fence = "__HERMES_SKILL_PROBE_FENCE__"
+    script = _build_probe_script(env_var_names, command_names, fence)
+
+    try:
+        proc = subprocess.run(
+            [shell, "-lic", script],
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env=os.environ.copy(),
+            timeout=15,
+        )
+        return _parse_probe_output(proc.stdout, fence)
+    except Exception:
+        logger.debug("Local login-shell probe failed", exc_info=True)
+        return {"env_vars": {}, "commands": {}}
+
+
+def _probe_remote_environment(
+    task_id: str | None,
+    env_var_names: List[str],
+    command_names: List[str],
+) -> Dict[str, Dict[str, bool]]:
+    if not task_id or (not env_var_names and not command_names):
+        return {"env_vars": {}, "commands": {}}
+
+    try:
+        env, _ = get_or_create_environment(task_id=task_id, timeout=30)
+    except Exception:
+        logger.debug("Could not create environment for remote probe", exc_info=True)
+        return {"env_vars": {}, "commands": {}}
+
+    filtered_env = [name for name in env_var_names if _ENV_VAR_NAME_RE.match(name)]
+    if not filtered_env and not command_names:
+        return {"env_vars": {}, "commands": {}}
+
+    fence = "__HERMES_REMOTE_PROBE_FENCE__"
+    script = _build_probe_script(filtered_env, command_names, fence)
+
+    try:
+        result = env.execute(script, timeout=30)
+        payload = result.get("output", "")
+        return _parse_probe_output(payload, fence)
+    except Exception:
+        logger.debug("Remote probe command failed", exc_info=True)
+        return {"env_vars": {}, "commands": {}}
+
+
+def _get_missing_required_commands(
+    required_commands: List[str],
+    backend: str,
+    shell_probe: Dict[str, Dict[str, bool]] | None = None,
+    remote_probe: Dict[str, Dict[str, bool]] | None = None,
+) -> List[str]:
+    if not required_commands:
+        return []
+    if backend in _REMOTE_ENV_BACKENDS:
+        probed = (remote_probe or {}).get("commands", {})
+        return [cmd for cmd in required_commands if probed.get(cmd) is not True]
+    if backend == "local" and shell_probe is not None:
+        probed = shell_probe.get("commands", {})
+        return [
+            command
+            for command in required_commands
+            if probed.get(command, shutil.which(command) is not None) is False
+        ]
+    return [command for command in required_commands if shutil.which(command) is None]
+
+
+def _capture_required_environment_variables(
+    skill_name: str,
+    missing_entries: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not missing_entries:
+        return {
+            "missing_names": [],
+            "setup_skipped": False,
+            "gateway_setup_hint": None,
+        }
+
+    missing_names = [entry["name"] for entry in missing_entries]
+    if _is_gateway_surface():
+        return {
+            "missing_names": missing_names,
+            "setup_skipped": False,
+            "gateway_setup_hint": _gateway_setup_hint(),
+        }
+
+    if _secret_capture_callback is None:
+        return {
+            "missing_names": missing_names,
+            "setup_skipped": False,
+            "gateway_setup_hint": None,
+        }
+
+    setup_skipped = False
+    remaining_names: List[str] = []
+
+    for entry in missing_entries:
+        metadata = {"skill_name": skill_name}
+        if entry.get("help"):
+            metadata["help"] = entry["help"]
+        if entry.get("required_for"):
+            metadata["required_for"] = entry["required_for"]
+
+        try:
+            callback_result = _secret_capture_callback(
+                entry["name"],
+                entry["prompt"],
+                metadata,
+            )
+        except Exception:
+            logger.warning(
+                f"Secret capture callback failed for {entry['name']}", exc_info=True
+            )
+            callback_result = {
+                "success": False,
+                "stored_as": entry["name"],
+                "validated": False,
+                "skipped": True,
+            }
+
+        success = isinstance(callback_result, dict) and bool(
+            callback_result.get("success")
+        )
+        skipped = isinstance(callback_result, dict) and bool(
+            callback_result.get("skipped")
+        )
+        if success and not skipped:
+            continue
+
+        setup_skipped = True
+        remaining_names.append(entry["name"])
+
+    return {
+        "missing_names": remaining_names,
+        "setup_skipped": setup_skipped,
+        "gateway_setup_hint": None,
+    }
+
+
+def _get_terminal_backend_name() -> str:
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        backend = str(_get_env_config().get("env_type") or "").strip().lower()
+        if backend:
+            return backend
+    except Exception:
+        pass
+
+    return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+
+
+def _is_env_var_persisted(var_name: str, env_snapshot: Dict[str, str] | None = None) -> bool:
+    if env_snapshot is None:
+        env_snapshot = load_env()
+    if var_name in env_snapshot:
+        return bool(env_snapshot.get(var_name))
+    return bool(os.getenv(var_name))
+
+
+def _is_env_var_available(
+    var_name: str,
+    *,
+    backend: str,
+    env_snapshot: Dict[str, str] | None = None,
+    shell_probe: Dict[str, Dict[str, bool]] | None = None,
+    remote_probe: Dict[str, Dict[str, bool]] | None = None,
+) -> bool:
+    if backend == "local" and shell_probe is not None:
+        shell_value = shell_probe.get("env_vars", {}).get(var_name)
+        if shell_value is not None:
+            return shell_value
+    if backend in _REMOTE_ENV_BACKENDS and remote_probe is not None:
+        remote_value = remote_probe.get("env_vars", {}).get(var_name)
+        if remote_value is not None:
+            return remote_value
+    return _is_env_var_persisted(var_name, env_snapshot)
+
+
+def _remaining_required_environment_names(
+    required_env_vars: List[Dict[str, Any]],
+    capture_result: Dict[str, Any],
+    *,
+    env_snapshot: Dict[str, str] | None = None,
+    backend: str | None = None,
+    shell_probe: Dict[str, Dict[str, bool]] | None = None,
+    remote_probe: Dict[str, Dict[str, bool]] | None = None,
+) -> List[str]:
+    if backend is None:
+        backend = _get_terminal_backend_name()
+    missing_names = set(capture_result["missing_names"])
+    if backend in _REMOTE_ENV_BACKENDS:
+        if remote_probe:
+            remote_env = remote_probe.get("env_vars", {})
+        else:
+            remote_env = {}
+        remaining = []
+        for entry in required_env_vars:
+            name = entry["name"]
+            if name in missing_names:
+                remaining.append(name)
+                continue
+            present = remote_env.get(name)
+            if present is not True:
+                remaining.append(name)
+        return remaining
+
+    if env_snapshot is None:
+        env_snapshot = load_env()
+    remaining = []
+    for entry in required_env_vars:
+        name = entry["name"]
+        if name in missing_names or not _is_env_var_available(
+            name,
+            backend=backend,
+            env_snapshot=env_snapshot,
+            shell_probe=shell_probe,
+        ):
+            remaining.append(name)
+    return remaining
+
+
+def _gateway_setup_hint() -> str:
+    try:
+        from gateway.platforms.base import GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
+
+        return GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
+    except Exception:
+        return "Secure secret entry is not available. Run `hermes setup` or update ~/.hermes/.env locally."
+
+
+def _build_setup_note(
+    readiness_status: SkillReadinessStatus,
+    missing: List[str],
+    setup_help: str | None = None,
+) -> str | None:
+    if readiness_status == SkillReadinessStatus.SETUP_NEEDED:
+        missing_str = ", ".join(missing) if missing else "required prerequisites"
+        note = f"Setup needed before using this skill: missing {missing_str}."
+        if setup_help:
+            return f"{note} {setup_help}"
+        return note
+    return None
 
 
 def check_skills_requirements() -> bool:
@@ -272,25 +711,20 @@ def _find_all_skills() -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts
     """
-    skills = []
-    
+    skills: List[Dict[str, Any]] = []
     if not SKILLS_DIR.exists():
         return skills
     
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+        if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
             continue
             
         skill_dir = skill_md.parent
         
         try:
-            content = skill_md.read_text(encoding='utf-8')
+            content = skill_md.read_text(encoding='utf-8')[:4000]
             frontmatter, body = _parse_frontmatter(content)
 
-            # Skip skills incompatible with the current OS platform
-            if not skill_matches_platform(frontmatter):
-                continue
-            
             name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
             
             description = frontmatter.get('description', '')
@@ -304,22 +738,21 @@ def _find_all_skills() -> List[Dict[str, Any]]:
             if len(description) > MAX_DESCRIPTION_LENGTH:
                 description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
             
+            if not skill_matches_platform(frontmatter):
+                continue
+
             category = _get_category_from_path(skill_md)
 
-            prereqs_met, prereqs_missing = check_skill_prerequisites(frontmatter)
-
-            entry = {
+            skills.append({
                 "name": name,
                 "description": description,
                 "category": category,
-            }
-            if not prereqs_met:
-                entry["prerequisites_met"] = False
-                entry["prerequisites_missing"] = prereqs_missing
+            })
 
-            skills.append(entry)
-            
         except Exception:
+            logger.debug(
+                f"Skipping skill at {skill_md}: failed to parse", exc_info=True
+            )
             continue
     
     return skills
@@ -372,7 +805,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
     
     Args:
         verbose: If True, include skill counts per category (default: False, but currently always included)
-        task_id: Optional task identifier (unused, for API consistency)
+        task_id: Optional task identifier used to probe the active backend
         
     Returns:
         JSON string with list of categories and their descriptions
@@ -386,20 +819,33 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
             }, ensure_ascii=False)
         
         category_dirs = {}
+        category_counts: Dict[str, int] = {}
         for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+
+            try:
+                frontmatter, _ = _parse_frontmatter(
+                    skill_md.read_text(encoding='utf-8')[:4000]
+                )
+            except Exception:
+                frontmatter = {}
+
+            if not skill_matches_platform(frontmatter):
+                continue
+
             category = _get_category_from_path(skill_md)
             if category:
-                category_dir = SKILLS_DIR / category
+                category_counts[category] = category_counts.get(category, 0) + 1
                 if category not in category_dirs:
-                    category_dirs[category] = category_dir
-        
+                    category_dirs[category] = SKILLS_DIR / category
+
         categories = []
         for name in sorted(category_dirs.keys()):
             category_dir = category_dirs[name]
             description = _load_category_description(category_dir)
-            skill_count = sum(1 for _ in category_dir.rglob("SKILL.md"))
             
-            cat_entry = {"name": name, "skill_count": skill_count}
+            cat_entry = {"name": name, "skill_count": category_counts[name]}
             if description:
                 cat_entry["description"] = description
             categories.append(cat_entry)
@@ -426,7 +872,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     
     Args:
         category: Optional category filter (e.g., "mlops")
-        task_id: Optional task identifier (unused, for API consistency)
+        task_id: Optional task identifier used to probe the active backend
         
     Returns:
         JSON string with minimal skill info: name, description, category
@@ -484,7 +930,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
     Args:
         name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl")
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
-        task_id: Optional task identifier (unused, for API consistency)
+        task_id: Optional task identifier used to probe the active backend
         
     Returns:
         JSON string with skill content or error message
@@ -523,16 +969,36 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     break
         
         if not skill_md or not skill_md.exists():
-            # List available skills in error message
-            all_skills = _find_all_skills()
-            available = [s["name"] for s in all_skills[:20]]  # Limit to 20
+            available = [s["name"] for s in _find_all_skills()[:20]]
             return json.dumps({
                 "success": False,
                 "error": f"Skill '{name}' not found.",
                 "available_skills": available,
                 "hint": "Use skills_list to see all available skills"
             }, ensure_ascii=False)
-        
+
+        # Read the file once — reused for platform check and main content below
+        try:
+            content = skill_md.read_text(encoding='utf-8')
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": f"Failed to read skill '{name}': {e}",
+            }, ensure_ascii=False)
+
+        parsed_frontmatter: Dict[str, Any] = {}
+        try:
+            parsed_frontmatter, _ = _parse_frontmatter(content)
+        except Exception:
+            parsed_frontmatter = {}
+
+        if not skill_matches_platform(parsed_frontmatter):
+            return json.dumps({
+                "success": False,
+                "error": f"Skill '{name}' is not supported on this platform.",
+                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            }, ensure_ascii=False)
+
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
             # Security: Prevent path traversal attacks
@@ -618,9 +1084,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 "file_type": target_file.suffix
             }, ensure_ascii=False)
         
-        # Read the main skill content
-        content = skill_md.read_text(encoding='utf-8')
-        frontmatter, body = _parse_frontmatter(content)
+        # Reuse the parse from the platform check above
+        frontmatter = parsed_frontmatter
         
         # Get reference, template, asset, and script files if this is a directory-based skill
         reference_files = []
@@ -672,29 +1137,121 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             linked_files["scripts"] = script_files
         
         rel_path = str(skill_md.relative_to(SKILLS_DIR))
-        
+        skill_name = frontmatter.get(
+            'name', skill_md.stem if not skill_dir else skill_dir.name
+        )
+        legacy_env_vars, legacy_commands = _collect_prerequisite_values(frontmatter)
+        required_env_vars = _get_required_environment_variables(frontmatter, legacy_env_vars)
+        required_commands = _get_required_commands(legacy_commands)
+        backend = _get_terminal_backend_name()
+        env_snapshot = load_env()
+        shell_probe = (
+            _probe_local_login_shell(
+                [entry["name"] for entry in required_env_vars],
+                required_commands,
+            )
+            if backend == "local"
+            else None
+        )
+        remote_probe = (
+            _probe_remote_environment(
+                task_id,
+                [entry["name"] for entry in required_env_vars],
+                required_commands,
+            )
+            if backend in _REMOTE_ENV_BACKENDS and task_id
+            else None
+        )
+        missing_required_env_vars = [
+            e
+            for e in required_env_vars
+            if not _is_env_var_available(
+                e["name"],
+                backend=backend,
+                env_snapshot=env_snapshot,
+                shell_probe=shell_probe,
+                remote_probe=remote_probe,
+            )
+        ]
+        capture_result = _capture_required_environment_variables(
+            skill_name,
+            missing_required_env_vars,
+        )
+        if missing_required_env_vars:
+            env_snapshot = load_env()
+            if backend == "local":
+                shell_probe = _probe_local_login_shell(
+                    [entry["name"] for entry in required_env_vars],
+                    required_commands,
+                )
+            if backend in _REMOTE_ENV_BACKENDS and task_id:
+                remote_probe = _probe_remote_environment(
+                    task_id,
+                    [entry["name"] for entry in required_env_vars],
+                    required_commands,
+                )
+        remaining_missing_required_envs = _remaining_required_environment_names(
+            required_env_vars,
+            capture_result,
+            env_snapshot=env_snapshot,
+            backend=backend,
+            shell_probe=shell_probe,
+            remote_probe=remote_probe,
+        )
+        missing_required_commands = _get_missing_required_commands(
+            required_commands,
+            backend,
+            shell_probe=shell_probe,
+            remote_probe=remote_probe,
+        )
+        setup_needed = bool(
+            remaining_missing_required_envs or missing_required_commands
+        )
+
         result = {
             "success": True,
-            "name": frontmatter.get('name', skill_md.stem if not skill_dir else skill_dir.name),
+            "name": skill_name,
             "description": frontmatter.get('description', ''),
             "tags": tags,
             "related_skills": related_skills,
             "content": content,
             "path": rel_path,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None
+            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
+            "required_environment_variables": required_env_vars,
+            "required_commands": required_commands,
+            "missing_required_environment_variables": remaining_missing_required_envs,
+            "missing_required_commands": missing_required_commands,
+            "setup_needed": setup_needed,
+            "setup_skipped": capture_result["setup_skipped"],
+            "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
+            if setup_needed
+            else SkillReadinessStatus.AVAILABLE.value,
         }
-        
-        # Prerequisite check — warn the agent if requirements are unmet
-        prereqs_met, prereqs_missing = check_skill_prerequisites(frontmatter)
-        if not prereqs_met:
-            result["prerequisites_met"] = False
-            result["prerequisites_missing"] = prereqs_missing
-            result["prerequisites_warning"] = (
-                f"This skill requires {', '.join(prereqs_missing)} which "
-                f"{'is' if len(prereqs_missing) == 1 else 'are'} not available. "
-                f"Tell the user what's needed before attempting to use this skill."
+
+        setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
+        if setup_help:
+            result["setup_help"] = setup_help
+
+        if capture_result["gateway_setup_hint"]:
+            result["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
+
+        if setup_needed:
+            missing_items = [f"env ${env_name}" for env_name in remaining_missing_required_envs]
+            missing_items.extend(
+                f"command `{command}`" for command in missing_required_commands
             )
+            setup_note = _build_setup_note(
+                SkillReadinessStatus.SETUP_NEEDED,
+                missing_items,
+                setup_help,
+            )
+            if backend in _REMOTE_ENV_BACKENDS and setup_note:
+                setup_note = (
+                    f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."
+                )
+            if setup_note:
+                result["setup_note"] = setup_note
 
         # Surface agentskills.io optional fields when present
         if frontmatter.get('compatibility'):
@@ -740,8 +1297,7 @@ if __name__ == "__main__":
         print("\nFirst 10 skills:")
         for skill in result["skills"][:10]:
             cat = f"[{skill['category']}] " if skill.get('category') else ""
-            refs = f" (+{len(skill['reference_files'])} refs)" if skill.get('reference_files') else ""
-            print(f"  • {cat}{skill['name']}: {skill['description'][:60]}...{refs}")
+            print(f"  • {cat}{skill['name']}: {skill['description'][:60]}...")
     else:
         print(f"Error: {result['error']}")
     
@@ -752,8 +1308,8 @@ if __name__ == "__main__":
         print(f"Name: {result['name']}")
         print(f"Description: {result.get('description', 'N/A')[:100]}...")
         print(f"Content length: {len(result['content'])} chars")
-        if result.get('reference_files'):
-            print(f"Reference files: {result['reference_files']}")
+        if result.get('linked_files'):
+            print(f"Linked files: {result['linked_files']}")
     else:
         print(f"Error: {result['error']}")
     
@@ -771,7 +1327,6 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
@@ -811,13 +1366,17 @@ registry.register(
     name="skills_list",
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(category=args.get("category")),
+    handler=lambda args, **kw: skills_list(
+        category=args.get("category"), task_id=kw.get("task_id")
+    ),
     check_fn=check_skills_requirements,
 )
 registry.register(
     name="skill_view",
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
-    handler=lambda args, **kw: skill_view(args.get("name", ""), file_path=args.get("file_path")),
+    handler=lambda args, **kw: skill_view(
+        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
+    ),
     check_fn=check_skills_requirements,
 )

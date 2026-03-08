@@ -109,7 +109,11 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": [
+            "skills_list",
+            "skill_view",
+            "skill_manage",
+        ],
         "includes": []
     },
     
@@ -494,7 +498,7 @@ if __name__ == "__main__":
     print("\nMultiple Toolset Resolution:")
     print("-" * 40)
     combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
-    print(f"  Combining ['web', 'vision', 'terminal']:")
+    print("  Combining ['web', 'vision', 'terminal']:")
     print(f"    Result: {', '.join(sorted(combined))}")
     
     print("\nCustom Toolset Creation:")
@@ -506,6 +510,6 @@ if __name__ == "__main__":
         includes=["terminal", "vision"]
     )
     custom_info = get_toolset_info("my_custom")
-    print(f"  Created 'my_custom' toolset:")
+    print("  Created 'my_custom' toolset:")
     print(f"    Description: {custom_info['description']}")
     print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")

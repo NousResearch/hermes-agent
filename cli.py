@@ -17,10 +17,12 @@ import os
 import sys
 import json
 import io
+import asyncio
 import atexit
 import random
 import time
 import uuid
+from itertools import zip_longest
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -389,6 +391,7 @@ from hermes_cli.skin import (
     get_mod_compact_tagline,
     get_mod_help_footer,
     get_mod_hint_bar,
+    get_mod_hero_animation_interval,
     get_mod_next_labels,
     get_mod_omens_title,
     get_mod_placeholder_text,
@@ -403,6 +406,7 @@ from hermes_cli.skin import (
     is_ares_skin,
     is_mod_skin,
     load_lore_state,
+    mod_has_animated_hero,
     maybe_create_trickster_note,
     normalize_skin_name,
     parse_dice_spec,
@@ -852,7 +856,7 @@ class HermesCLI:
             max_turns: Maximum tool-calling iterations (default: 60)
             verbose: Enable verbose logging
             compact: Use compact display mode
-            skin: Visual skin name ("hermes", "ares", or "posideon")
+            skin: Visual skin name ("hermes", "ares", "posideon", or "sisyphus")
             resume: Session ID to resume (restores conversation history from SQLite)
         """
         # Initialize Rich console
@@ -870,6 +874,7 @@ class HermesCLI:
         self.easter_eggs = bool(CLI_CONFIG["display"].get("easter_eggs", True))
         self._banner_phase = 0
         self._ui_phase = 0
+        self._managed_banner_frozen = False
         self._lore_state = load_lore_state()
         self._sync_skin_env()
         
@@ -1081,6 +1086,7 @@ class HermesCLI:
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,
+                suppress_progress_output=self._uses_managed_banner(),
                 clarify_callback=self._clarify_callback,
             )
             return True
@@ -1092,18 +1098,27 @@ class HermesCLI:
         """Display the welcome banner for the active skin."""
         self.console.clear()
 
+        if self._uses_startup_banner_animation():
+            self._show_animated_startup_banner()
+            return
+
+        self._render_banner(self.console, phase=self._banner_phase)
+        self._banner_phase += 1
+
+    def _render_banner(self, console, *, phase: int):
+        """Render the banner for a specific phase without mutating CLI state."""
         if self.compact:
             if is_mod_skin(self.skin):
-                self.console.print(_build_mod_compact_banner())
+                console.print(_build_mod_compact_banner())
             else:
-                self.console.print(STOCK_COMPACT_BANNER)
-            self._show_status()
+                console.print(STOCK_COMPACT_BANNER)
+            self._show_status(console=console)
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             self._refresh_lore()
             build_welcome_banner(
-                console=self.console,
+                console=console,
                 model=self.model,
                 cwd=cwd,
                 tools=tools,
@@ -1111,15 +1126,117 @@ class HermesCLI:
                 session_id=self.session_id,
                 skin=self.skin,
                 lore_state=self._lore_state,
-                phase=self._banner_phase,
+                phase=phase,
             )
-            self._banner_phase += 1
 
-        # Show tool availability warnings if any tools are disabled
-        self._show_tool_availability_warnings()
-        self.console.print()
+        self._show_tool_availability_warnings(console=console)
+        console.print()
 
-    def _build_banner_ansi(self) -> str:
+    def _uses_startup_banner_animation(self) -> bool:
+        return (
+            not self.compact
+            and self.ambient_motion
+            and is_mod_skin(self.skin)
+            and mod_has_animated_hero(self.skin)
+        )
+
+    def _uses_managed_banner(self) -> bool:
+        """Managed interactive banners are disabled; animated skins only animate at startup."""
+        return False
+
+    def _rewrite_banner_lines_in_place(
+        self,
+        previous_lines: List[str],
+        next_lines: List[str],
+        total_lines: int,
+    ) -> None:
+        """Patch only the changed banner lines during startup animation."""
+        if not previous_lines or not next_lines:
+            return
+
+        sys.stdout.write("\0337")
+        sys.stdout.write(f"\033[{total_lines}F")
+        current_line = 0
+
+        for index, (before, after) in enumerate(zip_longest(previous_lines, next_lines, fillvalue="")):
+            if before == after:
+                continue
+            delta = index - current_line
+            if delta > 0:
+                sys.stdout.write(f"\033[{delta}B")
+            sys.stdout.write("\r\033[2K")
+            sys.stdout.write(after)
+            current_line = index
+
+        sys.stdout.write("\0338")
+        sys.stdout.flush()
+
+    def _store_banner_snapshot(self, banner_ansi: str) -> None:
+        """Track the currently rendered banner for in-place animation updates."""
+        self._banner_snapshot_lines = banner_ansi.splitlines()
+        self._banner_snapshot_line_count = len(self._banner_snapshot_lines)
+
+    def _rewrite_banner_lines_absolute(
+        self,
+        previous_lines: List[str],
+        next_lines: List[str],
+    ) -> None:
+        """Rewrite changed banner lines at absolute rows without reprinting the terminal."""
+        if not previous_lines or not next_lines:
+            return
+        if len(previous_lines) != len(next_lines):
+            return
+
+        stream = sys.__stdout__
+        stream.write("\0337")
+        for index, (before, after) in enumerate(zip_longest(previous_lines, next_lines, fillvalue=""), start=1):
+            if before == after:
+                continue
+            stream.write(f"\033[{index};1H\033[2K{after}")
+        stream.write("\0338")
+        stream.flush()
+
+    def _advance_live_banner_frame(self) -> None:
+        """Advance an animated hero frame in place while the prompt is idle."""
+        previous_lines = getattr(self, "_banner_snapshot_lines", None)
+        if not previous_lines:
+            return
+
+        next_phase = self._banner_phase + 1
+        banner_ansi = self._build_banner_ansi(phase=next_phase)
+        next_lines = banner_ansi.splitlines()
+        if len(next_lines) != getattr(self, "_banner_snapshot_line_count", len(previous_lines)):
+            return
+
+        self._rewrite_banner_lines_absolute(previous_lines, next_lines)
+        self._store_banner_snapshot(banner_ansi)
+        self._banner_phase = next_phase
+
+    def _show_animated_startup_banner(self):
+        """Animate the hero asset in place during startup without repainting the terminal."""
+        phase = self._banner_phase
+        current_ansi = self._build_banner_ansi(phase=phase)
+        sys.stdout.write(current_ansi)
+        sys.stdout.flush()
+
+        current_lines = current_ansi.splitlines()
+        total_lines = len(current_lines)
+        interval = max(0.12, get_mod_hero_animation_interval(self.skin))
+        frame_count = max(4, min(8, int(round(1.5 / interval))))
+
+        for step in range(1, frame_count):
+            time.sleep(interval)
+            next_ansi = self._build_banner_ansi(phase=phase + step)
+            next_lines = next_ansi.splitlines()
+            if len(next_lines) != total_lines:
+                break
+            self._rewrite_banner_lines_in_place(current_lines, next_lines, total_lines)
+            current_lines = next_lines
+
+        self._store_banner_snapshot("\n".join(current_lines))
+        self._banner_phase = phase + frame_count
+
+    def _build_banner_ansi(self, *, phase: int | None = None) -> str:
         """Render the current banner and return ANSI for prompt_toolkit-safe redraws."""
         capture = io.StringIO()
         temp_console = Console(
@@ -1129,33 +1246,34 @@ class HermesCLI:
             width=max(getattr(self.console, "width", 120) or 120, 80),
             file=capture,
         )
-
-        if self.compact:
-            if is_mod_skin(self.skin):
-                temp_console.print(_build_mod_compact_banner())
-            else:
-                temp_console.print(STOCK_COMPACT_BANNER)
-            self._show_status(console=temp_console)
-        else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            self._refresh_lore()
-            build_welcome_banner(
-                console=temp_console,
-                model=self.model,
-                cwd=cwd,
-                tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                session_id=self.session_id,
-                skin=self.skin,
-                lore_state=self._lore_state,
-                phase=self._banner_phase,
-            )
-            self._banner_phase += 1
-
-        self._show_tool_availability_warnings(console=temp_console)
-        temp_console.print()
+        self._render_banner(temp_console, phase=self._banner_phase if phase is None else phase)
         return temp_console.export_text(styles=True, clear=False)
+
+    def _build_managed_banner_ansi(self) -> str:
+        """Build the prompt-toolkit-managed banner block."""
+        return self._build_banner_ansi(phase=self._banner_phase)
+
+    def _managed_banner_height(self) -> int:
+        """Return the current line height for the managed banner block."""
+        return max(1, len(self._build_managed_banner_ansi().splitlines()))
+
+    def _append_managed_output(self, ansi_text: str) -> None:
+        """Append ANSI transcript content for managed-banner skins."""
+        if not ansi_text:
+            return
+        existing = getattr(self, "_managed_output_ansi", "")
+        if existing and not existing.endswith("\n") and not ansi_text.startswith("\n"):
+            existing += "\n"
+        self._managed_output_ansi = existing + ansi_text
+        if self._app is not None:
+            self._app.invalidate()
+
+    def _managed_output_height(self) -> int:
+        """Return the current line height for the managed transcript region."""
+        output = getattr(self, "_managed_output_ansi", "")
+        if not output:
+            return 0
+        return len(output.splitlines()) or 1
     
     def _show_tool_availability_warnings(self, console=None):
         """Show warnings about disabled tools due to missing API keys."""
@@ -1236,7 +1354,9 @@ class HermesCLI:
         normalized = normalize_skin_name(new_skin)
         self.skin = normalized
         self._banner_phase = 0
+        self._banner_last_refresh = 0.0
         self._ui_phase = 0
+        self._managed_banner_frozen = False
         _sync_runtime_skin_theme(normalized)
         self._sync_skin_env()
         self._refresh_effective_system_prompt()
@@ -1246,6 +1366,16 @@ class HermesCLI:
             self._app.invalidate()
         if persist:
             save_config_value("display.skin", normalized)
+
+    def _freeze_managed_banner(self) -> None:
+        """Stop managed-banner animation after the first user interaction."""
+        if not self._uses_managed_banner():
+            return
+        if self._managed_banner_frozen:
+            return
+        self._managed_banner_frozen = True
+        if self._app is not None:
+            self._app.invalidate()
 
     def _compose_system_prompt(self) -> str:
         """Combine the active skin persona with any user-selected prompt."""
@@ -1264,7 +1394,13 @@ class HermesCLI:
     def _reload_skin_ui(self):
         """Redraw the terminal UI after a skin change like a fresh launcher boot."""
         if self._app is not None and getattr(self._app, "is_running", False):
-            _cprint("\033[2J\033[H" + self._build_banner_ansi())
+            if self._uses_managed_banner():
+                _cprint("\033[2J\033[H")
+                self._app.invalidate()
+                return
+            banner_ansi = self._build_banner_ansi()
+            self._store_banner_snapshot(banner_ansi)
+            _cprint("\033[2J\033[H" + banner_ansi)
             self._app.invalidate()
             return
         self.console.clear()
@@ -2046,8 +2182,8 @@ class HermesCLI:
             parts = cmd_original.split(maxsplit=1)
             if len(parts) == 1:
                 print(f"Active skin: {self.skin}")
-                print("  Usage: /skin Hermes|Ares|Posideon")
-                print("  Example: /skin Posideon")
+                print("  Usage: /skin Hermes|Ares|Posideon|Sisyphus")
+                print("  Example: /skin Sisyphus")
             else:
                 requested_skin = resolve_skin_request(parts[1])
                 if requested_skin not in VALID_SKINS:
@@ -2263,8 +2399,16 @@ class HermesCLI:
         w = self.console.width
         separator = build_speed_line(w, self._banner_phase) if self._ares_skin_active() else ("─" * w)
         separator_color = self._mod_response_frame_color() if self._ares_skin_active() else _GOLD
-        _cprint(f"{separator_color}{separator}{_RST}")
-        print(flush=True)
+        if self._uses_managed_banner():
+            prompt_color = _ansi_fg_hex(ARES_SAND if self._ares_skin_active() else "#FFF8DC")
+            glyph = get_mod_agent_glyph() if self._ares_skin_active() else "•"
+            self._append_managed_output(
+                f"{separator_color}{separator}{_RST}\n\n"
+                f"{separator_color}{glyph}{_RST} {prompt_color}{message}{_RST}\n"
+            )
+        else:
+            _cprint(f"{separator_color}{separator}{_RST}")
+            print(flush=True)
         
         try:
             # Run the conversation with interrupt monitoring
@@ -2298,7 +2442,11 @@ class HermesCLI:
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
-                            print(f"\n⚡ New message detected, interrupting...")
+                            if self._uses_managed_banner():
+                                notice = f"\n{_ansi_fg_hex(ARES_ASH)}⚡ New message detected, interrupting...{_RST}\n"
+                                self._append_managed_output(notice)
+                            else:
+                                print(f"\n⚡ New message detected, interrupting...")
                             self.agent.interrupt(interrupt_msg)
                             break
                     except queue.Empty:
@@ -2352,7 +2500,10 @@ class HermesCLI:
                     if trickster_note:
                         rendered += f"\n\n{subtle_color}╎ {trickster_note}{_RST}"
                     rendered += f"\n\n{frame_color}{bot}{_RST}"
-                    _cprint(rendered)
+                    if self._uses_managed_banner():
+                        self._append_managed_output(rendered + "\n")
+                    else:
+                        _cprint(rendered)
                 else:
                     if self._ares_skin_active():
                         label = f" {get_mod_agent_glyph()} {get_mod_assistant_name()} "
@@ -2364,7 +2515,11 @@ class HermesCLI:
 
                     # Render box + response as a single _cprint call so
                     # nothing can interleave between the box borders.
-                    _cprint(f"\n{top}\n{response}\n\n{bot}")
+                    rendered = f"\n{top}\n{response}\n\n{bot}"
+                    if self._uses_managed_banner():
+                        self._append_managed_output(rendered + "\n")
+                    else:
+                        _cprint(rendered)
             
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop
@@ -2378,7 +2533,11 @@ class HermesCLI:
                     except queue.Empty:
                         break
                 combined = "\n".join(all_parts)
-                print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
+                queued_note = f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'"
+                if self._uses_managed_banner():
+                    self._append_managed_output(f"{_ansi_fg_hex(ARES_ASH)}{queued_note}{_RST}\n")
+                else:
+                    print(queued_note)
                 self._pending_input.put(combined)
             
             return response
@@ -2415,15 +2574,22 @@ class HermesCLI:
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
-        self.show_banner()
-        welcome_message = (
-            get_mod_welcome_message()
-            if self._ares_skin_active()
-            else "Welcome to Hermes Agent! Type your message or /help for commands."
-        )
-        welcome_color = ARES_SAND if self._ares_skin_active() else "#FFF8DC"
-        self.console.print(f"[{welcome_color}]{welcome_message}[/]")
-        self.console.print()
+        if self._uses_managed_banner():
+            self.console.clear()
+            welcome_message = get_mod_welcome_message()
+            welcome_color = ARES_SAND if self._ares_skin_active() else "#FFF8DC"
+            self.console.print(f"[{welcome_color}]{welcome_message}[/]")
+            self.console.print()
+        else:
+            self.show_banner()
+            welcome_message = (
+                get_mod_welcome_message()
+                if self._ares_skin_active()
+                else "Welcome to Hermes Agent! Type your message or /help for commands."
+            )
+            welcome_color = ARES_SAND if self._ares_skin_active() else "#FFF8DC"
+            self.console.print(f"[{welcome_color}]{welcome_message}[/]")
+            self.console.print()
         
         # State for async operation
         self._agent_running = False
@@ -2431,6 +2597,8 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._banner_last_refresh = 0.0
+        self._managed_output_ansi = ""
 
         # Clarify tool state: interactive question/answer with the user.
         # When the agent calls the clarify tool, _clarify_state is set and
@@ -2704,6 +2872,8 @@ class HermesCLI:
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference."""
             text = buf.text
+            if text:
+                cli_ref._freeze_managed_banner()
             line_count = text.count('\n')
             # Heuristic: if text jumps to 5+ lines in one change, it's a paste
             if line_count >= 5 and not text.startswith('/'):
@@ -2966,6 +3136,24 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
+        managed_banner = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: _PT_ANSI(cli_ref._build_managed_banner_ansi())),
+                height=lambda: cli_ref._managed_banner_height(),
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._uses_managed_banner()),
+        )
+
+        managed_output = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: _PT_ANSI(getattr(cli_ref, "_managed_output_ansi", ""))),
+                height=lambda: cli_ref._managed_output_height(),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._uses_managed_banner() and bool(getattr(cli_ref, "_managed_output_ansi", ""))),
+        )
+
         # Horizontal rules above and below the input (bronze, 1 line each).
         # The bottom rule moves down as the TextArea grows with newlines.
         input_rule_top = Window(
@@ -2982,6 +3170,8 @@ class HermesCLI:
         # the corresponding interactive prompt is active.
         layout = Layout(
             HSplit([
+                managed_banner,
+                managed_output,
                 Window(height=0),
                 sudo_widget,
                 approval_widget,
@@ -3007,8 +3197,9 @@ class HermesCLI:
         self._app = app  # Store reference for clarify_callback
 
         if self._ares_skin_active():
-            def animation_loop():
+            async def animation_loop():
                 while not self._should_exit:
+                    managed_frozen = self._uses_managed_banner() and self._managed_banner_frozen
                     if self.ambient_motion or self._agent_running:
                         self._ui_phase = (self._ui_phase + 1) % 10_000
                         try:
@@ -3016,9 +3207,30 @@ class HermesCLI:
                                 app.invalidate()
                         except Exception:
                             pass
-                    time.sleep(0.12 if self._agent_running else 0.22)
+                    if (
+                        app.is_running
+                        and self.ambient_motion
+                        and self._uses_managed_banner()
+                        and mod_has_animated_hero(self.skin)
+                        and not self._agent_running
+                        and not self._clarify_state
+                        and not self._clarify_freetext
+                        and not self._sudo_state
+                        and not self._approval_state
+                        and not managed_frozen
+                    ):
+                        now = time.monotonic()
+                        interval = get_mod_hero_animation_interval(self.skin)
+                        if now - self._banner_last_refresh >= interval:
+                            try:
+                                self._banner_phase += 1
+                                app.invalidate()
+                            except Exception:
+                                pass
+                            self._banner_last_refresh = now
+                    await asyncio.sleep(0.12 if self._agent_running else 0.22)
 
-            threading.Thread(target=animation_loop, daemon=True).start()
+            app.pre_run_callables.append(lambda: app.create_background_task(animation_loop()))
         
         # Background thread to process inputs and run agent
         def process_loop():
@@ -3032,10 +3244,15 @@ class HermesCLI:
                     
                     if not user_input:
                         continue
+
+                    self._freeze_managed_banner()
                     
                     # Check for commands
                     if user_input.startswith("/"):
-                        print(f"\n⚙️  {user_input}")
+                        if self._uses_managed_banner():
+                            self._append_managed_output(f"\n{_ansi_fg_hex(ARES_ASH)}⚙️  {user_input}{_RST}\n")
+                        else:
+                            print(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
                             # Schedule app exit
@@ -3128,6 +3345,8 @@ def _resolve_invoked_skin(requested_skin: str | None) -> str | None:
     invoked_as = Path(sys.argv[0]).name.lower()
     if invoked_as.startswith("posideon") or invoked_as.startswith("poseidon"):
         return "posideon"
+    if invoked_as.startswith("sisyphus"):
+        return "sisyphus"
     if invoked_as.startswith("ares"):
         return "ares"
     if invoked_as.startswith("hermes"):
@@ -3166,7 +3385,7 @@ def main(
         max_turns: Maximum tool-calling iterations (default: 60)
         verbose: Enable verbose logging
         compact: Use compact display mode
-        skin: Visual skin name ("hermes", "ares", or "posideon")
+        skin: Visual skin name ("hermes", "ares", "posideon", or "sisyphus")
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)

@@ -124,6 +124,7 @@ class AIAgent:
         provider_sort: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        suppress_progress_output: bool = False,
         clarify_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
@@ -156,6 +157,8 @@ class AIAgent:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+            suppress_progress_output (bool): Disable quiet-mode spinner/progress lines that write
+                directly to stdout. Useful when a higher-level TUI already owns the screen.
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
@@ -185,6 +188,7 @@ class AIAgent:
         # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
         self.base_url = base_url or OPENROUTER_BASE_URL
         self.tool_progress_callback = tool_progress_callback
+        self.suppress_progress_output = suppress_progress_output
         self.clarify_callback = clarify_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
@@ -1451,7 +1455,7 @@ class AIAgent:
                     store=self._todo_store,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self.quiet_mode and not self.suppress_progress_output:
                     print(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search" and self._session_db:
                 from tools.session_search_tool import session_search as _session_search
@@ -1462,7 +1466,7 @@ class AIAgent:
                     db=self._session_db,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self.quiet_mode and not self.suppress_progress_output:
                     print(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 from tools.memory_tool import memory_tool as _memory_tool
@@ -1474,7 +1478,7 @@ class AIAgent:
                     store=self._memory_store,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self.quiet_mode and not self.suppress_progress_output:
                     print(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -1484,7 +1488,7 @@ class AIAgent:
                     callback=self.clarify_callback,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self.quiet_mode and not self.suppress_progress_output:
                     print(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
@@ -1495,7 +1499,7 @@ class AIAgent:
                     goal_preview = (function_args.get("goal") or "")[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
                 spinner = None
-                if self.quiet_mode:
+                if self.quiet_mode and not self.suppress_progress_output:
                     face = get_waiting_face()
                     spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
                     spinner.start()
@@ -1518,9 +1522,9 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    elif self.quiet_mode:
+                    elif self.quiet_mode and not self.suppress_progress_output:
                         print(f"  {cute_msg}")
-            elif self.quiet_mode:
+            elif self.quiet_mode and not self.suppress_progress_output:
                 face = get_waiting_face()
                 tool_emoji_map = {
                     'web_search': '🔍', 'web_extract': '📄', 'web_crawl': '🕸️',
@@ -1843,7 +1847,7 @@ class AIAgent:
                 print(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 print(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 print(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
-            else:
+            elif not self.suppress_progress_output:
                 # Animated thinking spinner in quiet mode
                 face = get_thinking_face()
                 verb = get_thinking_verb()
@@ -2301,7 +2305,7 @@ class AIAgent:
                     if turn_content and self._has_content_after_think_block(turn_content):
                         self._last_content_with_tools = turn_content
                         # Show intermediate commentary so the user can follow along
-                        if self.quiet_mode:
+                        if self.quiet_mode and not self.suppress_progress_output:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
                                 preview = clean[:120] + "..." if len(clean) > 120 else clean

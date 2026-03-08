@@ -850,7 +850,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--skin",
-        choices=["hermes", "ares", "posideon"],
+        choices=["hermes", "ares", "posideon", "sisyphus"],
         help="Visual skin to use for the CLI"
     )
     chat_parser.add_argument(

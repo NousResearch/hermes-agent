@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""
+Sisyphus Agent CLI Launcher
+
+This is a convenience wrapper to launch the Hermes CLI in Sisyphus skin mode.
+Usage: ./sisyphus [options]
+"""
+
+if __name__ == "__main__":
+    import os
+
+    os.environ["HERMES_CLI_SKIN"] = "sisyphus"
+    from cli import main
+    import fire
+
+    fire.Fire(main)

@@ -61,6 +61,7 @@ all = [
 hermes = "hermes_cli.main:main"
 ares = "hermes_cli.main:main"
 posideon = "hermes_cli.main:main"
+sisyphus = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 
 [tool.setuptools]
@@ -70,6 +71,7 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 hermes_cli = [
   "skin_payloads/ares_agent_mod/*",
   "skin_payloads/posideon_agent_mod/*",
+  "skin_payloads/sisyphus_agent_mod/*",
 ]
 
 [tool.setuptools.packages.find]

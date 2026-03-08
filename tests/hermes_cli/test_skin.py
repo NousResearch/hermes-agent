@@ -13,6 +13,7 @@ from hermes_cli.skin import (
     get_banner_title,
     get_caduceus_frame,
     get_mod_brand_name,
+    get_mod_hero_animation_interval,
     get_mod_system_prompt,
     is_ares_skin,
     is_hermes_skin,
@@ -32,15 +33,18 @@ class TestNormalizeSkinName:
     def test_aliases_resolve(self):
         assert normalize_skin_name("winged") == "ares"
         assert normalize_skin_name("poseidon") == "posideon"
+        assert normalize_skin_name("stone") == "sisyphus"
         assert normalize_skin_name("classic") == "hermes"
         assert normalize_skin_name("ares") == "ares"
         assert normalize_skin_name("posideon") == "posideon"
+        assert normalize_skin_name("sisyphus") == "sisyphus"
         assert normalize_skin_name("unknown-theme") == "hermes"
 
     def test_skin_request_resolution_accepts_title_case(self):
         assert resolve_skin_request("Hermes") == "hermes"
         assert resolve_skin_request("Ares") == "ares"
         assert resolve_skin_request("Posideon") == "posideon"
+        assert resolve_skin_request("Sisyphus") == "sisyphus"
         assert resolve_skin_request("Poseidon") == "posideon"
         assert resolve_skin_request("unknown-theme") is None
 
@@ -143,6 +147,20 @@ class TestTelemetryHelpers:
 
         set_active_skin_globals("hermes")
 
+    def test_sisyphus_payload_exposes_animated_hero_and_system_prompt(self):
+        with patch.dict("os.environ", {"HERMES_CLI_SKIN": "sisyphus"}):
+            set_active_skin_globals("sisyphus")
+            lore = HermesLoreState(sessions=2, clever_replies=1, published_skills=["stone"])
+            system_prompt = get_mod_system_prompt()
+            hero = get_caduceus_frame(lore, phase=1, width=28, height=14)
+            interval = get_mod_hero_animation_interval("sisyphus")
+
+            assert "You are Sisyphus Agent" in system_prompt
+            assert hero
+            assert interval >= 0.12
+
+        set_active_skin_globals("hermes")
+
 
 class TestCliSkinSwitching:
     def test_process_command_reloads_ui_for_title_case_skin(self):
@@ -185,6 +203,34 @@ class TestCliSkinSwitching:
         cli._app.invalidate.assert_called_once()
         cli.show_banner.assert_not_called()
 
+    def test_build_banner_ansi_does_not_advance_phase(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.compact = True
+        cli.skin = "sisyphus"
+        cli._banner_phase = 7
+        cli.console = Mock(width=120)
+        cli._show_status = Mock()
+        cli._show_tool_availability_warnings = Mock()
+
+        ansi = cli._build_banner_ansi()
+
+        assert ansi
+        assert cli._banner_phase == 7
+
+    def test_advance_live_banner_frame_updates_phase_and_snapshot(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._banner_phase = 2
+        cli._banner_snapshot_lines = ["frame-2"]
+        cli._banner_snapshot_line_count = 1
+        cli._build_banner_ansi = lambda phase=None: f"frame-{phase}"
+        cli._rewrite_banner_lines_absolute = Mock()
+
+        cli._advance_live_banner_frame()
+
+        cli._rewrite_banner_lines_absolute.assert_called_once_with(["frame-2"], ["frame-3"])
+        assert cli._banner_phase == 3
+        assert cli._banner_snapshot_lines == ["frame-3"]
+
     def test_compose_system_prompt_layers_skin_persona_and_user_prompt(self):
         cli = HermesCLI.__new__(HermesCLI)
         cli.skin = "ares"
@@ -194,6 +240,19 @@ class TestCliSkinSwitching:
 
         assert "You are Ares Agent" in composed
         assert "Answer like a terse staff officer." in composed
+
+    def test_freeze_managed_banner_is_permanent_for_session(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._managed_banner_frozen = False
+        cli._ui_phase = 12
+        cli._app = Mock(is_running=True)
+        cli._uses_managed_banner = lambda: True
+
+        cli._freeze_managed_banner()
+
+        assert cli._managed_banner_frozen is True
+        assert cli._ui_phase == 12
+        cli._app.invalidate.assert_called_once_with()
 
     def test_mod_scroll_body_uses_skin_specific_response_colors(self):
         cli = HermesCLI.__new__(HermesCLI)

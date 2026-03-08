@@ -21,12 +21,13 @@ from typing import Iterable
 
 
 DEFAULT_SKIN = "hermes"
-VALID_SKINS = {"hermes", "ares", "posideon"}
-MOD_SKINS = {"ares", "posideon"}
+VALID_SKINS = {"hermes", "ares", "posideon", "sisyphus"}
+MOD_SKINS = {"ares", "posideon", "sisyphus"}
 MOD_PAYLOAD_ROOT = Path(__file__).resolve().parent / "skin_payloads"
 MOD_DIRS = {
     "ares": MOD_PAYLOAD_ROOT / "ares_agent_mod",
     "posideon": MOD_PAYLOAD_ROOT / "posideon_agent_mod",
+    "sisyphus": MOD_PAYLOAD_ROOT / "sisyphus_agent_mod",
 }
 
 _DEFAULT_ARES_CRIMSON = "#9F1C1C"
@@ -165,6 +166,9 @@ def _normalize_skin_token(name: str | None) -> str:
         "poseidon": "posideon",
         "ocean": "posideon",
         "trident": "posideon",
+        "stone": "sisyphus",
+        "boulder": "sisyphus",
+        "uphill": "sisyphus",
     }
     return aliases.get(normalized, normalized)
 
@@ -493,6 +497,18 @@ def get_mod_welcome_message() -> str:
 
 def get_mod_system_prompt(skin_name: str | None = None) -> str:
     return str(_mod_attr("SYSTEM_PROMPT", "", skin_name=skin_name)).strip()
+
+
+def mod_has_animated_hero(skin_name: str | None = None) -> bool:
+    return bool(_mod_attr("ANIMATED_HERO", False, skin_name=skin_name))
+
+
+def get_mod_hero_animation_interval(skin_name: str | None = None) -> float:
+    interval = _mod_attr("HERO_ANIMATION_INTERVAL", 0.35, skin_name=skin_name)
+    try:
+        return max(0.12, float(interval))
+    except (TypeError, ValueError):
+        return 0.35
 
 
 def get_mod_placeholder_text() -> str:

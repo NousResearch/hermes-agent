@@ -253,13 +253,7 @@ class AIAgent:
             self.provider = "openai-codex"
         else:
             self.api_mode = "chat_completions"
-        if base_url and "api.anthropic.com" in base_url.strip().lower():
-            raise ValueError(
-                "Anthropic's native /v1/messages API is not supported yet (planned for a future release). "
-                "Hermes currently requires OpenAI-compatible /chat/completions endpoints. "
-                "To use Claude models now, route through OpenRouter (OPENROUTER_API_KEY) "
-                "or any OpenAI-compatible proxy that wraps the Anthropic API."
-            )
+
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback

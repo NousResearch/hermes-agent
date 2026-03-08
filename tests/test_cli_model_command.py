@@ -62,18 +62,20 @@ class TestModelCommand:
         assert cli_obj.agent is None
         save_mock.assert_not_called()
 
-    def test_bad_format_rejected_without_api_call(self, capsys):
+    def test_no_slash_model_probes_api_and_rejects(self, capsys):
+        """Model without '/' is still probed via API — not rejected on format alone."""
         cli_obj = self._make_cli()
 
         with patch("hermes_cli.auth.resolve_provider", return_value="openrouter"), \
-             patch("hermes_cli.models.fetch_api_models") as fetch_mock, \
+             patch("hermes_cli.models.fetch_api_models",
+                   return_value=["openai/gpt-5.4"]) as fetch_mock, \
              patch("cli.save_config_value") as save_mock:
-            cli_obj.process_command("/model invalid-no-slash")
+            cli_obj.process_command("/model gpt-5.4")
 
         output = capsys.readouterr().out
-        assert "provider/model" in output
+        assert "not a valid model" in output
         assert cli_obj.model == "anthropic/claude-opus-4.6"  # unchanged
-        fetch_mock.assert_not_called()  # no API call for format errors
+        fetch_mock.assert_called_once()  # API was probed
         save_mock.assert_not_called()
 
     def test_validation_crash_falls_back_to_save(self, capsys):

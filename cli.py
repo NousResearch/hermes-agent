@@ -1012,6 +1012,10 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Track whether model was explicitly chosen by the user or fell back
+        # to the global default.  Provider-specific normalisation may override
+        # the default silently but should warn when overriding an explicit choice.
+        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -1126,6 +1130,63 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
+        """Normalize obviously incompatible model/provider pairings.
+
+        When the resolved provider is ``openai-codex``, the Codex Responses API
+        only accepts Codex-compatible model slugs (e.g. ``gpt-5.3-codex``).
+        If the active model is incompatible (e.g. the OpenRouter default
+        ``anthropic/claude-opus-4.6``), swap it for the best available Codex
+        model.  Also strips provider prefixes the API does not accept
+        (``openai/gpt-5.3-codex`` → ``gpt-5.3-codex``).
+
+        Returns True when the active model was changed.
+        """
+        if resolved_provider != "openai-codex":
+            return False
+
+        current_model = (self.model or "").strip()
+        current_slug = current_model.split("/")[-1] if current_model else ""
+
+        # Keep explicit Codex models, but strip any provider prefix that the
+        # Codex Responses API does not accept.
+        if current_slug and "codex" in current_slug.lower():
+            if current_slug != current_model:
+                self.model = current_slug
+                if not self._model_is_default:
+                    self.console.print(
+                        f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
+                        f"using '{current_slug}' for OpenAI Codex.[/]"
+                    )
+                return True
+            return False
+
+        # Model is not Codex-compatible — replace with the best available
+        fallback_model = "gpt-5.3-codex"
+        try:
+            from hermes_cli.codex_models import get_codex_model_ids
+
+            codex_models = get_codex_model_ids(
+                access_token=self.api_key if self.api_key else None,
+            )
+            fallback_model = next(
+                (mid for mid in codex_models if "codex" in mid.lower()),
+                fallback_model,
+            )
+        except Exception:
+            pass
+
+        if current_model != fallback_model:
+            if not self._model_is_default:
+                self.console.print(
+                    f"[yellow]⚠️  Model '{current_model}' is not supported with "
+                    f"OpenAI Codex; switching to '{fallback_model}'.[/]"
+                )
+            self.model = fallback_model
+            return True
+
+        return False
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -1171,8 +1232,13 @@ class HermesCLI:
         self.api_key = api_key
         self.base_url = base_url
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
-        if (credentials_changed or routing_changed) and self.agent is not None:
+        # Normalize model for the resolved provider (e.g. swap non-Codex
+        # models when provider is openai-codex).  Fixes #651.
+        model_changed = self._normalize_model_for_provider(resolved_provider)
+
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
+        # routing, or the effective model changed.
+        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
 
         return True

@@ -1,23 +1,162 @@
 ---
 name: research-radar
-description: Autonomous research radar that gathers signals and generates structured intelligence briefings.
-version: 1.0
+description: Multi-source research radar for signal monitoring, trend extraction, and decision-ready intelligence briefings.
+version: 2.0.0
+metadata:
+  hermes:
+    tags: [research, radar, intelligence, trends, markdown, automation]
+    related_skills: [github-pr-workflow]
 ---
 
 # Research Radar
 
-Research Radar is a Hermes skill that collects signals about a topic and produces structured research briefings.
+Research Radar is a reusable Hermes skill for monitoring a topic across multiple public sources, extracting high-signal developments, and generating structured intelligence briefings in Markdown.
 
-## Features
+Use this skill when the user wants a report that is more than a simple summary:
+- recent developments
+- recurring themes
+- risks
+- opportunities
+- recommended actions
+- saved output for later review or automation
 
-- Collects signals from public sources (HN API)
-- Extracts trends and key developments
-- Generates structured markdown briefings
-- Supports automation via Hermes cron scheduling
-- Saves versioned outputs such as:
+## When to use
 
-ai_agents_briefing_2026-03-06.md
+Use this skill for:
+- AI / software / startup landscape monitoring
+- market or ecosystem watchlists
+- founder / operator / investor briefings
+- “what changed in the last 7 days?” style analysis
+- recurring intelligence reports scheduled with Hermes cron
 
-## Example
+Do not use this skill when:
+- the user only wants a short paragraph
+- a proprietary/private data source is required
+- the task is real-time trading, legal, or medical advice
 
-Generate a briefing about AI coding agents and save the report to a markdown file.
+## Inputs
+
+Collect or infer:
+- topic
+- time horizon
+- target audience
+- output filename
+
+Defaults:
+- time horizon: last 7 days
+- target audience: technical generalist
+- output filename: `research_briefing.md`
+
+## Available tools
+
+Prefer these tools only:
+1. `terminal`
+2. `execute_code`
+3. `write_file`
+4. `read_file`
+
+Do not rely on unavailable tools such as `web_search`.
+
+## Source strategy
+
+Use multiple lightweight public sources when possible.
+
+Preferred sources:
+- Hacker News Algolia API for discussion/activity signals
+- GitHub Search API for relevant repositories/projects
+- arXiv API for research/paper signals
+
+If one source fails, continue with the others and state that coverage was partial.
+
+## Workflow
+
+### Step 1 — Frame the task
+Restate:
+- topic
+- time horizon
+- target audience
+- filename
+
+### Step 2 — Gather signals
+Use terminal-accessible public sources.
+
+Examples:
+- Hacker News Algolia API
+- GitHub Search API
+- arXiv API
+
+Aim to collect:
+- discussion signals
+- code / repo signals
+- research / paper signals
+
+### Step 3 — Filter and synthesize
+Identify:
+- 3 to 5 key developments
+- 2 to 4 emerging themes
+- 2 to 4 risks
+- 2 to 4 opportunities
+- 3 recommended actions
+
+Prefer concrete, recent, decision-relevant information.
+
+### Step 4 — Write the report
+Write the final report using the standard template structure below.
+
+## Standard Report Structure
+
+# Research Radar: <topic>
+
+## Executive Summary
+Short paragraph.
+
+## Key Developments
+- bullet points
+
+## Emerging Themes
+- bullet points
+
+## Risks
+- bullet points
+
+## Opportunities
+- bullet points
+
+## Recommended Actions
+- bullet points
+
+## Sources
+- list of links or source names
+
+## Metadata
+- topic
+- time horizon
+- generated date
+
+## Style requirements
+
+- Be specific and concise
+- Prefer high-signal findings over generic commentary
+- Avoid hype
+- Make the report useful for decision-making
+- Save the final report to the requested markdown filename
+
+## Verification
+
+After writing the report:
+1. confirm the file exists
+2. confirm the file is readable
+3. summarize in one sentence what was produced
+
+## Pitfalls to avoid
+
+- Do not overclaim certainty from weak signals
+- Do not invent sources
+- Do not use only one source if multiple are available
+- Do not produce a generic summary without risks/opportunities/actions
+
+## Example requests
+
+- “Use research-radar to produce a 7-day briefing on AI coding agents and save it to `ai_agents_briefing.md`.”
+- “Use research-radar to monitor robotics startups for the last 14 days and save the report to `robotics_watch.md`.”
+- “Use research-radar to generate a founder-focused briefing on open-source agent tooling.”

@@ -2612,7 +2612,58 @@ class GatewayRunner:
         progress_task = None
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
-        
+
+        # Stream preview task: reads tokens from _stream_q and progressively
+        # edits a Telegram message to give a ChatGPT-style live typing effect.
+        async def stream_preview():
+            if not _stream_q:
+                return
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                return
+            accumulated = []
+            token_count = 0
+            last_edit = 0.0
+            MIN_TOKENS = 20
+            EDIT_INTERVAL = 1.5
+            try:
+                while True:
+                    try:
+                        chunk = _stream_q.get_nowait()
+                        accumulated.append(chunk)
+                        token_count += 1
+                    except Exception:
+                        await asyncio.sleep(0.1)
+                        continue
+                    now = asyncio.get_event_loop().time()
+                    if token_count >= MIN_TOKENS and (now - last_edit) >= EDIT_INTERVAL:
+                        preview = "".join(accumulated) + " ▌"
+                        if _stream_msg_id[0] is None:
+                            r = await adapter.send(chat_id=source.chat_id, content=preview)
+                            if r.success and r.message_id:
+                                _stream_msg_id[0] = r.message_id
+                        else:
+                            await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=_stream_msg_id[0],
+                                content=preview,
+                            )
+                        last_edit = now
+            except asyncio.CancelledError:
+                if _stream_msg_id[0] and accumulated:
+                    try:
+                        await adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=_stream_msg_id[0],
+                            content="".join(accumulated),
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("stream_preview error: %s", e)
+
+        stream_task = asyncio.create_task(stream_preview()) if _stream_q else None
+
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
         async def track_agent():
@@ -2690,6 +2741,8 @@ class GatewayRunner:
             # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()
+            if stream_task:
+                stream_task.cancel()
             interrupt_monitor.cancel()
             
             # Clean up tracking
@@ -2698,7 +2751,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, stream_task, interrupt_monitor, tracking_task]:
                 if task:
                     try:
                         await task

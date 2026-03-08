@@ -174,6 +174,7 @@ class AIAgent:
         tool_progress_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
+        stream_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -224,6 +225,10 @@ class AIAgent:
                 polluting trajectories with user-specific persona or project instructions.
             honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
+            stream_callback (callable): Optional callback(text_delta: str) invoked for each text token
+                during streaming LLM generation. When provided, the agent uses stream=True and fires
+                this callback per chunk. Used by the gateway to render a live typing preview in
+                platforms like Telegram. Falls back to non-streaming on any error.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -257,6 +262,7 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
+        self.stream_callback = stream_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Interrupt mechanism for breaking out of tool loops
@@ -2106,6 +2112,75 @@ class AIAgent:
 
         return True
 
+
+    def _run_streaming_call(self, api_kwargs: dict):
+        """Execute a streaming chat.completions call, feeding text tokens to
+        self.stream_callback as they arrive. Returns a fake response object
+        compatible with the non-streaming code path.
+
+        Falls back to a non-streaming call on any error.
+        """
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs["stream"] = True
+
+        accumulated_content = []
+        accumulated_tool_calls = {}  # index -> {id, name, arguments}
+
+        try:
+            stream = self.client.chat.completions.create(**stream_kwargs)
+
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                if hasattr(delta, "content") and delta.content:
+                    accumulated_content.append(delta.content)
+                    if self.stream_callback:
+                        try:
+                            self.stream_callback(delta.content)
+                        except Exception:
+                            pass
+
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
+                        if hasattr(tc_delta, "function") and tc_delta.function:
+                            fn = tc_delta.function
+                            if getattr(fn, "name", None):
+                                accumulated_tool_calls[idx]["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                accumulated_tool_calls[idx]["arguments"] += fn.arguments
+
+            tool_calls = []
+            for idx in sorted(accumulated_tool_calls.keys()):
+                tc = accumulated_tool_calls[idx]
+                if tc["name"]:
+                    tool_calls.append(SimpleNamespace(
+                        id=tc["id"],
+                        type="function",
+                        function=SimpleNamespace(name=tc["name"], arguments=tc["arguments"]),
+                    ))
+
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="".join(accumulated_content) if accumulated_content else "",
+                        tool_calls=tool_calls if tool_calls else None,
+                        role="assistant",
+                    ),
+                    finish_reason="tool_calls" if tool_calls else "stop",
+                )],
+                usage=None,
+                model=self.model,
+            )
+
+        except Exception as e:
+            logger.debug("Streaming call failed, falling back to non-streaming: %s", e)
+            return self.client.chat.completions.create(**api_kwargs)
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2121,6 +2196,8 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
+                elif self.stream_callback is not None:
+                    result["response"] = self._run_streaming_call(api_kwargs)
                 else:
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
             except Exception as e:

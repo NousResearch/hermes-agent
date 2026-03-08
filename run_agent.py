@@ -4147,9 +4147,15 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    # Route to ACP server when invoked as `hermes-agent acp`
+    if query == "acp":
+        from acp_adapter.entry import main as acp_main
+        acp_main()
+        return
+
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
-    
+
     # Handle tool listing
     if list_tools:
         from model_tools import get_all_tool_names, get_toolset_for_tool, get_available_toolsets

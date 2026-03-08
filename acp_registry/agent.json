@@ -1,24 +1,16 @@
 {
-  "$schema": "https://agentclientprotocol.github.io/agent-client-protocol/schemas/agent-registry-v1.json",
+  "$schema": "https://cdn.agentclientprotocol.com/registry/v1/latest/agent.schema.json",
   "id": "hermes-agent",
+  "name": "Hermes Agent",
   "version": "0.1.0",
-  "title": "Hermes Agent",
   "description": "Self-improving AI agent with tool calling, memory, web search, browser automation, and skill creation.",
   "icon": "./icon.svg",
   "repository": "https://github.com/NousResearch/hermes-agent",
   "license": "MIT",
   "distribution": {
     "uvx": {
-      "package": "hermes-agent",
-      "args": ["acp"],
-      "extras": ["acp"]
+      "package": "hermes-agent[acp]",
+      "args": ["acp"]
     }
-  },
-  "auth": [
-    {
-      "id": "env-check",
-      "title": "API Key",
-      "description": "Requires an LLM API key. Run 'hermes setup' or set e.g. OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY in environment or ~/.hermes/.env."
-    }
-  ]
+  }
 }

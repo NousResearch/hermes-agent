@@ -95,6 +95,11 @@ class SessionManager:
         with self._lock:
             return self._sessions.get(session_id)
 
+    def list_all(self) -> list[tuple[str, SessionState]]:
+        """Return all (session_id, state) pairs."""
+        with self._lock:
+            return list(self._sessions.items())
+
     def remove(self, session_id: str) -> None:
         with self._lock:
             state = self._sessions.pop(session_id, None)
@@ -126,6 +131,8 @@ class SessionManager:
         """
         existing = self.get(session_id)
         if existing is not None:
+            if cwd:
+                existing.cwd = cwd
             return existing
 
         state = self.create(session_id, conn, loop, cwd)

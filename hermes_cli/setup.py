@@ -870,8 +870,8 @@ def setup_model_provider(config: dict):
                 config['model'] = custom
                 save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
-            from hermes_cli.codex_models import get_codex_models
-            codex_models = get_codex_models()
+            from hermes_cli.codex_models import get_codex_model_ids
+            codex_models = get_codex_model_ids()
             model_choices = codex_models + [f"Keep current ({current_model})"]
             default_codex = 0
             if current_model in codex_models:

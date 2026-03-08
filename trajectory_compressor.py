@@ -351,16 +351,27 @@ class TrajectoryCompressor:
         
         from openai import OpenAI, AsyncOpenAI
         
+        # OpenRouter app attribution headers (only for OpenRouter endpoints)
+        extra = {}
+        if "openrouter" in self.config.base_url.lower():
+            extra["default_headers"] = {
+                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                "X-OpenRouter-Title": "Hermes Agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
+            }
+        
         # Sync client (for backwards compatibility)
         self.client = OpenAI(
             api_key=api_key,
-            base_url=self.config.base_url
+            base_url=self.config.base_url,
+            **extra,
         )
         
         # Async client for parallel processing
         self.async_client = AsyncOpenAI(
             api_key=api_key,
-            base_url=self.config.base_url
+            base_url=self.config.base_url,
+            **extra,
         )
         
         print(f"✅ Initialized OpenRouter client: {self.config.summarization_model}")

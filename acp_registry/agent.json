@@ -5,6 +5,8 @@
   "title": "Hermes Agent",
   "description": "Self-improving AI agent with tool calling, memory, web search, browser automation, and skill creation.",
   "icon": "./icon.svg",
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "license": "MIT",
   "distribution": {
     "uvx": {
       "package": "hermes-agent",
@@ -16,7 +18,7 @@
     {
       "id": "env-check",
       "title": "API Key",
-      "description": "Checks for OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY in the environment or ~/.hermes/.env"
+      "description": "Requires an LLM API key. Run 'hermes setup' or set e.g. OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY in environment or ~/.hermes/.env."
     }
   ]
 }

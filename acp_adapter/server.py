@@ -30,12 +30,17 @@ from acp.schema import (
     AuthMethod,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
+    ForkSessionResponse,
     HttpMcpServer,
     ImageContentBlock,
     Implementation,
+    ListSessionsResponse,
     McpServerStdio,
     ResourceContentBlock,
+    ResumeSessionResponse,
+    SessionInfo,
     SetSessionConfigOptionResponse,
+    SetSessionModelResponse,
     SetSessionModeResponse,
     SseMcpServer,
     TextContentBlock,
@@ -109,14 +114,47 @@ class HermesACPAgent(Agent):
     async def load_session(
         self,
         cwd: str,
+        session_id: str,
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
-        session_id: str = "",
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
         loop = asyncio.get_running_loop()
         self._sessions.load(session_id, self._conn, loop, cwd)
         logger.info("load_session: id=%s", session_id)
         return LoadSessionResponse()
+
+    async def list_sessions(
+        self, cursor: str | None = None, cwd: str | None = None, **kwargs: Any
+    ) -> ListSessionsResponse:
+        logger.info("list_sessions: cursor=%s cwd=%s", cursor, cwd)
+        sessions: list[SessionInfo] = []
+        with self._sessions._lock:
+            for sid, state in self._sessions._sessions.items():
+                sessions.append(SessionInfo(session_id=sid, cwd=state.cwd or "/"))
+        return ListSessionsResponse(sessions=sessions)
+
+    async def fork_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> ForkSessionResponse:
+        logger.warning("fork_session: not supported (session=%s)", session_id)
+        new_id = self._sessions.generate_id()
+        return ForkSessionResponse(session_id=new_id)
+
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse:
+        loop = asyncio.get_running_loop()
+        self._sessions.load(session_id, self._conn, loop, cwd)
+        logger.info("resume_session: id=%s", session_id)
+        return ResumeSessionResponse()
 
     async def prompt(
         self,
@@ -209,26 +247,33 @@ class HermesACPAgent(Agent):
             state.cancel_event.set()
             state.agent.interrupt()
 
-    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse:
+    async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
         state = self._sessions.get(session_id)
         if state is None:
             logger.warning("set_session_mode: unknown session %s", session_id)
         logger.info("set_session_mode: session=%s mode=%s (no-op)", session_id, mode_id)
         return SetSessionModeResponse()
 
+    async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> SetSessionModelResponse | None:
+        state = self._sessions.get(session_id)
+        if state is None:
+            logger.warning("set_session_model: unknown session %s", session_id)
+        logger.info("set_session_model: session=%s model=%s (no-op)", session_id, model_id)
+        return SetSessionModelResponse()
+
     async def set_config_option(
-        self, config_id: str, session_id: str, value: str = "", **kwargs: Any
-    ) -> SetSessionConfigOptionResponse:
+        self, config_id: str, session_id: str, value: str, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse | None:
         state = self._sessions.get(session_id)
         if state is None:
             logger.warning("set_config_option: unknown session %s", session_id)
         logger.info("set_config_option: session=%s config=%s (no-op)", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])
 
-    async def ext_method(self, method: str, params: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         raise RequestError.method_not_found(f"_{method}")
 
-    async def ext_notification(self, method: str, params: dict[str, Any] | None = None, **kwargs: Any) -> None:
+    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         pass
 
     # ------------------------------------------------------------------

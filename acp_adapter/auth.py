@@ -42,8 +42,9 @@ def check_auth() -> dict:
         "success": False,
         "error": (
             "No inference provider configured. "
-            "Set OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY "
-            "in your environment or in ~/.hermes/.env, "
-            "or run 'hermes setup' to configure interactively."
+            "Run 'hermes setup' to configure interactively, "
+            "or set an API key (e.g. OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY) "
+            "in your environment or in ~/.hermes/.env. "
+            "See https://github.com/NousResearch/hermes-agent#setup for all supported providers."
         ),
     }

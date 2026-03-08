@@ -226,6 +226,7 @@ The unified `hermes` command provides all functionality:
 |---------|-------------|
 | `hermes` | Interactive chat (default) |
 | `hermes chat -q "..."` | Single query mode |
+| `hermes -w` / `hermes --worktree` | Start in isolated git worktree (for parallel agents) |
 | `hermes setup` | Configure API keys and settings |
 | `hermes config` | View current configuration |
 | `hermes config edit` | Open config in editor |

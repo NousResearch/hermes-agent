@@ -30,6 +30,7 @@ Usage:
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Tuple, Any
 from enum import Enum
 
@@ -324,7 +325,10 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
         # File doesn't exist, nothing to delete
         return True, f"# {op.file_path} already deleted or doesn't exist"
     
-    # Delete directly via shell command using the underlying environment
+    # Delete by writing empty and then removing
+    # Use shell command via the underlying environment
+    from tools.checkpoint_tool import take_checkpoint
+    take_checkpoint(str(Path(op.file_path).parent), f"before delete: {op.file_path}")
     rm_result = file_ops._exec(f"rm -f {file_ops._escape_shell_arg(op.file_path)}")
     
     if rm_result.exit_code != 0:
@@ -337,6 +341,8 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
     # Use shell mv command
+    from tools.checkpoint_tool import take_checkpoint
+    take_checkpoint(str(Path(op.file_path).parent), f"before move: {op.file_path}")
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
     )

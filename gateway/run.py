@@ -1291,7 +1291,7 @@ class GatewayRunner:
             "`/reset` — Reset conversation history",
             "`/status` — Show session info",
             "`/stop` — Interrupt the running agent",
-            "`/model [name]` — Show or change the model",
+            "`/model [provider:model]` — Show/change model (or switch provider)",
             "`/personality [name]` — Set a personality",
             "`/retry` — Retry your last message",
             "`/undo` — Remove the last exchange",
@@ -1317,13 +1317,19 @@ class GatewayRunner:
     async def _handle_model_command(self, event: MessageEvent) -> str:
         """Handle /model command - show or change the current model."""
         import yaml
+        from hermes_cli.models import (
+            parse_model_input,
+            validate_requested_model,
+            curated_models_for_provider,
+            _PROVIDER_LABELS,
+        )
 
         args = event.get_command_args().strip()
         config_path = _hermes_home / 'config.yaml'
 
-        # Resolve current model the same way the agent init does:
-        # env vars first, then config.yaml always overrides.
+        # Resolve current model and provider from config
         current = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+        current_provider = "openrouter"
         try:
             if config_path.exists():
                 with open(config_path) as f:
@@ -1333,22 +1339,70 @@ class GatewayRunner:
                     current = model_cfg
                 elif isinstance(model_cfg, dict):
                     current = model_cfg.get("default", current)
+                    current_provider = model_cfg.get("provider", current_provider)
         except Exception:
             pass
 
         if not args:
-            return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
+            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+            lines = [
+                f"🤖 **Current model:** `{current}`",
+                f"**Provider:** {provider_label}",
+                "",
+            ]
+            curated = curated_models_for_provider(current_provider)
+            if curated:
+                lines.append(f"**Available models ({provider_label}):**")
+                for mid, desc in curated:
+                    marker = " ←" if mid == current else ""
+                    label = f"  _{desc}_" if desc else ""
+                    lines.append(f"• `{mid}`{label}{marker}")
+                lines.append("")
+            lines.append("To change: `/model model-name`")
+            lines.append("Switch provider: `/model provider:model-name`")
+            return "\n".join(lines)
 
-        if "/" not in args:
-            return (
-                f"🤖 Invalid model format: `{args}`\n\n"
-                f"Use `provider/model-name` format, e.g.:\n"
-                f"• `anthropic/claude-sonnet-4`\n"
-                f"• `google/gemini-2.5-pro`\n"
-                f"• `openai/gpt-4o`"
+        # Parse provider:model syntax
+        target_provider, new_model = parse_model_input(args, current_provider)
+        provider_changed = target_provider != current_provider
+
+        # Resolve credentials for the target provider (for API probe)
+        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+        base_url = "https://openrouter.ai/api/v1"
+        if provider_changed:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=target_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+            except Exception as e:
+                provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                return f"⚠️ Could not resolve credentials for provider '{provider_label}': {e}"
+        else:
+            # Use current provider's base_url from config or registry
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=current_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+            except Exception:
+                pass
+
+        # Validate the model against the live API
+        try:
+            validation = validate_requested_model(
+                new_model,
+                target_provider,
+                api_key=api_key,
+                base_url=base_url,
             )
+        except Exception:
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
-        # Write to config.yaml (source of truth), same pattern as CLI save_config_value.
+        if not validation.get("accepted"):
+            return f"⚠️ {validation.get('message')}"
+
+        # Write to config.yaml
         try:
             user_config = {}
             if config_path.exists():
@@ -1356,16 +1410,25 @@ class GatewayRunner:
                     user_config = yaml.safe_load(f) or {}
             if "model" not in user_config or not isinstance(user_config["model"], dict):
                 user_config["model"] = {}
-            user_config["model"]["default"] = args
+            user_config["model"]["default"] = new_model
+            if provider_changed:
+                user_config["model"]["provider"] = target_provider
             with open(config_path, 'w') as f:
                 yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
         except Exception as e:
             return f"⚠️ Failed to save model change: {e}"
 
-        # Also set env var so code reading it before the next agent init sees the update.
-        os.environ["HERMES_MODEL"] = args
+        os.environ["HERMES_MODEL"] = new_model
 
-        return f"🤖 Model changed to `{args}`\n_(takes effect on next message)_"
+        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+        provider_note = f"\n**Provider:** {provider_label}" if provider_changed else ""
+
+        warning = ""
+        if validation.get("message"):
+            warning = f"\n⚠️ {validation['message']}"
+
+        persist_note = "saved to config" if validation.get("persist") else "session only"
+        return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""

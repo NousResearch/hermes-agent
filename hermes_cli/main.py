@@ -203,6 +203,10 @@ def cmd_chat(args):
     except Exception:
         pass
 
+    # --fuck-it-ship-it: bypass all dangerous command approvals
+    if getattr(args, "fuck_it_ship_it", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -1303,6 +1307,12 @@ For more help on a command:
         default=False,
         help="Run in an isolated git worktree (for parallel agents)"
     )
+    parser.add_argument(
+        "--fuck-it-ship-it",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -1356,6 +1366,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Run in an isolated git worktree (for parallel agents on the same repo)"
+    )
+    chat_parser.add_argument(
+        "--fuck-it-ship-it",
+        action="store_true",
+        default=False,
+        help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

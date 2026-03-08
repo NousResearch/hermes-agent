@@ -1546,24 +1546,65 @@ class HermesCLI:
         if not self.conversation_history:
             print("(._.) No conversation history yet.")
             return
-        
+
+        preview_limit = 400
+        visible_index = 0
+        hidden_tool_messages = 0
+
+        def flush_tool_summary():
+            nonlocal hidden_tool_messages
+            if not hidden_tool_messages:
+                return
+
+            noun = "message" if hidden_tool_messages == 1 else "messages"
+            print("\n  [Tools]")
+            print(f"    ({hidden_tool_messages} tool {noun} hidden)")
+            hidden_tool_messages = 0
+
         print()
         print("+" + "-" * 50 + "+")
         print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
         print("+" + "-" * 50 + "+")
-        
-        for i, msg in enumerate(self.conversation_history, 1):
+
+        for msg in self.conversation_history:
             role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
-            
+
+            if role == "tool":
+                hidden_tool_messages += 1
+                continue
+
+            if role not in {"user", "assistant"}:
+                continue
+
+            flush_tool_summary()
+            visible_index += 1
+
+            content = msg.get("content")
+            content_text = "" if content is None else str(content)
+
             if role == "user":
-                print(f"\n  [You #{i}]")
-                print(f"    {content[:200]}{'...' if len(content) > 200 else ''}")
-            elif role == "assistant":
-                print(f"\n  [Hermes #{i}]")
-                preview = content[:200] if content else "(tool calls)"
-                print(f"    {preview}{'...' if len(str(content)) > 200 else ''}")
-        
+                print(f"\n  [You #{visible_index}]")
+                print(
+                    f"    {content_text[:preview_limit]}{'...' if len(content_text) > preview_limit else ''}"
+                )
+                continue
+
+            print(f"\n  [Hermes #{visible_index}]")
+            tool_calls = msg.get("tool_calls") or []
+            if content_text:
+                preview = content_text[:preview_limit]
+                suffix = "..." if len(content_text) > preview_limit else ""
+            elif tool_calls:
+                tool_count = len(tool_calls)
+                noun = "call" if tool_count == 1 else "calls"
+                preview = f"(requested {tool_count} tool {noun})"
+                suffix = ""
+            else:
+                preview = "(no text response)"
+                suffix = ""
+            print(f"    {preview}{suffix}")
+
+        flush_tool_summary()
         print()
     
     def reset_conversation(self):

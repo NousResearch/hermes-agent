@@ -222,3 +222,52 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
     return total_chars // 4
+
+
+# ---------------------------------------------------------------------------
+# Vision capability detection  (Issue #638)
+# ---------------------------------------------------------------------------
+
+# Model name substrings that indicate vision/multimodal support.
+VISION_CAPABLE_MODEL_SUBSTRINGS = [
+    "gpt-4o",
+    "gpt-4-turbo",
+    "gpt-4-vision",
+    "claude-3",
+    "claude-sonnet",
+    "claude-opus",
+    "claude-haiku",
+    "gemini",
+    "pixtral",
+    "llama-3.2-11b-vision",
+    "llama-3.2-90b-vision",
+    "qwen-vl",
+    "qwen2-vl",
+    "vision",
+]
+
+# Provider base_url substrings that are known to NOT support vision.
+NON_VISION_PROVIDERS = [
+    "api.nous.systems",
+]
+
+
+def model_supports_vision(model: str, base_url: str = "") -> bool:
+    """Return True if this model/provider combo is expected to accept
+    image_url content parts.
+
+    Best-effort heuristic based on known model names and provider URLs.
+    Returns False (safe default) when unknown.
+    """
+    model_lower = model.lower()
+    base_url_lower = (base_url or "").lower()
+
+    for provider_substr in NON_VISION_PROVIDERS:
+        if provider_substr in base_url_lower:
+            return False
+
+    for substr in VISION_CAPABLE_MODEL_SUBSTRINGS:
+        if substr in model_lower:
+            return True
+
+    return False

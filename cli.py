@@ -2528,12 +2528,35 @@ class HermesCLI:
         
         # Convert attached images to OpenAI vision multimodal content
         if images:
-            message = self._build_multimodal_content(
-                message if isinstance(message, str) else "", images
-            )
-            for img_path in images:
-                if img_path.exists():
-                    _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
+            from agent.model_metadata import model_supports_vision
+            base_url = getattr(self.agent, "base_url", "") if self.agent else ""
+            model = getattr(self.agent, "model", "") if self.agent else ""
+            if not model_supports_vision(model, base_url):
+                _cprint(f"  \033[33m⚠️  This model does not support images. The image was not sent.\033[0m")
+                _cprint(f"  \033[2mSwitch to a vision-capable model (e.g. gpt-4o, claude-3, gemini) to send images.\033[0m")
+                # Offer to describe the images via the vision_analyze tool instead
+                image_names = [p.name for p in images if p.exists()]
+                if image_names:
+                    names_str = ", ".join(image_names)
+                    if isinstance(message, str) and message.strip():
+                        message = (
+                            message
+                            + f"\n\n[The user attached image(s) that this model cannot process directly: {names_str}. "
+                            "If a vision tool is available, use it to analyze and describe the image(s) "
+                            "and incorporate the description into your response.]"
+                        )
+                    else:
+                        message = (
+                            f"[The user attached image(s) that this model cannot process directly: {names_str}. "
+                            "If a vision tool is available, use it to analyze and describe the image(s).]"
+                        )
+            else:
+                message = self._build_multimodal_content(
+                    message if isinstance(message, str) else "", images
+                )
+                for img_path in images:
+                    if img_path.exists():
+                        _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})

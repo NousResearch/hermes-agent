@@ -3550,6 +3550,40 @@ class AIAgent:
                                 "partial": True
                             }
 
+                    # Check for image-related errors (Issue #638).
+                    # If the API rejected our request because of image/vision content,
+                    # strip all image_url parts from messages and retry once so that
+                    # subsequent text-only turns are not affected.
+                    image_error_signals = [
+                        "image_url", "unsupported content", "invalid content",
+                        "does not support", "image input", "multimodal",
+                        "vision", "base64",
+                    ]
+                    is_image_error = any(sig in error_msg for sig in image_error_signals)
+
+                    if is_image_error:
+                        removed = 0
+                        cleaned = []
+                        for msg in messages:
+                            c = msg.get("content")
+                            if isinstance(c, list):
+                                new_parts = [p for p in c if not (isinstance(p, dict) and p.get("type") == "image_url")]
+                                removed += len(c) - len(new_parts)
+                                if len(new_parts) == 1 and isinstance(new_parts[0], dict) and new_parts[0].get("type") == "text":
+                                    cleaned.append({**msg, "content": new_parts[0]["text"]})
+                                elif new_parts:
+                                    cleaned.append({**msg, "content": new_parts})
+                                # drop message entirely if it had only images
+                            else:
+                                cleaned.append(msg)
+                        if removed:
+                            messages = cleaned
+                            print(f"{self.log_prefix}⚠️  API rejected image content — stripped {removed} image(s) from history and retrying without images.")
+                            print(f"{self.log_prefix}   💡 This model does not support vision input. Use a vision-capable model for images.")
+                            retry_count -= 1  # don't count this against retry budget
+                            continue
+                        # no images found — fall through to normal error handling
+
                     # Check for non-retryable client errors (4xx HTTP status codes).
                     # These indicate a problem with the request itself (bad model ID,
                     # invalid API key, forbidden, etc.) and will never succeed on retry.

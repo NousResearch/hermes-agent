@@ -103,18 +103,16 @@ class TestValidateFormatChecks:
         assert result["accepted"] is False
         assert "spaces" in result["message"].lower()
 
-    def test_openrouter_requires_slash(self):
-        result = _validate("claude-opus-4.6")
-        assert result["accepted"] is False
-        assert "provider/model" in result["message"]
+    def test_no_slash_model_still_probes_api(self):
+        """Models without '/' should still be checked via API (not all providers need it)."""
+        result = _validate("gpt-5.4", api_models=["gpt-5.4", "gpt-5.4-pro"])
+        assert result["accepted"] is True
+        assert result["persist"] is True
 
-    def test_openrouter_rejects_leading_slash(self):
-        result = _validate("/claude-opus-4.6")
+    def test_no_slash_model_rejected_if_not_in_api(self):
+        result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
         assert result["accepted"] is False
-
-    def test_openrouter_rejects_trailing_slash(self):
-        result = _validate("anthropic/")
-        assert result["accepted"] is False
+        assert "not a valid model" in result["message"]
 
 
 # -- validate_requested_model — API probe found model ------------------------

@@ -177,23 +177,6 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    # OpenRouter requires provider/model format
-    if normalized == "openrouter":
-        if "/" not in requested or requested.startswith("/") or requested.endswith("/"):
-            known_models = provider_model_ids(normalized)
-            suggestion = get_close_matches(requested, known_models, n=1, cutoff=0.6)
-            suggestion_text = f" Did you mean `{suggestion[0]}`?" if suggestion else ""
-            return {
-                "accepted": False,
-                "persist": False,
-                "recognized": False,
-                "message": (
-                    "OpenRouter model IDs should use the `provider/model` format "
-                    "(for example `anthropic/claude-opus-4.6`)."
-                    f"{suggestion_text}"
-                ),
-            }
-
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 

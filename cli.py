@@ -343,9 +343,10 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich import box
 
 import fire
 
@@ -949,6 +950,31 @@ def _cli_render_section(title: str, entries: list[tuple[str, str]], *, command_w
     for command, description in entries:
         lines.append(f"    {_GOLD}{command:<{width}}{_RST} {_DIM}-{_RST} {description}")
     return "\n".join(lines)
+
+
+def _cli_render_value_section(title: str, entries: list[tuple[str, str]], *, key_width: int | None = None) -> str:
+    """Render aligned key/value rows as a single ANSI string."""
+    width = key_width or (max(len(key) for key, _ in entries) + 2)
+    lines = [f"", f"  {_BOLD}{title}{_RST}"]
+    for key, value in entries:
+        lines.append(f"    {_GOLD}{key:<{width}}{_RST} {_DIM}:{_RST} {value}")
+    return "\n".join(lines)
+
+
+def _render_rich(*renderables) -> str:
+    """Render Rich objects to a single ANSI string for prompt_toolkit output."""
+    from io import StringIO
+
+    buffer = StringIO()
+    console = Console(
+        file=buffer,
+        force_terminal=True,
+        highlight=False,
+        width=_terminal_columns(),
+    )
+    for renderable in renderables:
+        console.print(renderable)
+    return buffer.getvalue().rstrip("\n")
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -1569,40 +1595,47 @@ class HermesCLI:
         if not tools:
             print("(;_;) No tools available")
             return
-        
-        # Header
-        print()
-        title = "(^_^)/ Available Tools"
-        width = 78
-        pad = width - len(title)
-        print("+" + "-" * width + "+")
-        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
-        print("+" + "-" * width + "+")
-        print()
-        
-        # Group tools by toolset
-        toolsets = {}
+
+        rows = []
+        tool_preview_length = _dynamic_preview_length(
+            command_width=28,
+            indent=16,
+            minimum=52,
+            maximum=120,
+        )
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
             name = tool["function"]["name"]
             toolset = get_toolset_for_tool(name) or "unknown"
-            if toolset not in toolsets:
-                toolsets[toolset] = []
             desc = tool["function"].get("description", "")
             # First sentence: split on ". " (period+space) to avoid breaking on "e.g." or "v2.0"
             desc = desc.split("\n")[0]
             if ". " in desc:
                 desc = desc[:desc.index(". ") + 1]
-            toolsets[toolset].append((name, desc))
-        
-        # Display by toolset
-        for toolset in sorted(toolsets.keys()):
-            print(f"  [{toolset}]")
-            for name, desc in toolsets[toolset]:
-                print(f"    * {name:<20} - {desc}")
-            print()
-        
-        print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
-        print()
+            rows.append((toolset, name, _preview_text(desc, tool_preview_length)))
+
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=box.SIMPLE_HEAVY,
+            expand=True,
+        )
+        table.add_column("Toolset", style="bold cyan", no_wrap=True)
+        table.add_column("Tool", style="bold yellow", no_wrap=True)
+        table.add_column("Description", style="white")
+
+        for toolset, name, desc in rows:
+            table.add_row(toolset, name, desc)
+
+        panel = Panel(
+            Group(
+                table,
+                f"[dim]Total: {len(tools)} tools  ヽ(^o^)ノ[/]",
+            ),
+            title="(^_^)/ Available Tools",
+            border_style="bright_black",
+            padding=(0, 1),
+        )
+        _cprint(_render_rich("", panel, ""))
     
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
@@ -1651,39 +1684,52 @@ class HermesCLI:
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
-        
-        print()
-        title = "(^_^) Configuration"
-        width = 50
-        pad = width - len(title)
-        print("+" + "-" * width + "+")
-        print("|" + " " * (pad // 2) + title + " " * (pad - pad // 2) + "|")
-        print("+" + "-" * width + "+")
-        print()
-        print("  -- Model --")
-        print(f"  Model:     {self.model}")
-        print(f"  Base URL:  {self.base_url}")
-        print(f"  API Key:   {api_key_display}")
-        print()
-        print("  -- Terminal --")
-        print(f"  Environment:  {terminal_env}")
+
+        terminal_entries = [
+            ("Environment", terminal_env),
+            ("Working Dir", terminal_cwd),
+            ("Timeout", f"{terminal_timeout}s"),
+        ]
         if terminal_env == "ssh":
             ssh_host = os.getenv("TERMINAL_SSH_HOST", "not set")
             ssh_user = os.getenv("TERMINAL_SSH_USER", "not set")
             ssh_port = os.getenv("TERMINAL_SSH_PORT", "22")
-            print(f"  SSH Target:   {ssh_user}@{ssh_host}:{ssh_port}")
-        print(f"  Working Dir:  {terminal_cwd}")
-        print(f"  Timeout:      {terminal_timeout}s")
-        print()
-        print("  -- Agent --")
-        print(f"  Max Turns:  {self.max_turns}")
-        print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
-        print(f"  Verbose:    {self.verbose}")
-        print()
-        print("  -- Session --")
-        print(f"  Started:     {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"  Config File: {config_path} {config_status}")
-        print()
+            terminal_entries.append(("SSH Target", f"{ssh_user}@{ssh_host}:{ssh_port}"))
+
+        def _config_table(title: str, entries: list[tuple[str, str]]) -> Group:
+            table = Table.grid(padding=(0, 2), expand=False)
+            table.add_column(style="bold yellow", no_wrap=True, width=12)
+            table.add_column(style="white")
+            for key, value in entries:
+                table.add_row(key, value)
+            return Group(f"[bold]{title}[/]", table)
+
+        panel = Panel.fit(
+            Group(
+                _config_table("Model", [
+                    ("Model", self.model),
+                    ("Base URL", self.base_url),
+                    ("API Key", api_key_display),
+                ]),
+                "",
+                _config_table("Terminal", terminal_entries),
+                "",
+                _config_table("Agent", [
+                    ("Max Turns", str(self.max_turns)),
+                    ("Toolsets", ", ".join(self.enabled_toolsets) if self.enabled_toolsets else "all"),
+                    ("Verbose", str(self.verbose)),
+                ]),
+                "",
+                _config_table("Session", [
+                    ("Started", self.session_start.strftime('%Y-%m-%d %H:%M:%S')),
+                    ("Config File", f"{config_path} {config_status}"),
+                ]),
+            ),
+            title="(^_^) Configuration",
+            border_style="bright_black",
+            padding=(0, 1),
+        )
+        _cprint(_render_rich("", panel, ""))
     
     def show_history(self):
         """Display conversation history."""
@@ -1917,26 +1963,35 @@ class HermesCLI:
                 print(f"  Available: {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
-            print()
-            print("+" + "-" * 50 + "+")
-            print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
-            print("+" + "-" * 50 + "+")
-            print()
             names = sorted(self.personalities)
             personality_preview_length = _dynamic_preview_length(
-                indent=8,
+                command_width=16,
+                indent=18,
                 minimum=48,
                 maximum=100,
             )
-            for index, name in enumerate(names):
+            table = Table(
+                show_header=True,
+                header_style="bold",
+                box=box.SIMPLE_HEAVY,
+                expand=True,
+            )
+            table.add_column("Name", style="bold cyan", no_wrap=True, width=16)
+            table.add_column("Preview", style="white")
+            for name in names:
                 preview = _preview_text(self.personalities[name], max_length=personality_preview_length)
-                print(f"  {name}")
-                print(f"    {preview}")
-                if index != len(names) - 1:
-                    print("    " + "-" * 42)
-            print()
-            print("  Usage: /personality <name>")
-            print()
+                table.add_row(name, preview)
+
+            panel = Panel(
+                Group(
+                    table,
+                    "[dim]Usage: /personality <name>[/]",
+                ),
+                title="(^o^)/ Personalities",
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+            _cprint(_render_rich("", panel, ""))
     
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -2335,17 +2390,35 @@ class HermesCLI:
             else:
                 current = raw_provider
             current_label = _PROVIDER_LABELS.get(current, current)
-            print(f"\n  Current provider: {current_label} ({current})\n")
             providers = list_available_providers()
-            print("  Available providers:")
+            table = Table(
+                show_header=True,
+                header_style="bold",
+                box=box.SIMPLE_HEAVY,
+                expand=True,
+            )
+            table.add_column("Status", style="bold", no_wrap=True, width=6)
+            table.add_column("Provider", style="bold cyan", no_wrap=True, width=14)
+            table.add_column("Label", style="white")
             for p in providers:
                 marker = " ← active" if p["id"] == current else ""
                 auth = "✓" if p["authenticated"] else "✗"
-                aliases = f"  (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
-                print(f"    [{auth}] {p['id']:<14} {p['label']}{aliases}{marker}")
-            print()
-            print("  Switch: /model provider:model-name")
-            print("  Setup:  hermes setup")
+                aliases = f" (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
+                table.add_row(f"[{auth}]", p["id"], f"{p['label']}{aliases}{marker}")
+            panel = Panel.fit(
+                Group(
+                    f"[bold]Current provider:[/] {current_label} ({current})",
+                    "",
+                    table,
+                    "",
+                    "[dim]Switch: /model provider:model-name[/]",
+                    "[dim]Setup:  hermes setup[/]",
+                ),
+                title="(^_^)/ Providers",
+                border_style="bright_black",
+                padding=(0, 1),
+            )
+            _cprint(_render_rich("", panel, ""))
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

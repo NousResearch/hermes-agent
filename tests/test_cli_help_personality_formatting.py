@@ -73,19 +73,23 @@ class TestCLIHelpFormatting:
 
 
 class TestCLIPersonalityFormatting:
-    def test_personality_list_is_sorted_and_separated(self, capsys):
+    def test_personality_list_uses_rich_table(self, capsys):
         cli_obj = _make_cli()
 
-        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((80, 24))):
+        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((80, 24))), \
+             patch("cli._cprint", lambda text: print(text)):
             cli_obj._handle_personality_command("/personality")
 
-        output = capsys.readouterr().out
+        output = _strip_ansi(capsys.readouterr().out)
 
         assert "Personalities" in output
-        assert "  alpha\n    Short and direct." in output
-        assert "  zebra\n    A personality with extra spacing for tests." in output
-        assert output.index("  alpha") < output.index("  zebra")
-        assert "-" * 42 in output
+        assert "Name" in output
+        assert "Preview" in output
+        assert "alpha" in output
+        assert "Short and direct." in output
+        assert "zebra" in output
+        assert "A personality with extra spacing for tests." in output
+        assert output.index("alpha") < output.index("zebra")
         assert "Usage: /personality <name>" in output
 
     def test_personality_preview_expands_on_wider_terminals(self, capsys):
@@ -94,8 +98,9 @@ class TestCLIPersonalityFormatting:
             "builder": "very long prompt " * 10,
         }
 
-        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((140, 24))):
+        with patch("cli.shutil.get_terminal_size", return_value=os.terminal_size((140, 24))), \
+             patch("cli._cprint", lambda text: print(text)):
             cli_obj._handle_personality_command("/personality")
 
-        output = capsys.readouterr().out
+        output = _strip_ansi(capsys.readouterr().out)
         assert "very long prompt very long prompt very long prompt" in output

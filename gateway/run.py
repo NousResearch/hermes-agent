@@ -1546,16 +1546,18 @@ class GatewayRunner:
         lines = [
             f"🔌 **Current provider:** {current_label} (`{current_provider}`)",
             "",
-            "**Available providers:**",
+            "**Available providers**",
+            "```text",
         ]
 
         providers = list_available_providers()
         for p in providers:
             marker = " ← active" if p["id"] == current_provider else ""
             auth = "✅" if p["authenticated"] else "❌"
-            aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
-            lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
+            aliases = f" ({', '.join(p['aliases'])})" if p["aliases"] else ""
+            lines.append(f"{auth} {p['id']:<12} {p['label']}{aliases}{marker}")
 
+        lines.append("```")
         lines.append("")
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")

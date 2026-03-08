@@ -12,8 +12,12 @@ Manual test steps:
    - Risks
    - Opportunities
    - Recommended Actions
-6. Confirm dated output filenames can be created as expected
+6. Run the skill again for the same topic with a dated filename
+7. Confirm the newer report includes:
+   - What Changed Since Last Run
+8. Confirm dated output filenames can be created as expected
 
 Example output files:
 - ai_agents_briefing.md
 - ai_agents_briefing_YYYY-MM-DD.md
+- ai_agents_briefing_YYYY-MM-DD_v2.md

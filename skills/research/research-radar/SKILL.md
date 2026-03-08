@@ -1,10 +1,10 @@
 ---
 name: research-radar
 description: Multi-source research radar for signal monitoring, trend extraction, and decision-ready intelligence briefings.
-version: 2.0.0
+version: 3.0.0
 metadata:
   hermes:
-    tags: [research, radar, intelligence, trends, markdown, automation]
+    tags: [research, radar, intelligence, trends, markdown, automation, change-detection]
     related_skills: [github-pr-workflow]
 ---
 
@@ -19,6 +19,8 @@ Use this skill when the user wants a report that is more than a simple summary:
 - opportunities
 - recommended actions
 - saved output for later review or automation
+
+This skill can also compare the current report with the most recent previous run and highlight what changed.
 
 ## When to use
 
@@ -100,7 +102,24 @@ Identify:
 
 Prefer concrete, recent, decision-relevant information.
 
-### Step 4 — Write the report
+### Step 4 — Compare with the last run when available
+If a previous report exists for the same topic, read it and compare it against the current findings.
+
+Look for:
+- newly appearing developments
+- developments that are no longer prominent
+- changing risks
+- changing opportunities
+
+If a meaningful comparison is possible, add a section called:
+
+## What Changed Since Last Run
+
+Include short bullet points describing the differences.
+
+If no previous report exists, skip this section and continue normally.
+
+### Step 5 — Write the report
 Write the final report using the standard template structure below.
 
 ## Standard Report Structure
@@ -124,6 +143,9 @@ Short paragraph.
 
 ## Recommended Actions
 - bullet points
+
+## What Changed Since Last Run
+- bullet points if a previous report exists
 
 ## Sources
 - list of links or source names
@@ -154,9 +176,11 @@ After writing the report:
 - Do not invent sources
 - Do not use only one source if multiple are available
 - Do not produce a generic summary without risks/opportunities/actions
+- Do not force a change-detection section when there is no meaningful prior report
 
 ## Example requests
 
 - “Use research-radar to produce a 7-day briefing on AI coding agents and save it to `ai_agents_briefing.md`.”
 - “Use research-radar to monitor robotics startups for the last 14 days and save the report to `robotics_watch.md`.”
 - “Use research-radar to generate a founder-focused briefing on open-source agent tooling.”
+- “Use research-radar to compare the latest AI coding agents landscape against the previous run and highlight what changed.”

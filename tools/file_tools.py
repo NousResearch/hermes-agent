@@ -142,7 +142,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_reads[read_key] = task_reads.get(read_key, 0) + 1
             count = task_reads[read_key]
 
-        if count > 1:
+        if count >= 3:
+            # Hard block: stop returning content to break the loop
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have read this exact file region {count} times. "
+                    "The content has NOT changed. You already have this information. "
+                    "STOP re-reading and proceed with your task."
+                ),
+                "path": path,
+                "already_read": count,
+            }, ensure_ascii=False)
+        elif count > 1:
             result_dict["_warning"] = (
                 f"You have already read this exact file region {count} times in this session. "
                 "The content has not changed. Use the information you already have instead of re-reading. "
@@ -224,12 +235,38 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        # Track searches to detect repeated search loops
+        search_key = ("search", pattern, target, path, file_glob or "")
+        with _read_tracker_lock:
+            task_reads = _read_tracker.setdefault(task_id, {})
+            task_reads[search_key] = task_reads.get(search_key, 0) + 1
+            count = task_reads[search_key]
+
+        if count >= 3:
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have run this exact search {count} times. "
+                    "The results have NOT changed. You already have this information. "
+                    "STOP re-searching and proceed with your task."
+                ),
+                "pattern": pattern,
+                "already_searched": count,
+            }, ensure_ascii=False)
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+
+        if count > 1:
+            result_dict["_warning"] = (
+                f"You have run this exact search {count} times in this session. "
+                "The results have not changed. Use the information you already have."
+            )
+
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

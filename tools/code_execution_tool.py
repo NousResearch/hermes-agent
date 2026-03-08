@@ -78,7 +78,7 @@ _TOOL_STUBS = {
     "web_extract": (
         "web_extract",
         "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
+        '"""Extract content from URLs. Returns dict with results list of {url, content, error}."""',
         '{"urls": urls}',
     ),
     "read_file": (
@@ -605,7 +605,7 @@ _TOOL_DOC_LINES = [
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
      "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+     "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown"),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
@@ -643,7 +643,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
-    import_str = ", ".join(import_examples) + ", ..."
+    if import_examples:
+        import_str = ", ".join(import_examples) + ", ..."
+    else:
+        import_str = "..."
 
     description = (
         "Run a Python script that can call Hermes tools programmatically. "

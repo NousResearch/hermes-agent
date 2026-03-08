@@ -909,28 +909,6 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 # CLI Commands
 # ============================================================================
 
-COMMANDS = {
-    "/help": "Show this help message",
-    "/tools": "List available tools",
-    "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
-    "/prompt": "View/set custom system prompt",
-    "/personality": "Set a predefined personality",
-    "/clear": "Clear screen and reset conversation (fresh start)",
-    "/history": "Show conversation history",
-    "/new": "Start a new conversation (reset history)",
-    "/reset": "Reset conversation only (keep screen)",
-    "/retry": "Retry the last message (resend to agent)",
-    "/undo": "Remove the last user/assistant exchange",
-    "/save": "Save the current conversation",
-    "/config": "Show current configuration",
-    "/cron": "Manage scheduled tasks (list, add, remove)",
-    "/skills": "Search, install, inspect, or manage skills from online registries",
-    "/platforms": "Show gateway/messaging platform status",
-    "/paste": "Check clipboard for an image and attach it",
-    "/reload-mcp": "Reload MCP servers from config.yaml",
-    "/quit": "Exit the CLI (also: /exit, /q)",
-}
 
 
 # ============================================================================

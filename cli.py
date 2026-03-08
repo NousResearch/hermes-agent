@@ -1175,7 +1175,9 @@ class HermesCLI:
             current_model = (self.model or "").strip()
             current_slug = current_model.split("/")[-1]
             is_codex_model = "codex" in current_slug.lower()
+            has_provider_prefix = "/" in current_model
             if not is_codex_model:
+                # Model is not Codex-compatible at all — replace with best available
                 try:
                     from hermes_cli.codex_models import get_codex_model_ids
                     codex_models = get_codex_model_ids(access_token=api_key)
@@ -1189,6 +1191,15 @@ class HermesCLI:
                             f"OpenAI Codex; switching to '{codex_default}'.[/]"
                         )
                     self.model = codex_default
+            elif has_provider_prefix:
+                # Model is Codex-compatible but has a provider prefix the Codex
+                # Responses API does not accept (e.g. openai/gpt-5.3-codex)
+                self.model = current_slug
+                if not getattr(self, "_model_is_default", True):
+                    self.console.print(
+                        f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
+                        f"using '{current_slug}' for OpenAI Codex.[/]"
+                    )
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or effective model changed.

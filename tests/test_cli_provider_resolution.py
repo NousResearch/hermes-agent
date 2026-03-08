@@ -287,3 +287,29 @@ def test_explicit_codex_model_not_overridden(monkeypatch):
     assert shell._model_is_default is False
     assert shell._ensure_runtime_credentials() is True
     assert shell.model == "gpt-5.1-codex-mini"
+
+
+def test_codex_model_with_provider_prefix_is_stripped(monkeypatch):
+    """openai/gpt-5.3-codex should become gpt-5.3-codex — the Codex Responses
+    API does not accept provider-prefixed model slugs."""
+    cli = _import_cli()
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="openai/gpt-5.3-codex", compact=True, max_turns=1)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "gpt-5.3-codex"

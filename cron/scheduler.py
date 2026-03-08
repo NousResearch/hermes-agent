@@ -137,8 +137,8 @@ def _deliver_result(job: dict, content: str) -> None:
         try:
             from gateway.mirror import mirror_to_session
             mirror_to_session(platform_name, chat_id, content, source_label="cron")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
@@ -189,8 +189,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     model = _model_cfg
                 elif isinstance(_model_cfg, dict):
                     model = _model_cfg.get("default", model)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Reasoning config from env or config.yaml
         reasoning_config = None

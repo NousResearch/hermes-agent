@@ -75,6 +75,7 @@ if _config_path.exists():
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
@@ -107,11 +108,13 @@ os.environ["HERMES_QUIET"] = "1"
 # Enable interactive exec approval for dangerous commands on messaging platforms
 os.environ["HERMES_EXEC_ASK"] = "1"
 
-# Set terminal working directory for messaging platforms
-# Uses MESSAGING_CWD if set, otherwise defaults to home directory
-# This is separate from CLI which uses the directory where `hermes` is run
-messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
-os.environ["TERMINAL_CWD"] = messaging_cwd
+# Set terminal working directory for messaging platforms.
+# If the user set an explicit path in config.yaml (not "." or "auto"),
+# respect it. Otherwise use MESSAGING_CWD or default to home directory.
+_configured_cwd = os.environ.get("TERMINAL_CWD", "")
+if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
+    messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
+    os.environ["TERMINAL_CWD"] = messaging_cwd
 
 from gateway.config import (
     Platform,

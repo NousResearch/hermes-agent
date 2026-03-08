@@ -2020,14 +2020,44 @@ class HermesCLI:
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1]
-                self.model = new_model
-                self.agent = None  # Force re-init
-                # Save to config
-                if save_config_value("model.default", new_model):
-                    print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                new_model = parts[1].strip()
+
+                from hermes_cli.auth import resolve_provider
+                from hermes_cli.models import validate_requested_model
+
+                try:
+                    provider_for_validation = resolve_provider(
+                        self.requested_provider,
+                        explicit_api_key=self._explicit_api_key,
+                        explicit_base_url=self._explicit_base_url,
+                    )
+                except Exception:
+                    provider_for_validation = self.provider or self.requested_provider
+
+                validation = validate_requested_model(
+                    new_model,
+                    provider_for_validation,
+                    base_url=self.base_url,
+                )
+
+                if not validation.get("accepted"):
+                    print(f"(^_^) Warning: {validation.get('message')}")
+                    print(f"(^_^) Current model unchanged: {self.model}")
                 else:
-                    print(f"(^_^) Model changed to: {new_model} (session only)")
+                    self.model = new_model
+                    self.agent = None  # Force re-init
+
+                    if validation.get("persist"):
+                        if save_config_value("model.default", new_model):
+                            print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                        else:
+                            print(f"(^_^) Model changed to: {new_model} (session only)")
+                    else:
+                        print(f"(^_^) Model changed to: {new_model} (session only)")
+
+                    message = validation.get("message")
+                    if message:
+                        print(f"  Warning: {message}")
             else:
                 print(f"Current model: {self.model}")
                 print("  Usage: /model <model-name> to change")

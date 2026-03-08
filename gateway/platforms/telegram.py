@@ -313,12 +313,16 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send an image natively as a Telegram photo."""
+        """Send an image natively as a Telegram photo.
+        
+        Tries URL-based send first (fast, works for <5MB images).
+        Falls back to downloading and uploading as file (supports up to 10MB).
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
         try:
-            # Telegram can send photos directly from URLs
+            # Telegram can send photos directly from URLs (up to ~5MB)
             msg = await self._bot.send_photo(
                 chat_id=int(chat_id),
                 photo=image_url,
@@ -327,9 +331,26 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send photo, falling back to URL: {e}")
-            # Fallback: send as text link
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            logger.warning("[%s] URL-based send_photo failed (%s), trying file upload", self.name, e)
+            # Fallback: download and upload as file (supports up to 10MB)
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(image_url)
+                    resp.raise_for_status()
+                    image_data = resp.content
+                
+                msg = await self._bot.send_photo(
+                    chat_id=int(chat_id),
+                    photo=image_data,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as e2:
+                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2)
+                # Final fallback: send URL as text
+                return await super().send_image(chat_id, image_url, caption, reply_to)
     
     async def send_animation(
         self,

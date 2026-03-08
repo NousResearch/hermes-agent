@@ -158,10 +158,17 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
 
 def _format_gateway_section(title: str, entries: list[tuple[str, str]]) -> list[str]:
-    """Render a titled markdown section with one command per line."""
-    lines = [f"**{title}**"]
+    """Render a titled markdown section with aligned command rows."""
+    return [f"**{title}**", *_format_gateway_rows(entries)]
+
+
+def _format_gateway_rows(entries: list[tuple[str, str]]) -> list[str]:
+    """Render aligned rows inside a fenced code block."""
+    command_width = max(len(command) for command, _ in entries) + 2
+    lines = ["```text"]
     for command, description in entries:
-        lines.append(f"`{command}` — {description}")
+        lines.append(f"{command:<{command_width}}{description}")
+    lines.append("```")
     return lines
 
 
@@ -171,6 +178,11 @@ def _format_personality_preview(prompt: str, max_length: int = 72) -> str:
     if len(preview) <= max_length:
         return preview
     return preview[: max_length - 3].rstrip() + "..."
+
+
+def _format_skill_command_preview(description: str, max_length: int = 96) -> str:
+    """Keep skill command descriptions compact in /help output."""
+    return _format_personality_preview(description, max_length=max_length)
 
 
 class GatewayRunner:
@@ -1353,8 +1365,13 @@ class GatewayRunner:
             if skill_cmds:
                 lines.append("")
                 lines.append(f"⚡ **Skill Commands** ({len(skill_cmds)} installed)")
+                lines.append("Use a skill command directly to run it.")
+                skill_entries = []
                 for cmd in sorted(skill_cmds):
-                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                    description = str(skill_cmds[cmd].get("description", "Skill command"))
+                    preview = _format_skill_command_preview(description)
+                    skill_entries.append((cmd, preview))
+                lines.extend(_format_gateway_rows(skill_entries))
         except Exception:
             pass
         return "\n".join(lines)
@@ -1570,7 +1587,7 @@ class GatewayRunner:
             lines = ["🎭 **Available Personalities**"]
             for name in sorted(personalities):
                 lines.append("")
-                lines.append(f"`{name}`")
+                lines.append(f"**{name}**")
                 lines.append(_format_personality_preview(str(personalities[name])))
             lines.append("")
             lines.append("Use `/personality <name>` to switch.")

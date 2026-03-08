@@ -914,6 +914,22 @@ from agent.skill_commands import scan_skill_commands, get_skill_commands, build_
 _skill_commands = scan_skill_commands()
 
 
+def _preview_text(text: str, max_length: int = 96) -> str:
+    """Collapse whitespace so long descriptions stay readable."""
+    preview = " ".join(str(text).split())
+    if len(preview) <= max_length:
+        return preview
+    return preview[: max_length - 3].rstrip() + "..."
+
+
+def _cli_print_section(title: str, entries: list[tuple[str, str]], *, command_width: int | None = None) -> None:
+    """Render an aligned command section in the interactive CLI."""
+    width = command_width or (max(len(command) for command, _ in entries) + 2)
+    _cprint(f"\n  {_BOLD}{title}{_RST}")
+    for command, description in entries:
+        _cprint(f"    {_GOLD}{command:<{width}}{_RST} {_DIM}-{_RST} {description}")
+
+
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
@@ -1441,14 +1457,66 @@ class HermesCLI:
         _cprint(f"\n{_BOLD}+{'-' * 50}+{_RST}")
         _cprint(f"{_BOLD}|{' ' * 14}(^_^)? Available Commands{' ' * 10}|{_RST}")
         _cprint(f"{_BOLD}+{'-' * 50}+{_RST}\n")
-        
-        for cmd, desc in COMMANDS.items():
-            _cprint(f"  {_GOLD}{cmd:<15}{_RST} {_DIM}-{_RST} {desc}")
-        
+
+        sections = [
+            (
+                "Session",
+                [
+                    ("/new", "Start a new session with a fresh conversation"),
+                    ("/reset", "Clear the current session's conversation history"),
+                    ("/clear", "Clear the screen and reset the conversation"),
+                    ("/history", "Show conversation history"),
+                    ("/retry", "Retry the last message"),
+                    ("/undo", "Remove the last exchange"),
+                    ("/save", "Save the current conversation"),
+                    ("/quit", "Exit the CLI"),
+                ],
+            ),
+            (
+                "Configuration",
+                [
+                    ("/model", "Show or change the current model"),
+                    ("/provider", "Show available providers and current provider"),
+                    ("/prompt", "View or set a custom system prompt"),
+                    ("/personality", "List or switch predefined personalities"),
+                    ("/config", "Show current configuration"),
+                    ("/verbose", "Cycle tool progress display modes"),
+                ],
+            ),
+            (
+                "Tools & Platform",
+                [
+                    ("/tools", "List available tools"),
+                    ("/toolsets", "List available toolsets"),
+                    ("/skills", "Search, install, inspect, or manage skills"),
+                    ("/platforms", "Show gateway and messaging platform status"),
+                    ("/reload-mcp", "Reload MCP servers from config.yaml"),
+                    ("/paste", "Attach an image from the clipboard"),
+                ],
+            ),
+            (
+                "Context & Automation",
+                [
+                    ("/compress", "Manually compress conversation context"),
+                    ("/usage", "Show token usage for the current session"),
+                    ("/insights", "Show usage insights and analytics"),
+                    ("/cron", "Manage scheduled tasks"),
+                    ("/help", "Show this message"),
+                ],
+            ),
+        ]
+
+        for title, entries in sections:
+            _cli_print_section(title, entries)
+
         if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
-            for cmd, info in sorted(_skill_commands.items()):
-                _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
+            skill_entries = [
+                (cmd, _preview_text(info.get("description", "Skill command")))
+                for cmd, info in sorted(_skill_commands.items())
+            ]
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed)")
+            _cprint(f"    {_DIM}Use a skill command directly to run it.{_RST}")
+            _cli_print_section("Installed Skills", skill_entries, command_width=24)
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
@@ -1814,8 +1882,13 @@ class HermesCLI:
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
-            for name, prompt in self.personalities.items():
-                print(f"  {name:<12} - \"{prompt}\"")
+            names = sorted(self.personalities)
+            for index, name in enumerate(names):
+                preview = _preview_text(self.personalities[name], max_length=76)
+                print(f"  {name}")
+                print(f"    {preview}")
+                if index != len(names) - 1:
+                    print("    " + "-" * 42)
             print()
             print("  Usage: /personality <name>")
             print()

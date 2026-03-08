@@ -1,3 +1,4 @@
+import re
 from unittest.mock import patch
 
 import pytest
@@ -38,9 +39,9 @@ class TestHelpFormatting:
         assert "**Configuration**" in result
         assert "**Context**" in result
         assert "**Maintenance**" in result
-        assert "`/new` — Start a new session with a fresh conversation" in result
-        assert "`/personality [name]` — List or switch personalities" in result
-        assert "`/update` — Update Hermes Agent to the latest version" in result
+        assert "```text\n/new" in result
+        assert re.search(r"/personality \[name\]\s+List or switch personalities", result)
+        assert re.search(r"/update\s+Update Hermes Agent to the latest version", result)
 
     @pytest.mark.asyncio
     async def test_help_output_separates_skill_commands_section(self):
@@ -52,7 +53,23 @@ class TestHelpFormatting:
             result = await runner._handle_help_command(_make_event(text="/help"))
 
         assert "⚡ **Skill Commands** (1 installed)" in result
-        assert "\n\n⚡ **Skill Commands** (1 installed)\n`/gif-search` — Search for GIFs across providers" in result
+        assert "Use a skill command directly to run it." in result
+        assert "```text\n/gif-search" in result
+        assert "Search for GIFs across providers" in result
+
+    @pytest.mark.asyncio
+    async def test_help_output_truncates_long_skill_descriptions(self):
+        runner = _make_runner()
+        long_description = " ".join(["Search across providers with extra detail"] * 6)
+
+        with patch("agent.skill_commands.get_skill_commands", return_value={
+            "/gif-search": {"description": long_description},
+        }):
+            result = await runner._handle_help_command(_make_event(text="/help"))
+
+        assert "/gif-search" in result
+        assert "..." in result
+        assert long_description not in result
 
 
 class TestPersonalityFormatting:
@@ -77,9 +94,9 @@ class TestPersonalityFormatting:
             )
 
         assert result.startswith("🎭 **Available Personalities**")
-        assert "\n\n`alpha`\nShort and direct." in result
-        assert "\n\n`zebra`\nA personality with extra spacing for tests." in result
-        assert result.index("`alpha`") < result.index("`zebra`")
+        assert "\n\n**alpha**\nShort and direct." in result
+        assert "\n\n**zebra**\nA personality with extra spacing for tests." in result
+        assert result.index("**alpha**") < result.index("**zebra**")
         assert result.endswith("Use `/personality <name>` to switch.")
 
     @pytest.mark.asyncio
@@ -101,6 +118,6 @@ class TestPersonalityFormatting:
                 _make_event(text="/personality")
             )
 
-        assert "`builder`" in result
+        assert "**builder**" in result
         assert "..." in result
         assert "very long prompt very long prompt" in result

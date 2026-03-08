@@ -78,15 +78,26 @@ def _escape_mdv2(text: str) -> str:
 
 
 def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+    """Strip MarkdownV2 syntax to produce readable plain-text fallback.
 
-    Also removes MarkdownV2 bold markers (*text* -> text) so the fallback
-    doesn't show stray asterisks from header/bold conversion.
+    This is used only after Telegram rejects MarkdownV2 parsing. We prefer a
+    human-readable fallback over preserving raw formatting markers.
     """
-    # Remove escape backslashes before special characters
+    # Remove escape backslashes before special characters.
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
-    # Remove MarkdownV2 bold markers that format_message converted from **bold**
+
+    # Collapse supported inline entities to their visible text.
+    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
+    cleaned = re.sub(r'__([^_]+)__', r'\1', cleaned)
+    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
+    cleaned = re.sub(r'_([^_]+)_', r'\1', cleaned)
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+
+    # Replace markdown links with their display text.
+    cleaned = re.sub(r'!\[([^\]]+)\]\((?:tg://(?:emoji|time)[^)]+)\)', r'\1', cleaned)
+    cleaned = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1', cleaned)
+
     return cleaned
 
 

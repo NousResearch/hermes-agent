@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _strip_mdv2,
     format_telegram_markdownv2,
     split_telegram_markdownv2,
 )
@@ -340,6 +341,16 @@ class TestItalicNewlineBug:
 # =========================================================================
 # format_message - mixed/complex
 # =========================================================================
+
+
+class TestPlainTextFallbackCleanup:
+    def test_strip_mdv2_removes_supported_entities(self, adapter):
+        raw = adapter.format_message(
+            "**bold** *italic* __under__ ~~gone~~ ||secret|| `code` "
+            "[link](https://example.com) ![now](tg://time?unix=1647531900&format=t)"
+        )
+        cleaned = _strip_mdv2(raw)
+        assert cleaned == "bold italic under gone secret code link now"
 
 
 class TestFormatMessageComplex:

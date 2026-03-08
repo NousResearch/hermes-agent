@@ -22,6 +22,7 @@ These are commands you run from your shell.
 | `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`) |
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
 | `hermes chat --verbose` | Enable verbose/debug output |
+| `hermes --worktree` / `-w` | Start in an isolated git worktree (for parallel agents) |
 
 ### Provider & Model Management
 

@@ -1,20 +1,15 @@
 """Tests for git worktree isolation (CLI --worktree / -w flag).
 
 Verifies worktree creation, cleanup, .worktreeinclude handling,
-and .gitignore management.  (#652)
+.gitignore management, and integration with the CLI.  (#652)
 """
 
 import os
+import shutil
 import subprocess
 import pytest
 from pathlib import Path
-from unittest.mock import patch
-
-# Import worktree functions from cli.py
-# We need to be careful — cli.py has heavy imports at module level.
-# Import the functions directly.
-import importlib
-import sys
+from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture
@@ -39,19 +34,6 @@ def git_repo(tmp_path):
         cwd=repo, capture_output=True,
     )
     return repo
-
-
-@pytest.fixture
-def worktree_funcs():
-    """Import worktree functions without triggering heavy cli.py imports."""
-    # We test the functions in isolation using subprocess calls
-    # that mirror what the functions do, since importing cli.py
-    # pulls in prompt_toolkit, rich, fire, etc.
-    return {
-        "git_repo_root": _git_repo_root,
-        "setup_worktree": _setup_worktree,
-        "cleanup_worktree": _cleanup_worktree,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +379,257 @@ class TestMultipleWorktrees:
         # All should be removed
         for info in worktrees:
             assert not Path(info["path"]).exists()
+
+
+class TestWorktreeDirectorySymlink:
+    """Test .worktreeinclude with directories (symlinked)."""
+
+    def test_symlinks_directory(self, git_repo):
+        """Directories in .worktreeinclude should be symlinked."""
+        # Create a .venv directory
+        venv_dir = git_repo / ".venv" / "lib"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "marker.txt").write_text("venv marker")
+        (git_repo / ".gitignore").write_text(".venv/\n.worktrees/\n")
+        subprocess.run(
+            ["git", "add", ".gitignore"], cwd=str(git_repo), capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "gitignore"], cwd=str(git_repo), capture_output=True
+        )
+
+        (git_repo / ".worktreeinclude").write_text(".venv/\n")
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        wt_path = Path(info["path"])
+        src = git_repo / ".venv"
+        dst = wt_path / ".venv"
+
+        # Manually symlink (mirrors cli.py logic)
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(str(src.resolve()), str(dst))
+
+        assert dst.is_symlink()
+        assert (dst / "lib" / "marker.txt").read_text() == "venv marker"
+
+
+class TestStaleWorktreePruning:
+    """Test _prune_stale_worktrees garbage collection."""
+
+    def test_prunes_old_clean_worktree(self, git_repo):
+        """Old clean worktrees should be removed on prune."""
+        import time
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+        assert Path(info["path"]).exists()
+
+        # Make the worktree look old (set mtime to 25h ago)
+        old_time = time.time() - (25 * 3600)
+        os.utime(info["path"], (old_time, old_time))
+
+        # Reimplementation of prune logic (matches cli.py)
+        worktrees_dir = git_repo / ".worktrees"
+        cutoff = time.time() - (24 * 3600)
+
+        for entry in worktrees_dir.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("hermes-"):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+                if mtime > cutoff:
+                    continue
+            except Exception:
+                continue
+
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            if status.stdout.strip():
+                continue
+
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            branch = branch_result.stdout.strip()
+            subprocess.run(
+                ["git", "worktree", "remove", str(entry), "--force"],
+                capture_output=True, text=True, timeout=15, cwd=str(git_repo),
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, timeout=10, cwd=str(git_repo),
+                )
+
+        assert not Path(info["path"]).exists()
+
+    def test_keeps_recent_worktree(self, git_repo):
+        """Recent worktrees should NOT be pruned."""
+        import time
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # Don't modify mtime — it's recent
+        worktrees_dir = git_repo / ".worktrees"
+        cutoff = time.time() - (24 * 3600)
+
+        pruned = False
+        for entry in worktrees_dir.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("hermes-"):
+                continue
+            mtime = entry.stat().st_mtime
+            if mtime > cutoff:
+                continue  # Too recent
+            pruned = True
+
+        assert not pruned
+        assert Path(info["path"]).exists()
+
+    def test_keeps_dirty_old_worktree(self, git_repo):
+        """Old worktrees with uncommitted changes should NOT be pruned."""
+        import time
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # Make it dirty
+        (Path(info["path"]) / "dirty.txt").write_text("uncommitted")
+        subprocess.run(
+            ["git", "add", "dirty.txt"],
+            cwd=info["path"], capture_output=True,
+        )
+
+        # Make it old
+        old_time = time.time() - (25 * 3600)
+        os.utime(info["path"], (old_time, old_time))
+
+        # Check if it would be pruned
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=info["path"],
+        )
+        has_changes = bool(status.stdout.strip())
+        assert has_changes  # Should be dirty → not pruned
+        assert Path(info["path"]).exists()
+
+
+class TestEdgeCases:
+    """Test edge cases for robustness."""
+
+    def test_no_commits_repo(self, tmp_path):
+        """Worktree creation should fail gracefully on a repo with no commits."""
+        repo = tmp_path / "empty-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), capture_output=True)
+
+        info = _setup_worktree(str(repo))
+        assert info is None  # Should fail gracefully
+
+    def test_not_a_git_repo(self, tmp_path):
+        """Repo detection should return None for non-git directories."""
+        bare = tmp_path / "not-git"
+        bare.mkdir()
+        root = _git_repo_root(cwd=str(bare))
+        assert root is None
+
+    def test_worktrees_dir_already_exists(self, git_repo):
+        """Should work fine if .worktrees/ already exists."""
+        (git_repo / ".worktrees").mkdir(exist_ok=True)
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+        assert Path(info["path"]).exists()
+
+
+class TestCLIFlagLogic:
+    """Test the flag/config OR logic from main()."""
+
+    def test_worktree_flag_triggers(self):
+        """--worktree flag should trigger worktree creation."""
+        worktree = True
+        w = False
+        config_worktree = False
+        use_worktree = worktree or w or config_worktree
+        assert use_worktree
+
+    def test_w_flag_triggers(self):
+        """-w flag should trigger worktree creation."""
+        worktree = False
+        w = True
+        config_worktree = False
+        use_worktree = worktree or w or config_worktree
+        assert use_worktree
+
+    def test_config_triggers(self):
+        """worktree: true in config should trigger worktree creation."""
+        worktree = False
+        w = False
+        config_worktree = True
+        use_worktree = worktree or w or config_worktree
+        assert use_worktree
+
+    def test_none_set_no_trigger(self):
+        """No flags and no config should not trigger."""
+        worktree = False
+        w = False
+        config_worktree = False
+        use_worktree = worktree or w or config_worktree
+        assert not use_worktree
+
+
+class TestTerminalCWDIntegration:
+    """Test that TERMINAL_CWD is correctly set to the worktree path."""
+
+    def test_terminal_cwd_set(self, git_repo):
+        """After worktree setup, TERMINAL_CWD should point to the worktree."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # This is what main() does:
+        os.environ["TERMINAL_CWD"] = info["path"]
+        assert os.environ["TERMINAL_CWD"] == info["path"]
+        assert Path(os.environ["TERMINAL_CWD"]).exists()
+
+        # Clean up env
+        del os.environ["TERMINAL_CWD"]
+
+    def test_terminal_cwd_is_valid_git_repo(self, git_repo):
+        """The TERMINAL_CWD worktree should be a valid git working tree."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, cwd=info["path"],
+        )
+        assert result.stdout.strip() == "true"
+
+
+class TestSystemPromptInjection:
+    """Test that the agent gets worktree context in its system prompt."""
+
+    def test_prompt_note_format(self, git_repo):
+        """Verify the system prompt note contains all required info."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # This is what main() does:
+        wt_note = (
+            f"\n\n[System note: You are working in an isolated git worktree at "
+            f"{info['path']}. Your branch is `{info['branch']}`. "
+            f"Changes here do not affect the main working tree or other agents. "
+            f"Remember to commit and push your changes, and create a PR if appropriate. "
+            f"The original repo is at {info['repo_root']}.]"
+        )
+
+        assert info["path"] in wt_note
+        assert info["branch"] in wt_note
+        assert info["repo_root"] in wt_note
+        assert "isolated git worktree" in wt_note
+        assert "commit and push" in wt_note

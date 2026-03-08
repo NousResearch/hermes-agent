@@ -33,6 +33,10 @@ hermes --resume <session_id>  # Resume a specific session by ID (-r)
 
 # Verbose mode (debug output)
 hermes chat --verbose
+
+# Isolated git worktree (for running multiple agents in parallel)
+hermes -w                         # Interactive mode in worktree
+hermes -w -q "Fix issue #123"     # Single query in worktree
 ```
 
 ## Interface Layout

@@ -2629,16 +2629,17 @@ class HermesCLI:
         except Exception as e:
             print(f"  MCP reload failed: {e}")
 
-    def _apply_skin(self, name: str) -> None:
-        """Apply a skin by name and persist it."""
+    def _apply_skin(self, name: str, save: bool = True) -> None:
+        """Apply a skin by name. Pass save=False for live preview without persisting."""
         self._current_skin = name
         if self._app:
             self._app.style = PTStyle.from_dict(_SKIN_THEMES[name])
             self._app.invalidate()
-        if save_config_value("display.skin", name):
-            print(f"Skin set to: {name} (saved)")
-        else:
-            print(f"Skin set to: {name}")
+        if save:
+            if save_config_value("display.skin", name):
+                print(f"Skin set to: {name} (saved)")
+            else:
+                print(f"Skin set to: {name}")
 
     def _handle_skin_command(self, cmd: str) -> None:
         """Handle /skin [name|:toggle|:create <desc>]."""
@@ -2650,20 +2651,65 @@ class HermesCLI:
             keyword = sub.split()[0].lower() if sub else ""
             if keyword == "toggle":
                 idx = available.index(self._current_skin) if self._current_skin in available else 0
-                next_name = available[(idx + 1) % len(available)]
-                self._apply_skin(next_name)
+                self._skin_picker_state = {
+                    "selected": idx,
+                    "original": self._current_skin,
+                    "skins": available,
+                }
+                if self._app:
+                    self._app.invalidate()
                 return
             if keyword == "create":
                 description = sub[6:].strip()  # everything after "create"
-                create_cmd = "/skin-create"
-                if create_cmd in _skill_commands:
-                    msg = build_skill_invocation_message(create_cmd, description)
-                    if msg and hasattr(self, '_pending_input'):
-                        skill_name = _skill_commands[create_cmd]["name"]
-                        print(f"\n  loading skill: {skill_name}")
-                        self._pending_input.put(msg)
-                        return
-                print("skin-create skill not found — install it first")
+                if not description:
+                    print("Usage: /skin:create <description>  e.g. /skin:create sheikah blue with electric pink accents")
+                    return
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(
+                        f"Create a new Hermes terminal skin. Description: {description}\n\n"
+                        f"The skin is a Python dict entry in `_SKIN_THEMES` inside "
+                        f"`/Users/eribarrett/Documents/coding/hermes-agent/cli.py`.\n\n"
+                        f"Steps:\n"
+                        f"1. Choose a short slug name (e.g. 'nightsea', 'sakura', 'void').\n"
+                        f"2. Design hex colors matching the description for all 29 keys below.\n"
+                        f"3. Use the patch tool to insert the new dict entry into `_SKIN_THEMES` "
+                        f"right before the closing `}}` of the dict (after the 'slate' entry).\n"
+                        f"4. Call: save_config_value('display.skin', '<slug>') to activate it.\n\n"
+                        f"Required keys (copy this template and fill in hex values):\n"
+                        f"    \"<slug>\": {{\n"
+                        f"        \"input-area\": \"#hex\",\n"
+                        f"        \"placeholder\": \"#hex italic\",\n"
+                        f"        \"prompt\": \"#hex\",\n"
+                        f"        \"prompt-working\": \"#hex italic\",\n"
+                        f"        \"hint\": \"#hex italic\",\n"
+                        f"        \"spinner\": \"#hex\",\n"
+                        f"        \"input-rule\": \"#hex\",\n"
+                        f"        \"image-badge\": \"#hex bold\",\n"
+                        f"        \"completion-menu\": \"bg:#hex #hex\",\n"
+                        f"        \"completion-menu.completion\": \"bg:#hex #hex\",\n"
+                        f"        \"completion-menu.completion.current\": \"bg:#hex #hex\",\n"
+                        f"        \"completion-menu.meta.completion\": \"bg:#hex #hex\",\n"
+                        f"        \"completion-menu.meta.completion.current\": \"bg:#hex #hex\",\n"
+                        f"        \"clarify-border\": \"#hex\",\n"
+                        f"        \"clarify-title\": \"#hex bold\",\n"
+                        f"        \"clarify-question\": \"#hex bold\",\n"
+                        f"        \"clarify-choice\": \"#hex\",\n"
+                        f"        \"clarify-selected\": \"#hex bold\",\n"
+                        f"        \"clarify-active-other\": \"#hex italic\",\n"
+                        f"        \"clarify-countdown\": \"#hex\",\n"
+                        f"        \"sudo-prompt\": \"#hex bold\",\n"
+                        f"        \"sudo-border\": \"#hex\",\n"
+                        f"        \"sudo-title\": \"#hex bold\",\n"
+                        f"        \"sudo-text\": \"#hex\",\n"
+                        f"        \"approval-border\": \"#hex\",\n"
+                        f"        \"approval-title\": \"#hex bold\",\n"
+                        f"        \"approval-desc\": \"#hex bold\",\n"
+                        f"        \"approval-cmd\": \"#hex italic\",\n"
+                        f"        \"approval-choice\": \"#hex\",\n"
+                        f"        \"approval-selected\": \"#hex bold\",\n"
+                        f"    }},\n\n"
+                        f"Do not use execute_code. Use read_file and patch tools only."
+                    )
                 return
             print(f"Unknown sub-command: /skin:{keyword}  (available: toggle, create)")
             return
@@ -3007,6 +3053,9 @@ class HermesCLI:
         self._clarify_freetext = False  # True when user chose "Other" and is typing
         self._clarify_deadline = 0      # monotonic timestamp when the clarify times out
 
+        # Skin picker state: /skin:toggle opens a live-preview selector
+        self._skin_picker_state = None  # dict: {selected, original, skins} when active
+
         # Sudo password prompt state (similar mechanism to clarify)
         self._sudo_state = None         # dict with response_queue when active
         self._sudo_deadline = 0
@@ -3071,6 +3120,13 @@ class HermesCLI:
                     event.app.invalidate()
                 return
 
+            # --- Skin picker: confirm and save selected skin ---
+            if self._skin_picker_state:
+                state = self._skin_picker_state
+                self._skin_picker_state = None
+                self._apply_skin(state["skins"][state["selected"]], save=True)
+                return
+
             # --- Clarify choice mode: confirm the highlighted selection ---
             if self._clarify_state and not self._clarify_freetext:
                 state = self._clarify_state
@@ -3112,6 +3168,32 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
+        # --- Skin picker: arrow-key navigation with live preview ---
+
+        _skin_picker_active = Condition(lambda: bool(self._skin_picker_state))
+
+        @kb.add('up', filter=_skin_picker_active, eager=True)
+        def skin_picker_up(event):
+            state = self._skin_picker_state
+            if state:
+                state["selected"] = max(0, state["selected"] - 1)
+                self._apply_skin(state["skins"][state["selected"]], save=False)
+
+        @kb.add('down', filter=_skin_picker_active, eager=True)
+        def skin_picker_down(event):
+            state = self._skin_picker_state
+            if state:
+                state["selected"] = min(len(state["skins"]) - 1, state["selected"] + 1)
+                self._apply_skin(state["skins"][state["selected"]], save=False)
+
+        @kb.add('escape', filter=_skin_picker_active, eager=True)
+        def skin_picker_cancel(event):
+            state = self._skin_picker_state
+            if state:
+                self._apply_skin(state["original"], save=False)
+                self._skin_picker_state = None
+                event.app.invalidate()
+
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
@@ -3150,7 +3232,8 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state
+            lambda: not self._clarify_state and not self._approval_state
+                    and not self._sudo_state and not self._skin_picker_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -3444,6 +3527,43 @@ class HermesCLI:
 
         # --- Clarify tool: dynamic display widget for questions + choices ---
 
+        def _get_skin_picker_display():
+            """Build styled text for the skin picker panel."""
+            state = cli_ref._skin_picker_state
+            if not state:
+                return []
+            skins = state["skins"]
+            selected = state["selected"]
+            title = 'Choose skin'
+            cols = shutil.get_terminal_size().columns
+            box_w = min(max(cols - 2, len(title) + 8), 50)
+            top_fill = '─' * max(0, box_w - len(title) - 5)
+            bot_fill = '─' * (box_w - 2)
+            frags = []
+            frags.append(('class:clarify-border', '╭─ '))
+            frags.append(('class:clarify-title', title))
+            frags.append(('class:clarify-border', f' {top_fill}╮\n'))
+            frags.append(('class:clarify-border', '│\n'))
+            for i, name in enumerate(skins):
+                frags.append(('class:clarify-border', '│  '))
+                if i == selected:
+                    frags.append(('class:clarify-selected', f'> {name}'))
+                else:
+                    frags.append(('class:clarify-choice', f'  {name}'))
+                frags.append(('', '\n'))
+            frags.append(('class:clarify-border', '│\n'))
+            frags.append(('class:clarify-border', f'╰{bot_fill}╯\n'))
+            frags.append(('class:hint', '  ↑/↓ preview  ·  Enter apply  ·  Esc cancel\n'))
+            return frags
+
+        skin_picker_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_skin_picker_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._skin_picker_state is not None),
+        )
+
         def _get_clarify_display():
             """Build styled text for the clarify question/choices panel."""
             state = cli_ref._clarify_state
@@ -3636,6 +3756,7 @@ class HermesCLI:
                 sudo_widget,
                 approval_widget,
                 clarify_widget,
+                skin_picker_widget,
                 spacer,
                 input_rule_top,
                 image_bar,

@@ -40,7 +40,7 @@ COMMANDS = {
     "/reload-mcp": "Reload MCP servers from config.yaml",
     "/skin": "Switch terminal color theme (default, mono, slate)",
     "/skin:toggle": "Cycle to the next skin theme",
-    "/skin:create": "Generate a new skin theme with AI — /skin:create <description>",
+    "/skin:create": "Generate new custom skin — /skin:create <description>",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

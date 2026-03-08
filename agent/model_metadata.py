@@ -191,24 +191,55 @@ def get_model_context_length(model: str, base_url: str = "") -> int:
     3. Hardcoded DEFAULT_CONTEXT_LENGTHS (fuzzy match)
     4. First probe tier (2M) — will be narrowed on first context error
     """
-    # 1. Check persistent cache (model+provider)
+    return resolve_model_capabilities(model, base_url=base_url).get("context_length", CONTEXT_PROBE_TIERS[0])
+
+
+def resolve_model_capabilities(model: str, base_url: str = "") -> Dict[str, Any]:
+    """Resolve basic model capabilities with source attribution.
+
+    Returns a dict containing at least:
+      - context_length
+      - context_source: one of cached|metadata|default|probe
+      - max_completion_tokens (if known)
+      - name / pricing (if known from metadata)
+    """
+    result: Dict[str, Any] = {
+        "context_length": CONTEXT_PROBE_TIERS[0],
+        "context_source": "probe",
+        "max_completion_tokens": None,
+        "name": model,
+        "pricing": {},
+    }
+
+    if not model:
+        return result
+
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            return cached
+            result["context_length"] = cached
+            result["context_source"] = "cached"
+            return result
 
-    # 2. OpenRouter API metadata
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        meta = metadata[model]
+        result.update({
+            "context_length": meta.get("context_length", 128000),
+            "context_source": "metadata",
+            "max_completion_tokens": meta.get("max_completion_tokens"),
+            "name": meta.get("name", model),
+            "pricing": meta.get("pricing", {}) or {},
+        })
+        return result
 
-    # 3. Hardcoded defaults (fuzzy match)
     for default_model, length in DEFAULT_CONTEXT_LENGTHS.items():
         if default_model in model or model in default_model:
-            return length
+            result["context_length"] = length
+            result["context_source"] = "default"
+            return result
 
-    # 4. Unknown model — start at highest probe tier
-    return CONTEXT_PROBE_TIERS[0]
+    return result
 
 
 def estimate_tokens_rough(text: str) -> int:

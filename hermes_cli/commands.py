@@ -35,6 +35,7 @@ COMMANDS = {
     "/verbose": "Cycle tool progress display: off → new → all → verbose",
     "/compress": "Manually compress conversation context (flush memories + summarize)",
     "/usage": "Show token usage for the current session",
+    "/stats": "Show detailed live session diagnostics",
     "/insights": "Show usage insights and analytics (last 30 days)",
     "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",

@@ -9,7 +9,7 @@ from agent.context_compressor import ContextCompressor
 @pytest.fixture()
 def compressor():
     """Create a ContextCompressor with mocked dependencies."""
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+    with patch("agent.context_compressor.resolve_model_capabilities", return_value={"context_length": 100000, "context_source": "default"}), \
          patch("agent.context_compressor.get_text_auxiliary_client", return_value=(None, None)):
         c = ContextCompressor(
             model="test/model",
@@ -67,6 +67,9 @@ class TestUpdateFromResponse:
 
 
 class TestGetStatus:
+    def test_context_source_reflects_resolution_path(self, compressor):
+        assert compressor.context_source == "default"
+
     def test_returns_expected_keys(self, compressor):
         status = compressor.get_status()
         assert "last_prompt_tokens" in status
@@ -74,6 +77,9 @@ class TestGetStatus:
         assert "context_length" in status
         assert "usage_percent" in status
         assert "compression_count" in status
+        assert "summarization_count" in status
+        assert "estimated_tokens_saved" in status
+        assert "context_source" in status
 
     def test_usage_percent_calculation(self, compressor):
         compressor.last_prompt_tokens = 50000
@@ -103,8 +109,26 @@ class TestCompress:
         msgs = self._make_messages(10)
         compressor.compress(msgs)
         assert compressor.compression_count == 1
+        assert compressor.estimated_tokens_saved >= 0
         compressor.compress(msgs)
         assert compressor.compression_count == 2
+
+    def test_summary_path_tracks_summarization_count(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: summarized"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.resolve_model_capabilities", return_value={"context_length": 100000, "context_source": "default"}), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        msgs = self._make_messages(10)
+        c.compress(msgs)
+        assert c.compression_count == 1
+        assert c.summarization_count == 1
+        assert c.estimated_tokens_saved >= 0
 
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
@@ -125,7 +149,7 @@ class TestGenerateSummaryNoneContent:
         mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: tool calls happened"
         mock_client.chat.completions.create.return_value = mock_response
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+        with patch("agent.context_compressor.resolve_model_capabilities", return_value={"context_length": 100000, "context_source": "default"}), \
              patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
             c = ContextCompressor(model="test", quiet_mode=True)
 
@@ -145,7 +169,7 @@ class TestGenerateSummaryNoneContent:
 
     def test_none_content_in_system_message_compress(self):
         """System message with content=None should not crash during compress."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+        with patch("agent.context_compressor.resolve_model_capabilities", return_value={"context_length": 100000, "context_source": "default"}), \
              patch("agent.context_compressor.get_text_auxiliary_client", return_value=(None, None)):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
@@ -165,7 +189,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
         mock_client.chat.completions.create.return_value = mock_response
 
-        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+        with patch("agent.context_compressor.resolve_model_capabilities", return_value={"context_length": 100000, "context_source": "default"}), \
              patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
             c = ContextCompressor(model="test", quiet_mode=True)
 

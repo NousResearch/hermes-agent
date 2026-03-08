@@ -830,6 +830,33 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_prompt_cache_usage_accumulates(self, agent):
+        self._setup_agent(agent)
+        agent._use_prompt_caching = True
+        resp = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 25,
+                "total_tokens": 125,
+                "prompt_tokens_details": SimpleNamespace(cached_tokens=40, cache_write_tokens=10),
+            },
+        )
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+        assert result["completed"] is True
+        assert agent.session_prompt_tokens == 100
+        assert agent.session_completion_tokens == 25
+        assert agent.session_total_tokens == 125
+        assert agent.session_cache_read_tokens == 40
+        assert agent.session_cache_write_tokens == 10
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).

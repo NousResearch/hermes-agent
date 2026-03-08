@@ -193,9 +193,17 @@ class DockerEnvironment(BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
         work_dir = cwd or self.cwd
         effective_timeout = timeout or self.timeout
+
+        # Merge sudo password (if any) with caller-supplied stdin_data.
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
 
         # docker exec -w doesn't expand ~, so prepend a cd into the command
         if work_dir == "~" or work_dir.startswith("~/"):
@@ -204,7 +212,7 @@ class DockerEnvironment(BaseEnvironment):
 
         assert self._inner.container_id, "Container not started"
         cmd = [self._inner.config.executable, "exec"]
-        if stdin_data is not None:
+        if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
         for key in self._inner.config.forward_env:
@@ -219,12 +227,12 @@ class DockerEnvironment(BaseEnvironment):
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
                 text=True,
             )
-            if stdin_data:
+            if effective_stdin:
                 try:
-                    proc.stdin.write(stdin_data)
+                    proc.stdin.write(effective_stdin)
                     proc.stdin.close()
                 except Exception:
                     pass

@@ -91,6 +91,38 @@ def menu_labels() -> list[str]:
     return labels
 
 
+def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
+    """Parse ``/model`` input into ``(provider, model)``.
+
+    Supports ``provider:model`` syntax to switch providers at runtime::
+
+        openrouter:anthropic/claude-sonnet-4.5  →  ("openrouter", "anthropic/claude-sonnet-4.5")
+        nous:hermes-3                           →  ("nous", "hermes-3")
+        anthropic/claude-sonnet-4.5             →  (current_provider, "anthropic/claude-sonnet-4.5")
+        gpt-5.4                                 →  (current_provider, "gpt-5.4")
+
+    Returns ``(provider, model)`` where *provider* is either the explicit
+    provider from the input or *current_provider* if none was specified.
+    """
+    stripped = raw.strip()
+    colon = stripped.find(":")
+    if colon > 0:
+        provider_part = stripped[:colon].strip().lower()
+        model_part = stripped[colon + 1:].strip()
+        if provider_part and model_part:
+            return (normalize_provider(provider_part), model_part)
+    return (current_provider, stripped)
+
+
+def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]]:
+    """Return ``(model_id, description)`` tuples for a provider's curated list."""
+    normalized = normalize_provider(provider)
+    if normalized == "openrouter":
+        return list(OPENROUTER_MODELS)
+    models = _PROVIDER_MODELS.get(normalized, [])
+    return [(m, "") for m in models]
+
+
 def normalize_provider(provider: Optional[str]) -> str:
     """Normalize provider aliases to Hermes' canonical provider ids."""
     normalized = (provider or "openrouter").strip().lower()

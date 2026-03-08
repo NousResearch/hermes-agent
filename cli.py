@@ -2061,29 +2061,43 @@ class HermesCLI:
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1].strip()
-
                 from hermes_cli.auth import resolve_provider
-                from hermes_cli.models import validate_requested_model
+                from hermes_cli.models import (
+                    parse_model_input,
+                    validate_requested_model,
+                    _PROVIDER_LABELS,
+                )
 
-                try:
-                    provider_for_validation = resolve_provider(
-                        self.requested_provider,
-                        explicit_api_key=self._explicit_api_key,
-                        explicit_base_url=self._explicit_base_url,
-                    )
-                except Exception:
-                    provider_for_validation = self.provider or self.requested_provider
+                raw_input = parts[1].strip()
+
+                # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
+                current_provider = self.provider or self.requested_provider or "openrouter"
+                target_provider, new_model = parse_model_input(raw_input, current_provider)
+                provider_changed = target_provider != current_provider
+
+                # If provider is changing, re-resolve credentials for the new provider
+                api_key_for_probe = self.api_key
+                base_url_for_probe = self.base_url
+                if provider_changed:
+                    try:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        runtime = resolve_runtime_provider(requested=target_provider)
+                        api_key_for_probe = runtime.get("api_key", "")
+                        base_url_for_probe = runtime.get("base_url", "")
+                    except Exception as e:
+                        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                        print(f"(^_^) Current model unchanged: {self.model}")
+                        return True
 
                 try:
                     validation = validate_requested_model(
                         new_model,
-                        provider_for_validation,
-                        api_key=self.api_key,
-                        base_url=self.base_url,
+                        target_provider,
+                        api_key=api_key_for_probe,
+                        base_url=base_url_for_probe,
                     )
                 except Exception:
-                    # Validation itself failed — fall back to old behavior (accept + save)
                     validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
                 if not validation.get("accepted"):
@@ -2093,20 +2107,49 @@ class HermesCLI:
                     self.model = new_model
                     self.agent = None  # Force re-init
 
+                    if provider_changed:
+                        self.requested_provider = target_provider
+                        self.provider = target_provider
+                        self.api_key = api_key_for_probe
+                        self.base_url = base_url_for_probe
+
+                    provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                    provider_note = f" [provider: {provider_label}]" if provider_changed else ""
+
                     if validation.get("persist"):
-                        if save_config_value("model.default", new_model):
-                            print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                        saved_model = save_config_value("model.default", new_model)
+                        if provider_changed:
+                            save_config_value("model.provider", target_provider)
+                        if saved_model:
+                            print(f"(^_^)b Model changed to: {new_model}{provider_note} (saved to config)")
                         else:
-                            print(f"(^_^) Model changed to: {new_model} (session only)")
+                            print(f"(^_^) Model changed to: {new_model}{provider_note} (session only)")
                     else:
-                        print(f"(^_^) Model changed to: {new_model} (session only)")
+                        print(f"(^_^) Model changed to: {new_model}{provider_note} (session only)")
 
                     message = validation.get("message")
                     if message:
                         print(f"  Warning: {message}")
             else:
-                print(f"Current model: {self.model}")
-                print("  Usage: /model <model-name> to change")
+                from hermes_cli.models import curated_models_for_provider, _PROVIDER_LABELS
+                provider_label = _PROVIDER_LABELS.get(
+                    self.provider or "openrouter",
+                    self.provider or "openrouter",
+                )
+                print(f"\n  Current model:    {self.model}")
+                print(f"  Current provider: {provider_label}")
+                print()
+                curated = curated_models_for_provider(self.provider)
+                if curated:
+                    print(f"  Available models ({provider_label}):")
+                    for mid, desc in curated:
+                        marker = " ←" if mid == self.model else ""
+                        label = f"  {desc}" if desc else ""
+                        print(f"    {mid}{label}{marker}")
+                    print()
+                print("  Usage: /model <model-name>")
+                print("         /model provider:model-name  (to switch provider)")
+                print("  Example: /model openrouter:anthropic/claude-sonnet-4.5")
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

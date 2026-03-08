@@ -58,6 +58,7 @@ hermes-agent/
 ├── skills/               # Bundled skill sources
 ├── optional-skills/      # Official optional skills (not activated by default)
 ├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
+├── hermes_state.py       # SessionDB — SQLite session store (schema, titles, FTS5 search)
 ├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py           # Tool groupings
@@ -226,6 +227,9 @@ The unified `hermes` command provides all functionality:
 |---------|-------------|
 | `hermes` | Interactive chat (default) |
 | `hermes chat -q "..."` | Single query mode |
+| `hermes -c` / `hermes --continue` | Resume the most recent session |
+| `hermes -c "my project"` | Resume a session by name (latest in lineage) |
+| `hermes --resume <session_id>` | Resume a specific session by ID or title |
 | `hermes -w` / `hermes --worktree` | Start in isolated git worktree (for parallel agents) |
 | `hermes setup` | Configure API keys and settings |
 | `hermes config` | View current configuration |
@@ -240,6 +244,8 @@ The unified `hermes` command provides all functionality:
 | `hermes gateway` | Start gateway (messaging + cron scheduler) |
 | `hermes gateway setup` | Configure messaging platforms interactively |
 | `hermes gateway install` | Install gateway as system service |
+| `hermes sessions list` | List past sessions (title, preview, last active) |
+| `hermes sessions rename <id> <title>` | Rename/title a session |
 | `hermes cron list` | View scheduled jobs |
 | `hermes cron status` | Check if cron scheduler is running |
 | `hermes version` | Show version info |

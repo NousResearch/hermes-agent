@@ -8,8 +8,6 @@ metadata:
   hermes:
     tags: [RSS, Blogs, Feed-Reader, Monitoring]
     homepage: https://github.com/Hyaxia/blogwatcher
-prerequisites:
-  commands: [blogwatcher]
 ---
 
 # Blogwatcher

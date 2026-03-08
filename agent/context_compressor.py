@@ -13,7 +13,6 @@ from agent.auxiliary_client import get_text_auxiliary_client
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
-    resolve_model_capabilities,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,13 +44,9 @@ class ContextCompressor:
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
 
-        capabilities = resolve_model_capabilities(model, base_url=base_url)
-        self.context_length = capabilities.get("context_length", get_model_context_length(model, base_url=base_url))
+        self.context_length = get_model_context_length(model, base_url=base_url)
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
-        self.summarization_count = 0
-        self.estimated_tokens_saved = 0
-        self.context_source = capabilities.get("context_source", "probe")
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
@@ -85,9 +80,6 @@ class ContextCompressor:
             "context_length": self.context_length,
             "usage_percent": (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0,
             "compression_count": self.compression_count,
-            "summarization_count": self.summarization_count,
-            "estimated_tokens_saved": self.estimated_tokens_saved,
-            "context_source": self.context_source,
         }
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
@@ -351,7 +343,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
 
         if summary:
             compressed.append({"role": "user", "content": summary})
-            self.summarization_count += 1
         else:
             if not self.quiet_mode:
                 print("   ⚠️  No summary model available — middle turns dropped without summary")
@@ -362,11 +353,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         self.compression_count += 1
 
         compressed = self._sanitize_tool_pairs(compressed)
-        new_estimate = estimate_messages_tokens_rough(compressed)
-        saved_estimate = max(display_tokens - new_estimate, 0)
-        self.estimated_tokens_saved += saved_estimate
 
         if not self.quiet_mode:
+            new_estimate = estimate_messages_tokens_rough(compressed)
+            saved_estimate = display_tokens - new_estimate
             print(f"   ✅ Compressed: {n_messages} → {len(compressed)} messages (~{saved_estimate:,} tokens saved)")
             print(f"   💡 Compression #{self.compression_count} complete")
 

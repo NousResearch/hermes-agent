@@ -592,8 +592,6 @@ class AIAgent:
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
         self.session_api_calls = 0
-        self.session_cache_read_tokens = 0
-        self.session_cache_write_tokens = 0
         
         if not self.quiet_mode:
             if compression_enabled:
@@ -3365,8 +3363,6 @@ class AIAgent:
                             details = getattr(response.usage, 'prompt_tokens_details', None)
                             cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
                             written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
-                            self.session_cache_read_tokens += cached
-                            self.session_cache_write_tokens += written
                             prompt = usage_dict["prompt_tokens"]
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:

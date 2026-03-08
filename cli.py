@@ -2255,8 +2255,6 @@ class HermesCLI:
             self._manual_compress()
         elif cmd_lower == "/usage":
             self._show_usage()
-        elif cmd_lower == "/stats":
-            self._show_stats()
         elif cmd_lower.startswith("/insights"):
             self._show_insights(cmd_original)
         elif cmd_lower == "/paste":
@@ -2383,22 +2381,6 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
-
-    def _show_stats(self):
-        """Show detailed live session diagnostics for the current session."""
-        if not self.agent:
-            print("(._.) No active agent -- send a message first.")
-            return
-
-        from agent.session_stats import collect_session_stats, render_stats_terminal
-
-        stats = collect_session_stats(
-            agent=self.agent,
-            compressor=getattr(self.agent, "context_compressor", None),
-            session_db=getattr(self, "_session_db", None),
-            session_id=getattr(self, "session_id", None),
-        )
-        print(render_stats_terminal(stats))
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

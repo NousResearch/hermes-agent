@@ -8,8 +8,6 @@ platforms: [macos]
 metadata:
   hermes:
     tags: [iMessage, SMS, messaging, macOS, Apple]
-prerequisites:
-  commands: [imsg]
 ---
 
 # iMessage

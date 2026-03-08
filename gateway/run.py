@@ -710,7 +710,8 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "insights", "reload-mcp", "update"}
+                          "compress", "usage", "insights", "reload-mcp", "update",
+                          "title"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -763,6 +764,9 @@ class GatewayRunner:
 
         if command == "update":
             return await self._handle_update_command(event)
+
+        if command == "title":
+            return await self._handle_title_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1301,6 +1305,7 @@ class GatewayRunner:
             "`/undo` — Remove the last exchange",
             "`/sethome` — Set this chat as the home channel",
             "`/compress` — Compress conversation context",
+            "`/title [name]` — Set or show the session title",
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
             "`/reload-mcp` — Reload MCP servers from config",
@@ -1690,6 +1695,40 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
+
+    async def _handle_title_command(self, event: MessageEvent) -> str:
+        """Handle /title command — set or show the current session's title."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+
+        if not self._session_db:
+            return "Session database not available."
+
+        title_arg = event.get_command_args().strip()
+        if title_arg:
+            # Sanitize the title before setting
+            try:
+                sanitized = self._session_db.sanitize_title(title_arg)
+            except ValueError as e:
+                return f"⚠️ {e}"
+            if not sanitized:
+                return "⚠️ Title is empty after cleanup. Please use printable characters."
+            # Set the title
+            try:
+                if self._session_db.set_session_title(session_id, sanitized):
+                    return f"✏️ Session title set: **{sanitized}**"
+                else:
+                    return "Session not found in database."
+            except ValueError as e:
+                return f"⚠️ {e}"
+        else:
+            # Show the current title
+            title = self._session_db.get_session_title(session_id)
+            if title:
+                return f"📌 Session title: **{title}**"
+            else:
+                return "No title set. Usage: `/title My Session Name`"
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""

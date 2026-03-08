@@ -170,22 +170,6 @@ def _skill_is_platform_compatible(skill_file: Path) -> bool:
         return True  # Err on the side of showing the skill
 
 
-def _skill_prerequisites_met(skill_file: Path) -> bool:
-    """Check if a SKILL.md's declared prerequisites are satisfied.
-
-    Returns True (show the skill) when prerequisites are met or not declared.
-    Returns False when the skill explicitly declares prerequisites that are missing.
-    """
-    try:
-        from tools.skills_tool import _parse_frontmatter, check_skill_prerequisites
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
-        met, _ = check_skill_prerequisites(frontmatter)
-        return met
-    except Exception:
-        return True
-
-
 def build_skills_system_prompt() -> str:
     """Build a compact skill index for the system prompt.
 
@@ -206,9 +190,6 @@ def build_skills_system_prompt() -> str:
     for skill_file in skills_dir.rglob("SKILL.md"):
         # Skip skills incompatible with the current OS platform
         if not _skill_is_platform_compatible(skill_file):
-            continue
-        # Skip skills whose prerequisites (env vars, commands) are unmet
-        if not _skill_prerequisites_met(skill_file):
             continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts

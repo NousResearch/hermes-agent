@@ -157,6 +157,12 @@ def generate_systemd_unit() -> str:
     import shutil
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    venv_dir = str(PROJECT_ROOT / "venv")
+    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+
+    # Build a PATH that includes the venv, node_modules, and standard system dirs
+    sane_path = f"{venv_bin}:{node_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     
     hermes_cli = shutil.which("hermes") or f"{python_path} -m hermes_cli.main"
     return f"""[Unit]
@@ -168,6 +174,8 @@ Type=simple
 ExecStart={python_path} -m hermes_cli.main gateway run --replace
 ExecStop={hermes_cli} gateway stop
 WorkingDirectory={working_dir}
+Environment="PATH={sane_path}"
+Environment="VIRTUAL_ENV={venv_dir}"
 Restart=on-failure
 RestartSec=10
 KillMode=mixed

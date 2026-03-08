@@ -815,6 +815,13 @@ def _run_browser_command(
             level = logging.WARNING if result.returncode != 0 else logging.DEBUG
             logger.log(level, "browser '%s' stderr: %s", command, result.stderr.strip()[:500])
         
+        # Log empty output as warning — common sign of broken agent-browser
+        if not result.stdout.strip() and result.returncode == 0:
+            logger.warning("browser '%s' returned empty stdout with rc=0. "
+                           "cmd=%s stderr=%s",
+                           command, " ".join(cmd_parts[:4]) + "...",
+                           (result.stderr or "")[:200])
+
         # Parse JSON output
         if result.stdout.strip():
             try:

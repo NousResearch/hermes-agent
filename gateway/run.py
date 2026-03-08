@@ -1321,6 +1321,7 @@ class GatewayRunner:
             parse_model_input,
             validate_requested_model,
             curated_models_for_provider,
+            normalize_provider,
             _PROVIDER_LABELS,
         )
 
@@ -1342,6 +1343,8 @@ class GatewayRunner:
                     current_provider = model_cfg.get("provider", current_provider)
         except Exception:
             pass
+
+        current_provider = normalize_provider(current_provider)
 
         if not args:
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)

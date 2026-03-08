@@ -168,13 +168,28 @@ class TestCliSkinSwitching:
         cli.skin = "hermes"
         events = []
 
+        cli._reset_for_skin_change = lambda: events.append(("reset",))
         cli._set_skin = lambda skin, persist=False: events.append(("set", skin, persist))
         cli._reload_skin_ui = lambda: events.append(("reload",))
 
         with patch("builtins.print"):
             assert cli.process_command("/skin Posideon") is True
 
-        assert events == [("set", "posideon", True), ("reload",)]
+        assert events == [("reset",), ("set", "posideon", True), ("reload",)]
+
+    def test_process_command_relaunches_for_sisyphus_skin(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        events = []
+
+        cli._reset_for_skin_change = lambda: events.append(("reset",))
+        cli._set_skin = lambda skin, persist=False: events.append(("set", skin, persist))
+        cli._reload_skin_ui = lambda: events.append(("reload",))
+        cli._relaunch_with_skin = lambda skin: events.append(("relaunch", skin))
+
+        with patch("builtins.print"):
+            assert cli.process_command("/skin Sisyphus") is True
+
+        assert events == [("set", "sisyphus", True), ("relaunch", "sisyphus")]
 
     def test_clear_command_uses_safe_reload_ui_path(self):
         cli = HermesCLI.__new__(HermesCLI)
@@ -192,16 +207,48 @@ class TestCliSkinSwitching:
     def test_reload_skin_ui_uses_prompt_toolkit_safe_redraw_when_app_running(self):
         cli = HermesCLI.__new__(HermesCLI)
         cli._app = Mock(is_running=True)
-        cli._build_banner_ansi = lambda: "banner"
-        cli.console = Mock()
-        cli.show_banner = Mock()
+        cli.compact = False
+        cli.ambient_motion = True
+        cli.skin = "hermes"
+        cli._pending_banner_redraw = False
+        cli._pending_banner_redraw_animated = False
 
-        with patch("cli._cprint") as cprint:
-            cli._reload_skin_ui()
+        cli._reload_skin_ui()
 
-        cprint.assert_called_once_with("\033[2J\033[Hbanner")
+        assert cli._pending_banner_redraw is True
+        assert cli._pending_banner_redraw_animated is False
         cli._app.invalidate.assert_called_once()
-        cli.show_banner.assert_not_called()
+
+    def test_reload_skin_ui_queues_animated_redraw_for_sisyphus(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._app = Mock(is_running=True)
+        cli.compact = False
+        cli.ambient_motion = True
+        cli.skin = "sisyphus"
+        cli._pending_banner_redraw = False
+        cli._pending_banner_redraw_animated = False
+
+        cli._reload_skin_ui()
+
+        assert cli._pending_banner_redraw is True
+        assert cli._pending_banner_redraw_animated is True
+        cli._app.invalidate.assert_called_once()
+
+    def test_render_live_banner_redraw_uses_prompt_toolkit_ansi_output(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._banner_phase = 3
+        cli._build_banner_ansi = lambda phase=None: "\x1b[31mBANNER\x1b[0m"
+
+        with patch.object(cli_module.sys, "__stdout__") as stdout_mock, patch.object(
+            cli_module, "_pt_print"
+        ) as pt_print:
+            cli._render_live_banner_redraw()
+
+        stdout_mock.write.assert_called_once_with("\033[2J\033[H")
+        stdout_mock.flush.assert_called_once()
+        rendered = pt_print.call_args.args[0]
+        assert "BANNER" in str(rendered)
+        assert pt_print.call_args.kwargs["end"] == ""
 
     def test_build_banner_ansi_does_not_advance_phase(self):
         cli = HermesCLI.__new__(HermesCLI)
@@ -230,6 +277,23 @@ class TestCliSkinSwitching:
         cli._rewrite_banner_lines_absolute.assert_called_once_with(["frame-2"], ["frame-3"])
         assert cli._banner_phase == 3
         assert cli._banner_snapshot_lines == ["frame-3"]
+
+    def test_show_animated_startup_banner_writes_to_real_stdout(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.skin = "sisyphus"
+        cli._banner_phase = 0
+        cli._build_banner_ansi = lambda phase=None: f"frame-{phase}"
+        cli._rewrite_banner_lines_in_place = Mock()
+        cli._store_banner_snapshot = Mock()
+
+        fake_stdout = Mock()
+        fake_real_stdout = Mock()
+        with patch.object(cli_module.sys, "stdout", fake_stdout), patch.object(cli_module.sys, "__stdout__", fake_real_stdout), patch("cli.time.sleep"):
+            cli._show_animated_startup_banner()
+
+        fake_stdout.write.assert_not_called()
+        fake_real_stdout.write.assert_called()
+        fake_real_stdout.flush.assert_called()
 
     def test_compose_system_prompt_layers_skin_persona_and_user_prompt(self):
         cli = HermesCLI.__new__(HermesCLI)

@@ -2,7 +2,9 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+import yaml
 
 import yaml
 
@@ -90,3 +92,62 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+
+class TestSaveConfigAtomicity:
+    """Verify save_config uses atomic writes (tempfile + os.replace)."""
+
+    def test_no_partial_write_on_crash(self, tmp_path):
+        """If save_config crashes mid-write, the previous file stays intact."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # Write an initial config
+            config = load_config()
+            config["model"] = "original-model"
+            save_config(config)
+
+            config_path = tmp_path / "config.yaml"
+            assert config_path.exists()
+
+            # Simulate a crash during yaml.dump by making atomic_yaml_write's
+            # yaml.dump raise after the temp file is created but before replace.
+            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+                try:
+                    config["model"] = "should-not-persist"
+                    save_config(config)
+                except OSError:
+                    pass
+
+            # Original file must still be intact
+            reloaded = load_config()
+            assert reloaded["model"] == "original-model"
+
+    def test_no_leftover_temp_files(self, tmp_path):
+        """Failed writes must clean up their temp files."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            save_config(config)
+
+            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+                try:
+                    save_config(config)
+                except OSError:
+                    pass
+
+            # No .tmp files should remain
+            tmp_files = list(tmp_path.glob(".*config*.tmp"))
+            assert tmp_files == []
+
+    def test_atomic_write_creates_valid_yaml(self, tmp_path):
+        """The written file must be valid YAML matching the input."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = "test/atomic-model"
+            config["agent"]["max_turns"] = 77
+            save_config(config)
+
+            # Read raw YAML to verify it's valid and correct
+            config_path = tmp_path / "config.yaml"
+            with open(config_path) as f:
+                raw = yaml.safe_load(f)
+            assert raw["model"] == "test/atomic-model"
+            assert raw["agent"]["max_turns"] == 77

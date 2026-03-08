@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agentclientprotocol.github.io/agent-client-protocol/schemas/agent-registry-v1.json",
+  "id": "hermes-agent",
+  "version": "0.1.0",
+  "title": "Hermes Agent",
+  "description": "Self-improving AI agent with tool calling, memory, web search, browser automation, and skill creation.",
+  "icon": "./icon.svg",
+  "distribution": {
+    "uvx": {
+      "package": "hermes-agent",
+      "args": ["acp"],
+      "extras": ["acp"]
+    }
+  },
+  "auth": [
+    {
+      "id": "env-check",
+      "title": "API Key",
+      "description": "Checks for OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY in the environment or ~/.hermes/.env"
+    }
+  ]
+}

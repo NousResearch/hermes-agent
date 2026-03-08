@@ -1808,6 +1808,22 @@ For more help on a command:
     insights_parser.set_defaults(func=cmd_insights)
 
     # =========================================================================
+    # acp command
+    # =========================================================================
+    acp_parser = subparsers.add_parser(
+        "acp",
+        help="Run as ACP agent server (for Zed, JetBrains, etc.)",
+        description="Launch the Agent Client Protocol server over stdio for editor integration"
+    )
+
+    def cmd_acp(args):
+        import asyncio
+        from acp_adapter.entry import run_acp_agent
+        asyncio.run(run_acp_agent())
+
+    acp_parser.set_defaults(func=cmd_acp)
+
+    # =========================================================================
     # version command
     # =========================================================================
     version_parser = subparsers.add_parser(

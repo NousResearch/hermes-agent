@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Caduceus-inspired staff -->
+  <line x1="8" y1="2" x2="8" y2="14"/>
+  <!-- Wings -->
+  <path d="M5 3.5 Q3 2, 3 4 Q3 6, 8 6"/>
+  <path d="M11 3.5 Q13 2, 13 4 Q13 6, 8 6"/>
+  <!-- Serpent hints -->
+  <path d="M6 8 Q8 9.5, 10 8"/>
+  <path d="M6 10.5 Q8 12, 10 10.5"/>
+</svg>

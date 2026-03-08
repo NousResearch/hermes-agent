@@ -38,7 +38,11 @@ from acp.schema import (
     McpServerStdio,
     ResourceContentBlock,
     ResumeSessionResponse,
+    SessionCapabilities,
+    SessionForkCapabilities,
     SessionInfo,
+    SessionListCapabilities,
+    SessionResumeCapabilities,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -61,6 +65,17 @@ class HermesACPAgent(Agent):
         self._sessions = SessionManager()
         self._executor = ThreadPoolExecutor(max_workers=4)
 
+    def shutdown(self) -> None:
+        """Release resources (ThreadPoolExecutor, sessions)."""
+        self._sessions.cleanup_all()
+        self._executor.shutdown(wait=False)
+
+    def __del__(self) -> None:
+        try:
+            self._executor.shutdown(wait=False)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # ACP lifecycle
     # ------------------------------------------------------------------
@@ -82,7 +97,14 @@ class HermesACPAgent(Agent):
             )
         return InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
-            agent_capabilities=AgentCapabilities(load_session=True),
+            agent_capabilities=AgentCapabilities(
+                load_session=True,
+                session_capabilities=SessionCapabilities(
+                    list=SessionListCapabilities(),
+                    fork=SessionForkCapabilities(),
+                    resume=SessionResumeCapabilities(),
+                ),
+            ),
             agent_info=Implementation(
                 name="hermes-agent",
                 title="Hermes Agent",
@@ -204,8 +226,8 @@ class HermesACPAgent(Agent):
             except Exception:
                 logger.debug("tool_progress_cb failed", exc_info=True)
 
-        def step_cb(step_info: dict) -> None:
-            """Called after each AIAgent API call iteration."""
+        def step_cb(api_call_count: int, prev_tools: list) -> None:
+            """Called between AIAgent API call iterations."""
             if state.cancel_event.is_set():
                 state.agent.interrupt()
 
@@ -230,7 +252,7 @@ class HermesACPAgent(Agent):
             return PromptResponse(stop_reason="error")
 
         # Stream the final response text back to the editor
-        response_text = result.get("response", "")
+        response_text = result.get("final_response", "")
         if response_text:
             await _send_text(conn, session_id, response_text)
 

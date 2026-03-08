@@ -68,7 +68,11 @@ class ToolBridge:
     def _run(self, coro: Any) -> Any:
         """Schedule *coro* on the ACP event loop and block until done."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=120)
+        try:
+            return future.result(timeout=120)
+        except TimeoutError:
+            logger.warning("Tool bridge call timed out after 120s")
+            raise RuntimeError("Editor did not respond within 120 seconds")
 
     # ------------------------------------------------------------------
     # Tool implementations

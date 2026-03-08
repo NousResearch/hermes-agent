@@ -97,7 +97,19 @@ class SessionManager:
 
     def remove(self, session_id: str) -> None:
         with self._lock:
-            self._sessions.pop(session_id, None)
+            state = self._sessions.pop(session_id, None)
+        if state is not None:
+            try:
+                state.agent._cleanup_task_resources()
+            except Exception:
+                pass
+
+    def cleanup_all(self) -> None:
+        """Remove all sessions and clean up their resources."""
+        with self._lock:
+            sids = list(self._sessions.keys())
+        for sid in sids:
+            self.remove(sid)
 
     def load(
         self,

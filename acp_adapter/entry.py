@@ -67,7 +67,10 @@ async def run_acp_agent() -> None:
     from acp_adapter.server import HermesACPAgent
 
     agent = HermesACPAgent()
-    await run_agent(agent, use_unstable_protocol=True)
+    try:
+        await run_agent(agent, use_unstable_protocol=True)
+    finally:
+        agent.shutdown()
 
 
 def main() -> None:

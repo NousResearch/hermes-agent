@@ -101,13 +101,12 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render. "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
-        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
-        "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "Telegram messages support formatting and are rendered with Telegram MarkdownV2. "
+        "Prefer well-structured, readable responses with tasteful formatting: short headings, bold for emphasis, italic sparingly, bullet lists, numbered lists, inline code, fenced code blocks, and links when helpful. "
+        "Use formatting carefully so it stays valid Telegram MarkdownV2; each message chunk must be a standalone valid message because long replies may be split across multiple messages. "
+        "You can send media files natively: to deliver a file to the user, include MEDIA:/absolute/path/to/file in your response. Audio (.ogg) sends as voice bubbles. You can also include image URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
+
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "

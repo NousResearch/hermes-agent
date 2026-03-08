@@ -9,6 +9,8 @@ import json
 import logging
 import os
 
+from gateway.platforms.telegram import ParseMode, _strip_mdv2, split_telegram_markdownv2
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,8 +170,29 @@ async def _send_telegram(token, chat_id, message):
     try:
         from telegram import Bot
         bot = Bot(token=token)
-        msg = await bot.send_message(chat_id=int(chat_id), text=message)
-        return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(msg.message_id)}
+        chunks = split_telegram_markdownv2(message, 4096)
+        message_ids = []
+        for chunk in chunks:
+            try:
+                msg = await bot.send_message(
+                    chat_id=int(chat_id),
+                    text=chunk,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            except Exception as md_error:
+                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                    plain_chunk = _strip_mdv2(chunk)
+                    msg = await bot.send_message(chat_id=int(chat_id), text=plain_chunk)
+                else:
+                    raise
+            message_ids.append(str(msg.message_id))
+        return {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": chat_id,
+            "message_id": message_ids[0] if message_ids else None,
+            "message_ids": message_ids,
+        }
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:

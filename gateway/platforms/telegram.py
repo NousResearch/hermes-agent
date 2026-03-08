@@ -69,6 +69,7 @@ def check_telegram_requirements() -> bool:
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+_PLACEHOLDER_RE = re.compile(r'\x00PH\d+\x00')
 
 
 def _escape_mdv2(text: str) -> str:
@@ -87,6 +88,210 @@ def _strip_mdv2(text: str) -> str:
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     return cleaned
+
+
+def _split_plain_text_token(text: str, max_length: int) -> List[str]:
+    """Split already-escaped plain text without breaking escape sequences."""
+    if not text:
+        return []
+
+    parts: List[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_length:
+            parts.append(remaining)
+            break
+
+        region = remaining[:max_length]
+        split_at = region.rfind("\n")
+        if split_at < max_length // 2:
+            split_at = region.rfind(" ")
+        if split_at < 1:
+            split_at = max_length
+
+        while split_at > 0 and remaining[split_at - 1] == "\\":
+            split_at -= 1
+        if split_at < 1:
+            split_at = max_length
+
+        parts.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+
+    return parts
+
+
+def _split_code_block_token(token: str, max_length: int) -> List[str]:
+    """Split a fenced code block into valid standalone fenced chunks."""
+    if len(token) <= max_length:
+        return [token]
+
+    match = re.match(r'^```([^\n`]*)\n([\s\S]*?)\n```$', token)
+    if not match:
+        return _split_plain_text_token(token, max_length)
+
+    lang = match.group(1).strip()
+    body = match.group(2)
+    open_fence = f"```{lang}\n" if lang else "```\n"
+    close_fence = "\n```"
+    headroom = max_length - len(open_fence) - len(close_fence)
+    if headroom < 32:
+        return [token[:max_length]]
+
+    body_parts = _split_plain_text_token(body, headroom)
+    return [f"{open_fence}{part}{close_fence}" for part in body_parts]
+
+
+def _split_wrapped_token(token: str, marker: str, max_length: int) -> List[str]:
+    """Split a token wrapped by symmetric one-char MarkdownV2 markers."""
+    if len(token) <= max_length:
+        return [token]
+
+    inner = token[len(marker):-len(marker)]
+    headroom = max_length - (2 * len(marker))
+    if headroom < 8:
+        return [token[:max_length]]
+
+    inner_parts = _split_plain_text_token(inner, headroom)
+    return [f"{marker}{part}{marker}" for part in inner_parts]
+
+
+def _split_mdv2_token(token: str, max_length: int) -> List[str]:
+    """Split a formatted MarkdownV2 token into valid standalone chunks."""
+    if len(token) <= max_length:
+        return [token]
+    if token.startswith("```") and token.endswith("```"):
+        return _split_code_block_token(token, max_length)
+    if token.startswith("*") and token.endswith("*") and len(token) >= 2:
+        return _split_wrapped_token(token, "*", max_length)
+    if token.startswith("_") and token.endswith("_") and len(token) >= 2:
+        return _split_wrapped_token(token, "_", max_length)
+    if token.startswith("`") and token.endswith("`") and len(token) >= 2:
+        return _split_wrapped_token(token, "`", max_length)
+    return _split_plain_text_token(token, max_length)
+
+
+def _append_chunk_indicators_mdv2(chunks: List[str]) -> List[str]:
+    """Append Telegram-safe chunk indicators like '(1/3)' to each chunk."""
+    if len(chunks) <= 1:
+        return chunks
+
+    total = len(chunks)
+    final_chunks: List[str] = []
+    for i, chunk in enumerate(chunks, start=1):
+        indicator = _escape_mdv2(f" ({i}/{total})")
+        final_chunks.append(f"{chunk}{indicator}")
+    return final_chunks
+
+
+def _restore_placeholders(text: str, placeholders: dict) -> str:
+    """Restore placeholder tokens in reverse insertion order."""
+    for key in reversed(list(placeholders.keys())):
+        text = text.replace(key, placeholders[key])
+    return text
+
+
+def _format_markdownv2_with_placeholders(content: str) -> tuple[str, dict]:
+    """Convert markdown-ish text to escaped Telegram MarkdownV2 with placeholders."""
+    if not content:
+        return content, {}
+
+    placeholders: dict = {}
+    counter = [0]
+
+    def _ph(value: str) -> str:
+        key = f"\x00PH{counter[0]}\x00"
+        counter[0] += 1
+        placeholders[key] = value
+        return key
+
+    text = content
+    text = re.sub(
+        r'(```(?:[^\n]*\n)?[\s\S]*?```)',
+        lambda m: _ph(m.group(0)),
+        text,
+    )
+    text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
+
+    def _convert_link(m):
+        display = _escape_mdv2(m.group(1))
+        url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
+        return _ph(f'[{display}]({url})')
+
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
+
+    def _convert_header(m):
+        inner = m.group(1).strip()
+        inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
+        return _ph(f'*{_escape_mdv2(inner)}*')
+
+    text = re.sub(
+        r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
+    )
+
+    text = re.sub(
+        r'\*\*(.+?)\*\*',
+        lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
+        text,
+    )
+
+    text = re.sub(
+        r'\*([^*\n]+)\*',
+        lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
+        text,
+    )
+
+    text = _escape_mdv2(text)
+    return text, placeholders
+
+
+def format_telegram_markdownv2(content: str) -> str:
+    """Convert markdown-ish text to final Telegram MarkdownV2."""
+    text, placeholders = _format_markdownv2_with_placeholders(content)
+    return _restore_placeholders(text, placeholders)
+
+
+def split_telegram_markdownv2(content: str, max_length: int = 4096) -> List[str]:
+    """Format and split a long Telegram message without breaking MarkdownV2."""
+    if not content:
+        return [content]
+
+    text, placeholders = _format_markdownv2_with_placeholders(content)
+    reserve = 16
+    budget = max(64, max_length - reserve)
+
+    parts = _PLACEHOLDER_RE.split(text)
+    matches = _PLACEHOLDER_RE.findall(text)
+    sequence: List[str] = []
+    for i, part in enumerate(parts):
+        if part:
+            sequence.append(part)
+        if i < len(matches):
+            sequence.append(matches[i])
+
+    chunks: List[str] = []
+    current = ""
+
+    def _flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(_restore_placeholders(current, placeholders))
+            current = ""
+
+    for token in sequence:
+        resolved = placeholders.get(token, token)
+        token_pieces = _split_mdv2_token(resolved, budget) if len(resolved) > budget else [resolved]
+
+        for piece in token_pieces:
+            if not current:
+                current = piece
+            elif len(current) + len(piece) <= budget:
+                current += piece
+            else:
+                _flush()
+                current = piece
+
+    _flush()
+    return _append_chunk_indicators_mdv2(chunks)
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -196,8 +401,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = split_telegram_markdownv2(content, self.MAX_MESSAGE_LENGTH)
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None
@@ -443,84 +647,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
     
     def format_message(self, content: str) -> str:
-        """
-        Convert standard markdown to Telegram MarkdownV2 format.
-
-        Protected regions (code blocks, inline code) are extracted first so
-        their contents are never modified.  Standard markdown constructs
-        (headers, bold, italic, links) are translated to MarkdownV2 syntax,
-        and all remaining special characters are escaped.
-        """
-        if not content:
-            return content
-
-        placeholders: dict = {}
-        counter = [0]
-
-        def _ph(value: str) -> str:
-            """Stash *value* behind a placeholder token that survives escaping."""
-            key = f"\x00PH{counter[0]}\x00"
-            counter[0] += 1
-            placeholders[key] = value
-            return key
-
-        text = content
-
-        # 1) Protect fenced code blocks (``` ... ```)
-        text = re.sub(
-            r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            lambda m: _ph(m.group(0)),
-            text,
-        )
-
-        # 2) Protect inline code (`...`)
-        text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
-
-        # 3) Convert markdown links – escape the display text; inside the URL
-        #    only ')' and '\' need escaping per the MarkdownV2 spec.
-        def _convert_link(m):
-            display = _escape_mdv2(m.group(1))
-            url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
-            return _ph(f'[{display}]({url})')
-
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
-
-        # 4) Convert markdown headers (## Title) → bold *Title*
-        def _convert_header(m):
-            inner = m.group(1).strip()
-            # Strip redundant bold markers that may appear inside a header
-            inner = re.sub(r'\*\*(.+?)\*\*', r'\1', inner)
-            return _ph(f'*{_escape_mdv2(inner)}*')
-
-        text = re.sub(
-            r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
-        )
-
-        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
-        text = re.sub(
-            r'\*\*(.+?)\*\*',
-            lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
-            text,
-        )
-
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
-        #    [^*\n]+ prevents matching across newlines (which would corrupt
-        #    bullet lists using * markers and multi-line content).
-        text = re.sub(
-            r'\*([^*\n]+)\*',
-            lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
-            text,
-        )
-
-        # 7) Escape remaining special characters in plain text
-        text = _escape_mdv2(text)
-
-        # 8) Restore placeholders in reverse insertion order so that
-        #    nested references (a placeholder inside another) resolve correctly.
-        for key in reversed(list(placeholders.keys())):
-            text = text.replace(key, placeholders[key])
-
-        return text
+        """Convert standard markdown to Telegram MarkdownV2 format."""
+        return format_telegram_markdownv2(content)
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages."""

@@ -34,7 +34,11 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2  # noqa: E402
+from gateway.platforms.telegram import (  # noqa: E402
+    TelegramAdapter,
+    _escape_mdv2,
+    split_telegram_markdownv2,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +364,52 @@ class TestFormatMessageComplex:
         assert "Header" in result
         assert "block" in result
         assert "url.com" in result
+
+
+class TestSplitTelegramMarkdownV2:
+    def test_single_chunk_unchanged_when_short(self):
+        chunks = split_telegram_markdownv2("Hello **world**", max_length=4096)
+        assert len(chunks) == 1
+        assert "*world*" in chunks[0]
+
+    def test_multi_chunk_adds_escaped_indicators(self):
+        text = ("Hello world! " * 80).strip()
+        chunks = split_telegram_markdownv2(text, max_length=120)
+        assert len(chunks) > 1
+        assert chunks[0].endswith(r" \(1/" + str(len(chunks)) + r"\)")
+        assert chunks[-1].endswith(r" \(" + str(len(chunks)) + "/" + str(len(chunks)) + r"\)")
+
+    def test_does_not_split_escape_sequence(self):
+        text = ("Price is 5.00! " * 60).strip()
+        chunks = split_telegram_markdownv2(text, max_length=80)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert not chunk.endswith("\\")
+
+    def test_keeps_code_blocks_balanced_across_chunks(self):
+        text = "Before\n```python\n" + ("print('hello')\n" * 80) + "```\nAfter"
+        chunks = split_telegram_markdownv2(text, max_length=180)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.count("```") % 2 == 0
+
+    def test_long_code_block_reopens_language_tag(self):
+        text = "```python\n" + ("print('x')\n" * 120) + "```"
+        chunks = split_telegram_markdownv2(text, max_length=160)
+        assert len(chunks) > 1
+        assert all(chunk.startswith("```python\n") for chunk in chunks)
+
+    def test_long_bold_segment_remains_valid(self):
+        text = "**" + ("hello world " * 80).strip() + "**"
+        chunks = split_telegram_markdownv2(text, max_length=140)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            body = re.sub(r" \\\([0-9]+/[0-9]+\\\)$", "", chunk)
+            assert body.count("*") % 2 == 0
+
+    def test_long_link_does_not_leak_placeholders(self):
+        url = "https://example.com/" + ("path-" * 60)
+        text = f"Read [this resource]({url}) please"
+        chunks = split_telegram_markdownv2(text, max_length=140)
+        assert len(chunks) > 1
+        assert all("\x00" not in chunk for chunk in chunks)

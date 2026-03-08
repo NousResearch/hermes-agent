@@ -8,8 +8,6 @@ metadata:
   hermes:
     tags: [Notion, Productivity, Notes, Database, API]
     homepage: https://developers.notion.com
-prerequisites:
-  env_vars: [NOTION_API_KEY]
 ---
 
 # Notion API

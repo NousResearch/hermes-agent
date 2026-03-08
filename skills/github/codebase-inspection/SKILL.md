@@ -8,8 +8,6 @@ metadata:
   hermes:
     tags: [LOC, Code Analysis, pygount, Codebase, Metrics, Repository]
     related_skills: [github-repo-management]
-prerequisites:
-  commands: [pygount]
 ---
 
 # Codebase Inspection with pygount

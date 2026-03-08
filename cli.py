@@ -1612,17 +1612,36 @@ class HermesCLI:
         print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
         print("+" + "-" * 50 + "+")
         
-        for i, msg in enumerate(self.conversation_history, 1):
+        # Use separate counter for displayed messages (not enumerate over all)
+        display_num = 0
+        tool_count = 0
+        
+        for msg in self.conversation_history:
             role = msg.get("role", "unknown")
             content = msg.get("content") or ""
             
+            # Skip tool messages but count them
+            if role == "tool":
+                tool_count += 1
+                continue
+            
+            # Skip system messages
+            if role == "system":
+                continue
+            
+            display_num += 1
+            
             if role == "user":
-                print(f"\n  [You #{i}]")
-                print(f"    {content[:200]}{'...' if len(content) > 200 else ''}")
+                print(f"\n  [You #{display_num}]")
+                print(f"    {content[:300]}{'...' if len(content) > 300 else ''}")
             elif role == "assistant":
-                print(f"\n  [Hermes #{i}]")
-                preview = content[:200] if content else "(tool calls)"
-                print(f"    {preview}{'...' if len(str(content)) > 200 else ''}")
+                print(f"\n  [Hermes #{display_num}]")
+                preview = content[:300] if content else "(tool calls)"
+                print(f"    {preview}{'...' if len(str(content)) > 300 else ''}")
+        
+        # Show summary of hidden tool messages
+        if tool_count > 0:
+            print(f"\n  [dim]{tool_count} tool message(s) hidden[/]")
         
         print()
     

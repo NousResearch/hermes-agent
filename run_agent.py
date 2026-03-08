@@ -389,6 +389,12 @@ class AIAgent:
                 "X-OpenRouter-Title": "Hermes Agent",
                 "X-OpenRouter-Categories": "productivity,cli-agent",
             }
+        elif "api.kimi.com" in effective_base.lower():
+            # Kimi Code API requires a recognized coding-agent User-Agent
+            # (see https://github.com/MoonshotAI/kimi-cli)
+            client_kwargs["default_headers"] = {
+                "User-Agent": "KimiCLI/1.0",
+            }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
         try:

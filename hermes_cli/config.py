@@ -1004,6 +1004,7 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
+        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

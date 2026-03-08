@@ -47,7 +47,8 @@ _AUTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Telegram bot tokens: bot<digits>:<token> or <digits>:<alphanum>
+# Telegram bot tokens: bot<digits>:<token> or <digits>:<token>,
+# where token part is restricted to [-A-Za-z0-9_] and length >= 30
 _TELEGRAM_RE = re.compile(
     r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})",
 )

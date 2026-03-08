@@ -181,7 +181,20 @@ class DaytonaEnvironment(BaseEnvironment):
                 marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
             command = f"{command} << '{marker}'\n{stdin_data}\n{marker}"
 
-        exec_command = self._prepare_command(command)
+        exec_command, sudo_stdin = self._prepare_command(command)
+
+        # Daytona sandboxes execute commands via the Daytona SDK and cannot
+        # pipe subprocess stdin directly the way a local Popen can.  When a
+        # sudo password is present, use a shell-level pipe from printf so that
+        # the password feeds sudo -S without appearing as an echo argument
+        # embedded in the shell string.  The password is still visible in the
+        # remote sandbox's command line, but it is not exposed on the user's
+        # local machine — which is the primary threat being mitigated.
+        if sudo_stdin is not None:
+            import shlex
+            exec_command = (
+                f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
+            )
         effective_cwd = cwd or self.cwd or None
         effective_timeout = timeout or self.timeout
 

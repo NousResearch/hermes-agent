@@ -1176,6 +1176,47 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
+        """Normalize obviously incompatible model/provider pairings.
+
+        Returns True when the active model changed.
+        """
+        if resolved_provider != "openai-codex":
+            return False
+
+        current_model = (self.model or "").strip()
+        current_slug = current_model.split("/")[-1] if current_model else ""
+
+        # Keep explicit Codex models, but strip any provider prefix that the
+        # Codex Responses API does not expect.
+        if current_slug and "codex" in current_slug.lower():
+            if current_slug != current_model:
+                self.model = current_slug
+                return True
+            return False
+
+        fallback_model = "gpt-5.3-codex"
+        try:
+            from hermes_cli.codex_models import get_codex_model_ids
+
+            fallback_model = next(
+                (model_id for model_id in get_codex_model_ids() if "codex" in model_id.lower()),
+                fallback_model,
+            )
+        except Exception:
+            pass
+
+        if current_model != fallback_model:
+            if current_model:
+                self.console.print(
+                    f"[yellow]Model '{current_model}' is not supported with OpenAI Codex; "
+                    f"using '{fallback_model}' instead.[/]"
+                )
+            self.model = fallback_model
+            return True
+
+        return False
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -1220,9 +1261,11 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        model_changed = self._normalize_model_for_provider(resolved_provider)
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
-        if (credentials_changed or routing_changed) and self.agent is not None:
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
+        # routing, or the effective model changed.
+        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
 
         return True

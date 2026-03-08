@@ -136,6 +136,15 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Mixture-of-Agents configuration. Model IDs are passed through as-is to the
+    # active provider, so use whatever your backend expects (e.g. provider/model
+    # for OpenRouter, plain local model names for custom endpoints, etc.).
+    "moa": {
+        "reference_models": [],
+        "aggregator_model": "",
+        "providers": {},
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.

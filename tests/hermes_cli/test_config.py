@@ -66,3 +66,31 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+    def test_moa_config_defaults_present(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert config["moa"] == {
+                "reference_models": [],
+                "aggregator_model": "",
+                "providers": {},
+            }
+
+    def test_moa_nested_values_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["moa"]["reference_models"] = ["custom/model-a", "custom/model-b"]
+            config["moa"]["aggregator_model"] = "custom/aggregator"
+            config["moa"]["providers"] = {
+                "openrouter": {
+                    "reference_models": ["anthropic/claude-opus-4.6"],
+                    "aggregator_model": "anthropic/claude-opus-4.6",
+                }
+            }
+            save_config(config)
+
+            reloaded = load_config()
+            assert reloaded["moa"]["reference_models"] == ["custom/model-a", "custom/model-b"]
+            assert reloaded["moa"]["aggregator_model"] == "custom/aggregator"
+            assert reloaded["moa"]["providers"]["openrouter"]["reference_models"] == ["anthropic/claude-opus-4.6"]
+            assert reloaded["moa"]["providers"]["openrouter"]["aggregator_model"] == "anthropic/claude-opus-4.6"

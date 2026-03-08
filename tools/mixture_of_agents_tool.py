@@ -135,6 +135,45 @@ def _configured_model() -> str:
     return ""
 
 
+def _moa_config() -> Dict[str, Any]:
+    config = load_config().get("moa")
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _provider_moa_config(provider: str) -> Dict[str, Any]:
+    moa_cfg = _moa_config()
+    providers_cfg = moa_cfg.get("providers")
+    if not isinstance(providers_cfg, dict):
+        return {}
+    provider_cfg = providers_cfg.get(provider)
+    return dict(provider_cfg) if isinstance(provider_cfg, dict) else {}
+
+
+def _normalize_model_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return _dedupe_preserve_order([item for item in value if isinstance(item, str)])
+
+
+def _configured_moa_overrides(provider: str) -> Tuple[List[str], str]:
+    provider_cfg = _provider_moa_config(provider)
+    root_cfg = _moa_config()
+
+    reference_models = _normalize_model_list(provider_cfg.get("reference_models"))
+    if not reference_models:
+        reference_models = _normalize_model_list(root_cfg.get("reference_models"))
+
+    aggregator_model = ""
+    provider_aggregator = provider_cfg.get("aggregator_model")
+    root_aggregator = root_cfg.get("aggregator_model")
+    if isinstance(provider_aggregator, str) and provider_aggregator.strip():
+        aggregator_model = provider_aggregator.strip()
+    elif isinstance(root_aggregator, str) and root_aggregator.strip():
+        aggregator_model = root_aggregator.strip()
+
+    return reference_models, aggregator_model
+
+
 def _is_openrouter_runtime(runtime: Dict[str, Any]) -> bool:
     return "openrouter.ai" in str(runtime.get("base_url", "")).lower()
 
@@ -185,15 +224,20 @@ def _build_async_client(runtime: Dict[str, Any]):
 def _resolve_default_models(runtime: Dict[str, Any]) -> Tuple[List[str], str]:
     provider = str(runtime.get("provider", "openrouter") or "openrouter")
     current_model = _configured_model()
+    config_reference_models, config_aggregator_model = _configured_moa_overrides(provider)
 
     if _is_custom_openai_runtime(runtime):
-        models = _dedupe_preserve_order([current_model])
+        models = _dedupe_preserve_order(config_reference_models or [current_model])
+        aggregator = (config_aggregator_model or current_model).strip()
+        if aggregator and aggregator not in models:
+            models = [aggregator] + models
+        models = _dedupe_preserve_order(models)
         if not models:
             raise ValueError(
                 "No model configured for the active OpenAI-compatible endpoint. "
-                "Set HERMES_MODEL, LLM_MODEL, or OPENAI_MODEL first."
+                "Set moa.reference_models / moa.aggregator_model or HERMES_MODEL / LLM_MODEL / OPENAI_MODEL."
             )
-        return models, models[0]
+        return models, aggregator or models[0]
 
     if provider == "nous":
         fetched_models: List[str] = []
@@ -205,36 +249,47 @@ def _resolve_default_models(runtime: Dict[str, Any]) -> Tuple[List[str], str]:
             )
         except Exception as exc:
             logger.warning("Could not fetch Nous model list for MoA; falling back to configured model: %s", exc)
-        models = _dedupe_preserve_order(([current_model] if current_model else []) + fetched_models)
+        models = _dedupe_preserve_order(config_reference_models or (([current_model] if current_model else []) + fetched_models))
+        aggregator = (config_aggregator_model or current_model or (models[0] if models else "")).strip()
+        if aggregator and aggregator not in models:
+            models = [aggregator] + models
+        models = _dedupe_preserve_order(models)
         if not models:
             raise ValueError("No Nous models available for Mixture of Agents")
-        return models[:4], models[0]
+        return models, aggregator or models[0]
 
     if provider == "openai-codex":
         models = _dedupe_preserve_order(
-            ([current_model] if current_model else [])
-            + get_codex_model_ids(access_token=str(runtime.get("api_key", "")))
+            config_reference_models or (([current_model] if current_model else []) + get_codex_model_ids(access_token=str(runtime.get("api_key", ""))))
         )
+        aggregator = (config_aggregator_model or current_model or (models[0] if models else "")).strip()
+        if aggregator and aggregator not in models:
+            models = [aggregator] + models
+        models = _dedupe_preserve_order(models)
         if not models:
             raise ValueError("No Codex models available for Mixture of Agents")
-        return models[:4], models[0]
+        return models, aggregator or models[0]
 
     if provider in _PROVIDER_REFERENCE_DEFAULTS:
         models = _dedupe_preserve_order(
-            ([current_model] if current_model else []) + _PROVIDER_REFERENCE_DEFAULTS[provider]
+            config_reference_models or (([current_model] if current_model else []) + _PROVIDER_REFERENCE_DEFAULTS[provider])
         )
+        aggregator = (config_aggregator_model or current_model or (models[0] if models else "")).strip()
+        if aggregator and aggregator not in models:
+            models = [aggregator] + models
+        models = _dedupe_preserve_order(models)
         if not models:
             raise ValueError(f"No default models configured for provider '{provider}'")
-        return models[:4], models[0]
+        return models, aggregator or models[0]
 
-    models = _dedupe_preserve_order(([current_model] if current_model else []) + REFERENCE_MODELS)
-    aggregator = current_model or AGGREGATOR_MODEL
+    models = _dedupe_preserve_order(config_reference_models or (([current_model] if current_model else []) + REFERENCE_MODELS))
+    aggregator = (config_aggregator_model or current_model or AGGREGATOR_MODEL).strip()
     if aggregator and aggregator not in models:
         models = [aggregator] + models
     models = _dedupe_preserve_order(models)
     if not models:
         raise ValueError("No models available for Mixture of Agents")
-    return models[:4], aggregator
+    return models, aggregator or models[0]
 
 
 def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
@@ -439,7 +494,8 @@ async def mixture_of_agents_tool(
 
         default_ref_models, default_agg_model = _resolve_default_models(runtime)
 
-        # Use provided models or provider-aware defaults
+        # Use provided models or provider-aware defaults. Model IDs are passed through
+        # exactly as configured; we do not rewrite them into provider/model format.
         ref_models = _dedupe_preserve_order(reference_models or default_ref_models)
         agg_model = (aggregator_model or default_agg_model).strip()
 
@@ -540,13 +596,16 @@ async def mixture_of_agents_tool(
         end_time = datetime.datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         
+        fallback_reference_models = reference_models or get_available_models()["reference_models"]
+        fallback_aggregator_model = aggregator_model or get_available_models()["aggregator_models"][0]
+
         # Prepare error response (minimal fields)
         result = {
             "success": False,
             "response": "MoA processing failed. Please try again or use a single model for this query.",
             "models_used": {
-                "reference_models": reference_models or REFERENCE_MODELS,
-                "aggregator_model": aggregator_model or AGGREGATOR_MODEL
+                "reference_models": fallback_reference_models,
+                "aggregator_model": fallback_aggregator_model
             },
             "error": error_msg
         }

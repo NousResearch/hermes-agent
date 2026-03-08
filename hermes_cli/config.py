@@ -156,6 +156,15 @@ DEFAULT_CONFIG = {
 # Config Migration System
 # =============================================================================
 
+# Track which env vars were introduced in each config version.
+# Migration only mentions vars new since the user's previous version.
+ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
+    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
+    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
+    5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
+        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+}
+
 # Required environment variables with metadata for migration prompts.
 # LLM provider is required but handled in the setup wizard's provider
 # selection step (Nous Portal / OpenRouter / Custom endpoint), so this
@@ -625,34 +634,47 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if v["name"] not in required_names and not v.get("advanced")
     ]
     
-    if interactive and missing_optional:
-        print("  Would you like to configure any optional keys now?")
-        try:
-            answer = input("  Configure optional keys? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-        
-        if answer in ("y", "yes"):
+    # Only offer to configure env vars that are NEW since the user's previous version
+    new_var_names = set()
+    for ver in range(current_ver + 1, latest_ver + 1):
+        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
+
+    if new_var_names and interactive and not quiet:
+        new_and_unset = [
+            (name, OPTIONAL_ENV_VARS[name])
+            for name in sorted(new_var_names)
+            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
+        ]
+        if new_and_unset:
+            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
+            for name, info in new_and_unset:
+                print(f"    • {name} — {info.get('description', '')}")
             print()
-            for var in missing_optional:
-                desc = var.get("description", "")
-                if var.get("url"):
-                    print(f"  {desc}")
-                    print(f"  Get your key at: {var['url']}")
-                else:
-                    print(f"  {desc}")
-                
-                if var.get("password"):
-                    import getpass
-                    value = getpass.getpass(f"  {var['prompt']} (Enter to skip): ")
-                else:
-                    value = input(f"  {var['prompt']} (Enter to skip): ").strip()
-                
-                if value:
-                    save_env_value(var["name"], value)
-                    results["env_added"].append(var["name"])
-                    print(f"  ✓ Saved {var['name']}")
+            try:
+                answer = input("  Configure new keys? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+
+            if answer in ("y", "yes"):
                 print()
+                for name, info in new_and_unset:
+                    if info.get("url"):
+                        print(f"  {info.get('description', name)}")
+                        print(f"  Get your key at: {info['url']}")
+                    else:
+                        print(f"  {info.get('description', name)}")
+                    if info.get("password"):
+                        import getpass
+                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                    else:
+                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                    if value:
+                        save_env_value(name, value)
+                        results["env_added"].append(name)
+                        print(f"  ✓ Saved {name}")
+                    print()
+            else:
+                print("  Set later with: hermes config set KEY VALUE")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()

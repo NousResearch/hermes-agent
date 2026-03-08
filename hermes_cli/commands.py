@@ -19,6 +19,7 @@ COMMANDS = {
     "/toolsets": "List available toolsets",
     "/model": "Show or change the current model",
     "/provider": "Show available providers and current provider",
+    "/fallback": "Show/toggle fallback chain (auto, interactive, off)",
     "/prompt": "View/set custom system prompt",
     "/personality": "Set a predefined personality",
     "/clear": "Clear screen and reset conversation (fresh start)",

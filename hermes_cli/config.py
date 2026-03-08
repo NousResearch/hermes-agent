@@ -88,7 +88,22 @@ DEFAULT_CONFIG = {
         "threshold": 0.85,
         "summary_model": "google/gemini-3-flash-preview",
     },
-    
+
+    # Provider fallback chain — tried in order when primary fails (429/529/etc.)
+    # enabled: true/false master toggle; mode: "interactive"/"auto"/"off"
+    # Each entry: provider name + optional base_url, model, api_key_env override
+    "fallback": {
+        "enabled": True,        # Master toggle — set false to disable all fallback
+        "mode": "interactive",  # "auto" | "interactive" | "off"
+        "timeout": 30,          # seconds before auto-selecting (interactive mode)
+        "chain": [
+            # Example entries (uncomment and customize):
+            # {"provider": "openrouter", "model": "anthropic/claude-opus-4.6"},
+            # {"provider": "lmstudio", "base_url": "http://localhost:1234/v1", "model": "qwen3-30b-a3b"},
+            # {"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "llama3.1:70b"},
+        ],
+    },
+
     "display": {
         "compact": False,
         "personality": "kawaii",

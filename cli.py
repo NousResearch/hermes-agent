@@ -1218,6 +1218,23 @@ class HermesCLI:
                 pass
         
         try:
+            # Build fallback chain from config, with CLI flag override.
+            # If config has no chain entries, try building a legacy chain from
+            # env vars (e.g. OPENROUTER_API_KEY) so interactive mode still works.
+            from agent.fallback_chain import FallbackChain
+            fallback_override = getattr(self, "_fallback_mode_override", None)
+            fallback_chain = FallbackChain.from_config(CLI_CONFIG)
+            if not fallback_chain.has_fallbacks():
+                fallback_chain = FallbackChain.build_legacy_chain(self.model)
+
+            # Apply mode: CLI flag > config > default (interactive for CLI)
+            if fallback_override == "off":
+                fallback_chain.enabled = False
+            elif fallback_override in ("auto", "interactive"):
+                fallback_chain.mode = fallback_override
+            elif fallback_chain.has_fallbacks():
+                fallback_chain.mode = "interactive"  # CLI default
+
             self.agent = AIAgent(
                 model=self.model,
                 api_key=self.api_key,
@@ -1242,6 +1259,8 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
+                fallback_chain=fallback_chain,
+                fallback_selector=self._fallback_selector,
             )
             return True
         except Exception as e:
@@ -1734,6 +1753,60 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
+    def _handle_fallback_command(self, cmd: str):
+        """Handle /fallback — show status or toggle mode (auto/interactive/off)."""
+        parts = cmd.split(maxsplit=1)
+        chain = getattr(self.agent, "_fallback_chain", None) if self.agent else None
+
+        if len(parts) < 2 or not parts[1].strip():
+            # Show current status
+            print()
+            if chain is None or not chain.entries:
+                print("  Fallback chain: (not configured)")
+                print("  Add providers in ~/.hermes/config.yaml under 'fallback.chain'")
+            else:
+                status = "enabled" if chain.enabled else "disabled"
+                print(f"  Fallback: {status}  |  Mode: {chain.mode}  |  Timeout: {chain.timeout}s")
+                print(f"  Chain ({len(chain.entries)} provider{'s' if len(chain.entries) > 1 else ''}):")
+                for i, entry in enumerate(chain.entries, 1):
+                    model_str = f"  →  {entry.model}" if entry.model else ""
+                    exhausted = " (exhausted)" if i - 1 in chain._exhausted else ""
+                    print(f"    [{i}] {entry.display_name}{model_str}{exhausted}")
+            print()
+            print("  Usage: /fallback auto|interactive|off")
+            print()
+            return
+
+        arg = parts[1].strip().lower()
+        if arg == "off":
+            if chain:
+                chain.enabled = False
+                print("  ✓ Fallback disabled for this session")
+            else:
+                print("  No fallback chain to disable")
+        elif arg in ("auto", "interactive"):
+            if chain:
+                chain.enabled = True
+                chain.mode = arg
+                print(f"  ✓ Fallback mode set to: {arg}")
+            else:
+                print("  No fallback chain configured — add providers in config.yaml")
+        elif arg == "on":
+            if chain:
+                chain.enabled = True
+                print(f"  ✓ Fallback enabled (mode: {chain.mode})")
+            else:
+                print("  No fallback chain configured")
+        elif arg == "reset":
+            if chain:
+                chain.reset()
+                print("  ✓ Fallback chain reset — all providers available again")
+            else:
+                print("  No fallback chain to reset")
+        else:
+            print(f"  Unknown fallback option: {arg}")
+            print("  Usage: /fallback auto|interactive|off|on|reset")
+
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
         parts = cmd.split(maxsplit=1)
@@ -2228,6 +2301,8 @@ class HermesCLI:
             print()
             print("  Switch: /model provider:model-name")
             print("  Setup:  hermes setup")
+        elif cmd_lower.startswith("/fallback"):
+            self._handle_fallback_command(cmd_original)
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
@@ -2499,6 +2574,56 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _fallback_selector(self, chain, error_msg):
+        """
+        Platform callback for fallback provider selection. Called from the agent thread.
+
+        Reuses the clarify UI mechanism — presents fallback providers as numbered
+        choices with a countdown timer. Returns the selected FallbackEntry or None.
+        """
+        available = chain.available_entries()
+        if not available:
+            return None
+
+        # Build choices for clarify-style UI
+        choices = []
+        for _, entry in available:
+            model_str = f" → {entry.model}" if entry.model else ""
+            choices.append(f"{entry.display_name}{model_str}")
+        choices.append("Skip — keep retrying primary")
+
+        question = f"⚠️ {error_msg[:120]}\n\n🔄 Select fallback provider:"
+
+        # Use clarify mechanism (handles prompt_toolkit threading)
+        result = self._clarify_callback(question, choices)
+
+        if result is None:
+            return None
+
+        # Parse result — clarify returns the choice text
+        result_str = str(result).strip()
+
+        # Timeout or "use best judgement" → auto-select first entry
+        if "did not provide" in result_str.lower() or "best judgement" in result_str.lower():
+            _cprint(f"  🔄 Auto-selecting {available[0][1].display_name}")
+            return available[0][1]
+
+        # Check if user chose to skip
+        if "skip" in result_str.lower() or "retry" in result_str.lower():
+            return None
+
+        # Try to match the result to an available entry
+        for _, entry in available:
+            model_str = f" → {entry.model}" if entry.model else ""
+            choice_text = f"{entry.display_name}{model_str}"
+            if choice_text == result_str or entry.provider in result_str.lower():
+                return entry
+
+        # Default to first available on unrecognized input
+        if available:
+            return available[0][1]
+        return None
 
     def _clarify_callback(self, question, choices):
         """
@@ -3612,6 +3737,7 @@ def main(
     resume: str = None,
     worktree: bool = False,
     w: bool = False,
+    fallback_mode: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -3713,6 +3839,8 @@ def main(
         compact=compact,
         resume=resume,
     )
+    # Pass through --fallback CLI flag (auto/interactive/off)
+    cli._fallback_mode_override = fallback_mode
 
     # Inject worktree context into agent's system prompt
     if wt_info:

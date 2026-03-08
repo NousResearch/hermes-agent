@@ -298,7 +298,7 @@ class TestAuthStatusDispatcher:
 # ---------------------------------------------------------------------------
 
 class TestFallbackProvider:
-    """Test the Anthropic -> OpenRouter fallback mechanism in AIAgent."""
+    """Test the provider fallback chain mechanism in AIAgent."""
 
     def _make_agent(self, **extra_env):
         """Create an AIAgent in anthropic_messages mode with mocked clients."""
@@ -350,20 +350,23 @@ class TestFallbackProvider:
             if needs_httpx_mock:
                 sys.modules.pop("httpx", None)
 
-    def test_fallback_available_with_openrouter_key(self):
+    def test_fallback_chain_auto_built_with_openrouter_key(self):
         agent = self._make_agent()
-        assert agent._fallback_available is True
+        assert agent._fallback_chain.has_fallbacks() is True
         assert agent._fallback_activated is False
         assert agent.api_mode == "anthropic_messages"
+        assert agent._fallback_chain.entries[0].provider == "openrouter"
 
-    def test_fallback_not_available_without_key(self):
+    def test_fallback_chain_empty_without_key(self):
         agent = self._make_agent(OPENROUTER_API_KEY="")
-        assert agent._fallback_available is False
+        assert agent._fallback_chain.has_fallbacks() is False
 
-    def test_switch_to_fallback(self):
+    def test_activate_fallback(self):
+        from agent.fallback_chain import FallbackEntry
         agent = self._make_agent()
+        entry = agent._fallback_chain.entries[0]
         with patch("run_agent.OpenAI") as mock_openai:
-            result = agent._switch_to_fallback_provider()
+            result = agent._activate_fallback(entry)
             assert result is True
             assert agent._fallback_activated is True
             assert agent.api_mode == "chat_completions"
@@ -371,25 +374,57 @@ class TestFallbackProvider:
             assert agent.model == "anthropic/claude-opus-4-20250514"
             mock_openai.assert_called_once()
 
-    def test_switch_idempotent(self):
-        """Calling switch twice should return False the second time."""
+    def test_chain_exhaustion(self):
+        """After activating the only entry, chain should be exhaustible."""
+        from agent.fallback_chain import FallbackEntry
         agent = self._make_agent()
+        entry = agent._fallback_chain.entries[0]
         with patch("run_agent.OpenAI"):
-            assert agent._switch_to_fallback_provider() is True
-            assert agent._switch_to_fallback_provider() is False
+            assert agent._activate_fallback(entry) is True
+            # Manually mark it failed to simulate exhaustion
+            agent._fallback_chain.mark_failed(entry)
+            assert agent._fallback_chain.is_exhausted() is True
 
-    def test_model_remapping(self):
-        """Bare model names should get anthropic/ prefix for OpenRouter."""
+    def test_model_remapping_bare_names(self):
+        """Bare model names get anthropic/ prefix when falling back to OpenRouter with no entry model."""
+        from agent.fallback_chain import FallbackEntry, FallbackChain
         agent = self._make_agent()
         agent.model = "claude-sonnet-4-20250514"
+        # Create a chain entry WITHOUT a model override — triggers remapping
+        chain = FallbackChain(entries=[
+            FallbackEntry(provider="openrouter"),  # no model set
+        ])
+        agent._fallback_chain = chain
+        entry = chain.entries[0]
         with patch("run_agent.OpenAI"):
-            agent._switch_to_fallback_provider()
+            agent._activate_fallback(entry)
             assert agent.model == "anthropic/claude-sonnet-4-20250514"
 
     def test_already_prefixed_model_not_doubled(self):
         """Models already prefixed shouldn't get double-prefixed."""
+        from agent.fallback_chain import FallbackEntry, FallbackChain
         agent = self._make_agent()
         agent.model = "anthropic/claude-opus-4-20250514"
+        chain = FallbackChain(entries=[
+            FallbackEntry(provider="openrouter"),  # no model override
+        ])
+        agent._fallback_chain = chain
+        entry = chain.entries[0]
         with patch("run_agent.OpenAI"):
-            agent._switch_to_fallback_provider()
+            agent._activate_fallback(entry)
             assert agent.model == "anthropic/claude-opus-4-20250514"
+
+    def test_entry_model_override(self):
+        """Entry-specified model should override the agent's current model."""
+        from agent.fallback_chain import FallbackEntry, FallbackChain
+        agent = self._make_agent()
+        # Replace chain with custom entry that has a model override
+        chain = FallbackChain(entries=[
+            FallbackEntry(provider="lmstudio", base_url="http://localhost:1234/v1", model="qwen3-30b-a3b"),
+        ])
+        agent._fallback_chain = chain
+        entry = chain.entries[0]
+        with patch("run_agent.OpenAI"):
+            agent._activate_fallback(entry)
+            assert agent.model == "qwen3-30b-a3b"
+            assert agent.provider == "lmstudio"

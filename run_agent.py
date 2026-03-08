@@ -183,6 +183,9 @@ class AIAgent:
         session_db=None,
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
+        fallback_chain: "FallbackChain" = None,
+        fallback_notify: callable = None,
+        fallback_selector: callable = None,
     ):
         """
         Initialize the AI Agent.
@@ -365,10 +368,17 @@ class AIAgent:
         # Initialize LLM client
         self._anthropic_client = None
 
-        # Fallback provider support: when primary is Anthropic, prepare an
-        # OpenRouter client to switch to on rate-limit or auth failures.
-        self._fallback_available = False
-        self._fallback_activated = False
+        # Provider fallback chain — triggered on rate-limit, auth, or overload errors.
+        # Replaces the old hardcoded Anthropic -> OpenRouter fallback.
+        from agent.fallback_chain import FallbackChain
+        if fallback_chain is not None:
+            self._fallback_chain = fallback_chain
+        else:
+            # Backward compat: auto-build a legacy chain if OPENROUTER_API_KEY is set
+            self._fallback_chain = FallbackChain.build_legacy_chain(self.model)
+        self._fallback_notify = fallback_notify
+        self._fallback_selector = fallback_selector  # Optional: platform-specific selector (e.g. CLI clarify UI)
+        self._fallback_activated = False  # True after first fallback switch
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -383,21 +393,10 @@ class AIAgent:
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
 
-            # Prepare OpenRouter fallback if key is available
-            fallback_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-            if fallback_key:
-                self._fallback_available = True
-                self._fallback_client_kwargs = {
-                    "base_url": OPENROUTER_BASE_URL,
-                    "api_key": fallback_key,
-                    "default_headers": {
-                        "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-                        "X-OpenRouter-Title": "Hermes Agent",
-                        "X-OpenRouter-Categories": "productivity,cli-agent",
-                    },
-                }
-                if not self.quiet_mode:
-                    print(f"🔄 Fallback provider: OpenRouter (ready)")
+            if self._fallback_chain.has_fallbacks() and not self.quiet_mode:
+                n = len(self._fallback_chain.entries)
+                names = ", ".join(e.provider for e in self._fallback_chain.entries)
+                print(f"🔄 Fallback chain: {names} ({n} provider{'s' if n > 1 else ''})")
         else:
             client_kwargs = {}
 
@@ -2194,37 +2193,94 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
-    def _switch_to_fallback_provider(self) -> bool:
-        """Switch from Anthropic to OpenRouter fallback.
+    def _activate_fallback(self, entry: "FallbackEntry") -> bool:
+        """Activate a fallback provider entry.
 
-        Returns True if switch succeeded, False if no fallback available.
-        Called when the primary Anthropic provider fails with rate-limit,
-        auth, or overload errors.
+        Switches the agent's client, model, and API mode to use the given
+        fallback entry. Returns True on success, False on failure (in which
+        case the entry is marked as failed in the chain).
         """
-        if not self._fallback_available or self._fallback_activated:
-            return False
-
+        from agent.fallback_chain import FallbackEntry
         try:
-            self.client = OpenAI(**self._fallback_client_kwargs)
-            self._client_kwargs = self._fallback_client_kwargs
-            self.api_mode = "chat_completions"
-            self.provider = "openrouter"
-            self.base_url = OPENROUTER_BASE_URL
+            client_kwargs = entry.build_client_kwargs()
+            self.client = OpenAI(**client_kwargs)
+            self._client_kwargs = client_kwargs
+            self.api_mode = entry.api_mode or "chat_completions"
+            self.provider = entry.provider
+            self.base_url = client_kwargs.get("base_url", OPENROUTER_BASE_URL)
             self._fallback_activated = True
+            # Disable anthropic native client since we're on OpenAI-compatible now
+            self._anthropic_client = None
 
-            # Re-map bare model names to OpenRouter format if needed
-            if not self.model.startswith("anthropic/") and "claude" in self.model.lower():
-                self.model = f"anthropic/{self.model}"
+            # Override model if the entry specifies one
+            if entry.model:
+                self.model = entry.model
+            elif "openrouter" in self.base_url.lower():
+                # Re-map bare model names to OpenRouter format if needed
+                if not self.model.startswith("anthropic/") and "claude" in self.model.lower():
+                    self.model = f"anthropic/{self.model}"
 
             # Enable prompt caching for Claude via OpenRouter
-            self._use_prompt_caching = True
+            if "openrouter" in self.base_url.lower():
+                self._use_prompt_caching = True
 
-            print(f"{self.log_prefix}🔄 Switched to fallback provider: OpenRouter ({self.model})")
-            logging.info("Fallback activated: Anthropic -> OpenRouter (%s)", self.model)
+            print(f"{self.log_prefix}🔄 Switched to fallback: {entry.display_name} ({self.model})")
+            logging.info("Fallback activated: %s (%s)", entry.provider, self.model)
             return True
         except Exception as e:
-            logging.error("Failed to initialize fallback OpenRouter client: %s", e)
+            logging.error("Failed to activate fallback %s: %s", entry.provider, e)
+            self._fallback_chain.mark_failed(entry)
             return False
+
+    def _try_fallback_chain(self, error_msg: str) -> bool:
+        """Attempt to switch to the next fallback provider in the chain.
+
+        Selection strategy priority:
+        1. Platform-injected fallback_selector callback (e.g. CLI clarify-style UI)
+        2. Interactive stdin prompt (only if stdin is a real tty, not prompt_toolkit)
+        3. Auto-cascade (gateway, non-interactive, or fallback)
+
+        Returns True if a fallback was activated, False if exhausted/skipped.
+        """
+        from agent.fallback_chain import select_interactive, select_auto
+
+        chain = self._fallback_chain
+        if not chain.has_fallbacks() or chain.is_exhausted():
+            return False
+
+        entry = None
+
+        # 1. Platform-injected selector (e.g. CLI with prompt_toolkit UI)
+        if self._fallback_selector and chain.mode == "interactive":
+            entry = self._fallback_selector(chain, error_msg)
+
+        # 2. Raw stdin interactive (works when running outside prompt_toolkit)
+        elif chain.mode == "interactive" and sys.stdin.isatty():
+            entry = select_interactive(
+                chain, error_msg,
+                current_model=self.model,
+                log_prefix=self.log_prefix,
+            )
+
+        # 3. Auto-cascade (gateway, non-interactive)
+        else:
+            entry = select_auto(
+                chain, error_msg,
+                current_model=self.model,
+                log_prefix=self.log_prefix,
+                notify=self._fallback_notify,
+            )
+
+        if entry is None:
+            # User chose to skip or chain exhausted
+            return False
+
+        if self._activate_fallback(entry):
+            return True
+
+        # Activation failed — mark and try next (auto-cascade on failure)
+        chain.mark_failed(entry)
+        return self._try_fallback_chain(error_msg)  # Recurse to next entry
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
@@ -3512,17 +3568,18 @@ class AIAgent:
                             print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
                             continue
 
-                    # Anthropic fallback: on rate-limit (429), auth (401), or
-                    # overload (529) errors, switch to OpenRouter if available.
+                    # Universal provider fallback: on rate-limit (429), auth (401),
+                    # overload (529), or service-unavailable (503), try the
+                    # fallback chain if one is configured.
+                    from agent.fallback_chain import should_trigger_fallback
                     if (
-                        self.api_mode == "anthropic_messages"
-                        and self.provider == "anthropic"
-                        and status_code in {401, 429, 529}
-                        and not self._fallback_activated
+                        should_trigger_fallback(status_code, api_error)
+                        and self._fallback_chain.has_fallbacks()
+                        and not self._fallback_chain.is_exhausted()
                     ):
-                        print(f"{self.log_prefix}⚠️  Anthropic API error ({status_code}): {str(api_error)[:150]}")
-                        if self._switch_to_fallback_provider():
-                            print(f"{self.log_prefix}   🔄 Retrying with OpenRouter fallback...")
+                        error_str = f"{self.provider} API error ({status_code}): {str(api_error)[:150]}"
+                        if self._try_fallback_chain(error_str):
+                            print(f"{self.log_prefix}   🔄 Retrying with fallback provider...")
                             continue
 
                     retry_count += 1

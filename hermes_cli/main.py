@@ -168,6 +168,7 @@ def cmd_chat(args):
         "query": args.query,
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
+        "fallback_mode": getattr(args, "fallback", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1303,6 +1304,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Run in an isolated git worktree (for parallel agents on the same repo)"
+    )
+    chat_parser.add_argument(
+        "--fallback",
+        choices=["auto", "interactive", "off"],
+        default=None,
+        help="Fallback mode override: 'interactive' (countdown prompt), 'auto' (silent cascade), 'off' (disable)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

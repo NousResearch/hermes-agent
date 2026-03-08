@@ -175,6 +175,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._provider_routing = self._load_provider_routing()
+        self._fallback_chain = self._load_fallback_chain()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -373,6 +374,25 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_fallback_chain():
+        """Load fallback provider chain from config.yaml (auto mode for gateway)."""
+        try:
+            from agent.fallback_chain import FallbackChain
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                chain = FallbackChain.from_config(cfg)
+                if chain.has_fallbacks():
+                    chain.mode = "auto"  # Gateway always auto-cascades
+                    return chain
+            # No config — try legacy chain
+            return FallbackChain.build_legacy_chain()
+        except Exception:
+            return None
 
     async def start(self) -> bool:
         """
@@ -2466,6 +2486,39 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
+
+            # Build fallback notify callback for gateway status messages.
+            # Sends interim messages (e.g. "switching to lmstudio...") to the user's chat.
+            _fallback_notify_fn = None
+            if self._fallback_chain and self._fallback_chain.has_fallbacks():
+                _fb_adapter = self.adapters.get(source.platform)
+                _fb_chat_id = source.chat_id
+                _fb_loop = asyncio.get_event_loop()
+
+                def _fallback_notify_fn(msg: str):
+                    """Send fallback status to user's chat (sync-safe wrapper)."""
+                    if _fb_adapter and _fb_chat_id:
+                        try:
+                            import concurrent.futures
+                            future = asyncio.run_coroutine_threadsafe(
+                                _fb_adapter.send(_fb_chat_id, msg),
+                                _fb_loop,
+                            )
+                            future.result(timeout=5)
+                        except Exception:
+                            pass
+
+            # Create a fresh chain instance per request so exhaustion state is isolated
+            _req_fallback_chain = None
+            if self._fallback_chain and self._fallback_chain.has_fallbacks():
+                from agent.fallback_chain import FallbackChain
+                _req_fallback_chain = FallbackChain(
+                    entries=list(self._fallback_chain.entries),
+                    mode=self._fallback_chain.mode,
+                    timeout=self._fallback_chain.timeout,
+                    enabled=self._fallback_chain.enabled,
+                )
+
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -2488,6 +2541,8 @@ class GatewayRunner:
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,
+                fallback_chain=_req_fallback_chain,
+                fallback_notify=_fallback_notify_fn,
             )
             
             # Store agent reference for interrupt support

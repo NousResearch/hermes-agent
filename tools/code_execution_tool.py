@@ -651,7 +651,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
-    import_str = ", ".join(import_examples) + ", ..."
+    if import_examples:
+        import_str = ", ".join(import_examples) + ", ..."
+    else:
+        import_str = "..."
 
     description = (
         "Run a Python script that can call Hermes tools programmatically. "

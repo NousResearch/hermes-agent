@@ -39,6 +39,8 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
+from agent.signal_detector import build_nudge_prefix
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback
 from dotenv import load_dotenv
 
@@ -2805,6 +2807,14 @@ class AIAgent:
         # Preserve the original user message before nudge injection.
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = user_message
+
+        # Implicit signal detection: scan the user message for emotional/
+        # cognitive signals (frustration, confusion, fatigue, …) and prepend
+        # a behavioural nudge so the LLM responds more appropriately.
+        # Cache-safe: only the new user message is modified.  See #692.
+        signal_nudge = build_nudge_prefix(user_message)
+        if signal_nudge:
+            user_message = signal_nudge + user_message
 
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.

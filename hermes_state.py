@@ -251,7 +251,12 @@ class SessionDB:
 
         Returns True if session was found and title was set.
         Raises ValueError if title is already in use by another session.
+        Empty strings are normalized to None (clearing the title).
         """
+        # Normalize empty string to None so it doesn't conflict with the
+        # unique index (only non-NULL values are constrained)
+        if not title:
+            title = None
         if title:
             # Check uniqueness (allow the same session to keep its own title)
             cursor = self._conn.execute(
@@ -298,10 +303,12 @@ class SessionDB:
         exact = self.get_session_by_title(title)
 
         # Also search for numbered variants: "title #2", "title #3", etc.
+        # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
+        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cursor = self._conn.execute(
             "SELECT id, title, started_at FROM sessions "
-            "WHERE title LIKE ? ORDER BY started_at DESC",
-            (f"{title} #%",),
+            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+            (f"{escaped} #%",),
         )
         numbered = cursor.fetchall()
 
@@ -327,9 +334,11 @@ class SessionDB:
             base = base_title
 
         # Find all existing numbered variants
+        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
+        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cursor = self._conn.execute(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ?",
-            (base, f"{base} #%"),
+            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+            (base, f"{escaped} #%"),
         )
         existing = [row["title"] for row in cursor.fetchall()]
 
@@ -356,40 +365,41 @@ class SessionDB:
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
         message_count, preview (first 60 chars of first user message),
         last_active (timestamp of last message).
-        """
-        if source:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                (source, limit, offset),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
-        sessions = [dict(row) for row in cursor.fetchall()]
 
-        for s in sessions:
-            # Get first user message preview
-            preview_cursor = self._conn.execute(
-                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' "
-                "ORDER BY timestamp, id LIMIT 1",
-                (s["id"],),
-            )
-            preview_row = preview_cursor.fetchone()
-            if preview_row and preview_row["content"]:
-                text = preview_row["content"].replace("\n", " ").strip()
-                s["preview"] = text[:60] + ("..." if len(text) > 60 else "")
+        Uses a single query with correlated subqueries instead of N+2 queries.
+        """
+        source_clause = "WHERE s.source = ?" if source else ""
+        query = f"""
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            {source_clause}
+            ORDER BY s.started_at DESC
+            LIMIT ? OFFSET ?
+        """
+        params = (source, limit, offset) if source else (limit, offset)
+        cursor = self._conn.execute(query, params)
+        sessions = []
+        for row in cursor.fetchall():
+            s = dict(row)
+            # Build the preview from the raw substring
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
             else:
                 s["preview"] = ""
-
-            # Get last message timestamp
-            last_cursor = self._conn.execute(
-                "SELECT MAX(timestamp) as last_ts FROM messages WHERE session_id = ?",
-                (s["id"],),
-            )
-            last_row = last_cursor.fetchone()
-            s["last_active"] = last_row["last_ts"] if last_row and last_row["last_ts"] else s["started_at"]
+            sessions.append(s)
 
         return sessions
 

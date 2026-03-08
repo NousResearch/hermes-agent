@@ -405,12 +405,25 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == title
 
-    def test_title_empty_string(self, db):
+    def test_title_empty_string_normalized_to_none(self, db):
+        """Empty strings are normalized to None (clearing the title)."""
         db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "My Title")
+        # Setting to empty string should clear the title (normalize to None)
         db.set_session_title("s1", "")
 
         session = db.get_session("s1")
-        assert session["title"] == ""
+        assert session["title"] is None
+
+    def test_multiple_empty_titles_no_conflict(self, db):
+        """Multiple sessions can have empty-string (normalized to NULL) titles."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.set_session_title("s1", "")
+        db.set_session_title("s2", "")
+        # Both should be None, no uniqueness conflict
+        assert db.get_session("s1")["title"] is None
+        assert db.get_session("s2")["title"] is None
 
     def test_title_survives_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -628,6 +641,37 @@ class TestTitleLineage:
         db.set_session_title("s2", "my project #2")
         # Even when called with "my project #2", it should return #3
         assert db.get_next_title_in_lineage("my project #2") == "my project #3"
+
+
+class TestTitleSqlWildcards:
+    """Titles containing SQL LIKE wildcards (%, _) must not cause false matches."""
+
+    def test_resolve_title_with_underscore(self, db):
+        """A title like 'test_project' should not match 'testXproject #2'."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "test_project")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "testXproject #2")
+        # Resolving "test_project" should return s1 (exact), not s2
+        assert db.resolve_session_by_title("test_project") == "s1"
+
+    def test_resolve_title_with_percent(self, db):
+        """A title with '%' should not wildcard-match unrelated sessions."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "100% done")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "100X done #2")
+        # Should resolve to s1 (exact), not s2
+        assert db.resolve_session_by_title("100% done") == "s1"
+
+    def test_next_lineage_with_underscore(self, db):
+        """get_next_title_in_lineage with underscores doesn't match wrong sessions."""
+        db.create_session("s1", "cli")
+        db.set_session_title("s1", "test_project")
+        db.create_session("s2", "cli")
+        db.set_session_title("s2", "testXproject #2")
+        # Only "test_project" exists, so next should be "test_project #2"
+        assert db.get_next_title_in_lineage("test_project") == "test_project #2"
 
 
 class TestListSessionsRich:

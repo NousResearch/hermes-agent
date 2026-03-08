@@ -65,6 +65,10 @@ CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
+# Anthropic Claude Code OAuth credentials
+DEFAULT_CLAUDE_CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
+
 
 # =============================================================================
 # Provider Registry
@@ -485,7 +489,7 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-        "claude": "anthropic",
+        "claude": "anthropic", "claude-code": "anthropic",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -513,6 +517,17 @@ def resolve_provider(
                 return active
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
+
+    # Check for Claude Code credentials (auto-detect Anthropic via Claude Code)
+    try:
+        claude_creds = _read_claude_code_credentials()
+        if claude_creds:
+            expires_at_ms = claude_creds.get("expiresAt")
+            if isinstance(expires_at_ms, (int, float)) and expires_at_ms > 0:
+                if (expires_at_ms / 1000.0) > time.time():
+                    return "anthropic"
+    except Exception as e:
+        logger.debug("Could not detect Claude Code credentials: %s", e)
 
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
@@ -1368,6 +1383,108 @@ def get_codex_auth_status() -> Dict[str, Any]:
         }
 
 
+# =============================================================================
+# Claude Code OAuth Credentials
+# =============================================================================
+
+def _read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+    """Read Claude Code's OAuth credentials from ~/.claude/.credentials.json.
+
+    Returns the claudeAiOauth dict if present and contains an access token,
+    or None if the file doesn't exist or is malformed.
+    """
+    creds_path = DEFAULT_CLAUDE_CREDENTIALS_PATH
+    if not creds_path.is_file():
+        return None
+    try:
+        raw = json.loads(creds_path.read_text())
+        oauth = raw.get("claudeAiOauth")
+        if not isinstance(oauth, dict):
+            return None
+        access_token = oauth.get("accessToken")
+        if not isinstance(access_token, str) or not access_token.strip():
+            return None
+        return oauth
+    except Exception as exc:
+        logger.debug("Failed to read Claude Code credentials: %s", exc)
+        return None
+
+
+def resolve_anthropic_claude_code_credentials() -> Dict[str, Any]:
+    """Resolve runtime credentials from Claude Code's OAuth token store.
+
+    Reads ~/.claude/.credentials.json written by Claude Code.
+    The token works as a standard Anthropic API key (sk-ant-oat* format
+    requires bearer auth, handled by the anthropic_adapter).
+
+    Returns dict with: provider, base_url, api_key, source, expires_at.
+    """
+    oauth = _read_claude_code_credentials()
+    if not oauth:
+        raise AuthError(
+            "No Claude Code credentials found. Install and authenticate "
+            "Claude Code first, or set ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.",
+            provider="anthropic",
+            code="claude_code_auth_missing",
+            relogin_required=True,
+        )
+
+    access_token = oauth["accessToken"].strip()
+    expires_at_ms = oauth.get("expiresAt")
+
+    # Check expiry (expiresAt is milliseconds timestamp)
+    if isinstance(expires_at_ms, (int, float)) and expires_at_ms > 0:
+        expires_at_s = expires_at_ms / 1000.0
+        if expires_at_s <= time.time():
+            raise AuthError(
+                "Claude Code OAuth token has expired. Run `claude` to refresh it.",
+                provider="anthropic",
+                code="claude_code_token_expired",
+                relogin_required=True,
+            )
+
+    base_url = (
+        os.getenv("ANTHROPIC_BASE_URL", "").strip().rstrip("/")
+        or ANTHROPIC_API_BASE_URL
+    )
+
+    return {
+        "provider": "anthropic",
+        "api_mode": "anthropic_messages",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "claude-code",
+        "subscription_type": oauth.get("subscriptionType", "unknown"),
+        "expires_at": expires_at_ms,
+    }
+
+
+def get_claude_code_auth_status() -> Dict[str, Any]:
+    """Status snapshot for Claude Code credentials."""
+    oauth = _read_claude_code_credentials()
+    if not oauth:
+        return {
+            "logged_in": False,
+            "credentials_path": str(DEFAULT_CLAUDE_CREDENTIALS_PATH),
+            "source": "claude-code",
+        }
+
+    expires_at_ms = oauth.get("expiresAt")
+    is_expired = False
+    if isinstance(expires_at_ms, (int, float)) and expires_at_ms > 0:
+        is_expired = (expires_at_ms / 1000.0) <= time.time()
+
+    return {
+        "logged_in": not is_expired,
+        "credentials_path": str(DEFAULT_CLAUDE_CREDENTIALS_PATH),
+        "source": "claude-code",
+        "subscription_type": oauth.get("subscriptionType"),
+        "expires_at": expires_at_ms,
+        "scopes": oauth.get("scopes"),
+        "is_expired": is_expired,
+    }
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -1411,6 +1528,12 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "anthropic":
+        # Check Claude Code credentials first, then fall back to env-var status
+        claude_status = get_claude_code_auth_status()
+        if claude_status.get("logged_in"):
+            return claude_status
+        return get_api_key_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":

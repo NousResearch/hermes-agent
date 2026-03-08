@@ -365,6 +365,11 @@ class AIAgent:
         # Initialize LLM client
         self._anthropic_client = None
 
+        # Fallback provider support: when primary is Anthropic, prepare an
+        # OpenRouter client to switch to on rate-limit or auth failures.
+        self._fallback_available = False
+        self._fallback_activated = False
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
             effective_key = api_key or os.getenv("ANTHROPIC_TOKEN", "") or os.getenv("ANTHROPIC_API_KEY", "")
@@ -377,6 +382,22 @@ class AIAgent:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+
+            # Prepare OpenRouter fallback if key is available
+            fallback_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+            if fallback_key:
+                self._fallback_available = True
+                self._fallback_client_kwargs = {
+                    "base_url": OPENROUTER_BASE_URL,
+                    "api_key": fallback_key,
+                    "default_headers": {
+                        "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                        "X-OpenRouter-Title": "Hermes Agent",
+                        "X-OpenRouter-Categories": "productivity,cli-agent",
+                    },
+                }
+                if not self.quiet_mode:
+                    print(f"🔄 Fallback provider: OpenRouter (ready)")
         else:
             client_kwargs = {}
 
@@ -2173,6 +2194,38 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    def _switch_to_fallback_provider(self) -> bool:
+        """Switch from Anthropic to OpenRouter fallback.
+
+        Returns True if switch succeeded, False if no fallback available.
+        Called when the primary Anthropic provider fails with rate-limit,
+        auth, or overload errors.
+        """
+        if not self._fallback_available or self._fallback_activated:
+            return False
+
+        try:
+            self.client = OpenAI(**self._fallback_client_kwargs)
+            self._client_kwargs = self._fallback_client_kwargs
+            self.api_mode = "chat_completions"
+            self.provider = "openrouter"
+            self.base_url = OPENROUTER_BASE_URL
+            self._fallback_activated = True
+
+            # Re-map bare model names to OpenRouter format if needed
+            if not self.model.startswith("anthropic/") and "claude" in self.model.lower():
+                self.model = f"anthropic/{self.model}"
+
+            # Enable prompt caching for Claude via OpenRouter
+            self._use_prompt_caching = True
+
+            print(f"{self.log_prefix}🔄 Switched to fallback provider: OpenRouter ({self.model})")
+            logging.info("Fallback activated: Anthropic -> OpenRouter (%s)", self.model)
+            return True
+        except Exception as e:
+            logging.error("Failed to initialize fallback OpenRouter client: %s", e)
+            return False
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -3457,6 +3510,19 @@ class AIAgent:
                         nous_auth_retry_attempted = True
                         if self._try_refresh_nous_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                            continue
+
+                    # Anthropic fallback: on rate-limit (429), auth (401), or
+                    # overload (529) errors, switch to OpenRouter if available.
+                    if (
+                        self.api_mode == "anthropic_messages"
+                        and self.provider == "anthropic"
+                        and status_code in {401, 429, 529}
+                        and not self._fallback_activated
+                    ):
+                        print(f"{self.log_prefix}⚠️  Anthropic API error ({status_code}): {str(api_error)[:150]}")
+                        if self._switch_to_fallback_provider():
+                            print(f"{self.log_prefix}   🔄 Retrying with OpenRouter fallback...")
                             continue
 
                     retry_count += 1

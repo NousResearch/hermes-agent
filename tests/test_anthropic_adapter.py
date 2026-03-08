@@ -141,7 +141,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "high"},
         )
-        assert kwargs["thinking"]["type"] == "enabled"
+        assert kwargs["thinking"]["type"] == "adaptive"
         assert kwargs["thinking"]["budget_tokens"] == 16000
         assert kwargs["max_tokens"] >= 16000 + 4096
 

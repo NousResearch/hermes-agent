@@ -95,6 +95,10 @@ PROVIDER_ENV_VARS = (
 def _clear_provider_env(monkeypatch):
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
+    # Prevent Claude Code credential auto-detection from interfering
+    monkeypatch.setattr(
+        "hermes_cli.auth._read_claude_code_credentials", lambda: None
+    )
 
 
 class TestResolveProvider:

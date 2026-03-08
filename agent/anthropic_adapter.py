@@ -145,6 +145,13 @@ def build_anthropic_kwargs(
     system, anthropic_messages = convert_messages_to_anthropic(messages)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
+    # Normalize OpenRouter-style model names for Anthropic API
+    # "anthropic/claude-opus-4.6" -> "claude-opus-4-6"
+    if model.startswith("anthropic/"):
+        model = model[len("anthropic/"):]
+    # Anthropic uses hyphens not dots (claude-opus-4.6 -> claude-opus-4-6)
+    model = model.replace(".", "-")
+
     effective_max_tokens = max_tokens or 16384
 
     kwargs: Dict[str, Any] = {
@@ -164,7 +171,7 @@ def build_anthropic_kwargs(
         if reasoning_config.get("enabled") is not False:
             effort = reasoning_config.get("effort", "medium")
             budget = THINKING_BUDGET.get(effort, 8000)
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            kwargs["thinking"] = {"type": "adaptive", "budget_tokens": budget}
             kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs

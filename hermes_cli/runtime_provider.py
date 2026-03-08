@@ -13,6 +13,7 @@ from hermes_cli.auth import (
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
     resolve_api_key_provider_credentials,
+    resolve_anthropic_claude_code_credentials,
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
@@ -149,7 +150,20 @@ def resolve_runtime_provider(
         }
 
     # Anthropic (native Messages API)
+    # Try Claude Code OAuth credentials first, then fall back to env vars
     if provider == "anthropic":
+        try:
+            creds = resolve_anthropic_claude_code_credentials()
+            return {
+                "provider": "anthropic",
+                "api_mode": "anthropic_messages",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "claude-code"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            pass  # Fall through to env-var resolution
         creds = resolve_api_key_provider_credentials(provider)
         return {
             "provider": "anthropic",

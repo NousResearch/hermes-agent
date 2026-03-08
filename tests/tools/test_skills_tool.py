@@ -11,6 +11,7 @@ from tools.skills_tool import (
     _estimate_tokens,
     _find_all_skills,
     _load_category_description,
+    check_skill_prerequisites,
     skill_matches_platform,
     skills_list,
     skills_categories,
@@ -464,3 +465,124 @@ class TestFindAllSkillsPlatformFiltering:
         assert len(skills_darwin) == 1
         assert len(skills_linux) == 1
         assert len(skills_win) == 0
+
+
+# ---------------------------------------------------------------------------
+# check_skill_prerequisites
+# ---------------------------------------------------------------------------
+
+
+class TestCheckSkillPrerequisites:
+    def test_no_or_empty_prerequisites(self):
+        """No field, empty dict, or non-dict all pass."""
+        assert check_skill_prerequisites({})[0] is True
+        assert check_skill_prerequisites({"prerequisites": {}})[0] is True
+        assert check_skill_prerequisites({"prerequisites": "curl"})[0] is True
+
+    def test_env_var_present_and_missing(self, monkeypatch):
+        monkeypatch.setenv("MY_TEST_KEY", "val")
+        monkeypatch.delenv("NONEXISTENT_TEST_VAR_XYZ", raising=False)
+        assert check_skill_prerequisites({"prerequisites": {"env_vars": ["MY_TEST_KEY"]}})[0] is True
+        met, missing = check_skill_prerequisites({"prerequisites": {"env_vars": ["NONEXISTENT_TEST_VAR_XYZ"]}})
+        assert met is False
+        assert "env $NONEXISTENT_TEST_VAR_XYZ" in missing
+
+    def test_command_present_and_missing(self):
+        assert check_skill_prerequisites({"prerequisites": {"commands": ["python3"]}})[0] is True
+        met, missing = check_skill_prerequisites({"prerequisites": {"commands": ["nonexistent_binary_xyz_123"]}})
+        assert met is False
+        assert "command `nonexistent_binary_xyz_123`" in missing
+
+    def test_mixed_env_and_commands(self, monkeypatch):
+        monkeypatch.delenv("MISSING_A", raising=False)
+        met, missing = check_skill_prerequisites({
+            "prerequisites": {
+                "env_vars": ["MISSING_A"],
+                "commands": ["python3", "nonexistent_cmd_xyz"],
+            }
+        })
+        assert met is False
+        assert len(missing) == 2
+
+    def test_string_instead_of_list(self, monkeypatch):
+        """YAML scalar (string) should be coerced to a single-element list."""
+        monkeypatch.delenv("SOLO_VAR", raising=False)
+        assert check_skill_prerequisites({"prerequisites": {"env_vars": "SOLO_VAR"}})[0] is False
+        assert check_skill_prerequisites({"prerequisites": {"commands": "nonexistent_cmd_xyz_solo"}})[0] is False
+
+
+# ---------------------------------------------------------------------------
+# _find_all_skills — prerequisites integration
+# ---------------------------------------------------------------------------
+
+
+class TestFindAllSkillsPrerequisites:
+    def test_skills_with_unmet_prereqs_flagged(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NONEXISTENT_API_KEY_XYZ", raising=False)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path, "needs-key",
+                frontmatter_extra="prerequisites:\n  env_vars: [NONEXISTENT_API_KEY_XYZ]\n",
+            )
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert skills[0]["prerequisites_met"] is False
+        assert any("NONEXISTENT_API_KEY_XYZ" in m for m in skills[0]["prerequisites_missing"])
+
+    def test_skills_with_met_prereqs_no_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_PRESENT_KEY", "val")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path, "has-key",
+                frontmatter_extra="prerequisites:\n  env_vars: [MY_PRESENT_KEY]\n",
+            )
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert "prerequisites_met" not in skills[0]
+
+    def test_skills_without_prereqs_no_flag(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "simple-skill")
+            skills = _find_all_skills()
+        assert len(skills) == 1
+        assert "prerequisites_met" not in skills[0]
+
+
+# ---------------------------------------------------------------------------
+# skill_view — prerequisites warnings
+# ---------------------------------------------------------------------------
+
+
+class TestSkillViewPrerequisites:
+    def test_warns_on_unmet_prerequisites(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MISSING_KEY_XYZ", raising=False)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path, "gated-skill",
+                frontmatter_extra="prerequisites:\n  env_vars: [MISSING_KEY_XYZ]\n",
+            )
+            raw = skill_view("gated-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["prerequisites_met"] is False
+        assert "MISSING_KEY_XYZ" in result["prerequisites_warning"]
+
+    def test_no_warning_when_prereqs_met(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PRESENT_KEY", "value")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path, "ready-skill",
+                frontmatter_extra="prerequisites:\n  env_vars: [PRESENT_KEY]\n",
+            )
+            raw = skill_view("ready-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "prerequisites_warning" not in result
+
+    def test_no_warning_when_no_prereqs(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plain-skill")
+            raw = skill_view("plain-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "prerequisites_warning" not in result

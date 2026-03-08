@@ -11,7 +11,7 @@ EXPECTED_COMMANDS = {
     "/help", "/tools", "/toolsets", "/model", "/provider", "/prompt",
     "/personality", "/clear", "/history", "/new", "/reset", "/retry",
     "/undo", "/save", "/config", "/cron", "/skills", "/platforms",
-    "/verbose", "/compress", "/usage", "/insights", "/paste",
+    "/verbose", "/compress", "/title", "/usage", "/insights", "/paste",
     "/reload-mcp", "/quit",
 }
 

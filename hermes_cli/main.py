@@ -120,16 +120,63 @@ def _resolve_last_cli_session() -> Optional[str]:
     return None
 
 
+def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
+    """Resolve a session name (title) or ID to a session ID.
+
+    - If it looks like a session ID (contains underscore + hex), try direct lookup first.
+    - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
+    - Falls back to the other method if the first doesn't match.
+    """
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+
+        # Try as exact session ID first
+        session = db.get_session(name_or_id)
+        if session:
+            db.close()
+            return session["id"]
+
+        # Try as title (with auto-latest for lineage)
+        session_id = db.resolve_session_by_title(name_or_id)
+        db.close()
+        return session_id
+    except Exception:
+        pass
+    return None
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Resolve --continue into --resume with the latest CLI session
-    if getattr(args, "continue_last", False) and not getattr(args, "resume", None):
-        last_id = _resolve_last_cli_session()
-        if last_id:
-            args.resume = last_id
+    # Resolve --continue into --resume with the latest CLI session or by name
+    continue_val = getattr(args, "continue_last", None)
+    if continue_val and not getattr(args, "resume", None):
+        if isinstance(continue_val, str):
+            # -c "session name" — resolve by title or ID
+            resolved = _resolve_session_by_name_or_id(continue_val)
+            if resolved:
+                args.resume = resolved
+            else:
+                print(f"No session found matching '{continue_val}'.")
+                print("Use 'hermes sessions list' to see available sessions.")
+                sys.exit(1)
         else:
-            print("No previous CLI session found to continue.")
-            sys.exit(1)
+            # -c with no argument — continue the most recent session
+            last_id = _resolve_last_cli_session()
+            if last_id:
+                args.resume = last_id
+            else:
+                print("No previous CLI session found to continue.")
+                sys.exit(1)
+
+    # Resolve --resume by title if it's not a direct session ID
+    resume_val = getattr(args, "resume", None)
+    if resume_val:
+        resolved = _resolve_session_by_name_or_id(resume_val)
+        if resolved:
+            args.resume = resolved
+        # If resolution fails, keep the original value — _init_agent will
+        # report "Session not found" with the original input
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -1209,8 +1256,9 @@ def main():
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
-    hermes --continue             Resume the most recent session
-    hermes --resume <session_id>  Resume a specific session
+    hermes -c                     Resume the most recent session
+    hermes -c "my project"        Resume a session by name (latest in lineage)
+    hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes model                  Select default model
@@ -1221,6 +1269,7 @@ Examples:
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
+    hermes sessions rename ID T   Rename/title a session
     hermes update                 Update to latest version
 
 For more help on a command:
@@ -1235,16 +1284,18 @@ For more help on a command:
     )
     parser.add_argument(
         "--resume", "-r",
-        metavar="SESSION_ID",
+        metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID (shortcut for: hermes chat --resume ID)"
+        help="Resume a previous session by ID or title"
     )
     parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
-        action="store_true",
-        default=False,
-        help="Resume the most recent CLI session"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
     )
     parser.add_argument(
         "--worktree", "-w",
@@ -1294,9 +1345,11 @@ For more help on a command:
     chat_parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
-        action="store_true",
-        default=False,
-        help="Resume the most recent CLI session"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
     )
     chat_parser.add_argument(
         "--worktree", "-w",
@@ -1671,7 +1724,7 @@ For more help on a command:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete)",
         description="View and manage the SQLite session store"
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -1696,6 +1749,10 @@ For more help on a command:
 
     sessions_stats = sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
+    sessions_rename = sessions_subparsers.add_parser("rename", help="Set or change a session's title")
+    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -1708,18 +1765,51 @@ For more help on a command:
         action = args.sessions_action
 
         if action == "list":
-            sessions = db.search_sessions(source=args.source, limit=args.limit)
+            sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
             if not sessions:
                 print("No sessions found.")
                 return
-            print(f"{'ID':<30} {'Source':<12} {'Model':<30} {'Messages':>8} {'Started'}")
-            print("─" * 100)
             from datetime import datetime
+            import time as _time
+
+            def _relative_time(ts):
+                """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+                if not ts:
+                    return "?"
+                delta = _time.time() - ts
+                if delta < 60:
+                    return "just now"
+                elif delta < 3600:
+                    mins = int(delta / 60)
+                    return f"{mins}m ago"
+                elif delta < 86400:
+                    hours = int(delta / 3600)
+                    return f"{hours}h ago"
+                elif delta < 172800:
+                    return "yesterday"
+                elif delta < 604800:
+                    days = int(delta / 86400)
+                    return f"{days}d ago"
+                else:
+                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+            has_titles = any(s.get("title") for s in sessions)
+            if has_titles:
+                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 100)
+            else:
+                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 90)
             for s in sessions:
-                started = datetime.fromtimestamp(s["started_at"]).strftime("%Y-%m-%d %H:%M") if s["started_at"] else "?"
-                model = (s.get("model") or "?")[:28]
-                ended = " (ended)" if s.get("ended_at") else ""
-                print(f"{s['id']:<30} {s['source']:<12} {model:<30} {s['message_count']:>8} {started}{ended}")
+                last_active = _relative_time(s.get("last_active"))
+                preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
+                if has_titles:
+                    title = (s.get("title") or "—")[:20]
+                    sid = s["id"][:20]
+                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                else:
+                    sid = s["id"][:20]
+                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
             if args.session_id:
@@ -1758,6 +1848,16 @@ For more help on a command:
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
+
+        elif action == "rename":
+            title = " ".join(args.title)
+            try:
+                if db.set_session_title(args.session_id, title):
+                    print(f"Session '{args.session_id}' renamed to: {title}")
+                else:
+                    print(f"Session '{args.session_id}' not found.")
+            except ValueError as e:
+                print(f"Error: {e}")
 
         elif action == "stats":
             total = db.session_count()
@@ -1877,7 +1977,7 @@ For more help on a command:
         args.toolsets = None
         args.verbose = False
         args.resume = None
-        args.continue_last = False
+        args.continue_last = None
         if not hasattr(args, "worktree"):
             args.worktree = False
         cmd_chat(args)

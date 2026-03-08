@@ -1094,6 +1094,16 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
+        # Initialize SQLite session store early so /title works before first message
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception:
+            pass
+        
+        # Deferred title: stored in memory until the session is created in the DB
+        self._pending_title: Optional[str] = None
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
@@ -1181,13 +1191,13 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return False
 
-        # Initialize SQLite session store for CLI sessions
-        self._session_db = None
-        try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            logger.debug("SQLite session store not available: %s", e)
+        # Initialize SQLite session store for CLI sessions (if not already done in __init__)
+        if self._session_db is None:
+            try:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                logger.debug("SQLite session store not available: %s", e)
         
         # If resuming, validate the session exists and load its history
         if self._resumed and self._session_db:
@@ -1200,8 +1210,11 @@ class HermesCLI:
             if restored:
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
+                title_part = ""
+                if session_meta.get("title"):
+                    title_part = f" \"{session_meta['title']}\""
                 _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
+                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD}{title_part} "
                     f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                     f"{len(restored)} total messages){_RST}"
                 )
@@ -1243,6 +1256,15 @@ class HermesCLI:
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
             )
+            # Apply any pending title now that the session exists in the DB
+            if self._pending_title and self._session_db:
+                try:
+                    self._session_db.set_session_title(self.session_id, self._pending_title)
+                    _cprint(f"  Session title applied: {self._pending_title}")
+                    self._pending_title = None
+                except (ValueError, Exception) as e:
+                    _cprint(f"  Could not apply pending title: {e}")
+                    self._pending_title = None
             return True
         except Exception as e:
             self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -2091,6 +2113,55 @@ class HermesCLI:
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
         elif cmd_lower == "/history":
             self.show_history()
+        elif cmd_lower.startswith("/title"):
+            parts = cmd_original.split(maxsplit=1)
+            if len(parts) > 1:
+                raw_title = parts[1].strip()
+                if raw_title:
+                    if self._session_db:
+                        # Sanitize the title early so feedback matches what gets stored
+                        try:
+                            from hermes_state import SessionDB
+                            new_title = SessionDB.sanitize_title(raw_title)
+                        except ValueError as e:
+                            _cprint(f"  {e}")
+                            new_title = None
+                        if not new_title:
+                            _cprint("  Title is empty after cleanup. Please use printable characters.")
+                        elif self._session_db.get_session(self.session_id):
+                            # Session exists in DB — set title directly
+                            try:
+                                if self._session_db.set_session_title(self.session_id, new_title):
+                                    _cprint(f"  Session title set: {new_title}")
+                                else:
+                                    _cprint("  Session not found in database.")
+                            except ValueError as e:
+                                _cprint(f"  {e}")
+                        else:
+                            # Session not created yet — defer the title
+                            # Check uniqueness proactively with the sanitized title
+                            existing = self._session_db.get_session_by_title(new_title)
+                            if existing:
+                                _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")
+                            else:
+                                self._pending_title = new_title
+                                _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
+                    else:
+                        _cprint("  Session database not available.")
+                else:
+                    _cprint("  Usage: /title <your session title>")
+            else:
+                # Show current title if no argument given
+                if self._session_db:
+                    session = self._session_db.get_session(self.session_id)
+                    if session and session.get("title"):
+                        _cprint(f"  Session title: {session['title']}")
+                    elif self._pending_title:
+                        _cprint(f"  Session title (pending): {self._pending_title}")
+                    else:
+                        _cprint(f"  No title set. Usage: /title <your session title>")
+                else:
+                    _cprint("  Session database not available.")
         elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):

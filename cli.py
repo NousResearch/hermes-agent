@@ -455,12 +455,16 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
         logger.debug("Could not update .gitignore: %s", e)
 
     # Create the worktree
-    result = subprocess.run(
-        ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
-        capture_output=True, text=True, timeout=30, cwd=repo_root,
-    )
-    if result.returncode != 0:
-        print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
+            return None
+    except Exception as e:
+        print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
         return None
 
     # Copy files listed in .worktreeinclude (gitignored files the agent needs)
@@ -551,6 +555,66 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     _active_worktree = None
     print(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
+
+
+def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
+    """Remove worktrees older than max_age_hours that have no uncommitted changes.
+
+    Runs silently on startup to clean up after crashed/killed sessions.
+    """
+    import subprocess
+    import time
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    if not worktrees_dir.exists():
+        return
+
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+
+    for entry in worktrees_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("hermes-"):
+            continue
+
+        # Check age
+        try:
+            mtime = entry.stat().st_mtime
+            if mtime > cutoff:
+                continue  # Too recent — skip
+        except Exception:
+            continue
+
+        # Check for uncommitted changes
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            if status.stdout.strip():
+                continue  # Has changes — skip
+        except Exception:
+            continue  # Can't check — skip
+
+        # Safe to remove
+        try:
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            branch = branch_result.stdout.strip()
+
+            subprocess.run(
+                ["git", "worktree", "remove", str(entry), "--force"],
+                capture_output=True, text=True, timeout=15, cwd=repo_root,
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root,
+                )
+            logger.debug("Pruned stale worktree: %s", entry.name)
+        except Exception as e:
+            logger.debug("Failed to prune worktree %s: %s", entry.name, e)
 
 # ============================================================================
 # ASCII Art & Branding
@@ -3456,17 +3520,25 @@ def main(
         asyncio.run(start_gateway())
         return
 
-    # ── Git worktree isolation (#652) ──
-    # Create an isolated worktree so this agent instance doesn't collide
-    # with other agents working on the same repo.
-    use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
-    wt_info = None
-    if use_worktree:
-        wt_info = _setup_worktree()
-        if wt_info:
-            _active_worktree = wt_info
-            os.environ["TERMINAL_CWD"] = wt_info["path"]
-            atexit.register(_cleanup_worktree, wt_info)
+    # Skip worktree for list commands (they exit immediately)
+    if not list_tools and not list_toolsets:
+        # ── Git worktree isolation (#652) ──
+        # Create an isolated worktree so this agent instance doesn't collide
+        # with other agents working on the same repo.
+        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        wt_info = None
+        if use_worktree:
+            # Prune stale worktrees from crashed/killed sessions
+            _repo = _git_repo_root()
+            if _repo:
+                _prune_stale_worktrees(_repo)
+            wt_info = _setup_worktree()
+            if wt_info:
+                _active_worktree = wt_info
+                os.environ["TERMINAL_CWD"] = wt_info["path"]
+                atexit.register(_cleanup_worktree, wt_info)
+    else:
+        wt_info = None
     
     # Handle query shorthand
     query = query or q

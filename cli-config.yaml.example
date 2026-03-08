@@ -51,6 +51,16 @@ model:
 #   # data_collection: "deny"
 
 # =============================================================================
+# Git Worktree Isolation
+# =============================================================================
+# When enabled, each CLI session creates an isolated git worktree so multiple
+# agents can work on the same repo concurrently without file collisions.
+# Equivalent to always passing --worktree / -w on the command line.
+#
+# worktree: true    # Always create a worktree when in a git repo
+# worktree: false   # Default — only create when -w flag is passed
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

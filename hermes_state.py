@@ -24,7 +24,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    title TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -133,7 +134,33 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 2")
+            if current_version < 3:
+                # v3: add title column to sessions
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 3")
+            if current_version < 4:
+                # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
+                try:
+                    cursor.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                        "ON sessions(title) WHERE title IS NOT NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Index already exists
+                cursor.execute("UPDATE schema_version SET version = 4")
 
+        # Unique title index — always ensure it exists (safe to run after migrations
+        # since the title column is guaranteed to exist at this point)
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                "ON sessions(title) WHERE title IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # Index already exists
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -218,6 +245,153 @@ class SessionDB:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session.
+        """
+        if title:
+            # Check uniqueness (allow the same session to keep its own title)
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                (title, session_id),
+            )
+            conflict = cursor.fetchone()
+            if conflict:
+                raise ValueError(
+                    f"Title '{title}' is already in use by session {conflict['id']}"
+                )
+        cursor = self._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (title, session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def get_session_title(self, session_id: str) -> Optional[str]:
+        """Get the title for a session, or None."""
+        cursor = self._conn.execute(
+            "SELECT title FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        return row["title"] if row else None
+
+    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Look up a session by exact title. Returns session dict or None."""
+        cursor = self._conn.execute(
+            "SELECT * FROM sessions WHERE title = ?", (title,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def resolve_session_by_title(self, title: str) -> Optional[str]:
+        """Resolve a title to a session ID, preferring the latest in a lineage.
+
+        If the exact title exists, returns that session's ID.
+        If not, searches for "title #N" variants and returns the latest one.
+        If the exact title exists AND numbered variants exist, returns the
+        latest numbered variant (the most recent continuation).
+        """
+        # First try exact match
+        exact = self.get_session_by_title(title)
+
+        # Also search for numbered variants: "title #2", "title #3", etc.
+        cursor = self._conn.execute(
+            "SELECT id, title, started_at FROM sessions "
+            "WHERE title LIKE ? ORDER BY started_at DESC",
+            (f"{title} #%",),
+        )
+        numbered = cursor.fetchall()
+
+        if numbered:
+            # Return the most recent numbered variant
+            return numbered[0]["id"]
+        elif exact:
+            return exact["id"]
+        return None
+
+    def get_next_title_in_lineage(self, base_title: str) -> str:
+        """Generate the next title in a lineage (e.g., "my session" → "my session #2").
+
+        Strips any existing " #N" suffix to find the base name, then finds
+        the highest existing number and increments.
+        """
+        import re
+        # Strip existing #N suffix to find the true base
+        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        if match:
+            base = match.group(1)
+        else:
+            base = base_title
+
+        # Find all existing numbered variants
+        cursor = self._conn.execute(
+            "SELECT title FROM sessions WHERE title = ? OR title LIKE ?",
+            (base, f"{base} #%"),
+        )
+        existing = [row["title"] for row in cursor.fetchall()]
+
+        if not existing:
+            return base  # No conflict, use the base name as-is
+
+        # Find the highest number
+        max_num = 1  # The unnumbered original counts as #1
+        for t in existing:
+            m = re.match(r'^.* #(\d+)$', t)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+
+        return f"{base} #{max_num + 1}"
+
+    def list_sessions_rich(
+        self,
+        source: str = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List sessions with preview (first user message) and last active timestamp.
+
+        Returns dicts with keys: id, source, model, title, started_at, ended_at,
+        message_count, preview (first 60 chars of first user message),
+        last_active (timestamp of last message).
+        """
+        if source:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                (source, limit, offset),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+        sessions = [dict(row) for row in cursor.fetchall()]
+
+        for s in sessions:
+            # Get first user message preview
+            preview_cursor = self._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' "
+                "ORDER BY timestamp, id LIMIT 1",
+                (s["id"],),
+            )
+            preview_row = preview_cursor.fetchone()
+            if preview_row and preview_row["content"]:
+                text = preview_row["content"].replace("\n", " ").strip()
+                s["preview"] = text[:60] + ("..." if len(text) > 60 else "")
+            else:
+                s["preview"] = ""
+
+            # Get last message timestamp
+            last_cursor = self._conn.execute(
+                "SELECT MAX(timestamp) as last_ts FROM messages WHERE session_id = ?",
+                (s["id"],),
+            )
+            last_row = last_cursor.fetchone()
+            s["last_active"] = last_row["last_ts"] if last_row and last_row["last_ts"] else s["started_at"]
+
+        return sessions
 
     # =========================================================================
     # Message storage

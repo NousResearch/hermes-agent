@@ -424,7 +424,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1289,15 +1289,17 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
     text-based snapshot may not capture (CAPTCHAs, verification challenges,
     images, complex layouts, etc.).
     
+    The screenshot is saved persistently and its file path is returned alongside
+    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    
     Args:
         question: What you want to know about the page visually
         task_id: Task identifier for session isolation
         
     Returns:
-        JSON string with vision analysis results
+        JSON string with vision analysis results and screenshot_path
     """
     import base64
-    import tempfile
     import uuid as uuid_mod
     from pathlib import Path
     
@@ -1311,11 +1313,17 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
                      "Set OPENROUTER_API_KEY or configure Nous Portal to enable browser vision."
         }, ensure_ascii=False)
     
-    # Create a temporary file for the screenshot
-    temp_dir = Path(tempfile.gettempdir())
-    screenshot_path = temp_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
+    # Save screenshot to persistent location so it can be shared with users
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    screenshots_dir = hermes_home / "browser_screenshots"
+    screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Prune old screenshots (older than 24 hours) to prevent unbounded disk growth
+        _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
+        
         # Take screenshot using agent-browser
         result = _run_browser_command(
             effective_task_id, 
@@ -1372,21 +1380,35 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         return json.dumps({
             "success": True,
             "analysis": analysis,
+            "screenshot_path": str(screenshot_path),
         }, ensure_ascii=False)
     
     except Exception as e:
-        return json.dumps({
-            "success": False,
-            "error": f"Error during vision analysis: {str(e)}"
-        }, ensure_ascii=False)
-    
-    finally:
-        # Clean up screenshot file
+        # Clean up screenshot on failure
         if screenshot_path.exists():
             try:
                 screenshot_path.unlink()
             except Exception:
                 pass
+        return json.dumps({
+            "success": False,
+            "error": f"Error during vision analysis: {str(e)}"
+        }, ensure_ascii=False)
+
+
+def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
+    """Remove browser screenshots older than max_age_hours to prevent disk bloat."""
+    import time
+    try:
+        cutoff = time.time() - (max_age_hours * 3600)
+        for f in screenshots_dir.glob("browser_screenshot_*.png"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass  # Non-critical — don't fail the screenshot operation
 
 
 # ============================================================================

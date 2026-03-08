@@ -115,8 +115,9 @@
 - `edit_message(chat_id, message_id, content)` — edit sent messages
 
 ### What's missing:
-- **Telegram:** No override for `send_document` or `send_image_file` — falls back to text!
-- **Discord:** No override for `send_document` — falls back to text!
+- **Telegram:** No override for `send_document` — falls back to text! (`send_image_file` ✅ added)
+- **Discord:** No override for `send_document` — falls back to text! (`send_image_file` ✅ added)
+- **Slack:** No override for `send_document` — falls back to text! (`send_image_file` ✅ added)
 - **WhatsApp:** Has `send_document` and `send_image_file` via bridge — COMPLETE.
 - The base class defaults just send "📎 File: /path" as text — useless for actual file delivery.
 
@@ -126,13 +127,13 @@
 - `send()` — MarkdownV2 text with fallback to plain
 - `send_voice()` — `.ogg`/`.opus` as `send_voice()`, others as `send_audio()`
 - `send_image()` — URL-based via `send_photo()`
+- `send_image_file()` — local file via `send_photo(photo=open(path, 'rb'))` ✅
 - `send_animation()` — GIF via `send_animation()`
 - `send_typing()` — "typing" chat action
 - `edit_message()` — edit text messages
 
 ### MISSING:
 - **`send_document()` NOT overridden** — Need to add `self._bot.send_document(chat_id, document=open(file_path, 'rb'), ...)`
-- **`send_image_file()` NOT overridden** — Need to add `self._bot.send_photo(chat_id, photo=open(path, 'rb'), ...)`
 - **`send_video()` NOT overridden** — Need to add `self._bot.send_video(...)`
 
 ## 8. gateway/platforms/discord.py — Send Method Analysis
@@ -141,12 +142,12 @@
 - `send()` — text messages with chunking
 - `send_voice()` — discord.File attachment
 - `send_image()` — downloads URL, creates discord.File attachment
+- `send_image_file()` — local file via discord.File attachment ✅
 - `send_typing()` — channel.typing()
 - `edit_message()` — edit text messages
 
 ### MISSING:
 - **`send_document()` NOT overridden** — Need to add discord.File attachment
-- **`send_image_file()` NOT overridden** — Need to add discord.File from local path
 - **`send_video()` NOT overridden** — Need to add discord.File attachment
 
 ## 9. gateway/run.py — User File Attachment Handling

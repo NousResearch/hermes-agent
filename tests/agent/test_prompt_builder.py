@@ -8,7 +8,6 @@ from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _read_skill_description,
-    _skill_prerequisites_met,
     build_skills_system_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
@@ -211,69 +210,6 @@ class TestBuildSkillsSystemPrompt:
 
         assert "imessage" in result
         assert "Send iMessages" in result
-
-    def test_excludes_skills_with_unmet_prerequisites(self, monkeypatch, tmp_path):
-        """Skills with missing env var prerequisites should not appear."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
-        skills_dir = tmp_path / "skills" / "media"
-
-        gated = skills_dir / "gated-skill"
-        gated.mkdir(parents=True)
-        (gated / "SKILL.md").write_text(
-            "---\nname: gated-skill\ndescription: Needs a key\n"
-            "prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]\n---\n"
-        )
-
-        available = skills_dir / "free-skill"
-        available.mkdir(parents=True)
-        (available / "SKILL.md").write_text(
-            "---\nname: free-skill\ndescription: No prereqs\n---\n"
-        )
-
-        result = build_skills_system_prompt()
-        assert "free-skill" in result
-        assert "gated-skill" not in result
-
-    def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
-        """Skills with satisfied prerequisites should appear normally."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("MY_API_KEY", "test_value")
-        skills_dir = tmp_path / "skills" / "media"
-
-        skill = skills_dir / "ready-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: ready-skill\ndescription: Has key\n"
-            "prerequisites:\n  env_vars: [MY_API_KEY]\n---\n"
-        )
-
-        result = build_skills_system_prompt()
-        assert "ready-skill" in result
-
-
-# =========================================================================
-# _skill_prerequisites_met
-# =========================================================================
-
-
-class TestSkillPrerequisitesMet:
-    def test_met_or_absent(self, tmp_path, monkeypatch):
-        """No prereqs, met prereqs, and missing file all return True."""
-        monkeypatch.setenv("PRESENT_KEY_123", "val")
-        basic = tmp_path / "basic.md"
-        basic.write_text("---\nname: basic\ndescription: basic\n---\n")
-        ready = tmp_path / "ready.md"
-        ready.write_text("---\nname: ready\ndescription: ready\nprerequisites:\n  env_vars: [PRESENT_KEY_123]\n---\n")
-        assert _skill_prerequisites_met(basic) is True
-        assert _skill_prerequisites_met(ready) is True
-        assert _skill_prerequisites_met(tmp_path / "nope.md") is True
-
-    def test_unmet_returns_false(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("NONEXISTENT_KEY_ABC", raising=False)
-        skill = tmp_path / "SKILL.md"
-        skill.write_text("---\nname: gated\ndescription: gated\nprerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n")
-        assert _skill_prerequisites_met(skill) is False
 
 
 # =========================================================================

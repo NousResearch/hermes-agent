@@ -34,11 +34,6 @@ SKILL.md Format (YAML Frontmatter, agentskills.io compatible):
     platforms: [macos]            # Optional — restrict to specific OS platforms
                                   #   Valid: macos, linux, windows
                                   #   Omit to load on all platforms (default)
-    prerequisites:                # Optional — runtime requirements
-      env_vars: [API_KEY]         #   Env vars that must be set (checked via os.getenv)
-      commands: [curl, jq]        #   CLI binaries that must be on PATH (checked via shutil.which)
-                                  #   Skills with unmet prerequisites are hidden from the
-                                  #   system prompt and flagged with a warning in skill_view.
     compatibility: Requires X     # Optional (agentskills.io)
     metadata:                     # Optional, arbitrary key-value (agentskills.io)
       hermes:
@@ -70,7 +65,6 @@ Usage:
 import json
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -122,43 +116,6 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
         if current.startswith(mapped):
             return True
     return False
-
-
-def check_skill_prerequisites(frontmatter: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Check if a skill's declared prerequisites are satisfied.
-
-    Skills declare prerequisites via a top-level ``prerequisites`` dict
-    in their YAML frontmatter::
-
-        prerequisites:
-          env_vars: [TENOR_API_KEY]
-          commands: [curl, jq]
-
-    Returns:
-        (all_met, missing) — True + empty list if all met, else False + list
-        of human-readable descriptions of what's missing.
-    """
-    prereqs = frontmatter.get("prerequisites")
-    if not prereqs or not isinstance(prereqs, dict):
-        return True, []
-
-    missing: List[str] = []
-
-    env_vars = prereqs.get("env_vars") or []
-    if isinstance(env_vars, str):
-        env_vars = [env_vars]
-    for var in env_vars:
-        if not os.getenv(str(var)):
-            missing.append(f"env ${var}")
-
-    commands = prereqs.get("commands") or []
-    if isinstance(commands, str):
-        commands = [commands]
-    for cmd in commands:
-        if not shutil.which(str(cmd)):
-            missing.append(f"command `{cmd}`")
-
-    return (len(missing) == 0), missing
 
 
 def check_skills_requirements() -> bool:
@@ -305,19 +262,12 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                 description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
             
             category = _get_category_from_path(skill_md)
-
-            prereqs_met, prereqs_missing = check_skill_prerequisites(frontmatter)
-
-            entry = {
+            
+            skills.append({
                 "name": name,
                 "description": description,
                 "category": category,
-            }
-            if not prereqs_met:
-                entry["prerequisites_met"] = False
-                entry["prerequisites_missing"] = prereqs_missing
-
-            skills.append(entry)
+            })
             
         except Exception:
             continue
@@ -685,17 +635,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None
         }
         
-        # Prerequisite check — warn the agent if requirements are unmet
-        prereqs_met, prereqs_missing = check_skill_prerequisites(frontmatter)
-        if not prereqs_met:
-            result["prerequisites_met"] = False
-            result["prerequisites_missing"] = prereqs_missing
-            result["prerequisites_warning"] = (
-                f"This skill requires {', '.join(prereqs_missing)} which "
-                f"{'is' if len(prereqs_missing) == 1 else 'are'} not available. "
-                f"Tell the user what's needed before attempting to use this skill."
-            )
-
         # Surface agentskills.io optional fields when present
         if frontmatter.get('compatibility'):
             result["compatibility"] = frontmatter['compatibility']

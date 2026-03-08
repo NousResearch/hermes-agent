@@ -860,6 +860,15 @@ def setup_model_provider(config: dict):
                     config['model'] = model_name
             # else: keep current
 
+        elif selected_provider == "nous":
+            # Nous login succeeded but model fetch failed — prompt manually
+            # instead of falling through to the OpenRouter static list.
+            print_warning("Could not fetch available models from Nous Portal.")
+            print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
+            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
             from hermes_cli.codex_models import get_codex_models
             codex_models = get_codex_models()

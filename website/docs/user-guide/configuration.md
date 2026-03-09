@@ -476,15 +476,42 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 
 ### Provider Options
 
-| Provider | Description |
-|----------|-------------|
-| `"auto"` | Best available (default). Vision only tries OpenRouter + Nous Portal. |
-| `"openrouter"` | Force OpenRouter (requires `OPENROUTER_API_KEY`) |
-| `"nous"` | Force Nous Portal (requires `hermes login`) |
-| `"main"` | Use your main chat model's provider. Useful for local/self-hosted models. |
+| Provider | Description | Requirements |
+|----------|-------------|-------------|
+| `"auto"` | Best available (default). Vision only tries OpenRouter + Nous Portal. | — |
+| `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
+| `"nous"` | Force Nous Portal | `hermes login` |
+| `"openai"` | Force OpenAI direct API (`api.openai.com`). Supports vision (GPT-4o). | `OPENAI_API_KEY` |
+| `"main"` | Use your main chat model's provider. For local/self-hosted models. | Depends on your setup |
+
+### Common Setups
+
+**Using OpenAI for vision** (if you have an OpenAI API key):
+```yaml
+auxiliary:
+  vision:
+    provider: "openai"
+    model: "gpt-4o"       # or "gpt-4o-mini" for cheaper
+```
+
+**Using OpenRouter for vision** (route to any model):
+```yaml
+auxiliary:
+  vision:
+    provider: "openrouter"
+    model: "openai/gpt-4o"      # or "google/gemini-2.5-flash", etc.
+```
+
+**Using a local/self-hosted model:**
+```yaml
+auxiliary:
+  vision:
+    provider: "main"      # uses your OPENAI_BASE_URL endpoint
+    model: "my-local-model"
+```
 
 :::warning
-**Vision requires a multimodal model.** In `auto` mode, only OpenRouter and Nous Portal are tried because they support image input (via Gemini). If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
+**Vision requires a multimodal model.** In `auto` mode, only OpenRouter and Nous Portal are tried (they route to Gemini, which supports images). If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail. The `"openai"` provider works for vision since GPT-4o supports image input.
 :::
 
 ### Environment Variables

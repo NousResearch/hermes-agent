@@ -1050,7 +1050,7 @@ def _model_flow_custom(config):
         cfg = load_config()
         model = cfg.get("model")
         if isinstance(model, dict):
-            model["provider"] = "auto"
+            model["provider"] = "custom"
             model["base_url"] = effective_url
         save_config(cfg)
         deactivate_provider()

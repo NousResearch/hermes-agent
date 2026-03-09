@@ -1877,6 +1877,19 @@ class HermesCLI:
             print("    /personality    - Use a predefined personality")
             print()
     
+
+    @staticmethod
+    def _resolve_personality_prompt(value) -> str:
+        """Accept string or dict personality value; return system prompt string."""
+        if isinstance(value, dict):
+            parts = [value.get("system_prompt", "")]
+            if value.get("tone"):
+                parts.append(f'Tone: {value["tone"]}' )
+            if value.get("style"):
+                parts.append(f'Style: {value["style"]}' )
+            return "\n".join(p for p in parts if p)
+        return str(value)
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -1885,8 +1898,16 @@ class HermesCLI:
             # Set personality
             personality_name = parts[1].strip().lower()
             
-            if personality_name in self.personalities:
-                self.system_prompt = self.personalities[personality_name]
+            if personality_name in ("none", "default", "neutral"):
+                self.system_prompt = ""
+                self.agent = None  # Force re-init
+                if save_config_value("agent.system_prompt", ""):
+                    print("(^_^)b Personality cleared (saved to config)")
+                else:
+                    print("(^_^) Personality cleared (session only)")
+                print("  No personality overlay — using base agent behavior.")
+            elif personality_name in self.personalities:
+                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
@@ -1895,7 +1916,7 @@ class HermesCLI:
                 print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
-                print(f"  Available: {', '.join(self.personalities.keys())}")
+                print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
             print()
@@ -1903,8 +1924,13 @@ class HermesCLI:
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
+            print(f"  {'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
-                print(f"  {name:<12} - \"{prompt}\"")
+                if isinstance(prompt, dict):
+                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
+                else:
+                    preview = str(prompt)[:50]
+                print(f"  {name:<12} - {preview}")
             print()
             print("  Usage: /personality <name>")
             print()

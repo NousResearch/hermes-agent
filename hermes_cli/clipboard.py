@@ -300,11 +300,11 @@ def _convert_to_png(path: Path) -> bool:
             tmp.rename(path)
     except FileNotFoundError:
         logger.debug("ImageMagick not installed — cannot convert BMP to PNG")
-        if not path.exists() and tmp.exists():
+        if tmp.exists() and not path.exists():
             tmp.rename(path)
     except Exception as e:
         logger.debug("ImageMagick BMP→PNG conversion failed: %s", e)
-        if not path.exists() and tmp.exists():
+        if tmp.exists() and not path.exists():
             tmp.rename(path)
 
     # Can't convert — BMP is still usable as-is for most APIs

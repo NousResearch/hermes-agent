@@ -550,14 +550,13 @@ class TestConvertToPng:
         """BMP file should still be reported as success if no converter available."""
         dest = tmp_path / "img.png"
         dest.write_bytes(FAKE_BMP)  # it's a BMP but named .png
-        # Both Pillow and ImageMagick fail
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
-            # Pillow import fails
-            with pytest.raises(Exception):
-                from PIL import Image  # noqa — this may or may not work
-            # The function should still return True if file exists and has content
-            # (raw BMP is better than nothing)
-            assert dest.exists() and dest.stat().st_size > 0
+        # Both Pillow and ImageMagick unavailable
+        with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+                result = _convert_to_png(dest)
+                # Raw BMP is better than nothing — function should return True
+                assert result is True
+                assert dest.exists() and dest.stat().st_size > 0
 
     def test_imagemagick_failure_preserves_original(self, tmp_path):
         """When ImageMagick convert fails, the original file must not be lost."""
@@ -647,11 +646,11 @@ class TestHasClipboardImage:
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Level 2: _build_multimodal_content — image → OpenAI vision format
+# Level 2: _preprocess_images_with_vision — image → text via vision tool
 # ═════════════════════════════════════════════════════════════════════════
 
-class TestBuildMultimodalContent:
-    """Test the extracted _build_multimodal_content method directly."""
+class TestPreprocessImagesWithVision:
+    """Test vision-based image pre-processing for the CLI."""
 
     @pytest.fixture
     def cli(self):
@@ -682,55 +681,81 @@ class TestBuildMultimodalContent:
         img.write_bytes(content)
         return img
 
+    def _mock_vision_success(self, description="A test image with colored pixels."):
+        """Return an async mock that simulates a successful vision_analyze_tool call."""
+        import json
+        async def _fake_vision(**kwargs):
+            return json.dumps({"success": True, "analysis": description})
+        return _fake_vision
+
+    def _mock_vision_failure(self):
+        """Return an async mock that simulates a failed vision_analyze_tool call."""
+        import json
+        async def _fake_vision(**kwargs):
+            return json.dumps({"success": False, "analysis": "Error"})
+        return _fake_vision
+
     def test_single_image_with_text(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        result = cli._build_multimodal_content("Describe this", [img])
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+            result = cli._preprocess_images_with_vision("Describe this", [img])
 
-        assert len(result) == 2
-        assert result[0] == {"type": "text", "text": "Describe this"}
-        assert result[1]["type"] == "image_url"
-        url = result[1]["image_url"]["url"]
-        assert url.startswith("data:image/png;base64,")
-        # Verify the base64 actually decodes to our image
-        b64_data = url.split(",", 1)[1]
-        assert base64.b64decode(b64_data) == FAKE_PNG
+        assert isinstance(result, str)
+        assert "A test image with colored pixels." in result
+        assert "Describe this" in result
+        assert str(img) in result
+        assert "base64," not in result  # no raw base64 image content
 
     def test_multiple_images(self, cli, tmp_path):
         imgs = [self._make_image(tmp_path, f"img{i}.png") for i in range(3)]
-        result = cli._build_multimodal_content("Compare", imgs)
-        assert len(result) == 4  # 1 text + 3 images
-        assert all(r["type"] == "image_url" for r in result[1:])
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+            result = cli._preprocess_images_with_vision("Compare", imgs)
+
+        assert isinstance(result, str)
+        assert "Compare" in result
+        # Each image path should be referenced
+        for img in imgs:
+            assert str(img) in result
 
     def test_empty_text_gets_default_question(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        result = cli._build_multimodal_content("", [img])
-        assert result[0]["text"] == "What do you see in this image?"
-
-    def test_jpeg_mime_type(self, cli, tmp_path):
-        img = self._make_image(tmp_path, "photo.jpg", b"\xff\xd8\xff\x00" * 20)
-        result = cli._build_multimodal_content("test", [img])
-        assert "image/jpeg" in result[1]["image_url"]["url"]
-
-    def test_webp_mime_type(self, cli, tmp_path):
-        img = self._make_image(tmp_path, "img.webp", b"RIFF\x00\x00" * 10)
-        result = cli._build_multimodal_content("test", [img])
-        assert "image/webp" in result[1]["image_url"]["url"]
-
-    def test_unknown_extension_defaults_to_png(self, cli, tmp_path):
-        img = self._make_image(tmp_path, "data.bmp", b"\x00" * 50)
-        result = cli._build_multimodal_content("test", [img])
-        assert "image/png" in result[1]["image_url"]["url"]
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+            result = cli._preprocess_images_with_vision("", [img])
+        assert isinstance(result, str)
+        assert "A test image with colored pixels." in result
 
     def test_missing_image_skipped(self, cli, tmp_path):
         missing = tmp_path / "gone.png"
-        result = cli._build_multimodal_content("test", [missing])
-        assert len(result) == 1  # only text
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+            result = cli._preprocess_images_with_vision("test", [missing])
+        # No images analyzed, falls back to default
+        assert result == "test"
 
     def test_mix_of_existing_and_missing(self, cli, tmp_path):
         real = self._make_image(tmp_path, "real.png")
         missing = tmp_path / "gone.png"
-        result = cli._build_multimodal_content("test", [real, missing])
-        assert len(result) == 2  # text + 1 real image
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+            result = cli._preprocess_images_with_vision("test", [real, missing])
+        assert str(real) in result
+        assert str(missing) not in result
+        assert "test" in result
+
+    def test_vision_failure_includes_path(self, cli, tmp_path):
+        img = self._make_image(tmp_path)
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_failure()):
+            result = cli._preprocess_images_with_vision("check this", [img])
+        assert isinstance(result, str)
+        assert str(img) in result  # path still included for retry
+        assert "check this" in result
+
+    def test_vision_exception_includes_path(self, cli, tmp_path):
+        img = self._make_image(tmp_path)
+        async def _explode(**kwargs):
+            raise RuntimeError("API down")
+        with patch("tools.vision_tools.vision_analyze_tool", side_effect=_explode):
+            result = cli._preprocess_images_with_vision("check this", [img])
+        assert isinstance(result, str)
+        assert str(img) in result  # path still included for retry
 
 
 # ═════════════════════════════════════════════════════════════════════════

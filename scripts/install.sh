@@ -829,6 +829,33 @@ install_node_deps() {
             log_warn "npm install failed (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"
+
+        # Install Playwright browser + system dependencies.
+        # Playwright's install-deps only supports apt/dnf/zypper natively.
+        # For Arch/Manjaro we install the system libs via pacman first.
+        log_info "Installing browser engine (Playwright Chromium)..."
+        case "$DISTRO" in
+            arch|manjaro)
+                if command -v pacman &> /dev/null; then
+                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
+                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
+                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
+                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                    elif [ "$(id -u)" -eq 0 ]; then
+                        pacman -S --noconfirm --needed \
+                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
+                    else
+                        log_warn "Cannot install browser deps without sudo. Run manually:"
+                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
+                    fi
+                fi
+                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
+                ;;
+            *)
+                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || true
+                ;;
+        esac
+        log_success "Browser engine installed"
     fi
 
     # Install WhatsApp bridge dependencies

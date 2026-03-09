@@ -66,7 +66,8 @@ DEFAULT_AGENT_IDENTITY = (
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below."
+    "being genuinely useful over being verbose unless otherwise directed below. "
+    "Be targeted and efficient in your exploration and investigations."
 )
 
 MEMORY_GUIDANCE = (
@@ -102,12 +103,24 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Audio "
-        "(.ogg) sends as voice bubbles. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as native photos."
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
+        "bubbles, and videos (.mp4) play inline. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (
-        "You are in a Discord server or group chat communicating with your user."
+        "You are in a Discord server or group chat communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are sent as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be sent as attachments."
+    ),
+    "slack": (
+        "You are in a Slack workspace communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "

@@ -154,19 +154,33 @@ def get_hermes_cli_path() -> str:
 # =============================================================================
 
 def generate_systemd_unit() -> str:
+    import shutil
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    venv_dir = str(PROJECT_ROOT / "venv")
+    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+
+    # Build a PATH that includes the venv, node_modules, and standard system dirs
+    sane_path = f"{venv_bin}:{node_bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     
+    hermes_cli = shutil.which("hermes") or f"{python_path} -m hermes_cli.main"
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main gateway run
+ExecStart={python_path} -m hermes_cli.main gateway run --replace
+ExecStop={hermes_cli} gateway stop
 WorkingDirectory={working_dir}
+Environment="PATH={sane_path}"
+Environment="VIRTUAL_ENV={venv_dir}"
 Restart=on-failure
 RestartSec=10
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
 StandardOutput=journal
 StandardError=journal
 
@@ -377,8 +391,15 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
-def run_gateway(verbose: bool = False):
-    """Run the gateway in foreground."""
+def run_gateway(verbose: bool = False, replace: bool = False):
+    """Run the gateway in foreground.
+    
+    Args:
+        verbose: Enable verbose logging output.
+        replace: If True, kill any existing gateway instance before starting.
+                 This prevents systemd restart loops when the old process
+                 hasn't fully exited yet.
+    """
     sys.path.insert(0, str(PROJECT_ROOT))
     
     from gateway.run import start_gateway
@@ -393,7 +414,7 @@ def run_gateway(verbose: bool = False):
     
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    success = asyncio.run(start_gateway())
+    success = asyncio.run(start_gateway(replace=replace))
     if not success:
         sys.exit(1)
 
@@ -765,7 +786,8 @@ def gateway_command(args):
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         verbose = getattr(args, 'verbose', False)
-        run_gateway(verbose)
+        replace = getattr(args, 'replace', False)
+        run_gateway(verbose, replace=replace)
         return
 
     if subcmd == "setup":

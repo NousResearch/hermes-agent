@@ -407,6 +407,26 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+## Git Worktree Isolation
+
+Enable isolated git worktrees for running multiple agents in parallel on the same repo:
+
+```yaml
+worktree: true    # Always create a worktree (same as hermes -w)
+# worktree: false # Default — only when -w flag is passed
+```
+
+When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+
+You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
+
+```
+# .worktreeinclude
+.env
+.venv/
+node_modules/
+```
+
 ## Context Compression
 
 ```yaml
@@ -421,10 +441,10 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = use model default. Options: xhigh (max), high, medium, low, minimal, none
+  reasoning_effort: ""   # empty = medium (default). Options: xhigh (max), high, medium, low, minimal, none
 ```
 
-When unset (default), the model's own default reasoning level is used. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
 ## TTS Configuration
 

@@ -63,7 +63,8 @@ hermes gateway status       # Check service status
 | Command | Description |
 |---------|-------------|
 | `/new` or `/reset` | Start fresh conversation |
-| `/model [name]` | Show or change the model |
+| `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
+| `/provider` | Show available providers with auth status |
 | `/personality [name]` | Set a personality |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |

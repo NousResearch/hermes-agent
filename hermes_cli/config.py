@@ -103,27 +103,6 @@ DEFAULT_CONFIG = {
         },
     },
     
-    # Fallback model — used when the primary model/provider fails after retries.
-    # When the primary hits rate limits (429), overload (529), or service errors (503),
-    # Hermes will automatically switch to this model for the remainder of the session.
-    # Set to None / omit to disable fallback.
-    #
-    # Supported providers (auto-resolve base_url and API key from env):
-    #   openrouter   (OPENROUTER_API_KEY)   — routes to any model
-    #   zai          (ZAI_API_KEY)          — Z.AI / GLM
-    #   kimi-coding  (KIMI_API_KEY)         — Kimi / Moonshot
-    #   minimax      (MINIMAX_API_KEY)      — MiniMax
-    #   minimax-cn   (MINIMAX_CN_API_KEY)   — MiniMax (China)
-    #
-    # For any other OpenAI-compatible endpoint, use base_url + api_key_env.
-    "fallback_model": {
-        "provider": "",   # provider name from the list above
-        "model": "",      # model slug, e.g. "anthropic/claude-sonnet-4"
-        # Optional overrides (usually auto-resolved from provider):
-        # "base_url": "",       # custom endpoint URL
-        # "api_key_env": "",    # env var name for API key (e.g. "MY_CUSTOM_KEY")
-    },
-
     "display": {
         "compact": False,
         "personality": "kawaii",
@@ -778,6 +757,26 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
+_FALLBACK_MODEL_COMMENT = """
+# Fallback model — automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
+
+
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     ensure_hermes_home()
@@ -785,6 +784,10 @@ def save_config(config: Dict[str, Any]):
     
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        # Append commented-out fallback_model docs if user hasn't configured it
+        fb = config.get("fallback_model")
+        if not fb or not (fb.get("provider") and fb.get("model")):
+            f.write(_FALLBACK_MODEL_COMMENT)
 
 
 def load_env() -> Dict[str, str]:

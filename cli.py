@@ -195,6 +195,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "fullscreen": False,  # Enter alternate screen buffer on launch (like vim/htop)
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -3866,11 +3867,12 @@ class HermesCLI:
         })
         
         # Create the application
+        _fullscreen = CLI_CONFIG.get("display", {}).get("fullscreen", False)
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
-            full_screen=False,
+            full_screen=_fullscreen,
             mouse_support=False,
         )
         self._app = app  # Store reference for clarify_callback

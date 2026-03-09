@@ -109,6 +109,7 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
         "bell_on_complete": False,  # Play terminal bell (\a) when agent finishes a response
+        "fullscreen": False,  # Enter alternate screen buffer on launch (like vim/htop)
     },
     
     # Text-to-speech configuration

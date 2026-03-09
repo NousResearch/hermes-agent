@@ -655,3 +655,8 @@ display:
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
   bell_on_complete: false
+
+  # Enter alternate screen buffer on launch, like vim or htop.
+  # Keeps the Hermes session visually separate from prior terminal history.
+  # On exit, the original terminal content is restored.
+  fullscreen: false

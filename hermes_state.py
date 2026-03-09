@@ -24,7 +24,7 @@ from typing import Dict, Any, List, Optional
 
 DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    title TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -133,7 +134,33 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 2")
+            if current_version < 3:
+                # v3: add title column to sessions
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 3")
+            if current_version < 4:
+                # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
+                try:
+                    cursor.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                        "ON sessions(title) WHERE title IS NOT NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Index already exists
+                cursor.execute("UPDATE schema_version SET version = 4")
 
+        # Unique title index — always ensure it exists (safe to run after migrations
+        # since the title column is guaranteed to exist at this point)
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                "ON sessions(title) WHERE title IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # Index already exists
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -218,6 +245,210 @@ class SessionDB:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    # Maximum length for session titles
+    MAX_TITLE_LENGTH = 100
+
+    @staticmethod
+    def sanitize_title(title: Optional[str]) -> Optional[str]:
+        """Validate and sanitize a session title.
+
+        - Strips leading/trailing whitespace
+        - Removes ASCII control characters (0x00-0x1F, 0x7F) and problematic
+          Unicode control chars (zero-width, RTL/LTR overrides, etc.)
+        - Collapses internal whitespace runs to single spaces
+        - Normalizes empty/whitespace-only strings to None
+        - Enforces MAX_TITLE_LENGTH
+
+        Returns the cleaned title string or None.
+        Raises ValueError if the title exceeds MAX_TITLE_LENGTH after cleaning.
+        """
+        if not title:
+            return None
+
+        import re
+
+        # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
+        # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
+        # normalized to spaces by the whitespace collapsing step below
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+
+        # Remove problematic Unicode control characters:
+        # - Zero-width chars (U+200B-U+200F, U+FEFF)
+        # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
+        # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
+        cleaned = re.sub(
+            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
+            '', cleaned,
+        )
+
+        # Collapse internal whitespace runs and strip
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        if not cleaned:
+            return None
+
+        if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
+            raise ValueError(
+                f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})"
+            )
+
+        return cleaned
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or update a session's title.
+
+        Returns True if session was found and title was set.
+        Raises ValueError if title is already in use by another session,
+        or if the title fails validation (too long, invalid characters).
+        Empty/whitespace-only strings are normalized to None (clearing the title).
+        """
+        title = self.sanitize_title(title)
+        if title:
+            # Check uniqueness (allow the same session to keep its own title)
+            cursor = self._conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                (title, session_id),
+            )
+            conflict = cursor.fetchone()
+            if conflict:
+                raise ValueError(
+                    f"Title '{title}' is already in use by session {conflict['id']}"
+                )
+        cursor = self._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (title, session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def get_session_title(self, session_id: str) -> Optional[str]:
+        """Get the title for a session, or None."""
+        cursor = self._conn.execute(
+            "SELECT title FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        return row["title"] if row else None
+
+    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Look up a session by exact title. Returns session dict or None."""
+        cursor = self._conn.execute(
+            "SELECT * FROM sessions WHERE title = ?", (title,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def resolve_session_by_title(self, title: str) -> Optional[str]:
+        """Resolve a title to a session ID, preferring the latest in a lineage.
+
+        If the exact title exists, returns that session's ID.
+        If not, searches for "title #N" variants and returns the latest one.
+        If the exact title exists AND numbered variants exist, returns the
+        latest numbered variant (the most recent continuation).
+        """
+        # First try exact match
+        exact = self.get_session_by_title(title)
+
+        # Also search for numbered variants: "title #2", "title #3", etc.
+        # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
+        escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = self._conn.execute(
+            "SELECT id, title, started_at FROM sessions "
+            "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+            (f"{escaped} #%",),
+        )
+        numbered = cursor.fetchall()
+
+        if numbered:
+            # Return the most recent numbered variant
+            return numbered[0]["id"]
+        elif exact:
+            return exact["id"]
+        return None
+
+    def get_next_title_in_lineage(self, base_title: str) -> str:
+        """Generate the next title in a lineage (e.g., "my session" → "my session #2").
+
+        Strips any existing " #N" suffix to find the base name, then finds
+        the highest existing number and increments.
+        """
+        import re
+        # Strip existing #N suffix to find the true base
+        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        if match:
+            base = match.group(1)
+        else:
+            base = base_title
+
+        # Find all existing numbered variants
+        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
+        escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = self._conn.execute(
+            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+            (base, f"{escaped} #%"),
+        )
+        existing = [row["title"] for row in cursor.fetchall()]
+
+        if not existing:
+            return base  # No conflict, use the base name as-is
+
+        # Find the highest number
+        max_num = 1  # The unnumbered original counts as #1
+        for t in existing:
+            m = re.match(r'^.* #(\d+)$', t)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+
+        return f"{base} #{max_num + 1}"
+
+    def list_sessions_rich(
+        self,
+        source: str = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List sessions with preview (first user message) and last active timestamp.
+
+        Returns dicts with keys: id, source, model, title, started_at, ended_at,
+        message_count, preview (first 60 chars of first user message),
+        last_active (timestamp of last message).
+
+        Uses a single query with correlated subqueries instead of N+2 queries.
+        """
+        source_clause = "WHERE s.source = ?" if source else ""
+        query = f"""
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            {source_clause}
+            ORDER BY s.started_at DESC
+            LIMIT ? OFFSET ?
+        """
+        params = (source, limit, offset) if source else (limit, offset)
+        cursor = self._conn.execute(query, params)
+        sessions = []
+        for row in cursor.fetchall():
+            s = dict(row)
+            # Build the preview from the raw substring
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
+            else:
+                s["preview"] = ""
+            sessions.append(s)
+
+        return sessions
 
     # =========================================================================
     # Message storage

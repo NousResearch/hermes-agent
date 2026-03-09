@@ -205,6 +205,9 @@ def _run_single_child(
             provider=getattr(parent_agent, "provider", None),
             api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,
+            max_tokens=getattr(parent_agent, "max_tokens", None),
+            reasoning_config=getattr(parent_agent, "reasoning_config", None),
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
             enabled_toolsets=child_toolsets,
             quiet_mode=True,
             ephemeral_system_prompt=child_prompt,
@@ -293,7 +296,6 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
-    model: Optional[str] = None,
     max_iterations: Optional[int] = None,
     parent_agent=None,
 ) -> str:
@@ -355,7 +357,7 @@ def delegate_task(
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=model,
+            model=None,
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
             task_count=1,
@@ -380,7 +382,7 @@ def delegate_task(
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
-                    model=model,
+                    model=None,
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
@@ -533,13 +535,6 @@ DELEGATE_TASK_SCHEMA = {
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
             },
-            "model": {
-                "type": "string",
-                "description": (
-                    "Model override for the subagent(s). Omit to use your "
-                    "same model. Use a cheaper/faster model for simple subtasks."
-                ),
-            },
             "max_iterations": {
                 "type": "integer",
                 "description": (
@@ -565,7 +560,6 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
-        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,

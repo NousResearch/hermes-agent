@@ -311,7 +311,9 @@ class SessionStore:
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._has_active_processes_fn = has_active_processes_fn
-        self._on_auto_reset = on_auto_reset  # callback(old_entry) before auto-reset
+        # on_auto_reset is deprecated — memory flush now runs proactively
+        # via the background session expiry watcher in GatewayRunner.
+        self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
         
         # Initialize SQLite session database
         self._db = None
@@ -353,6 +355,44 @@ class SessionStore:
         """Generate a session key from a source."""
         return build_session_key(source)
     
+    def _is_session_expired(self, entry: SessionEntry) -> bool:
+        """Check if a session has expired based on its reset policy.
+        
+        Works from the entry alone — no SessionSource needed.
+        Used by the background expiry watcher to proactively flush memories.
+        Sessions with active background processes are never considered expired.
+        """
+        if self._has_active_processes_fn:
+            if self._has_active_processes_fn(entry.session_key):
+                return False
+
+        policy = self.config.get_reset_policy(
+            platform=entry.platform,
+            session_type=entry.chat_type,
+        )
+
+        if policy.mode == "none":
+            return False
+
+        now = datetime.now()
+
+        if policy.mode in ("idle", "both"):
+            idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
+            if now > idle_deadline:
+                return True
+
+        if policy.mode in ("daily", "both"):
+            today_reset = now.replace(
+                hour=policy.at_hour,
+                minute=0, second=0, microsecond=0,
+            )
+            if now.hour < policy.at_hour:
+                today_reset -= timedelta(days=1)
+            if entry.updated_at < today_reset:
+                return True
+
+        return False
+
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> bool:
         """
         Check if a session should be reset based on policy.
@@ -439,13 +479,11 @@ class SessionStore:
                 self._save()
                 return entry
             else:
-                # Session is being auto-reset — flush memories before destroying
+                # Session is being auto-reset.  The background expiry watcher
+                # should have already flushed memories proactively; discard
+                # the marker so it doesn't accumulate.
                 was_auto_reset = True
-                if self._on_auto_reset:
-                    try:
-                        self._on_auto_reset(entry)
-                    except Exception as e:
-                        logger.debug("Auto-reset callback failed: %s", e)
+                self._pre_flushed_sessions.discard(entry.session_id)
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")
@@ -555,7 +593,49 @@ class SessionStore:
                 logger.debug("Session DB operation failed: %s", e)
         
         return new_entry
-    
+
+    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+        """Switch a session key to point at an existing session ID.
+
+        Used by ``/resume`` to restore a previously-named session.
+        Ends the current session in SQLite (like reset), but instead of
+        generating a fresh session ID, re-uses ``target_session_id`` so the
+        old transcript is loaded on the next message.
+        """
+        self._ensure_loaded()
+
+        if session_key not in self._entries:
+            return None
+
+        old_entry = self._entries[session_key]
+
+        # Don't switch if already on that session
+        if old_entry.session_id == target_session_id:
+            return old_entry
+
+        # End the current session in SQLite
+        if self._db:
+            try:
+                self._db.end_session(old_entry.session_id, "session_switch")
+            except Exception as e:
+                logger.debug("Session DB end_session failed: %s", e)
+
+        now = datetime.now()
+        new_entry = SessionEntry(
+            session_key=session_key,
+            session_id=target_session_id,
+            created_at=now,
+            updated_at=now,
+            origin=old_entry.origin,
+            display_name=old_entry.display_name,
+            platform=old_entry.platform,
+            chat_type=old_entry.chat_type,
+        )
+
+        self._entries[session_key] = new_entry
+        self._save()
+        return new_entry
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         self._ensure_loaded()

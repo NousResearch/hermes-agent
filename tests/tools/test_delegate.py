@@ -56,7 +56,6 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
-        self.assertIn("model", props)
         self.assertIn("max_iterations", props)
         self.assertEqual(props["tasks"]["maxItems"], 3)
 

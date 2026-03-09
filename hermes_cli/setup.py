@@ -667,16 +667,17 @@ def setup_model_provider(config: dict):
         print_header("Z.AI / GLM API Key")
         pconfig = PROVIDER_REGISTRY["zai"]
         print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
         print_info("Get your API key at: https://open.bigmodel.cn/")
         print()
 
         existing_key = get_env_value("GLM_API_KEY") or get_env_value("ZAI_API_KEY")
+        api_key = existing_key  # will be overwritten if user enters a new one
         if existing_key:
             print_info(f"Current: {existing_key[:8]}... (configured)")
             if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  GLM API key", password=True)
-                if api_key:
+                new_key = prompt("  GLM API key", password=True)
+                if new_key:
+                    api_key = new_key
                     save_env_value("GLM_API_KEY", api_key)
                     print_success("GLM API key updated")
         else:
@@ -687,11 +688,32 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
+        # Detect the correct z.ai endpoint for this key.
+        # Z.AI has separate billing for general vs coding plans and
+        # global vs China endpoints — we probe to find the right one.
+        zai_base_url = pconfig.inference_base_url
+        if api_key:
+            print()
+            print_info("Detecting your z.ai endpoint...")
+            from hermes_cli.auth import detect_zai_endpoint
+            detected = detect_zai_endpoint(api_key)
+            if detected:
+                zai_base_url = detected["base_url"]
+                print_success(f"Detected: {detected['label']} endpoint")
+                print_info(f"  URL: {detected['base_url']}")
+                if detected["id"].startswith("coding"):
+                    print_info(f"  Note: Coding Plan detected — GLM-5 is not available, using {detected['model']}")
+                save_env_value("GLM_BASE_URL", zai_base_url)
+            else:
+                print_warning("Could not verify any z.ai endpoint with this key.")
+                print_info(f"  Using default: {zai_base_url}")
+                print_info("  If you get billing errors, check your plan at https://open.bigmodel.cn/")
+
         # Clear custom endpoint vars if switching
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("zai", pconfig.inference_base_url)
+        _update_config_for_provider("zai", zai_base_url)
 
     elif provider_idx == 5:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
@@ -838,9 +860,18 @@ def setup_model_provider(config: dict):
                     config['model'] = model_name
             # else: keep current
 
+        elif selected_provider == "nous":
+            # Nous login succeeded but model fetch failed — prompt manually
+            # instead of falling through to the OpenRouter static list.
+            print_warning("Could not fetch available models from Nous Portal.")
+            print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
+            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
-            from hermes_cli.codex_models import get_codex_models
-            codex_models = get_codex_models()
+            from hermes_cli.codex_models import get_codex_model_ids
+            codex_models = get_codex_model_ids()
             model_choices = codex_models + [f"Keep current ({current_model})"]
             default_codex = 0
             if current_model in codex_models:
@@ -859,7 +890,12 @@ def setup_model_provider(config: dict):
                     save_env_value("LLM_MODEL", custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         elif selected_provider == "zai":
-            zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            # Coding Plan endpoints don't have GLM-5
+            is_coding_plan = get_env_value("GLM_BASE_URL") and "coding" in (get_env_value("GLM_BASE_URL") or "")
+            if is_coding_plan:
+                zai_models = ["glm-4.7", "glm-4.5", "glm-4.5-flash"]
+            else:
+                zai_models = ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"]
             model_choices = list(zai_models)
             model_choices.append("Custom model")
             model_choices.append(f"Keep current ({current_model})")

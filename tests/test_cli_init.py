@@ -3,9 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -70,6 +68,38 @@ class TestVerboseAndToolProgress:
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
+
+
+class TestHistoryDisplay:
+    def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1"}, {"id": "call_2"}],
+            },
+            {"role": "tool", "content": "tool output 1"},
+            {"role": "tool", "content": "tool output 2"},
+            {"role": "assistant", "content": "All set."},
+            {"role": "user", "content": "A" * 250},
+        ]
+
+        cli.show_history()
+        output = capsys.readouterr().out
+
+        assert "[You #1]" in output
+        assert "[Hermes #2]" in output
+        assert "(requested 2 tool calls)" in output
+        assert "[Tools]" in output
+        assert "(2 tool messages hidden)" in output
+        assert "[Hermes #3]" in output
+        assert "[You #4]" in output
+        assert "[You #5]" not in output
+        assert "A" * 250 in output
+        assert "A" * 250 + "..." not in output
 
 
 class TestProviderResolution:

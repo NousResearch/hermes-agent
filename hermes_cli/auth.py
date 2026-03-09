@@ -139,6 +139,83 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 
 # =============================================================================
+# Kimi Code Endpoint Detection
+# =============================================================================
+
+# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# KIMI_BASE_URL explicitly.
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
+
+
+def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
+    """Return the correct Kimi base URL based on the API key prefix.
+
+    If the user has explicitly set KIMI_BASE_URL, that always wins.
+    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    """
+    if env_override:
+        return env_override
+    if api_key.startswith("sk-kimi-"):
+        return KIMI_CODE_BASE_URL
+    return default_url
+
+
+# =============================================================================
+# Z.AI Endpoint Detection
+# =============================================================================
+
+# Z.AI has separate billing for general vs coding plans, and global vs China
+# endpoints.  A key that works on one may return "Insufficient balance" on
+# another.  We probe at setup time and store the working endpoint.
+
+ZAI_ENDPOINTS = [
+    # (id, base_url, default_model, label)
+    ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
+]
+
+
+def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
+    """Probe z.ai endpoints to find one that accepts this API key.
+
+    Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
+    first working endpoint, or None if all fail.
+    """
+    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
+        try:
+            resp = httpx.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "stream": False,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
+                return {
+                    "id": ep_id,
+                    "base_url": base_url,
+                    "model": model,
+                    "label": label,
+                }
+            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
+        except Exception as exc:
+            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    return None
+
+
+# =============================================================================
 # Error Types
 # =============================================================================
 
@@ -1298,11 +1375,16 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
             key_source = env_var
             break
 
-    base_url = pconfig.inference_base_url
+    env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-        if env_url:
-            base_url = env_url
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url
+    else:
+        base_url = pconfig.inference_base_url
 
     return {
         "configured": bool(api_key),
@@ -1350,11 +1432,16 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
             key_source = env_var
             break
 
-    base_url = pconfig.inference_base_url
+    env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-        if env_url:
-            base_url = env_url.rstrip("/")
+
+    if provider_id == "kimi-coding":
+        base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif env_url:
+        base_url = env_url.rstrip("/")
+    else:
+        base_url = pconfig.inference_base_url
 
     return {
         "provider": provider_id,

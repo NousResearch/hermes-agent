@@ -176,3 +176,93 @@ class TestCompressWithClient:
         contents = [m.get("content", "") for m in result]
         assert any("CONTEXT SUMMARY" in c for c in contents)
         assert len(result) < len(msgs)
+
+    def test_summarization_does_not_split_tool_call_pairs(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compressed middle"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=3,
+                protect_last_n=4,
+            )
+
+        msgs = [
+            {"role": "user", "content": "Could you address the reviewer comments in PR#71"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "skill_view", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "skill_view", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "output a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "output b"},
+            {"role": "user", "content": "later 1"},
+            {"role": "assistant", "content": "later 2"},
+            {"role": "tool", "tool_call_id": "call_x", "content": "later output"},
+            {"role": "assistant", "content": "later 3"},
+            {"role": "user", "content": "later 4"},
+        ]
+
+        result = c.compress(msgs)
+
+        answered_ids = {
+            msg.get("tool_call_id")
+            for msg in result
+            if msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+        for msg in result:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    assert tc["id"] in answered_ids
+
+    def test_summarization_does_not_start_tail_with_tool_outputs(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: compressed middle"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000), \
+             patch("agent.context_compressor.get_text_auxiliary_client", return_value=(mock_client, "test-model")):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=3,
+            )
+
+        msgs = [
+            {"role": "user", "content": "earlier 1"},
+            {"role": "assistant", "content": "earlier 2"},
+            {"role": "user", "content": "earlier 3"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_c", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_c", "content": "output c"},
+            {"role": "user", "content": "latest user"},
+        ]
+
+        result = c.compress(msgs)
+
+        called_ids = {
+            tc["id"]
+            for msg in result
+            if msg.get("role") == "assistant" and msg.get("tool_calls")
+            for tc in msg["tool_calls"]
+        }
+        for msg in result:
+            if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                assert msg["tool_call_id"] in called_ids

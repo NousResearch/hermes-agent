@@ -43,7 +43,6 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 import threading
@@ -108,7 +107,7 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
     
     Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
-    Returns None to use the default (xhigh), or a config dict to override.
+    Returns None to use the default (medium), or a config dict to override.
     """
     if not effort or not effort.strip():
         return None
@@ -118,7 +117,7 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     valid = ("xhigh", "high", "medium", "low", "minimal")
     if effort in valid:
         return {"enabled": True, "effort": effort}
-    logger.warning("Unknown reasoning_effort '%s', using default (xhigh)", effort)
+    logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return None
 
 
@@ -297,6 +296,7 @@ def load_cli_config() -> Dict[str, Any]:
         "container_disk": "TERMINAL_CONTAINER_DISK",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }
@@ -394,6 +394,228 @@ def _run_cleanup():
         shutdown_mcp_servers()
     except Exception:
         pass
+
+
+# =============================================================================
+# Git Worktree Isolation (#652)
+# =============================================================================
+
+# Tracks the active worktree for cleanup on exit
+_active_worktree: Optional[Dict[str, str]] = None
+
+
+def _git_repo_root() -> Optional[str]:
+    """Return the git repo root for CWD, or None if not in a repo."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
+    """Create an isolated git worktree for this CLI session.
+
+    Returns a dict with worktree metadata on success, None on failure.
+    The dict contains: path, branch, repo_root.
+    """
+    import subprocess
+
+    repo_root = repo_root or _git_repo_root()
+    if not repo_root:
+        print("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
+        print("  cd into your project repo first, then run hermes -w")
+        return None
+
+    short_id = uuid.uuid4().hex[:8]
+    wt_name = f"hermes-{short_id}"
+    branch_name = f"hermes/{wt_name}"
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+
+    wt_path = worktrees_dir / wt_name
+
+    # Ensure .worktrees/ is in .gitignore
+    gitignore = Path(repo_root) / ".gitignore"
+    _ignore_entry = ".worktrees/"
+    try:
+        existing = gitignore.read_text() if gitignore.exists() else ""
+        if _ignore_entry not in existing.splitlines():
+            with open(gitignore, "a") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{_ignore_entry}\n")
+    except Exception as e:
+        logger.debug("Could not update .gitignore: %s", e)
+
+    # Create the worktree
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            print(f"\033[31m✗ Failed to create worktree: {result.stderr.strip()}\033[0m")
+            return None
+    except Exception as e:
+        print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
+        return None
+
+    # Copy files listed in .worktreeinclude (gitignored files the agent needs)
+    include_file = Path(repo_root) / ".worktreeinclude"
+    if include_file.exists():
+        try:
+            for line in include_file.read_text().splitlines():
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                src = Path(repo_root) / entry
+                dst = wt_path / entry
+                if src.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(src), str(dst))
+                elif src.is_dir():
+                    # Symlink directories (faster, saves disk)
+                    if not dst.exists():
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        os.symlink(str(src.resolve()), str(dst))
+        except Exception as e:
+            logger.debug("Error copying .worktreeinclude entries: %s", e)
+
+    info = {
+        "path": str(wt_path),
+        "branch": branch_name,
+        "repo_root": repo_root,
+    }
+
+    print(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
+    print(f"  Branch: {branch_name}")
+
+    return info
+
+
+def _cleanup_worktree(info: Dict[str, str] = None) -> None:
+    """Remove a worktree and its branch on exit.
+
+    If the worktree has uncommitted changes, warn and keep it.
+    """
+    global _active_worktree
+    info = info or _active_worktree
+    if not info:
+        return
+
+    import subprocess
+
+    wt_path = info["path"]
+    branch = info["branch"]
+    repo_root = info["repo_root"]
+
+    if not Path(wt_path).exists():
+        return
+
+    # Check for uncommitted changes
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10, cwd=wt_path,
+        )
+        has_changes = bool(status.stdout.strip())
+    except Exception:
+        has_changes = True  # Assume dirty on error — don't delete
+
+    if has_changes:
+        print(f"\n\033[33m⚠ Worktree has uncommitted changes, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove {wt_path}")
+        _active_worktree = None
+        return
+
+    # Remove worktree
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", wt_path, "--force"],
+            capture_output=True, text=True, timeout=15, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("Failed to remove worktree: %s", e)
+
+    # Delete the branch (only if it was never pushed / has no upstream)
+    try:
+        subprocess.run(
+            ["git", "branch", "-D", branch],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("Failed to delete branch %s: %s", branch, e)
+
+    _active_worktree = None
+    print(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
+
+
+def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
+    """Remove worktrees older than max_age_hours that have no uncommitted changes.
+
+    Runs silently on startup to clean up after crashed/killed sessions.
+    """
+    import subprocess
+    import time
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    if not worktrees_dir.exists():
+        return
+
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+
+    for entry in worktrees_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("hermes-"):
+            continue
+
+        # Check age
+        try:
+            mtime = entry.stat().st_mtime
+            if mtime > cutoff:
+                continue  # Too recent — skip
+        except Exception:
+            continue
+
+        # Check for uncommitted changes
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            if status.stdout.strip():
+                continue  # Has changes — skip
+        except Exception:
+            continue  # Can't check — skip
+
+        # Safe to remove
+        try:
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5, cwd=str(entry),
+            )
+            branch = branch_result.stdout.strip()
+
+            subprocess.run(
+                ["git", "worktree", "remove", str(entry), "--force"],
+                capture_output=True, text=True, timeout=15, cwd=repo_root,
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "branch", "-D", branch],
+                    capture_output=True, text=True, timeout=10, cwd=repo_root,
+                )
+            logger.debug("Pruned stale worktree: %s", entry.name)
+        except Exception as e:
+            logger.debug("Failed to prune worktree %s: %s", entry.name, e)
 
 # ============================================================================
 # ASCII Art & Branding
@@ -685,72 +907,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
 
 
 # ============================================================================
-# CLI Commands
-# ============================================================================
-
-COMMANDS = {
-    "/help": "Show this help message",
-    "/tools": "List available tools",
-    "/toolsets": "List available toolsets",
-    "/model": "Show or change the current model",
-    "/prompt": "View/set custom system prompt",
-    "/personality": "Set a predefined personality",
-    "/clear": "Clear screen and reset conversation (fresh start)",
-    "/history": "Show conversation history",
-    "/new": "Start a new conversation (reset history)",
-    "/reset": "Reset conversation only (keep screen)",
-    "/retry": "Retry the last message (resend to agent)",
-    "/undo": "Remove the last user/assistant exchange",
-    "/save": "Save the current conversation",
-    "/config": "Show current configuration",
-    "/cron": "Manage scheduled tasks (list, add, remove)",
-    "/skills": "Search, install, inspect, or manage skills from online registries",
-    "/platforms": "Show gateway/messaging platform status",
-    "/paste": "Check clipboard for an image and attach it",
-    "/reload-mcp": "Reload MCP servers from config.yaml",
-    "/quit": "Exit the CLI (also: /exit, /q)",
-}
-
-
-# ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
 
 from agent.skill_commands import scan_skill_commands, get_skill_commands, build_skill_invocation_message
 
 _skill_commands = scan_skill_commands()
-
-
-class SlashCommandCompleter(Completer):
-    """Autocomplete for /commands and /skill-name in the input area."""
-
-    def get_completions(self, document, complete_event):
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        word = text[1:]  # strip the leading /
-
-        # Built-in commands
-        for cmd, desc in COMMANDS.items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    cmd_name,
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=desc,
-                )
-
-        # Skill commands
-        for cmd, info in _skill_commands.items():
-            cmd_name = cmd[1:]
-            if cmd_name.startswith(word):
-                yield Completion(
-                    cmd_name,
-                    start_position=-len(word),
-                    display=cmd,
-                    display_meta=f"⚡ {info['description'][:50]}{'...' if len(info['description']) > 50 else ''}",
-                )
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -851,6 +1013,10 @@ class HermesCLI:
         # Configuration - priority: CLI args > env vars > config file
         # Model can come from: CLI arg, LLM_MODEL env, OPENAI_MODEL env (custom endpoint), or config
         self.model = model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or CLI_CONFIG["model"]["default"]
+        # Track whether model was explicitly chosen by the user or fell back
+        # to the global default.  Provider-specific normalisation may override
+        # the default silently but should warn when overriding an explicit choice.
+        self._model_is_default = not (model or os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL"))
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -933,6 +1099,16 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
+        # Initialize SQLite session store early so /title works before first message
+        self._session_db = None
+        try:
+            from hermes_state import SessionDB
+            self._session_db = SessionDB()
+        except Exception:
+            pass
+        
+        # Deferred title: stored in memory until the session is created in the DB
+        self._pending_title: Optional[str] = None
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
@@ -954,6 +1130,63 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
+        """Normalize obviously incompatible model/provider pairings.
+
+        When the resolved provider is ``openai-codex``, the Codex Responses API
+        only accepts Codex-compatible model slugs (e.g. ``gpt-5.3-codex``).
+        If the active model is incompatible (e.g. the OpenRouter default
+        ``anthropic/claude-opus-4.6``), swap it for the best available Codex
+        model.  Also strips provider prefixes the API does not accept
+        (``openai/gpt-5.3-codex`` → ``gpt-5.3-codex``).
+
+        Returns True when the active model was changed.
+        """
+        if resolved_provider != "openai-codex":
+            return False
+
+        current_model = (self.model or "").strip()
+        current_slug = current_model.split("/")[-1] if current_model else ""
+
+        # Keep explicit Codex models, but strip any provider prefix that the
+        # Codex Responses API does not accept.
+        if current_slug and "codex" in current_slug.lower():
+            if current_slug != current_model:
+                self.model = current_slug
+                if not self._model_is_default:
+                    self.console.print(
+                        f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
+                        f"using '{current_slug}' for OpenAI Codex.[/]"
+                    )
+                return True
+            return False
+
+        # Model is not Codex-compatible — replace with the best available
+        fallback_model = "gpt-5.3-codex"
+        try:
+            from hermes_cli.codex_models import get_codex_model_ids
+
+            codex_models = get_codex_model_ids(
+                access_token=self.api_key if self.api_key else None,
+            )
+            fallback_model = next(
+                (mid for mid in codex_models if "codex" in mid.lower()),
+                fallback_model,
+            )
+        except Exception:
+            pass
+
+        if current_model != fallback_model:
+            if not self._model_is_default:
+                self.console.print(
+                    f"[yellow]⚠️  Model '{current_model}' is not supported with "
+                    f"OpenAI Codex; switching to '{fallback_model}'.[/]"
+                )
+            self.model = fallback_model
+            return True
+
+        return False
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1000,8 +1233,13 @@ class HermesCLI:
         self.api_key = api_key
         self.base_url = base_url
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key rotated
-        if (credentials_changed or routing_changed) and self.agent is not None:
+        # Normalize model for the resolved provider (e.g. swap non-Codex
+        # models when provider is openai-codex).  Fixes #651.
+        model_changed = self._normalize_model_for_provider(resolved_provider)
+
+        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
+        # routing, or the effective model changed.
+        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
 
         return True
@@ -1020,13 +1258,13 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return False
 
-        # Initialize SQLite session store for CLI sessions
-        self._session_db = None
-        try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
-        except Exception as e:
-            logger.debug("SQLite session store not available: %s", e)
+        # Initialize SQLite session store for CLI sessions (if not already done in __init__)
+        if self._session_db is None:
+            try:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                logger.debug("SQLite session store not available: %s", e)
         
         # If resuming, validate the session exists and load its history
         if self._resumed and self._session_db:
@@ -1039,8 +1277,11 @@ class HermesCLI:
             if restored:
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
+                title_part = ""
+                if session_meta.get("title"):
+                    title_part = f" \"{session_meta['title']}\""
                 _cprint(
-                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD} "
+                    f"{_GOLD}↻ Resumed session {_BOLD}{self.session_id}{_RST}{_GOLD}{title_part} "
                     f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                     f"{len(restored)} total messages){_RST}"
                 )
@@ -1082,6 +1323,15 @@ class HermesCLI:
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
             )
+            # Apply any pending title now that the session exists in the DB
+            if self._pending_title and self._session_db:
+                try:
+                    self._session_db.set_session_title(self.session_id, self._pending_title)
+                    _cprint(f"  Session title applied: {self._pending_title}")
+                    self._pending_title = None
+                except (ValueError, Exception) as e:
+                    _cprint(f"  Could not apply pending title: {e}")
+                    self._pending_title = None
             return True
         except Exception as e:
             self.console.print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -1158,32 +1408,68 @@ class HermesCLI:
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
-    def _build_multimodal_content(self, text: str, images: list) -> list:
-        """Convert text + image paths into OpenAI vision multimodal content.
+    def _preprocess_images_with_vision(self, text: str, images: list) -> str:
+        """Analyze attached images via the vision tool and return enriched text.
 
-        Returns a list of content parts suitable for the ``content`` field
-        of a ``user`` message.
+        Instead of embedding raw base64 ``image_url`` content parts in the
+        conversation (which only works with vision-capable models), this
+        pre-processes each image through the auxiliary vision model (Gemini
+        Flash) and prepends the descriptions to the user's message — the
+        same approach the messaging gateway uses.
+
+        The local file path is included so the agent can re-examine the
+        image later with ``vision_analyze`` if needed.
         """
-        import base64 as _b64
+        import asyncio as _asyncio
+        import json as _json
+        from tools.vision_tools import vision_analyze_tool
 
-        content_parts = []
-        text_part = text if isinstance(text, str) and text else "What do you see in this image?"
-        content_parts.append({"type": "text", "text": text_part})
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
 
-        _MIME = {
-            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "gif": "image/gif", "webp": "image/webp",
-        }
+        enriched_parts = []
         for img_path in images:
-            if img_path.exists():
-                data = _b64.b64encode(img_path.read_bytes()).decode()
-                ext = img_path.suffix.lower().lstrip(".")
-                mime = _MIME.get(ext, "image/png")
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{data}"}
-                })
-        return content_parts
+            if not img_path.exists():
+                continue
+            size_kb = img_path.stat().st_size // 1024
+            _cprint(f"  {_DIM}👁️  analyzing {img_path.name} ({size_kb}KB)...{_RST}")
+            try:
+                result_json = _asyncio.run(
+                    vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt)
+                )
+                result = _json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    enriched_parts.append(
+                        f"[The user attached an image. Here's what it contains:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {img_path}]"
+                    )
+                    _cprint(f"  {_DIM}✓ image analyzed{_RST}")
+                else:
+                    enriched_parts.append(
+                        f"[The user attached an image but it couldn't be analyzed. "
+                        f"You can try examining it with vision_analyze using "
+                        f"image_url: {img_path}]"
+                    )
+                    _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+            except Exception as e:
+                enriched_parts.append(
+                    f"[The user attached an image but analysis failed ({e}). "
+                    f"You can try examining it with vision_analyze using "
+                    f"image_url: {img_path}]"
+                )
+                _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+
+        # Combine: vision descriptions first, then the user's original text
+        user_text = text if isinstance(text, str) and text else ""
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            return f"{prefix}\n\n{user_text}" if user_text else prefix
+        return user_text or "What do you see in this image?"
 
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
@@ -1385,24 +1671,65 @@ class HermesCLI:
         if not self.conversation_history:
             print("(._.) No conversation history yet.")
             return
-        
+
+        preview_limit = 400
+        visible_index = 0
+        hidden_tool_messages = 0
+
+        def flush_tool_summary():
+            nonlocal hidden_tool_messages
+            if not hidden_tool_messages:
+                return
+
+            noun = "message" if hidden_tool_messages == 1 else "messages"
+            print("\n  [Tools]")
+            print(f"    ({hidden_tool_messages} tool {noun} hidden)")
+            hidden_tool_messages = 0
+
         print()
         print("+" + "-" * 50 + "+")
         print("|" + " " * 12 + "(^_^) Conversation History" + " " * 11 + "|")
         print("+" + "-" * 50 + "+")
-        
-        for i, msg in enumerate(self.conversation_history, 1):
+
+        for msg in self.conversation_history:
             role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
-            
+
+            if role == "tool":
+                hidden_tool_messages += 1
+                continue
+
+            if role not in {"user", "assistant"}:
+                continue
+
+            flush_tool_summary()
+            visible_index += 1
+
+            content = msg.get("content")
+            content_text = "" if content is None else str(content)
+
             if role == "user":
-                print(f"\n  [You #{i}]")
-                print(f"    {content[:200]}{'...' if len(content) > 200 else ''}")
-            elif role == "assistant":
-                print(f"\n  [Hermes #{i}]")
-                preview = content[:200] if content else "(tool calls)"
-                print(f"    {preview}{'...' if len(str(content)) > 200 else ''}")
-        
+                print(f"\n  [You #{visible_index}]")
+                print(
+                    f"    {content_text[:preview_limit]}{'...' if len(content_text) > preview_limit else ''}"
+                )
+                continue
+
+            print(f"\n  [Hermes #{visible_index}]")
+            tool_calls = msg.get("tool_calls") or []
+            if content_text:
+                preview = content_text[:preview_limit]
+                suffix = "..." if len(content_text) > preview_limit else ""
+            elif tool_calls:
+                tool_count = len(tool_calls)
+                noun = "call" if tool_count == 1 else "calls"
+                preview = f"(requested {tool_count} tool {noun})"
+                suffix = ""
+            else:
+                preview = "(no text response)"
+                suffix = ""
+            print(f"    {preview}{suffix}")
+
+        flush_tool_summary()
         print()
     
     def reset_conversation(self):
@@ -1811,32 +2138,234 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
-            # Clear terminal screen using Rich (portable, no shell needed)
-            self.console.clear()
+            # Clear terminal screen.  Inside the TUI, Rich's console.clear()
+            # goes through patch_stdout's StdoutProxy which swallows the
+            # screen-clear escape sequences.  Use prompt_toolkit's output
+            # object directly to actually clear the terminal.
+            if self._app:
+                out = self._app.output
+                out.erase_screen()
+                out.cursor_goto(0, 0)
+                out.flush()
+            else:
+                self.console.clear()
             # Reset conversation
             self.conversation_history = []
-            # Show fresh banner
-            self.show_banner()
-            print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+            # Show fresh banner.  Inside the TUI we must route Rich output
+            # through ChatConsole (which uses prompt_toolkit's native ANSI
+            # renderer) instead of self.console (which writes raw to stdout
+            # and gets mangled by patch_stdout).
+            if self._app:
+                cc = ChatConsole()
+                if self.compact:
+                    cc.print(COMPACT_BANNER)
+                else:
+                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                    ctx_len = None
+                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                        ctx_len = self.agent.context_compressor.context_length
+                    build_welcome_banner(
+                        console=cc,
+                        model=self.model,
+                        cwd=cwd,
+                        tools=tools,
+                        enabled_toolsets=self.enabled_toolsets,
+                        session_id=self.session_id,
+                        context_length=ctx_len,
+                    )
+                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+            else:
+                self.show_banner()
+                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
         elif cmd_lower == "/history":
             self.show_history()
+        elif cmd_lower.startswith("/title"):
+            parts = cmd_original.split(maxsplit=1)
+            if len(parts) > 1:
+                raw_title = parts[1].strip()
+                if raw_title:
+                    if self._session_db:
+                        # Sanitize the title early so feedback matches what gets stored
+                        try:
+                            from hermes_state import SessionDB
+                            new_title = SessionDB.sanitize_title(raw_title)
+                        except ValueError as e:
+                            _cprint(f"  {e}")
+                            new_title = None
+                        if not new_title:
+                            _cprint("  Title is empty after cleanup. Please use printable characters.")
+                        elif self._session_db.get_session(self.session_id):
+                            # Session exists in DB — set title directly
+                            try:
+                                if self._session_db.set_session_title(self.session_id, new_title):
+                                    _cprint(f"  Session title set: {new_title}")
+                                else:
+                                    _cprint("  Session not found in database.")
+                            except ValueError as e:
+                                _cprint(f"  {e}")
+                        else:
+                            # Session not created yet — defer the title
+                            # Check uniqueness proactively with the sanitized title
+                            existing = self._session_db.get_session_by_title(new_title)
+                            if existing:
+                                _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")
+                            else:
+                                self._pending_title = new_title
+                                _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
+                    else:
+                        _cprint("  Session database not available.")
+                else:
+                    _cprint("  Usage: /title <your session title>")
+            else:
+                # Show current title if no argument given
+                if self._session_db:
+                    session = self._session_db.get_session(self.session_id)
+                    if session and session.get("title"):
+                        _cprint(f"  Session title: {session['title']}")
+                    elif self._pending_title:
+                        _cprint(f"  Session title (pending): {self._pending_title}")
+                    else:
+                        _cprint(f"  No title set. Usage: /title <your session title>")
+                else:
+                    _cprint("  Session database not available.")
         elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                new_model = parts[1]
-                self.model = new_model
-                self.agent = None  # Force re-init
-                # Save to config
-                if save_config_value("model.default", new_model):
-                    print(f"(^_^)b Model changed to: {new_model} (saved to config)")
+                from hermes_cli.auth import resolve_provider
+                from hermes_cli.models import (
+                    parse_model_input,
+                    validate_requested_model,
+                    _PROVIDER_LABELS,
+                )
+
+                raw_input = parts[1].strip()
+
+                # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
+                current_provider = self.provider or self.requested_provider or "openrouter"
+                target_provider, new_model = parse_model_input(raw_input, current_provider)
+                provider_changed = target_provider != current_provider
+
+                # If provider is changing, re-resolve credentials for the new provider
+                api_key_for_probe = self.api_key
+                base_url_for_probe = self.base_url
+                if provider_changed:
+                    try:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        runtime = resolve_runtime_provider(requested=target_provider)
+                        api_key_for_probe = runtime.get("api_key", "")
+                        base_url_for_probe = runtime.get("base_url", "")
+                    except Exception as e:
+                        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                        print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
+                        print(f"(^_^) Current model unchanged: {self.model}")
+                        return True
+
+                try:
+                    validation = validate_requested_model(
+                        new_model,
+                        target_provider,
+                        api_key=api_key_for_probe,
+                        base_url=base_url_for_probe,
+                    )
+                except Exception:
+                    validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
+
+                if not validation.get("accepted"):
+                    print(f"(>_<) {validation.get('message')}")
+                    print(f"  Model unchanged: {self.model}")
+                    if "Did you mean" not in (validation.get("message") or ""):
+                        print("  Tip: Use /model to see available models, /provider to see providers")
                 else:
-                    print(f"(^_^) Model changed to: {new_model} (session only)")
+                    self.model = new_model
+                    self.agent = None  # Force re-init
+
+                    if provider_changed:
+                        self.requested_provider = target_provider
+                        self.provider = target_provider
+                        self.api_key = api_key_for_probe
+                        self.base_url = base_url_for_probe
+
+                    provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
+                    provider_note = f" [provider: {provider_label}]" if provider_changed else ""
+
+                    if validation.get("persist"):
+                        saved_model = save_config_value("model.default", new_model)
+                        if provider_changed:
+                            save_config_value("model.provider", target_provider)
+                        if saved_model:
+                            print(f"(^_^)b Model changed to: {new_model}{provider_note} (saved to config)")
+                        else:
+                            print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
+                    else:
+                        message = validation.get("message") or ""
+                        print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
+                        if message:
+                            print(f"  Reason: {message}")
+                        print("  Note: Model will revert on restart. Use a verified model to save to config.")
             else:
-                print(f"Current model: {self.model}")
-                print("  Usage: /model <model-name> to change")
+                from hermes_cli.models import curated_models_for_provider, normalize_provider, _PROVIDER_LABELS
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                # Resolve "auto" to the actual provider using credential detection
+                raw_provider = normalize_provider(self.provider)
+                if raw_provider == "auto":
+                    try:
+                        display_provider = _resolve_provider(
+                            self.requested_provider,
+                            explicit_api_key=self._explicit_api_key,
+                            explicit_base_url=self._explicit_base_url,
+                        )
+                    except Exception:
+                        display_provider = "openrouter"
+                else:
+                    display_provider = raw_provider
+                provider_label = _PROVIDER_LABELS.get(display_provider, display_provider)
+                print(f"\n  Current model:    {self.model}")
+                print(f"  Current provider: {provider_label}")
+                print()
+                curated = curated_models_for_provider(display_provider)
+                if curated:
+                    print(f"  Available models ({provider_label}):")
+                    for mid, desc in curated:
+                        marker = " ←" if mid == self.model else ""
+                        label = f"  {desc}" if desc else ""
+                        print(f"    {mid}{label}{marker}")
+                    print()
+                print("  Usage: /model <model-name>")
+                print("         /model provider:model-name  (to switch provider)")
+                print("  Example: /model openrouter:anthropic/claude-sonnet-4.5")
+                print("  See /provider for available providers")
+        elif cmd_lower == "/provider":
+            from hermes_cli.models import list_available_providers, normalize_provider, _PROVIDER_LABELS
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+            # Resolve current provider
+            raw_provider = normalize_provider(self.provider)
+            if raw_provider == "auto":
+                try:
+                    current = _resolve_provider(
+                        self.requested_provider,
+                        explicit_api_key=self._explicit_api_key,
+                        explicit_base_url=self._explicit_base_url,
+                    )
+                except Exception:
+                    current = "openrouter"
+            else:
+                current = raw_provider
+            current_label = _PROVIDER_LABELS.get(current, current)
+            print(f"\n  Current provider: {current_label} ({current})\n")
+            providers = list_available_providers()
+            print("  Available providers:")
+            for p in providers:
+                marker = " ← active" if p["id"] == current else ""
+                auth = "✓" if p["authenticated"] else "✗"
+                aliases = f"  (also: {', '.join(p['aliases'])})" if p["aliases"] else ""
+                print(f"    [{auth}] {p['id']:<14} {p['label']}{aliases}{marker}")
+            print()
+            print("  Switch: /model provider:model-name")
+            print("  Setup:  hermes setup")
         elif cmd_lower.startswith("/prompt"):
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
@@ -2272,14 +2801,13 @@ class HermesCLI:
         if not self._init_agent():
             return None
         
-        # Convert attached images to OpenAI vision multimodal content
+        # Pre-process images through the vision tool (Gemini Flash) so the
+        # main model receives text descriptions instead of raw base64 image
+        # content — works with any model, not just vision-capable ones.
         if images:
-            message = self._build_multimodal_content(
+            message = self._preprocess_images_with_vision(
                 message if isinstance(message, str) else "", images
             )
-            for img_path in images:
-                if img_path.exists():
-                    _cprint(f"  {_DIM}📎 attached {img_path.name} ({img_path.stat().st_size // 1024}KB){_RST}")
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -2729,7 +3257,7 @@ class HermesCLI:
             multiline=True,
             wrap_lines=True,
             history=FileHistory(str(self._history_file)),
-            completer=SlashCommandCompleter(),
+            completer=SlashCommandCompleter(skill_commands_provider=lambda: _skill_commands),
             complete_while_typing=True,
         )
 
@@ -3220,6 +3748,8 @@ def main(
     list_toolsets: bool = False,
     gateway: bool = False,
     resume: str = None,
+    worktree: bool = False,
+    w: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -3238,6 +3768,8 @@ def main(
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
+        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
+        w: Shorthand for --worktree
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -3245,7 +3777,11 @@ def main(
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py --list-tools               # List tools and exit
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
+        python cli.py -w                         # Start in isolated git worktree
+        python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    global _active_worktree
+
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
@@ -3257,6 +3793,30 @@ def main(
         print("Starting Hermes Gateway (messaging platforms)...")
         asyncio.run(start_gateway())
         return
+
+    # Skip worktree for list commands (they exit immediately)
+    if not list_tools and not list_toolsets:
+        # ── Git worktree isolation (#652) ──
+        # Create an isolated worktree so this agent instance doesn't collide
+        # with other agents working on the same repo.
+        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        wt_info = None
+        if use_worktree:
+            # Prune stale worktrees from crashed/killed sessions
+            _repo = _git_repo_root()
+            if _repo:
+                _prune_stale_worktrees(_repo)
+            wt_info = _setup_worktree()
+            if wt_info:
+                _active_worktree = wt_info
+                os.environ["TERMINAL_CWD"] = wt_info["path"]
+                atexit.register(_cleanup_worktree, wt_info)
+            else:
+                # Worktree was explicitly requested but setup failed —
+                # don't silently run without isolation.
+                return
+    else:
+        wt_info = None
     
     # Handle query shorthand
     query = query or q
@@ -3295,6 +3855,17 @@ def main(
         compact=compact,
         resume=resume,
     )
+
+    # Inject worktree context into agent's system prompt
+    if wt_info:
+        wt_note = (
+            f"\n\n[System note: You are working in an isolated git worktree at "
+            f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
+            f"Changes here do not affect the main working tree or other agents. "
+            f"Remember to commit and push your changes, and create a PR if appropriate. "
+            f"The original repo is at {wt_info['repo_root']}.]"
+        )
+        cli.system_prompt = (cli.system_prompt or "") + wt_note
     
     # Handle list commands (don't init agent for these)
     if list_tools:

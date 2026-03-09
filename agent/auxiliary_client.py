@@ -317,14 +317,22 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if not api_key:
             continue
         # Resolve base URL (with optional env-var override)
-        base_url = pconfig.inference_base_url
+        # Kimi Code keys (sk-kimi-) need api.kimi.com/coding/v1
+        env_url = ""
         if pconfig.base_url_env_var:
             env_url = os.getenv(pconfig.base_url_env_var, "").strip()
-            if env_url:
-                base_url = env_url.rstrip("/")
+        if env_url:
+            base_url = env_url.rstrip("/")
+        elif provider_id == "kimi-coding" and api_key.startswith("sk-kimi-"):
+            base_url = "https://api.kimi.com/coding/v1"
+        else:
+            base_url = pconfig.inference_base_url
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
-        return OpenAI(api_key=api_key, base_url=base_url), model
+        extra = {}
+        if "api.kimi.com" in base_url.lower():
+            extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+        return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
 
@@ -403,6 +411,8 @@ def get_async_text_auxiliary_client():
     }
     if "openrouter" in str(sync_client.base_url).lower():
         async_kwargs["default_headers"] = dict(_OR_HEADERS)
+    elif "api.kimi.com" in str(sync_client.base_url).lower():
+        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 

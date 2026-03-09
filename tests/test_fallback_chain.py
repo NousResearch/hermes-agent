@@ -14,6 +14,10 @@ from agent.fallback_chain import (
     select_interactive,
     should_trigger_fallback,
     FALLBACK_STATUS_CODES,
+    KNOWN_PROVIDERS,
+    LOCAL_PROVIDERS,
+    _infer_primary_provider,
+    _probe_local_endpoint,
 )
 
 
@@ -116,16 +120,15 @@ class TestFallbackChain:
         assert chain.entries[1].provider == "lmstudio"
 
     def test_build_legacy_chain_with_key(self):
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}):
+        """Legacy method delegates to build_auto_chain."""
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}, clear=True):
             chain = FallbackChain.build_legacy_chain("claude-opus-4-20250514")
             assert chain.has_fallbacks() is True
-            assert len(chain.entries) == 1
-            assert chain.entries[0].provider == "openrouter"
-            assert chain.entries[0].model == "anthropic/claude-opus-4-20250514"
-            assert chain.mode == "auto"  # Legacy mode = auto for backward compat
+            assert any(e.provider == "openrouter" for e in chain.entries)
+            assert chain.mode == "auto"
 
     def test_build_legacy_chain_without_key(self):
-        with patch.dict("os.environ", {"OPENROUTER_API_KEY": ""}):
+        with patch.dict("os.environ", {}, clear=True):
             chain = FallbackChain.build_legacy_chain("some-model")
             assert chain.has_fallbacks() is False
 
@@ -404,3 +407,162 @@ class TestIntegration:
         entry = select_auto(chain, "everything failed")
         assert entry is None
         assert chain.is_exhausted() is True
+
+
+# =============================================================================
+# _infer_primary_provider
+# =============================================================================
+
+class TestInferPrimaryProvider:
+    def test_direct_provider_match(self):
+        assert _infer_primary_provider("anthropic", "", "") == "anthropic"
+        assert _infer_primary_provider("openrouter", "", "") == "openrouter"
+        assert _infer_primary_provider("openai", "", "") == "openai"
+        assert _infer_primary_provider("Anthropic", "", "") == "anthropic"
+
+    def test_infer_from_model_claude(self):
+        assert _infer_primary_provider("", "claude-opus-4-20250514", "") == "anthropic"
+        assert _infer_primary_provider("", "anthropic/claude-opus-4.6", "") == "anthropic"
+
+    def test_infer_from_model_gpt(self):
+        assert _infer_primary_provider("", "gpt-4.1", "") == "openai"
+        assert _infer_primary_provider("", "o3-mini", "") == "openai"
+
+    def test_infer_from_model_gemini(self):
+        assert _infer_primary_provider("", "gemini-2.5-flash", "") == "gemini"
+
+    def test_infer_from_model_deepseek(self):
+        assert _infer_primary_provider("", "deepseek-chat", "") == "deepseek"
+
+    def test_infer_from_base_url(self):
+        assert _infer_primary_provider("", "", "https://openrouter.ai/api/v1") == "openrouter"
+        assert _infer_primary_provider("", "", "https://api.anthropic.com") == "anthropic"
+        assert _infer_primary_provider("", "", "https://api.openai.com/v1") == "openai"
+        assert _infer_primary_provider("", "", "http://localhost:1234/v1") == "lmstudio"
+        assert _infer_primary_provider("", "", "http://localhost:11434/v1") == "ollama"
+
+    def test_unknown_returns_empty(self):
+        assert _infer_primary_provider("", "", "") == ""
+        assert _infer_primary_provider("", "some-unknown-model", "") == ""
+
+    def test_provider_takes_priority(self):
+        """Provider string wins over model/URL inference."""
+        assert _infer_primary_provider("anthropic", "gpt-4", "https://openrouter.ai/api/v1") == "anthropic"
+
+
+# =============================================================================
+# build_auto_chain
+# =============================================================================
+
+class TestBuildAutoChain:
+    def test_empty_env(self):
+        """No API keys → empty chain."""
+        with patch.dict("os.environ", {}, clear=True):
+            chain = FallbackChain.build_auto_chain(primary_provider="anthropic")
+            assert chain.has_fallbacks() is False
+            assert len(chain.entries) == 0
+
+    def test_detects_openrouter(self):
+        """OpenRouter key detected, primary is anthropic."""
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or-key"}, clear=True):
+            chain = FallbackChain.build_auto_chain(
+                primary_provider="anthropic",
+                primary_model="claude-opus-4-20250514",
+            )
+            assert chain.has_fallbacks() is True
+            assert chain.entries[0].provider == "openrouter"
+            # Should map claude model to OpenRouter format
+            assert "anthropic/" in chain.entries[0].model or "claude" in chain.entries[0].model
+
+    def test_excludes_primary_provider(self):
+        """Primary provider is excluded from chain."""
+        env = {
+            "OPENROUTER_API_KEY": "sk-or",
+            "ANTHROPIC_API_KEY": "sk-ant",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            chain = FallbackChain.build_auto_chain(primary_provider="anthropic")
+            providers = [e.provider for e in chain.entries]
+            assert "anthropic" not in providers
+            assert "openrouter" in providers
+
+    def test_excludes_primary_by_model_inference(self):
+        """Even without explicit provider, infers from model name."""
+        env = {
+            "OPENROUTER_API_KEY": "sk-or",
+            "ANTHROPIC_API_KEY": "sk-ant",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            chain = FallbackChain.build_auto_chain(primary_model="claude-opus-4-20250514")
+            providers = [e.provider for e in chain.entries]
+            assert "anthropic" not in providers
+            assert "openrouter" in providers
+
+    def test_multiple_providers(self):
+        """Multiple API keys → multi-entry chain in priority order."""
+        env = {
+            "OPENROUTER_API_KEY": "sk-or",
+            "DEEPSEEK_API_KEY": "sk-ds",
+            "GROQ_API_KEY": "sk-groq",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            chain = FallbackChain.build_auto_chain(primary_provider="anthropic")
+            providers = [e.provider for e in chain.entries]
+            assert "openrouter" in providers
+            assert "deepseek" in providers
+            assert "groq" in providers
+            # Priority order: openrouter before deepseek before groq
+            assert providers.index("openrouter") < providers.index("deepseek")
+            assert providers.index("deepseek") < providers.index("groq")
+
+    def test_openrouter_uses_primary_model(self):
+        """OpenRouter entry should proxy the primary model."""
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "sk-or"}, clear=True):
+            chain = FallbackChain.build_auto_chain(
+                primary_provider="anthropic",
+                primary_model="claude-opus-4-20250514",
+            )
+            or_entry = chain.entries[0]
+            assert or_entry.provider == "openrouter"
+            assert or_entry.model == "anthropic/claude-opus-4-20250514"
+
+    def test_probes_local_providers(self):
+        """Local providers included if port is reachable."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("agent.fallback_chain._probe_local_endpoint", return_value=True):
+                chain = FallbackChain.build_auto_chain(primary_provider="anthropic")
+                providers = [e.provider for e in chain.entries]
+                assert "lmstudio" in providers
+                assert "ollama" in providers
+
+    def test_local_providers_excluded_when_unreachable(self):
+        """Local providers not included if port probe fails."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("agent.fallback_chain._probe_local_endpoint", return_value=False):
+                chain = FallbackChain.build_auto_chain(primary_provider="anthropic")
+                providers = [e.provider for e in chain.entries]
+                assert "lmstudio" not in providers
+                assert "ollama" not in providers
+
+    def test_all_providers_detected(self):
+        """All known cloud providers with keys get included."""
+        env = {
+            "OPENROUTER_API_KEY": "sk-or",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "OPENAI_API_KEY": "sk-oai",
+            "GEMINI_API_KEY": "sk-gem",
+            "DEEPSEEK_API_KEY": "sk-ds",
+            "TOGETHER_API_KEY": "sk-tog",
+            "GROQ_API_KEY": "sk-groq",
+            "FIREWORKS_API_KEY": "sk-fw",
+            "MISTRAL_API_KEY": "sk-mis",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            # Primary is "none" — all should be included
+            chain = FallbackChain.build_auto_chain(primary_provider="custom-local")
+            providers = [e.provider for e in chain.entries]
+            assert len(providers) == 9
+            assert set(providers) == {
+                "openrouter", "anthropic", "openai", "gemini",
+                "deepseek", "together", "groq", "fireworks", "mistral",
+            }

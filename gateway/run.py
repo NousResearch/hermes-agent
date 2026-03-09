@@ -389,8 +389,8 @@ class GatewayRunner:
                 if chain.has_fallbacks():
                     chain.mode = "auto"  # Gateway always auto-cascades
                     return chain
-            # No config — try legacy chain
-            return FallbackChain.build_legacy_chain()
+            # No config — auto-build from available API keys
+            return FallbackChain.build_auto_chain()
         except Exception:
             return None
 

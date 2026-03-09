@@ -1219,13 +1219,17 @@ class HermesCLI:
         
         try:
             # Build fallback chain from config, with CLI flag override.
-            # If config has no chain entries, try building a legacy chain from
-            # env vars (e.g. OPENROUTER_API_KEY) so interactive mode still works.
+            # If config has explicit chain entries, use those. Otherwise auto-build
+            # by scanning environment for known provider API keys.
             from agent.fallback_chain import FallbackChain
             fallback_override = getattr(self, "_fallback_mode_override", None)
             fallback_chain = FallbackChain.from_config(CLI_CONFIG)
             if not fallback_chain.has_fallbacks():
-                fallback_chain = FallbackChain.build_legacy_chain(self.model)
+                fallback_chain = FallbackChain.build_auto_chain(
+                    primary_provider=getattr(self, "provider", "") or "",
+                    primary_model=self.model,
+                    primary_base_url=getattr(self, "base_url", "") or "",
+                )
 
             # Apply mode: CLI flag > config > default (interactive for CLI)
             if fallback_override == "off":
@@ -1754,7 +1758,7 @@ class HermesCLI:
         print(f"  {remaining} message(s) remaining in history.")
     
     def _handle_fallback_command(self, cmd: str):
-        """Handle /fallback — show status or toggle mode (auto/interactive/off)."""
+        """Handle /fallback — show status, toggle mode, or interactive setup."""
         parts = cmd.split(maxsplit=1)
         chain = getattr(self.agent, "_fallback_chain", None) if self.agent else None
 
@@ -1762,8 +1766,10 @@ class HermesCLI:
             # Show current status
             print()
             if chain is None or not chain.entries:
-                print("  Fallback chain: (not configured)")
-                print("  Add providers in ~/.hermes/config.yaml under 'fallback.chain'")
+                print("  Fallback chain: (none)")
+                print("  No providers with API keys detected.")
+                print("  Set API keys (e.g. OPENROUTER_API_KEY) or configure in config.yaml")
+                print("  Run /fallback setup to interactively configure")
             else:
                 status = "enabled" if chain.enabled else "disabled"
                 print(f"  Fallback: {status}  |  Mode: {chain.mode}  |  Timeout: {chain.timeout}s")
@@ -1773,7 +1779,7 @@ class HermesCLI:
                     exhausted = " (exhausted)" if i - 1 in chain._exhausted else ""
                     print(f"    [{i}] {entry.display_name}{model_str}{exhausted}")
             print()
-            print("  Usage: /fallback auto|interactive|off")
+            print("  Usage: /fallback auto|interactive|off|on|reset|setup")
             print()
             return
 
@@ -1785,27 +1791,174 @@ class HermesCLI:
             else:
                 print("  No fallback chain to disable")
         elif arg in ("auto", "interactive"):
-            if chain:
+            if chain and chain.entries:
                 chain.enabled = True
                 chain.mode = arg
                 print(f"  ✓ Fallback mode set to: {arg}")
             else:
-                print("  No fallback chain configured — add providers in config.yaml")
+                print("  No fallback providers available — run /fallback setup")
         elif arg == "on":
-            if chain:
+            if chain and chain.entries:
                 chain.enabled = True
                 print(f"  ✓ Fallback enabled (mode: {chain.mode})")
             else:
-                print("  No fallback chain configured")
+                print("  No fallback providers available — run /fallback setup")
         elif arg == "reset":
             if chain:
                 chain.reset()
                 print("  ✓ Fallback chain reset — all providers available again")
             else:
                 print("  No fallback chain to reset")
+        elif arg == "setup":
+            self._handle_fallback_setup()
         else:
             print(f"  Unknown fallback option: {arg}")
-            print("  Usage: /fallback auto|interactive|off|on|reset")
+            print("  Usage: /fallback auto|interactive|off|on|reset|setup")
+
+    def _handle_fallback_setup(self):
+        """Interactive fallback chain setup — detect providers, let user reorder.
+
+        Uses _clarify_callback for input since prompt_toolkit owns stdin
+        in the worker thread (raw input() would deadlock).
+        """
+        from agent.fallback_chain import (
+            FallbackChain, FallbackEntry, KNOWN_PROVIDERS, LOCAL_PROVIDERS,
+            _probe_local_endpoint, _infer_primary_provider,
+        )
+        import os
+
+        _cprint("\n  🔍 Scanning for available providers...\n")
+
+        # Detect all available providers
+        available = []
+        for kp in KNOWN_PROVIDERS:
+            key_found = ""
+            for env_var in kp.env_vars:
+                val = os.getenv(env_var, "").strip()
+                if val:
+                    key_found = env_var
+                    break
+            if key_found:
+                available.append((kp, key_found))
+
+        for lp in LOCAL_PROVIDERS:
+            if _probe_local_endpoint(lp.base_url):
+                available.append((lp, "(local)"))
+
+        if not available:
+            _cprint("  No provider API keys found in environment.")
+            _cprint("  Set one or more of these env vars:")
+            for kp in KNOWN_PROVIDERS[:5]:
+                _cprint(f"    • {kp.env_vars[0]:30s}  ({kp.name})")
+            _cprint(f"    ... and {len(KNOWN_PROVIDERS) - 5} more\n")
+            return
+
+        # Identify primary provider
+        primary_model = self.model if hasattr(self, "model") else ""
+        primary_provider = getattr(self, "provider", "") or ""
+        primary_id = _infer_primary_provider(primary_provider, primary_model, "")
+
+        # Build choices for clarify UI — each non-primary provider is a choice
+        # plus "Use all (default order)" and "Cancel"
+        provider_choices = []
+        non_primary = []
+        for kp, key_src in available:
+            is_primary = primary_id and primary_id in kp.primary_aliases
+            if is_primary:
+                continue
+            model_str = kp.default_model[:35] if kp.default_model else "(auto)"
+            provider_choices.append(f"{kp.name} → {model_str}")
+            non_primary.append((kp, key_src))
+
+        if not non_primary:
+            _cprint("  Only the primary provider detected — no fallback candidates.\n")
+            return
+
+        # Build question text with provider listing
+        q_lines = [f"Primary: {primary_id or 'unknown'} ({primary_model})"]
+        q_lines.append(f"Detected {len(non_primary)} fallback candidate(s):\n")
+        for i, (kp, key_src) in enumerate(non_primary, 1):
+            q_lines.append(f"  [{i}] {kp.name:18s} {key_src}")
+        q_lines.append("\nSelect providers to include:")
+
+        # Choices: "Use all" + individual providers + "Cancel"
+        choices = [f"Use all {len(non_primary)} providers (default order)"]
+        choices.extend(provider_choices)
+
+        question = "\n".join(q_lines)
+        result = self._clarify_callback(question, choices)
+
+        if result is None:
+            _cprint("  Cancelled.\n")
+            return
+
+        result_str = str(result).strip()
+
+        # Parse the selection
+        entries = []
+        if "use all" in result_str.lower() or "did not provide" in result_str.lower() or "best judgement" in result_str.lower():
+            # Use all non-primary providers in order
+            for kp, key_src in non_primary:
+                entries.append(self._build_fallback_entry(kp, key_src, primary_model))
+        else:
+            # User selected a specific provider
+            for i, (kp, key_src) in enumerate(non_primary):
+                model_str = kp.default_model[:35] if kp.default_model else "(auto)"
+                choice_text = f"{kp.name} → {model_str}"
+                if choice_text == result_str or kp.name.lower() in result_str.lower():
+                    entries.append(self._build_fallback_entry(kp, key_src, primary_model))
+                    break
+
+        if not entries:
+            _cprint("  No providers selected.\n")
+            return
+
+        # Ask for mode via clarify
+        mode_result = self._clarify_callback(
+            "Fallback mode:",
+            ["Interactive — countdown prompt to choose (recommended)", "Auto — silently cascade through chain"],
+        )
+        mode_str = str(mode_result).strip().lower() if mode_result else ""
+        mode = "auto" if "auto" in mode_str else "interactive"
+
+        # Apply to current session
+        new_chain = FallbackChain(entries=entries, mode=mode, timeout=30, enabled=True)
+        if self.agent:
+            self.agent._fallback_chain = new_chain
+
+        _cprint(f"\n  ✓ Fallback chain configured ({len(entries)} provider{'s' if len(entries) > 1 else ''}, mode: {mode}):")
+        for i, entry in enumerate(entries, 1):
+            model_str = f"  →  {entry.model}" if entry.model else ""
+            _cprint(f"    [{i}] {entry.display_name}{model_str}")
+        _cprint("\n  This applies for the current session. To persist, add to config.yaml:\n")
+        _cprint("    fallback:")
+        _cprint(f"      mode: {mode}")
+        _cprint("      chain:")
+        for entry in entries:
+            _cprint(f"        - provider: {entry.provider}")
+            if entry.base_url:
+                _cprint(f"          base_url: {entry.base_url}")
+            if entry.model:
+                _cprint(f"          model: {entry.model}")
+        _cprint("")
+
+    @staticmethod
+    def _build_fallback_entry(kp, key_src, primary_model):
+        """Build a FallbackEntry from a known provider."""
+        from agent.fallback_chain import FallbackEntry
+        model = kp.default_model
+        if kp.id == "openrouter" and primary_model:
+            or_model = primary_model
+            if "claude" in or_model.lower() and not or_model.startswith("anthropic/"):
+                or_model = f"anthropic/{or_model}"
+            model = or_model
+        api_key_env = key_src if key_src != "(local)" else ""
+        return FallbackEntry(
+            provider=kp.id,
+            base_url=kp.base_url,
+            model=model,
+            api_key_env=api_key_env,
+        )
 
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""

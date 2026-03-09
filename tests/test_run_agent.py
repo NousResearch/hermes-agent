@@ -886,6 +886,9 @@ class TestRetryExhaustion:
     def test_api_error_raises_after_retries(self, agent):
         """Exhausted retries on API errors must raise, not fall through."""
         self._setup_agent(agent)
+        # Disable fallback chain so the error propagates after retries
+        from agent.fallback_chain import FallbackChain
+        agent._fallback_chain = FallbackChain(entries=[], mode="auto")
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
         with (
             patch.object(agent, "_persist_session"),

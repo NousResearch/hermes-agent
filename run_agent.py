@@ -369,13 +369,16 @@ class AIAgent:
         self._anthropic_client = None
 
         # Provider fallback chain — triggered on rate-limit, auth, or overload errors.
-        # Replaces the old hardcoded Anthropic -> OpenRouter fallback.
+        # Auto-detects available providers from env vars if no explicit chain given.
         from agent.fallback_chain import FallbackChain
         if fallback_chain is not None:
             self._fallback_chain = fallback_chain
         else:
-            # Backward compat: auto-build a legacy chain if OPENROUTER_API_KEY is set
-            self._fallback_chain = FallbackChain.build_legacy_chain(self.model)
+            self._fallback_chain = FallbackChain.build_auto_chain(
+                primary_provider=provider or "",
+                primary_model=self.model,
+                primary_base_url=base_url or "",
+            )
         self._fallback_notify = fallback_notify
         self._fallback_selector = fallback_selector  # Optional: platform-specific selector (e.g. CLI clarify UI)
         self._fallback_activated = False  # True after first fallback switch

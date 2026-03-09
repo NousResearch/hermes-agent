@@ -21,9 +21,20 @@ Config (in ~/.hermes/config.yaml):
           base_url: http://localhost:11434/v1
           model: llama3.1:70b
 
-If no fallback config exists but OPENROUTER_API_KEY is set and the
-primary provider is Anthropic, a single-entry OpenRouter chain is
-auto-generated for backward compatibility.
+If no explicit fallback config exists, the chain is auto-built by scanning
+environment variables for known provider API keys. The primary provider is
+excluded to avoid circular fallback. Priority order:
+
+    1. OpenRouter (broadest model selection, good fallback for any primary)
+    2. Anthropic (direct — for when primary is OpenRouter/other)
+    3. OpenAI (direct)
+    4. Google Gemini
+    5. DeepSeek
+    6. Together AI
+    7. Groq
+    8. Fireworks AI
+    9. Mistral AI
+    10. Local providers (LM Studio, Ollama — checked via port probe)
 """
 
 from __future__ import annotations
@@ -42,6 +53,214 @@ logger = logging.getLogger(__name__)
 
 # Status codes that trigger a fallback switch
 FALLBACK_STATUS_CODES = {401, 429, 503, 529}
+
+
+# =============================================================================
+# Known provider definitions for auto-chain building
+# =============================================================================
+
+@dataclass
+class _KnownProvider:
+    """Describes a known inference provider for auto-detection."""
+    id: str
+    name: str
+    env_vars: Tuple[str, ...]  # API key env vars to check (first found wins)
+    base_url: str = ""
+    default_model: str = ""
+    api_mode: str = "chat_completions"
+    # Aliases that match this provider as "primary" (to exclude from chain)
+    primary_aliases: Tuple[str, ...] = ()
+
+
+# Ordered by fallback priority — first match with a valid key wins
+KNOWN_PROVIDERS: List[_KnownProvider] = [
+    _KnownProvider(
+        id="openrouter",
+        name="OpenRouter",
+        env_vars=("OPENROUTER_API_KEY",),
+        base_url=OPENROUTER_BASE_URL,
+        default_model="anthropic/claude-sonnet-4",
+        primary_aliases=("openrouter",),
+    ),
+    _KnownProvider(
+        id="anthropic",
+        name="Anthropic",
+        env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+        base_url="https://api.anthropic.com/v1",
+        default_model="claude-sonnet-4-20250514",
+        primary_aliases=("anthropic",),
+    ),
+    _KnownProvider(
+        id="openai",
+        name="OpenAI",
+        env_vars=("OPENAI_API_KEY",),
+        base_url="https://api.openai.com/v1",
+        default_model="gpt-4.1",
+        primary_aliases=("openai",),
+    ),
+    _KnownProvider(
+        id="gemini",
+        name="Google Gemini",
+        env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model="gemini-2.5-flash",
+        primary_aliases=("gemini", "google"),
+    ),
+    _KnownProvider(
+        id="deepseek",
+        name="DeepSeek",
+        env_vars=("DEEPSEEK_API_KEY",),
+        base_url="https://api.deepseek.com/v1",
+        default_model="deepseek-chat",
+        primary_aliases=("deepseek",),
+    ),
+    _KnownProvider(
+        id="together",
+        name="Together AI",
+        env_vars=("TOGETHER_API_KEY",),
+        base_url="https://api.together.xyz/v1",
+        default_model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        primary_aliases=("together",),
+    ),
+    _KnownProvider(
+        id="groq",
+        name="Groq",
+        env_vars=("GROQ_API_KEY",),
+        base_url="https://api.groq.com/openai/v1",
+        default_model="llama-3.3-70b-versatile",
+        primary_aliases=("groq",),
+    ),
+    _KnownProvider(
+        id="fireworks",
+        name="Fireworks AI",
+        env_vars=("FIREWORKS_API_KEY",),
+        base_url="https://api.fireworks.ai/inference/v1",
+        default_model="accounts/fireworks/models/llama-v3p3-70b-instruct",
+        primary_aliases=("fireworks",),
+    ),
+    _KnownProvider(
+        id="mistral",
+        name="Mistral AI",
+        env_vars=("MISTRAL_API_KEY",),
+        base_url="https://api.mistral.ai/v1",
+        default_model="mistral-large-latest",
+        primary_aliases=("mistral",),
+    ),
+]
+
+# Local providers checked via port probe (no API key needed)
+LOCAL_PROVIDERS = [
+    _KnownProvider(
+        id="lmstudio",
+        name="LM Studio",
+        env_vars=(),
+        base_url="http://localhost:1234/v1",
+        default_model="",  # auto-detected
+        primary_aliases=("lmstudio", "lm-studio", "lm_studio"),
+    ),
+    _KnownProvider(
+        id="ollama",
+        name="Ollama",
+        env_vars=(),
+        base_url="http://localhost:11434/v1",
+        default_model="",  # auto-detected
+        primary_aliases=("ollama",),
+    ),
+]
+
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+
+def _infer_primary_provider(
+    provider: str, model: str, base_url: str
+) -> str:
+    """Infer the primary provider id from provider name, model, or base_url.
+
+    Returns a lowercase provider id that matches KNOWN_PROVIDERS aliases,
+    or empty string if unknown.
+    """
+    if provider:
+        p = provider.lower().strip()
+        # Direct match against known provider aliases
+        for kp in KNOWN_PROVIDERS + LOCAL_PROVIDERS:
+            if p in kp.primary_aliases or p == kp.id:
+                return kp.id
+        # Fuzzy match: provider string contains known id
+        for kp in KNOWN_PROVIDERS + LOCAL_PROVIDERS:
+            if kp.id in p:
+                return kp.id
+        return p  # Unknown provider — return as-is for exclusion
+
+    # Infer from model name
+    if model:
+        m = model.lower()
+        if "claude" in m or m.startswith("anthropic/"):
+            return "anthropic"
+        if "gpt" in m or "o1" in m or "o3" in m or "o4" in m:
+            return "openai"
+        if "gemini" in m:
+            return "gemini"
+        if "deepseek" in m:
+            return "deepseek"
+        if "llama" in m or "mistral" in m:
+            pass  # Could be any provider, don't guess
+        # Model has provider prefix (e.g. "anthropic/claude-3")
+        if "/" in m:
+            prefix = m.split("/")[0]
+            for kp in KNOWN_PROVIDERS:
+                if prefix in kp.primary_aliases:
+                    return kp.id
+
+    # Infer from base_url
+    if base_url:
+        url = base_url.lower()
+        if "openrouter" in url:
+            return "openrouter"
+        if "anthropic" in url:
+            return "anthropic"
+        if "openai.com" in url:
+            return "openai"
+        if "googleapis" in url or "generativelanguage" in url:
+            return "gemini"
+        if "deepseek" in url:
+            return "deepseek"
+        if "together" in url:
+            return "together"
+        if "groq" in url:
+            return "groq"
+        if "fireworks" in url:
+            return "fireworks"
+        if "mistral" in url:
+            return "mistral"
+        if "localhost:1234" in url:
+            return "lmstudio"
+        if "localhost:11434" in url:
+            return "ollama"
+
+    return ""
+
+
+def _probe_local_endpoint(base_url: str, timeout: float = 0.5) -> bool:
+    """Quick check if a local endpoint is reachable (TCP connect only).
+
+    Non-blocking, fast timeout. Returns True if port is open.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 80
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -170,30 +389,89 @@ class FallbackChain:
 
     @classmethod
     def build_legacy_chain(cls, primary_model: str = "") -> "FallbackChain":
-        """Build a backward-compatible single-entry OpenRouter chain.
+        """Build a backward-compatible chain. Delegates to build_auto_chain."""
+        return cls.build_auto_chain(primary_model=primary_model)
 
-        Called when there's no explicit fallback config but OPENROUTER_API_KEY
-        exists. Preserves the pre-chain behavior: Anthropic -> OpenRouter.
+    @classmethod
+    def build_auto_chain(
+        cls,
+        primary_provider: str = "",
+        primary_model: str = "",
+        primary_base_url: str = "",
+    ) -> "FallbackChain":
+        """Auto-build a fallback chain by scanning environment for API keys.
+
+        Detects all known providers with valid API keys, excludes the primary
+        provider, and returns an ordered chain. Also probes local endpoints
+        (LM Studio, Ollama) if reachable.
+
+        Args:
+            primary_provider: The active provider id (e.g. "anthropic", "openrouter").
+                              Used to exclude it from the fallback chain.
+            primary_model: The active model name. Used to infer primary provider
+                           if primary_provider is empty.
+            primary_base_url: The active base URL. Used to infer primary provider.
         """
-        key = os.getenv("OPENROUTER_API_KEY", "").strip()
-        if not key:
-            return cls(entries=[], mode="auto")
-
-        # Map the primary model to OpenRouter format
-        model = primary_model
-        if model and not model.startswith("anthropic/") and "claude" in model.lower():
-            model = f"anthropic/{model}"
-
-        return cls(
-            entries=[FallbackEntry(
-                provider="openrouter",
-                base_url=OPENROUTER_BASE_URL,
-                model=model,
-                api_key_env="OPENROUTER_API_KEY",
-            )],
-            mode="auto",
-            timeout=30,
+        # Infer primary provider from model/base_url if not explicitly given
+        primary_id = _infer_primary_provider(
+            primary_provider, primary_model, primary_base_url
         )
+
+        entries: List[FallbackEntry] = []
+
+        # Scan cloud providers (need API keys)
+        for kp in KNOWN_PROVIDERS:
+            # Skip the primary provider
+            if primary_id and primary_id in kp.primary_aliases:
+                continue
+
+            # Check if any env var has a key set
+            api_key = ""
+            api_key_env = ""
+            for env_var in kp.env_vars:
+                val = os.getenv(env_var, "").strip()
+                if val:
+                    api_key = val
+                    api_key_env = env_var
+                    break
+
+            if not api_key:
+                continue
+
+            # For OpenRouter: use the same model as primary (it's a proxy)
+            model = kp.default_model
+            if kp.id == "openrouter" and primary_model:
+                # Map model to OpenRouter format if needed
+                or_model = primary_model
+                if "claude" in or_model.lower() and not or_model.startswith("anthropic/"):
+                    or_model = f"anthropic/{or_model}"
+                model = or_model
+
+            entries.append(FallbackEntry(
+                provider=kp.id,
+                base_url=kp.base_url,
+                model=model,
+                api_key_env=api_key_env,
+            ))
+
+        # Probe local providers (no API key needed — just check if port is open)
+        for lp in LOCAL_PROVIDERS:
+            if primary_id and primary_id in lp.primary_aliases:
+                continue
+            if _probe_local_endpoint(lp.base_url):
+                entries.append(FallbackEntry(
+                    provider=lp.id,
+                    base_url=lp.base_url,
+                    model=lp.default_model,
+                ))
+
+        if entries:
+            logger.info(
+                "Auto-configured fallback chain: %s",
+                ", ".join(e.provider for e in entries),
+            )
+
+        return cls(entries=entries, mode="auto", timeout=30)
 
     def has_fallbacks(self) -> bool:
         """Check if fallback is enabled and entries exist."""

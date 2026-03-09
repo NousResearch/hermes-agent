@@ -1660,14 +1660,18 @@ def setup_gateway(config: dict):
 # Section 5: Tool Configuration (delegates to unified tools_config.py)
 # =============================================================================
 
-def setup_tools(config: dict):
+def setup_tools(config: dict, first_install: bool = False):
     """Configure tools — delegates to the unified tools_command() in tools_config.py.
     
     Both `hermes setup tools` and `hermes tools` use the same flow:
     platform selection → toolset toggles → provider/API key configuration.
+    
+    Args:
+        first_install: When True, uses the simplified first-install flow
+            (no platform menu, prompts for all unconfigured API keys).
     """
     from hermes_cli.tools_config import tools_command
-    tools_command()
+    tools_command(first_install=first_install)
 
 
 # =============================================================================
@@ -1820,7 +1824,7 @@ def run_setup_wizard(args):
     setup_gateway(config)
 
     # Section 5: Tools
-    setup_tools(config)
+    setup_tools(config, first_install=not is_existing)
 
     # Save and show summary
     save_config(config)

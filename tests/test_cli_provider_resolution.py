@@ -197,10 +197,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     assert shell.model == "gpt-5.2-codex"
 
 
-def test_codex_provider_replaces_incompatible_envvar_model(monkeypatch):
-    """Exact scenario from #651: LLM_MODEL is set to a non-Codex model and
-    provider resolves to openai-codex.  The model must be replaced and a
-    warning printed since the user explicitly chose it."""
+def test_codex_provider_trusts_explicit_envvar_model(monkeypatch):
+    """When the user explicitly sets LLM_MODEL, we trust their choice and
+    let the API be the judge — even if it's a non-OpenAI model.  Only
+    provider prefixes are stripped; the bare model passes through."""
     cli = _import_cli()
 
     monkeypatch.setenv("LLM_MODEL", "claude-opus-4-6")
@@ -217,18 +217,14 @@ def test_codex_provider_replaces_incompatible_envvar_model(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.2-codex", "gpt-5.1-codex-mini"],
-    )
 
     shell = cli.HermesCLI(compact=True, max_turns=1)
 
     assert shell._model_is_default is False
     assert shell._ensure_runtime_credentials() is True
     assert shell.provider == "openai-codex"
-    assert "claude" not in shell.model
-    assert shell.model == "gpt-5.2-codex"
+    # User explicitly chose this model — it passes through untouched
+    assert shell.model == "claude-opus-4-6"
 
 
 def test_codex_provider_preserves_explicit_codex_model(monkeypatch):

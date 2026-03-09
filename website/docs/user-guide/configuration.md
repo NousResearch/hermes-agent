@@ -673,6 +673,7 @@ checkpoints:
   max_snapshots: 50              # Max checkpoints to keep per directory
 ```
 
+
 ## Delegation
 
 Configure subagent behavior for the delegate tool:

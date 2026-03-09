@@ -18,6 +18,22 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
+    hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes honcho status                   # Show Honcho config and connection status
+    hermes honcho sessions                 # List directory → session name mappings
+    hermes honcho map <name>               # Map current directory to a session name
+    hermes honcho peer                     # Show peer names and dialectic settings
+    hermes honcho peer --user NAME         # Set user peer name
+    hermes honcho peer --ai NAME           # Set AI peer name
+    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    hermes honcho mode                     # Show current memory mode
+    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
+    hermes honcho tokens                   # Show token budget settings
+    hermes honcho tokens --context N       # Set session.context() token cap
+    hermes honcho tokens --dialectic N     # Set dialectic result char cap
+    hermes honcho identity                 # Show AI peer identity representation
+    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
     hermes version             # Show version
     hermes update              # Update to latest version
     hermes uninstall           # Uninstall Hermes Agent
@@ -2280,6 +2296,94 @@ For more help on a command:
         skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
+    # honcho command
+    # =========================================================================
+    honcho_parser = subparsers.add_parser(
+        "honcho",
+        help="Manage Honcho AI memory integration",
+        description=(
+            "Honcho is a memory layer that persists across sessions.\n\n"
+            "Each conversation is stored as a peer interaction in a workspace. "
+            "Honcho builds a representation of the user over time — conclusions, "
+            "patterns, context — and surfaces the relevant slice at the start of "
+            "each turn so Hermes knows who you are without you having to repeat yourself.\n\n"
+            "Modes: hybrid (Honcho + local MEMORY.md), honcho (Honcho only), "
+            "local (MEMORY.md only). Write frequency is configurable so memory "
+            "writes never block the response."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
+
+    honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")
+    honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
+    honcho_subparsers.add_parser("sessions", help="List known Honcho session mappings")
+
+    honcho_map = honcho_subparsers.add_parser(
+        "map", help="Map current directory to a Honcho session name (no arg = list mappings)"
+    )
+    honcho_map.add_argument(
+        "session_name", nargs="?", default=None,
+        help="Session name to associate with this directory. Omit to list current mappings.",
+    )
+
+    honcho_peer = honcho_subparsers.add_parser(
+        "peer", help="Show or update peer names and dialectic reasoning level"
+    )
+    honcho_peer.add_argument("--user", metavar="NAME", help="Set user peer name")
+    honcho_peer.add_argument("--ai", metavar="NAME", help="Set AI peer name")
+    honcho_peer.add_argument(
+        "--reasoning",
+        metavar="LEVEL",
+        choices=("minimal", "low", "medium", "high", "max"),
+        help="Set default dialectic reasoning level (minimal/low/medium/high/max)",
+    )
+
+    honcho_mode = honcho_subparsers.add_parser(
+        "mode", help="Show or set memory mode (hybrid/honcho/local)"
+    )
+    honcho_mode.add_argument(
+        "mode", nargs="?", metavar="MODE",
+        choices=("hybrid", "honcho", "local"),
+        help="Memory mode to set (hybrid/honcho/local). Omit to show current.",
+    )
+
+    honcho_tokens = honcho_subparsers.add_parser(
+        "tokens", help="Show or set token budget for context and dialectic"
+    )
+    honcho_tokens.add_argument(
+        "--context", type=int, metavar="N",
+        help="Max tokens Honcho returns from session.context() per turn",
+    )
+    honcho_tokens.add_argument(
+        "--dialectic", type=int, metavar="N",
+        help="Max chars of dialectic result to inject into system prompt",
+    )
+
+    honcho_identity = honcho_subparsers.add_parser(
+        "identity", help="Seed or show the AI peer's Honcho identity representation"
+    )
+    honcho_identity.add_argument(
+        "file", nargs="?", default=None,
+        help="Path to file to seed from (e.g. SOUL.md). Omit to show usage.",
+    )
+    honcho_identity.add_argument(
+        "--show", action="store_true",
+        help="Show current AI peer representation from Honcho",
+    )
+
+    honcho_subparsers.add_parser(
+        "migrate",
+        help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
+    )
+
+    def cmd_honcho(args):
+        from honcho_integration.cli import honcho_command
+        honcho_command(args)
+
+    honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
     # tools command

@@ -665,6 +665,7 @@ display:
   #   all:     Running output updates + final message (default)
   background_process_notifications: all
 
+
   # Play terminal bell when agent finishes a response.
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.

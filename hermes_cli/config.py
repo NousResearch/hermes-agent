@@ -90,7 +90,7 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
-    
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
@@ -817,6 +817,36 @@ def load_config() -> Dict[str, Any]:
             print(f"Warning: Failed to load config: {e}")
     
     return _normalize_max_turns_config(config)
+
+
+_COMMENTED_SECTIONS = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+#
+# security:
+#   redact_secrets: false
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes login) — OpenAI Codex
+#   nous         (OAuth — hermes login) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
 
 
 _COMMENTED_SECTIONS = """

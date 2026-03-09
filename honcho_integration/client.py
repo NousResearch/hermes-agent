@@ -27,6 +27,30 @@ GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
+def _resolve_memory_mode(
+    global_val: str | dict,
+    host_val: str | dict | None,
+) -> dict:
+    """Parse memoryMode (string or object) into memory_mode + peer_memory_modes.
+
+    Resolution order: host-level wins over global.
+    String form:  applies as the default for all peers.
+    Object form:  { "default": "hybrid", "hermes": "honcho", ... }
+                  "default" key sets the fallback; other keys are per-peer overrides.
+    """
+    # Pick the winning value (host beats global)
+    val = host_val if host_val is not None else global_val
+
+    if isinstance(val, dict):
+        default = val.get("default", "hybrid")
+        overrides = {k: v for k, v in val.items() if k != "default"}
+    else:
+        default = str(val) if val else "hybrid"
+        overrides = {}
+
+    return {"memory_mode": default, "peer_memory_modes": overrides}
+
+
 @dataclass
 class HonchoClientConfig:
     """Configuration for Honcho client, resolved for a specific host."""
@@ -42,10 +66,36 @@ class HonchoClientConfig:
     # Toggles
     enabled: bool = False
     save_messages: bool = True
+    # memoryMode: default for all peers. "hybrid" / "honcho" / "local"
+    memory_mode: str = "hybrid"
+    # Per-peer overrides — any named Honcho peer. Override memory_mode when set.
+    # Config object form: "memoryMode": { "default": "hybrid", "hermes": "honcho" }
+    peer_memory_modes: dict[str, str] = field(default_factory=dict)
+
+    def peer_memory_mode(self, peer_name: str) -> str:
+        """Return the effective memory mode for a named peer.
+
+        Resolution: per-peer override → global memory_mode default.
+        """
+        return self.peer_memory_modes.get(peer_name, self.memory_mode)
+    # Write frequency: "async" (background thread), "turn" (sync per turn),
+    # "session" (flush on session end), or int (every N turns)
+    write_frequency: str | int = "async"
     # Prefetch budget
     context_tokens: int | None = None
+    # Dialectic (peer.chat) settings
+    # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
+    # Used as the default; prefetch_dialectic may bump it dynamically.
+    dialectic_reasoning_level: str = "low"
+    # Max chars of dialectic result to inject into Hermes system prompt
+    dialectic_max_chars: int = 600
+    # Recall mode: how memory retrieval works when Honcho is active.
+    # "auto"    — pre-warmed context + memory tools available (model decides)
+    # "context" — pre-warmed context only, honcho memory tools removed
+    # "tools"   — no pre-loaded context, rely on tool calls only
+    recall_mode: str = "auto"
     # Session resolution
-    session_strategy: str = "per-directory"
+    session_strategy: str = "per-session"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -109,6 +159,17 @@ class HonchoClientConfig:
             # Respect explicit setting
             enabled = explicit_enabled
 
+        # write_frequency: accept int or string
+        raw_wf = (
+            host_block.get("writeFrequency")
+            or raw.get("writeFrequency")
+            or "async"
+        )
+        try:
+            write_frequency: str | int = int(raw_wf)
+        except (TypeError, ValueError):
+            write_frequency = str(raw_wf)
+
         return cls(
             host=host,
             workspace_id=workspace,
@@ -119,31 +180,105 @@ class HonchoClientConfig:
             linked_hosts=linked_hosts,
             enabled=enabled,
             save_messages=raw.get("saveMessages", True),
-            context_tokens=raw.get("contextTokens") or host_block.get("contextTokens"),
-            session_strategy=raw.get("sessionStrategy", "per-directory"),
+            **_resolve_memory_mode(
+                raw.get("memoryMode", "hybrid"),
+                host_block.get("memoryMode"),
+            ),
+            write_frequency=write_frequency,
+            context_tokens=host_block.get("contextTokens") or raw.get("contextTokens"),
+            dialectic_reasoning_level=(
+                host_block.get("dialecticReasoningLevel")
+                or raw.get("dialecticReasoningLevel")
+                or "low"
+            ),
+            dialectic_max_chars=int(
+                host_block.get("dialecticMaxChars")
+                or raw.get("dialecticMaxChars")
+                or 600
+            ),
+            recall_mode=(
+                host_block.get("recallMode")
+                or raw.get("recallMode")
+                or "auto"
+            ),
+            session_strategy=raw.get("sessionStrategy", "per-session"),
             session_peer_prefix=raw.get("sessionPeerPrefix", False),
             sessions=raw.get("sessions", {}),
             raw=raw,
         )
 
-    def resolve_session_name(self, cwd: str | None = None) -> str | None:
-        """Resolve session name for a directory.
+    @staticmethod
+    def _git_repo_name(cwd: str) -> str | None:
+        """Return the git repo root directory name, or None if not in a repo."""
+        import subprocess
 
-        Checks manual overrides first, then derives from directory name.
+        try:
+            root = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, cwd=cwd, timeout=5,
+            )
+            if root.returncode == 0:
+                return Path(root.stdout.strip()).name
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    def resolve_session_name(
+        self,
+        cwd: str | None = None,
+        session_title: str | None = None,
+        session_id: str | None = None,
+    ) -> str | None:
+        """Resolve Honcho session name.
+
+        Resolution order:
+          1. Manual directory override from sessions map
+          2. Hermes session title (from /title command)
+          3. per-session strategy — Hermes session_id ({timestamp}_{hex})
+          4. per-repo strategy — git repo root directory name
+          5. per-directory strategy — directory basename
+          6. global strategy — workspace name
         """
+        import re
+
         if not cwd:
             cwd = os.getcwd()
 
-        # Manual override
+        # Manual override always wins
         manual = self.sessions.get(cwd)
         if manual:
             return manual
 
-        # Derive from directory basename
-        base = Path(cwd).name
-        if self.session_peer_prefix and self.peer_name:
-            return f"{self.peer_name}-{base}"
-        return base
+        # /title mid-session remap
+        if session_title:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', session_title).strip('-')
+            if sanitized:
+                if self.session_peer_prefix and self.peer_name:
+                    return f"{self.peer_name}-{sanitized}"
+                return sanitized
+
+        # per-session: inherit Hermes session_id (new Honcho session each run)
+        if self.session_strategy == "per-session" and session_id:
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{session_id}"
+            return session_id
+
+        # per-repo: one Honcho session per git repository
+        if self.session_strategy == "per-repo":
+            base = self._git_repo_name(cwd) or Path(cwd).name
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{base}"
+            return base
+
+        # per-directory: one Honcho session per working directory
+        if self.session_strategy in ("per-directory", "per-session"):
+            base = Path(cwd).name
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{base}"
+            return base
+
+        # global: single session across all directories
+        return self.workspace_id
 
     def get_linked_workspaces(self) -> list[str]:
         """Resolve linked host keys to workspace names."""

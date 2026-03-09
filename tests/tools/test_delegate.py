@@ -255,5 +255,146 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(MAX_DEPTH, 2)
 
 
+class TestConfigurableSubagentModel(unittest.TestCase):
+    """Tests for delegation.model / delegation.provider config support (#609)."""
+
+    @patch("tools.delegate_tool._load_config")
+    def test_config_model_used_when_set(self, mock_cfg):
+        """When delegation.model is configured, child agent uses it instead of parent model."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test config model", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            # Provider should still inherit from parent (config provider is empty)
+            self.assertEqual(kwargs["provider"], parent.provider)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_config_provider_used_when_set(self, mock_cfg):
+        """When delegation.provider is configured, child agent uses it."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "nous"  # Parent uses different provider
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test config provider", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(kwargs["provider"], "openrouter")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_parent_model_inherited_when_no_config(self, mock_cfg):
+        """When delegation.model is empty, child inherits parent model (backwards compat)."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test inherit", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], parent.model)
+            self.assertEqual(kwargs["provider"], parent.provider)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_parent_model_inherited_when_config_missing(self, mock_cfg):
+        """When delegation config has no model key at all, child inherits parent model."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test no key", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], parent.model)
+            self.assertEqual(kwargs["provider"], parent.provider)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_config_model_used_in_batch_mode(self, mock_cfg):
+        """Config model/provider applies to all batch tasks."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "meta-llama/llama-4-scout",
+            "provider": "openrouter",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            tasks = [{"goal": "Task A"}, {"goal": "Task B"}]
+            delegate_task(tasks=tasks, parent_agent=parent)
+
+            # Both tasks should receive the configured model and provider
+            for call in mock_run.call_args_list:
+                self.assertEqual(call.kwargs.get("model"), "meta-llama/llama-4-scout")
+                self.assertEqual(call.kwargs.get("configured_provider"), "openrouter")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_empty_config_returns_none_not_empty_string(self, mock_cfg):
+        """Empty string config values are normalized to None so 'or' fallback works."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(goal="Test normalization", parent_agent=parent)
+
+            call_kwargs = mock_run.call_args.kwargs
+            # model should be None (not ""), so _run_single_child falls back to parent
+            self.assertIsNone(call_kwargs.get("model"))
+            self.assertIsNone(call_kwargs.get("configured_provider"))
+
+
 if __name__ == "__main__":
     unittest.main()

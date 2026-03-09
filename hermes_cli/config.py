@@ -148,6 +148,13 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
     },
     
+    # Subagent delegation — override the model/provider used by delegate_task
+    # so child agents can run on a cheaper/faster model than the parent.
+    "delegation": {
+        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider)
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

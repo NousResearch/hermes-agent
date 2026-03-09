@@ -165,6 +165,7 @@ def _run_single_child(
     max_iterations: int,
     parent_agent,
     task_count: int = 1,
+    configured_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Spawn and run a single child agent. Called from within a thread.
@@ -198,11 +199,16 @@ def _run_single_child(
         # count toward the session-wide limit.
         shared_budget = getattr(parent_agent, "iteration_budget", None)
 
+        # Resolve model: explicit arg > config > parent inherit
+        effective_model = model or parent_agent.model
+        # Resolve provider: config > parent inherit
+        effective_provider = configured_provider or getattr(parent_agent, "provider", None)
+
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
-            model=model or parent_agent.model,
-            provider=getattr(parent_agent, "provider", None),
+            model=effective_model,
+            provider=effective_provider,
             api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,
             max_tokens=getattr(parent_agent, "max_tokens", None),
@@ -326,6 +332,10 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
+    # Resolve subagent model/provider: config override > parent inherit
+    configured_model = cfg.get("model") or None
+    configured_provider = cfg.get("provider") or None
+
     # Normalize to task list
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
@@ -357,10 +367,11 @@ def delegate_task(
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=None,
+            model=configured_model,
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
             task_count=1,
+            configured_provider=configured_provider,
         )
         results.append(result)
     else:
@@ -382,10 +393,11 @@ def delegate_task(
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
-                    model=None,
+                    model=configured_model,
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
+                    configured_provider=configured_provider,
                 )
                 futures[future] = i
 
@@ -444,10 +456,23 @@ def delegate_task(
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG if available."""
+    """Load delegation config from CLI_CONFIG if available.
+
+    Checks both the runtime config (cli.py) and the persistent config
+    (hermes_cli/config.py) so that ``delegation.model`` / ``delegation.provider``
+    are picked up regardless of which config path was used to set them.
+    """
     try:
         from cli import CLI_CONFIG
-        return CLI_CONFIG.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation", {})
+        if cfg:
+            return cfg
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+        full = load_config()
+        return full.get("delegation", {})
     except Exception:
         return {}
 

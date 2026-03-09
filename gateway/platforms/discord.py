@@ -120,9 +120,23 @@ class DiscordAdapter(BasePlatformAdapter):
             
             @self._client.event
             async def on_message(message: DiscordMessage):
-                # Ignore bot's own messages
+                # Always ignore our own messages
                 if message.author == self._client.user:
                     return
+                
+                # Bot message filtering (DISCORD_ALLOW_BOTS):
+                #   "none"     — ignore all other bots (default)
+                #   "mentions" — accept bot messages only when they @mention us
+                #   "all"      — accept all bot messages
+                if getattr(message.author, "bot", False):
+                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    if allow_bots == "none":
+                        return
+                    elif allow_bots == "mentions":
+                        if not self._client.user or self._client.user not in message.mentions:
+                            return
+                    # "all" falls through to handle_message
+                
                 await self._handle_message(message)
             
             # Register slash commands

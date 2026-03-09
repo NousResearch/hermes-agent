@@ -131,19 +131,23 @@ def _handle_honcho_search(args: dict, **kw) -> str:
 _QUERY_SCHEMA = {
     "name": "honcho_context",
     "description": (
-        "Ask Honcho a natural language question about the user and get a synthesized answer. "
+        "Ask Honcho a natural language question and get a synthesized answer. "
         "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Use this when you need a direct answer synthesized from the user's full history. "
-        "Examples: 'What are this user's main goals?', 'How does this user prefer to communicate?', "
-        "'What is this user's technical expertise level?'"
+        "Can query about any peer: the user (default), the AI assistant, or any named peer. "
+        "Examples: 'What are the user's main goals?', 'What has hermes been working on?', "
+        "'What is the user's technical expertise level?'"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "A natural language question about the user.",
-            }
+                "description": "A natural language question.",
+            },
+            "peer": {
+                "type": "string",
+                "description": "Which peer to query about: 'user' (default) or 'ai'. Omit for user.",
+            },
         },
         "required": ["query"],
     },
@@ -156,12 +160,13 @@ def _handle_honcho_context(args: dict, **kw) -> str:
         return json.dumps({"error": "Missing required parameter: query"})
     if not _session_manager or not _session_key:
         return json.dumps({"error": "Honcho is not active for this session."})
+    peer_target = args.get("peer", "user")
     try:
-        result = _session_manager.dialectic_query(_session_key, query)
+        result = _session_manager.dialectic_query(_session_key, query, peer=peer_target)
         return json.dumps({"result": result or "No result from Honcho."})
     except Exception as e:
-        logger.error("Error querying Honcho user context: %s", e)
-        return json.dumps({"error": f"Failed to query user context: {e}"})
+        logger.error("Error querying Honcho context: %s", e)
+        return json.dumps({"error": f"Failed to query context: {e}"})
 
 
 # ── honcho_conclude ──

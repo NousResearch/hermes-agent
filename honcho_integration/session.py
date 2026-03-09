@@ -441,19 +441,24 @@ class HonchoSessionManager:
         idx = min(default_idx + bump, 3)
         return levels[idx]
 
-    def dialectic_query(self, session_key: str, query: str, reasoning_level: str | None = None) -> str:
+    def dialectic_query(
+        self, session_key: str, query: str,
+        reasoning_level: str | None = None,
+        peer: str = "user",
+    ) -> str:
         """
-        Query Honcho's dialectic endpoint about the user.
+        Query Honcho's dialectic endpoint about a peer.
 
-        Runs an LLM on Honcho's backend against the user peer's full
+        Runs an LLM on Honcho's backend against the target peer's full
         representation. Higher latency than context() — call async via
         prefetch_dialectic() to avoid blocking the response.
 
         Args:
             session_key: The session key to query against.
-            query: Natural language question about the user.
+            query: Natural language question.
             reasoning_level: Override the config default. If None, uses
                              _dynamic_reasoning_level(query).
+            peer: Which peer to query — "user" (default) or "ai".
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -462,11 +467,12 @@ class HonchoSessionManager:
         if not session:
             return ""
 
-        user_peer = self._get_or_create_peer(session.user_peer_id)
+        peer_id = session.assistant_peer_id if peer == "ai" else session.user_peer_id
+        target_peer = self._get_or_create_peer(peer_id)
         level = reasoning_level or self._dynamic_reasoning_level(query)
 
         try:
-            result = user_peer.chat(query, reasoning_level=level) or ""
+            result = target_peer.chat(query, reasoning_level=level) or ""
             # Apply Hermes-side char cap before caching
             if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"

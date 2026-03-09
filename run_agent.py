@@ -3092,9 +3092,14 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho prefetch: retrieve user context for system prompt injection
+        # Honcho prefetch: retrieve user context for system prompt injection.
+        # Only on the FIRST turn of a session (empty history).  On subsequent
+        # turns the model already has all prior context in its conversation
+        # history, and the Honcho context is baked into the stored system
+        # prompt — re-fetching it would change the system message and break
+        # Anthropic prompt caching.
         self._honcho_context = ""
-        if self._honcho and self._honcho_session_key:
+        if self._honcho and self._honcho_session_key and not conversation_history:
             try:
                 self._honcho_context = self._honcho_prefetch(user_message)
             except Exception as e:
@@ -3112,14 +3117,42 @@ class AIAgent:
         # Built once on first call, reused for all subsequent calls.
         # Only rebuilt after context compression events (which invalidate
         # the cache and reload memory from disk).
+        #
+        # For continuing sessions (gateway creates a fresh AIAgent per
+        # message), we load the stored system prompt from the session DB
+        # instead of rebuilding.  Rebuilding would pick up memory changes
+        # from disk that the model already knows about (it wrote them!),
+        # producing a different system prompt and breaking the Anthropic
+        # prefix cache.
         if self._cached_system_prompt is None:
-            self._cached_system_prompt = self._build_system_prompt(system_message)
-            # Store the system prompt snapshot in SQLite
-            if self._session_db:
+            stored_prompt = None
+            if conversation_history and self._session_db:
                 try:
-                    self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
-                except Exception as e:
-                    logger.debug("Session DB update_system_prompt failed: %s", e)
+                    session_row = self._session_db.get_session(self.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass  # Fall through to build fresh
+
+            if stored_prompt:
+                # Continuing session — reuse the exact system prompt from
+                # the previous turn so the Anthropic cache prefix matches.
+                self._cached_system_prompt = stored_prompt
+            else:
+                # First turn of a new session — build from scratch.
+                self._cached_system_prompt = self._build_system_prompt(system_message)
+                # Bake Honcho context into the prompt so it's stable for
+                # the entire session (not re-fetched per turn).
+                if self._honcho_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Store the system prompt snapshot in SQLite
+                if self._session_db:
+                    try:
+                        self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                    except Exception as e:
+                        logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 
@@ -3244,11 +3277,13 @@ class AIAgent:
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)
             # so it stays out of the session DB and logs.
+            # Note: Honcho context is baked into _cached_system_prompt on the first
+            # turn and stored in the session DB, so it does NOT need to be injected
+            # here.  This keeps the system message identical across all turns in a
+            # session, maximizing Anthropic prompt cache hits.
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if self._honcho_context:
-                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             

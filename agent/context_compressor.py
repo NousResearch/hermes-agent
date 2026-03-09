@@ -342,7 +342,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             compressed.append(msg)
 
         if summary:
-            compressed.append({"role": "user", "content": summary})
+            last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+            compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
                 print("   ⚠️  No summary model available — middle turns dropped without summary")

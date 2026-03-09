@@ -8,6 +8,8 @@ from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _read_skill_description,
+    _read_skill_conditions,
+    _skill_should_show,
     build_skills_system_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
@@ -277,3 +279,177 @@ class TestPromptBuilderConstants:
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+
+
+# =========================================================================
+# Conditional skill activation
+# =========================================================================
+
+class TestReadSkillConditions:
+    def test_no_conditions_returns_empty_lists(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["fallback_for_toolsets"] == []
+        assert conditions["requires_toolsets"] == []
+        assert conditions["fallback_for_tools"] == []
+        assert conditions["requires_tools"] == []
+
+    def test_reads_fallback_for_toolsets(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+        )
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["fallback_for_toolsets"] == ["web"]
+
+    def test_reads_requires_toolsets(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
+        )
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["requires_toolsets"] == ["terminal"]
+
+    def test_reads_multiple_conditions(self, tmp_path):
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
+        )
+        conditions = _read_skill_conditions(skill_file)
+        assert conditions["fallback_for_toolsets"] == ["browser"]
+        assert conditions["requires_tools"] == ["terminal"]
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        conditions = _read_skill_conditions(tmp_path / "missing.md")
+        assert conditions == {}
+
+
+class TestSkillShouldShow:
+    def test_no_filter_info_always_shows(self):
+        assert _skill_should_show({}, None, None) is True
+
+    def test_empty_conditions_always_shows(self):
+        assert _skill_should_show(
+            {"fallback_for_toolsets": [], "requires_toolsets": [],
+             "fallback_for_tools": [], "requires_tools": []},
+            {"web_search"}, {"web"}
+        ) is True
+
+    def test_fallback_hidden_when_toolset_available(self):
+        conditions = {"fallback_for_toolsets": ["web"], "requires_toolsets": [],
+                      "fallback_for_tools": [], "requires_tools": []}
+        assert _skill_should_show(conditions, set(), {"web"}) is False
+
+    def test_fallback_shown_when_toolset_unavailable(self):
+        conditions = {"fallback_for_toolsets": ["web"], "requires_toolsets": [],
+                      "fallback_for_tools": [], "requires_tools": []}
+        assert _skill_should_show(conditions, set(), set()) is True
+
+    def test_requires_shown_when_toolset_available(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": ["terminal"],
+                      "fallback_for_tools": [], "requires_tools": []}
+        assert _skill_should_show(conditions, set(), {"terminal"}) is True
+
+    def test_requires_hidden_when_toolset_missing(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": ["terminal"],
+                      "fallback_for_tools": [], "requires_tools": []}
+        assert _skill_should_show(conditions, set(), set()) is False
+
+    def test_fallback_for_tools_hidden_when_tool_available(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": [],
+                      "fallback_for_tools": ["web_search"], "requires_tools": []}
+        assert _skill_should_show(conditions, {"web_search"}, set()) is False
+
+    def test_fallback_for_tools_shown_when_tool_missing(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": [],
+                      "fallback_for_tools": ["web_search"], "requires_tools": []}
+        assert _skill_should_show(conditions, set(), set()) is True
+
+    def test_requires_tools_hidden_when_tool_missing(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": [],
+                      "fallback_for_tools": [], "requires_tools": ["terminal"]}
+        assert _skill_should_show(conditions, set(), set()) is False
+
+    def test_requires_tools_shown_when_tool_available(self):
+        conditions = {"fallback_for_toolsets": [], "requires_toolsets": [],
+                      "fallback_for_tools": [], "requires_tools": ["terminal"]}
+        assert _skill_should_show(conditions, {"terminal"}, set()) is True
+
+
+class TestBuildSkillsSystemPromptConditional:
+    def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets={"web"},
+        )
+        assert "duckduckgo" not in result
+
+    def test_fallback_skill_shown_when_primary_unavailable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "duckduckgo" in result
+
+    def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "iot" / "openhue"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "openhue" not in result
+
+    def test_requires_skill_shown_when_toolset_available(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "iot" / "openhue"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets={"terminal"},
+        )
+        assert "openhue" in result
+
+    def test_unconditional_skill_always_shown(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "notes"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: notes\ndescription: Take notes\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "notes" in result
+
+    def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
+        """Backward compat: calling with no args shows everything."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "duckduckgo" in result

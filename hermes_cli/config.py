@@ -147,6 +147,10 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+    # Custom personalities — add your own entries here
+    # Supports string format: {"name": "system prompt"}
+    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    "personalities": {},
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 5,

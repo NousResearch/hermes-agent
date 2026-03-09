@@ -787,6 +787,10 @@ def cmd_model(args):
     # Always add the manual custom endpoint option last
     providers.append(("custom", "Custom endpoint (enter URL manually)"))
 
+    # Add removal option if there are saved custom providers
+    if _custom_provider_map:
+        providers.append(("remove-custom", "Remove a saved custom provider"))
+
     # Reorder so the active provider is at the top
     known_keys = {k for k, _ in providers}
     active_key = active if active in known_keys else "custom"
@@ -816,6 +820,8 @@ def cmd_model(args):
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
+    elif selected_provider == "remove-custom":
+        _remove_custom_provider(config)
     elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1031,7 +1037,11 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_custom(config):
-    """Custom endpoint: collect URL, API key, and model name."""
+    """Custom endpoint: collect URL, API key, and model name.
+
+    Automatically saves the endpoint to ``custom_providers`` in config.yaml
+    so it appears in the provider menu on subsequent runs.
+    """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
 
@@ -1063,6 +1073,8 @@ def _model_flow_custom(config):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
 
+    effective_key = api_key or current_key
+
     if base_url:
         save_env_value("OPENAI_BASE_URL", base_url)
     if api_key:
@@ -1085,6 +1097,107 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+    # Auto-save to custom_providers so it appears in the menu next time
+    _save_custom_provider(effective_url, effective_key)
+
+
+def _save_custom_provider(base_url, api_key=""):
+    """Save a custom endpoint to custom_providers in config.yaml.
+
+    Deduplicates by base_url — if the URL already exists, silently skips.
+    Auto-generates a name from the URL hostname.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    providers = cfg.get("custom_providers") or []
+    if not isinstance(providers, list):
+        providers = []
+
+    # Check if this URL is already saved
+    for entry in providers:
+        if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
+            return  # already saved
+
+    # Auto-generate a name from the URL
+    import re
+    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+    # Remove /v1 suffix for cleaner names
+    clean = re.sub(r"/v1/?$", "", clean)
+    # Use hostname:port as the name
+    name = clean.split("/")[0]
+    # Capitalize for readability
+    if "localhost" in name or "127.0.0.1" in name:
+        name = f"Local ({name})"
+    elif "runpod" in name.lower():
+        name = f"RunPod ({name})"
+    else:
+        name = name.capitalize()
+
+    entry = {"name": name, "base_url": base_url}
+    if api_key:
+        entry["api_key"] = api_key
+
+    providers.append(entry)
+    cfg["custom_providers"] = providers
+    save_config(cfg)
+    print(f"  💾 Saved to custom providers as \"{name}\" (edit in config.yaml)")
+
+
+def _remove_custom_provider(config):
+    """Let the user remove a saved custom provider from config.yaml."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    providers = cfg.get("custom_providers") or []
+    if not isinstance(providers, list) or not providers:
+        print("No custom providers configured.")
+        return
+
+    print("Remove a custom provider:\n")
+
+    choices = []
+    for entry in providers:
+        if isinstance(entry, dict):
+            name = entry.get("name", "unnamed")
+            url = entry.get("base_url", "")
+            short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+            choices.append(f"{name} ({short_url})")
+        else:
+            choices.append(str(entry))
+    choices.append("Cancel")
+
+    try:
+        from simple_term_menu import TerminalMenu
+        menu = TerminalMenu(
+            [f"  {c}" for c in choices], cursor_index=0,
+            menu_cursor="-> ", menu_cursor_style=("fg_red", "bold"),
+            menu_highlight_style=("fg_red",),
+            cycle_cursor=True, clear_screen=False,
+            title="Select provider to remove:",
+        )
+        idx = menu.show()
+        print()
+    except (ImportError, NotImplementedError):
+        for i, c in enumerate(choices, 1):
+            print(f"  {i}. {c}")
+        print()
+        try:
+            val = input(f"Choice [1-{len(choices)}]: ").strip()
+            idx = int(val) - 1 if val else None
+        except (ValueError, KeyboardInterrupt, EOFError):
+            idx = None
+
+    if idx is None or idx >= len(providers):
+        print("No change.")
+        return
+
+    removed = providers.pop(idx)
+    cfg["custom_providers"] = providers
+    save_config(cfg)
+    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
+    print(f"✅ Removed \"{removed_name}\" from custom providers.")
 
 
 def _model_flow_named_custom(config, provider_info):

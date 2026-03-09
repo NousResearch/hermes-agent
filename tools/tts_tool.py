@@ -37,33 +37,29 @@ from typing import Callable, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Optional imports -- providers degrade gracefully if not installed
+# Lazy imports -- providers are imported only when actually used to avoid
+# crashing in headless environments (SSH, Docker, WSL, no PortAudio).
 # ---------------------------------------------------------------------------
-try:
+
+def _import_edge_tts():
+    """Lazy import edge_tts. Returns the module or raises ImportError."""
     import edge_tts
-    _HAS_EDGE_TTS = True
-except ImportError:
-    _HAS_EDGE_TTS = False
+    return edge_tts
 
-try:
+def _import_elevenlabs():
+    """Lazy import ElevenLabs client. Returns the class or raises ImportError."""
     from elevenlabs.client import ElevenLabs
-    _HAS_ELEVENLABS = True
-except ImportError:
-    _HAS_ELEVENLABS = False
+    return ElevenLabs
 
-# openai is a core dependency, but guard anyway
-try:
+def _import_openai_client():
+    """Lazy import OpenAI client. Returns the class or raises ImportError."""
     from openai import OpenAI as OpenAIClient
-    _HAS_OPENAI = True
-except ImportError:
-    _HAS_OPENAI = False
+    return OpenAIClient
 
-try:
+def _import_sounddevice():
+    """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
     import sounddevice as sd
-    _HAS_AUDIO = True
-except (ImportError, OSError):
-    sd = None  # type: ignore[assignment]
-    _HAS_AUDIO = False
+    return sd
 
 
 # ===========================================================================
@@ -202,6 +198,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         output_format = "mp3_44100_128"
 
+    ElevenLabs = _import_elevenlabs()
     client = ElevenLabs(api_key=api_key)
     audio_generator = client.text_to_speech.convert(
         text=text,
@@ -247,6 +244,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         response_format = "mp3"
 
+    OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
     response = client.audio.speech.create(
         model=model,
@@ -322,7 +320,9 @@ def text_to_speech_tool(
     try:
         # Generate audio with the configured provider
         if provider == "elevenlabs":
-            if not _HAS_ELEVENLABS:
+            try:
+                _import_elevenlabs()
+            except ImportError:
                 return json.dumps({
                     "success": False,
                     "error": "ElevenLabs provider selected but 'elevenlabs' package not installed. Run: pip install elevenlabs"
@@ -331,7 +331,9 @@ def text_to_speech_tool(
             _generate_elevenlabs(text, file_str, tts_config)
 
         elif provider == "openai":
-            if not _HAS_OPENAI:
+            try:
+                _import_openai_client()
+            except ImportError:
                 return json.dumps({
                     "success": False,
                     "error": "OpenAI provider selected but 'openai' package not installed."
@@ -341,7 +343,9 @@ def text_to_speech_tool(
 
         else:
             # Default: Edge TTS (free)
-            if not _HAS_EDGE_TTS:
+            try:
+                _import_edge_tts()
+            except ImportError:
                 return json.dumps({
                     "success": False,
                     "error": "Edge TTS not available. Run: pip install edge-tts"
@@ -422,12 +426,23 @@ def check_tts_requirements() -> bool:
     Returns:
         bool: True if at least one provider can work.
     """
-    if _HAS_EDGE_TTS:
+    try:
+        _import_edge_tts()
         return True
-    if _HAS_ELEVENLABS and os.getenv("ELEVENLABS_API_KEY"):
-        return True
-    if _HAS_OPENAI and os.getenv("VOICE_TOOLS_OPENAI_KEY"):
-        return True
+    except ImportError:
+        pass
+    try:
+        _import_elevenlabs()
+        if os.getenv("ELEVENLABS_API_KEY"):
+            return True
+    except ImportError:
+        pass
+    try:
+        _import_openai_client()
+        if os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+            return True
+    except ImportError:
+        pass
     return False
 
 
@@ -500,20 +515,27 @@ def stream_tts_to_speaker(
         api_key = os.getenv("ELEVENLABS_API_KEY", "")
         if not api_key:
             logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
-        elif _HAS_ELEVENLABS:
-            client = ElevenLabs(api_key=api_key)
+        else:
+            try:
+                ElevenLabs = _import_elevenlabs()
+                client = ElevenLabs(api_key=api_key)
+            except ImportError:
+                logger.warning("elevenlabs package not installed; streaming TTS disabled")
 
             # Open a single sounddevice output stream for the lifetime of
             # this function.  ElevenLabs pcm_24000 produces signed 16-bit
             # little-endian mono PCM at 24 kHz.
-            use_sd = _HAS_AUDIO and sd is not None
-            if use_sd:
+            if client is not None:
                 try:
+                    sd = _import_sounddevice()
                     import numpy as _np
                     output_stream = sd.OutputStream(
                         samplerate=24000, channels=1, dtype="int16",
                     )
                     output_stream.start()
+                except (ImportError, OSError) as exc:
+                    logger.debug("sounddevice not available: %s", exc)
+                    output_stream = None
                 except Exception as exc:
                     logger.warning("sounddevice OutputStream failed: %s", exc)
                     output_stream = None
@@ -666,12 +688,19 @@ if __name__ == "__main__":
     print("🔊 Text-to-Speech Tool Module")
     print("=" * 50)
 
+    def _check(importer, label):
+        try:
+            importer()
+            return True
+        except ImportError:
+            return False
+
     print(f"\nProvider availability:")
-    print(f"  Edge TTS:   {'✅ installed' if _HAS_EDGE_TTS else '❌ not installed (pip install edge-tts)'}")
-    print(f"  ElevenLabs: {'✅ installed' if _HAS_ELEVENLABS else '❌ not installed (pip install elevenlabs)'}")
-    print(f"    API Key:  {'✅ set' if os.getenv('ELEVENLABS_API_KEY') else '❌ not set'}")
-    print(f"  OpenAI:     {'✅ installed' if _HAS_OPENAI else '❌ not installed'}")
-    print(f"    API Key:  {'✅ set' if os.getenv('VOICE_TOOLS_OPENAI_KEY') else '❌ not set (VOICE_TOOLS_OPENAI_KEY)'}")
+    print(f"  Edge TTS:   {'installed' if _check(_import_edge_tts, 'edge') else 'not installed (pip install edge-tts)'}")
+    print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
+    print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")
+    print(f"  OpenAI:     {'installed' if _check(_import_openai_client, 'oai') else 'not installed'}")
+    print(f"    API Key:  {'set' if os.getenv('VOICE_TOOLS_OPENAI_KEY') else 'not set (VOICE_TOOLS_OPENAI_KEY)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

@@ -3779,7 +3779,15 @@ class HermesCLI:
             _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
             return
 
-        from tools.voice_mode import check_voice_requirements
+        from tools.voice_mode import check_voice_requirements, detect_audio_environment
+
+        # Environment detection -- warn and block in incompatible environments
+        env_check = detect_audio_environment()
+        if not env_check["available"]:
+            _cprint(f"\n{_GOLD}Voice mode unavailable in this environment:{_RST}")
+            for warning in env_check["warnings"]:
+                _cprint(f"  {_DIM}{warning}{_RST}")
+            return
 
         reqs = check_voice_requirements()
         if not reqs["available"]:
@@ -3815,8 +3823,14 @@ class HermesCLI:
         self.system_prompt = (self.system_prompt or "") + voice_instruction
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
+        try:
+            from hermes_cli.config import load_config
+            _ptt_key = load_config().get("voice", {}).get("push_to_talk_key", "c-b")
+        except Exception:
+            _ptt_key = "c-b"
+        _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
         _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}Ctrl+R to start/stop recording{_RST}")
+        _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
@@ -4804,6 +4818,51 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        # Voice push-to-talk key: configurable via config.yaml (voice.push_to_talk_key)
+        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
+        try:
+            from hermes_cli.config import load_config
+            _voice_key = load_config().get("voice", {}).get("push_to_talk_key", "c-b")
+        except Exception:
+            _voice_key = "c-b"
+
+        @kb.add(_voice_key)
+        def handle_voice_record(event):
+            """Toggle voice recording when voice mode is active."""
+            if not cli_ref._voice_mode:
+                return
+            # Always allow STOPPING a recording (even when agent is running)
+            if cli_ref._voice_recording:
+                # Manual stop via Ctrl+R: stop continuous mode
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = False
+                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
+                event.app.invalidate()
+                threading.Thread(
+                    target=cli_ref._voice_stop_and_transcribe,
+                    daemon=True,
+                ).start()
+            else:
+                # Guard: don't START recording during agent run or interactive prompts
+                if cli_ref._agent_running:
+                    return
+                if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
+                    return
+                try:
+                    # Interrupt TTS if playing, so user can start talking
+                    if not cli_ref._voice_tts_done.is_set():
+                        try:
+                            from tools.voice_mode import stop_playback
+                            stop_playback()
+                            cli_ref._voice_tts_done.set()
+                        except Exception:
+                            pass
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = True
+                    cli_ref._voice_start_recording()
+                    event.app.invalidate()
+                except Exception as e:
+                    _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)
@@ -4849,44 +4908,6 @@ class HermesCLI:
             else:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
-
-        @kb.add('c-space')
-        def handle_ctrl_space(event):
-            """Toggle voice recording when voice mode is active."""
-            if not cli_ref._voice_mode:
-                return
-            # Always allow STOPPING a recording (even when agent is running)
-            if cli_ref._voice_recording:
-                # Manual stop via Ctrl+R: stop continuous mode
-                with cli_ref._voice_lock:
-                    cli_ref._voice_continuous = False
-                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
-                event.app.invalidate()
-                threading.Thread(
-                    target=cli_ref._voice_stop_and_transcribe,
-                    daemon=True,
-                ).start()
-            else:
-                # Guard: don't START recording during agent run or interactive prompts
-                if cli_ref._agent_running:
-                    return
-                if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
-                    return
-                try:
-                    # Interrupt TTS if playing, so user can start talking
-                    if not cli_ref._voice_tts_done.is_set():
-                        try:
-                            from tools.voice_mode import stop_playback
-                            stop_playback()
-                            cli_ref._voice_tts_done.set()
-                        except Exception:
-                            pass
-                    with cli_ref._voice_lock:
-                        cli_ref._voice_continuous = True
-                    cli_ref._voice_start_recording()
-                    event.app.invalidate()
-                except Exception as e:
-                    _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.

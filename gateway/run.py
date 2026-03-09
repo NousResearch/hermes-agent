@@ -591,6 +591,13 @@ class GatewayRunner:
                 return None
             return SlackAdapter(config)
 
+        elif platform == Platform.SIGNAL:
+            from gateway.platforms.signal import SignalAdapter, check_signal_requirements
+            if not check_signal_requirements():
+                logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
+                return None
+            return SignalAdapter(config)
+
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
@@ -626,12 +633,14 @@ class GatewayRunner:
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

@@ -104,6 +104,10 @@ DEFAULT_CONFIG = {
         },
     },
     
+    "security": {
+        "redact_secrets": True,  # Mask API keys, tokens, passwords in tool output
+    },
+
     "display": {
         "compact": False,
         "personality": "kawaii",

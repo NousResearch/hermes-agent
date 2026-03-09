@@ -398,7 +398,7 @@ OPTIONAL_ENV_VARS = {
         "description": "Honcho API key for AI-native persistent memory",
         "prompt": "Honcho API key",
         "url": "https://app.honcho.dev",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context"],
         "password": True,
         "category": "tool",
     },

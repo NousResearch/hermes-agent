@@ -604,7 +604,7 @@ class AIAgent:
                     # all memory retrieval comes from the pre-warmed system prompt.
                     if hcfg.recall_mode != "context":
                         # Rebuild tool definitions now that Honcho check_fn will pass.
-                        # (Tools were built before Honcho init, so query_user_context
+                        # (Tools were built before Honcho init, so honcho_context
                         # was filtered out by _check_honcho_available() returning False.)
                         self.tools = get_tool_definitions(
                             enabled_toolsets=enabled_toolsets,
@@ -1596,7 +1596,7 @@ class AIAgent:
             elif recall_mode == "tools":
                 honcho_block += (
                     "Memory tools:\n"
-                    "  query_user_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
+                    "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
                     "  honcho_profile                          — user's peer card, key facts, no LLM\n"
                     "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"
@@ -1609,7 +1609,7 @@ class AIAgent:
                     "any tools. Only call memory tools when you need information beyond what is "
                     "already present in the Honcho Memory section.\n"
                     "Memory tools:\n"
-                    "  query_user_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
+                    "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
                     "  honcho_profile                          — user's peer card, key facts, no LLM\n"
                     "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"

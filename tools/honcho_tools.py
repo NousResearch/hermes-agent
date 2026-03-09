@@ -2,11 +2,11 @@
 
 Registers three complementary tools, ordered by capability:
 
-  query_user_context   — dialectic Q&A (LLM-powered, direct answers)
+  honcho_context   — dialectic Q&A (LLM-powered, direct answers)
   honcho_search        — semantic search (fast, no LLM, raw excerpts)
   honcho_profile       — peer card (fast, no LLM, structured facts)
 
-Use query_user_context when you need Honcho to synthesize an answer.
+Use honcho_context when you need Honcho to synthesize an answer.
 Use honcho_search or honcho_profile when you want raw data to reason
 over yourself.
 
@@ -58,7 +58,7 @@ _PROFILE_SCHEMA = {
         "about them (name, role, preferences, communication style, patterns). "
         "Fast, no LLM reasoning, minimal cost. "
         "Use this at conversation start or when you need a quick factual snapshot. "
-        "Use query_user_context instead when you need Honcho to synthesize an answer."
+        "Use honcho_context instead when you need Honcho to synthesize an answer."
     ),
     "parameters": {
         "type": "object",
@@ -88,9 +88,9 @@ _SEARCH_SCHEMA = {
     "description": (
         "Semantic search over Honcho's stored context about the user. "
         "Returns raw excerpts ranked by relevance to your query — no LLM synthesis. "
-        "Cheaper and faster than query_user_context. "
+        "Cheaper and faster than honcho_context. "
         "Good when you want to find specific past facts and reason over them yourself. "
-        "Use query_user_context when you need a direct synthesized answer."
+        "Use honcho_context when you need a direct synthesized answer."
     ),
     "parameters": {
         "type": "object",
@@ -126,10 +126,10 @@ def _handle_honcho_search(args: dict, **kw) -> str:
         return json.dumps({"error": f"Failed to search context: {e}"})
 
 
-# ── query_user_context (dialectic — LLM-powered) ──
+# ── honcho_context (dialectic — LLM-powered) ──
 
 _QUERY_SCHEMA = {
-    "name": "query_user_context",
+    "name": "honcho_context",
     "description": (
         "Ask Honcho a natural language question about the user and get a synthesized answer. "
         "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
@@ -150,7 +150,7 @@ _QUERY_SCHEMA = {
 }
 
 
-def _handle_query_user_context(args: dict, **kw) -> str:
+def _handle_honcho_context(args: dict, **kw) -> str:
     query = args.get("query", "")
     if not query:
         return json.dumps({"error": "Missing required parameter: query"})
@@ -228,10 +228,10 @@ registry.register(
 )
 
 registry.register(
-    name="query_user_context",
+    name="honcho_context",
     toolset="honcho",
     schema=_QUERY_SCHEMA,
-    handler=_handle_query_user_context,
+    handler=_handle_honcho_context,
     check_fn=_check_honcho_available,
 )
 

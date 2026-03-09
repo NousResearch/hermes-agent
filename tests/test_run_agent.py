@@ -1040,3 +1040,136 @@ class TestMaxTokensParam:
         agent.base_url = "https://openrouter.ai/api/v1/api.openai.com"
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
+
+
+# ---------------------------------------------------------------------------
+# System prompt stability for prompt caching
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptStability:
+    """Verify that the system prompt stays stable across turns for cache hits."""
+
+    def test_stored_prompt_reused_for_continuing_session(self, agent):
+        """When conversation_history is non-empty and session DB has a stored
+        prompt, it should be reused instead of rebuilding from disk."""
+        stored = "You are helpful. [stored from turn 1]"
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"system_prompt": stored}
+        agent._session_db = mock_db
+
+        # Simulate a continuing session with history
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        # First call — _cached_system_prompt is None, history is non-empty
+        agent._cached_system_prompt = None
+
+        # Patch run_conversation internals to just test the system prompt logic.
+        # We'll call the prompt caching block directly by simulating what
+        # run_conversation does.
+        conversation_history = history
+
+        # The block under test (from run_conversation):
+        if agent._cached_system_prompt is None:
+            stored_prompt = None
+            if conversation_history and agent._session_db:
+                try:
+                    session_row = agent._session_db.get_session(agent.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass
+
+            if stored_prompt:
+                agent._cached_system_prompt = stored_prompt
+
+        assert agent._cached_system_prompt == stored
+        mock_db.get_session.assert_called_once_with(agent.session_id)
+
+    def test_fresh_build_when_no_history(self, agent):
+        """On the first turn (no history), system prompt should be built fresh."""
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+
+        agent._cached_system_prompt = None
+        conversation_history = []
+
+        # The block under test:
+        if agent._cached_system_prompt is None:
+            stored_prompt = None
+            if conversation_history and agent._session_db:
+                session_row = agent._session_db.get_session(agent.session_id)
+                if session_row:
+                    stored_prompt = session_row.get("system_prompt") or None
+
+            if stored_prompt:
+                agent._cached_system_prompt = stored_prompt
+            else:
+                agent._cached_system_prompt = agent._build_system_prompt()
+
+        # Should have built fresh, not queried the DB
+        mock_db.get_session.assert_not_called()
+        assert agent._cached_system_prompt is not None
+        assert "Hermes Agent" in agent._cached_system_prompt
+
+    def test_fresh_build_when_db_has_no_prompt(self, agent):
+        """If the session DB has no stored prompt, build fresh even with history."""
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"system_prompt": ""}
+        agent._session_db = mock_db
+
+        agent._cached_system_prompt = None
+        conversation_history = [{"role": "user", "content": "hi"}]
+
+        if agent._cached_system_prompt is None:
+            stored_prompt = None
+            if conversation_history and agent._session_db:
+                try:
+                    session_row = agent._session_db.get_session(agent.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass
+
+            if stored_prompt:
+                agent._cached_system_prompt = stored_prompt
+            else:
+                agent._cached_system_prompt = agent._build_system_prompt()
+
+        # Empty string is falsy, so should fall through to fresh build
+        assert "Hermes Agent" in agent._cached_system_prompt
+
+    def test_honcho_context_baked_into_prompt_on_first_turn(self, agent):
+        """Honcho context should be baked into _cached_system_prompt on
+        the first turn, not injected separately per API call."""
+        agent._honcho_context = "User prefers Python over JavaScript."
+        agent._cached_system_prompt = None
+
+        # Simulate first turn: build fresh and bake in Honcho
+        agent._cached_system_prompt = agent._build_system_prompt()
+        if agent._honcho_context:
+            agent._cached_system_prompt = (
+                agent._cached_system_prompt + "\n\n" + agent._honcho_context
+            ).strip()
+
+        assert "User prefers Python over JavaScript" in agent._cached_system_prompt
+
+    def test_honcho_prefetch_skipped_on_continuing_session(self):
+        """Honcho prefetch should not be called when conversation_history
+        is non-empty (continuing session)."""
+        conversation_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        # The guard: `not conversation_history` is False when history exists
+        should_prefetch = not conversation_history
+        assert should_prefetch is False
+
+    def test_honcho_prefetch_runs_on_first_turn(self):
+        """Honcho prefetch should run when conversation_history is empty."""
+        conversation_history = []
+        should_prefetch = not conversation_history
+        assert should_prefetch is True

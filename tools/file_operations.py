@@ -100,6 +100,7 @@ class ReadResult:
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False
+    is_pdf: bool = False
     base64_content: Optional[str] = None
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
@@ -273,6 +274,7 @@ BINARY_EXTENSIONS = {
 
 # Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
+INLINE_FILE_EXTENSIONS = IMAGE_EXTENSIONS | {'.pdf'}
 
 # Linters by file extension
 LINTERS = {
@@ -368,6 +370,15 @@ class ShellFileOperations(FileOperations):
         """Check if file is an image we can return as base64."""
         ext = os.path.splitext(path)[1].lower()
         return ext in IMAGE_EXTENSIONS
+
+    def _is_pdf(self, path: str) -> bool:
+        """Check if file is a PDF we can return as an attachment."""
+        return os.path.splitext(path)[1].lower() == '.pdf'
+
+    def _is_inline_attachment(self, path: str) -> bool:
+        """Check if file is a binary attachment we can inline for multimodal models."""
+        ext = os.path.splitext(path)[1].lower()
+        return ext in INLINE_FILE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in LINE_NUM|CONTENT format."""
@@ -463,17 +474,8 @@ class ShellFileOperations(FileOperations):
             # Still try to read, but warn
             pass
         
-        # Images are never inlined — redirect to the vision tool
-        if self._is_image(path):
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    "Image file detected. Automatically redirected to vision_analyze tool. "
-                    "Use vision_analyze with this file path to inspect the image contents."
-                ),
-            )
+        if self._is_inline_attachment(path):
+            return self._read_inline_attachment(path, file_size)
         
         # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
@@ -516,52 +518,48 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
-    # Images larger than this are too expensive to inline as base64 in the
-    # conversation context. Return metadata only and suggest vision_analyze.
-    MAX_IMAGE_BYTES = 512 * 1024  # 512 KB
+    MAX_INLINE_ATTACHMENT_BYTES = 512 * 1024  # 512 KB
 
-    def _read_image(self, path: str) -> ReadResult:
-        """Read an image file, returning base64 content."""
-        # Get file size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        try:
-            file_size = int(stat_result.stdout.strip())
-        except ValueError:
-            file_size = 0
-        
-        if file_size > self.MAX_IMAGE_BYTES:
+    def _read_inline_attachment(self, path: str, file_size: int) -> ReadResult:
+        """Read an image or PDF file, returning base64 content when small enough."""
+        is_image = self._is_image(path)
+        is_pdf = self._is_pdf(path)
+
+        if file_size > self.MAX_INLINE_ATTACHMENT_BYTES:
+            noun = "Image" if is_image else "PDF"
+            guidance = (
+                "Use vision_analyze to inspect the image, or reference it by path."
+                if is_image
+                else "Reference it by path or use terminal tools to inspect it."
+            )
             return ReadResult(
-                is_image=True,
+                is_image=is_image,
+                is_pdf=is_pdf,
                 is_binary=True,
                 file_size=file_size,
-                hint=(
-                    f"Image is too large to inline ({file_size:,} bytes). "
-                    "Use vision_analyze to inspect the image, or reference it by path."
-                ),
+                hint=f"{noun} is too large to inline ({file_size:,} bytes). {guidance}",
             )
-        
-        # Get base64 content
-        b64_cmd = f"base64 -w 0 {self._escape_shell_arg(path)} 2>/dev/null"
+
+        b64_cmd = f"base64 < {self._escape_shell_arg(path)} | tr -d '\\n'"
         b64_result = self._exec(b64_cmd, timeout=30)
-        
+
         if b64_result.exit_code != 0:
+            noun = "image" if is_image else "PDF"
             return ReadResult(
-                is_image=True,
+                is_image=is_image,
+                is_pdf=is_pdf,
                 is_binary=True,
                 file_size=file_size,
-                error=f"Failed to read image: {b64_result.stdout}"
+                error=f"Failed to read {noun}: {b64_result.stdout}",
             )
-        
-        # Try to get dimensions (requires ImageMagick)
+
         dimensions = None
-        if self._has_command('identify'):
+        if is_image and self._has_command('identify'):
             dim_cmd = f"identify -format '%wx%h' {self._escape_shell_arg(path)} 2>/dev/null"
             dim_result = self._exec(dim_cmd)
             if dim_result.exit_code == 0:
                 dimensions = dim_result.stdout.strip()
-        
-        # Determine MIME type from extension
+
         ext = os.path.splitext(path)[1].lower()
         mime_types = {
             '.png': 'image/png',
@@ -571,16 +569,18 @@ class ShellFileOperations(FileOperations):
             '.webp': 'image/webp',
             '.bmp': 'image/bmp',
             '.ico': 'image/x-icon',
+            '.pdf': 'application/pdf',
         }
         mime_type = mime_types.get(ext, 'application/octet-stream')
-        
+
         return ReadResult(
-            is_image=True,
+            is_image=is_image,
+            is_pdf=is_pdf,
             is_binary=True,
             file_size=file_size,
             base64_content=b64_result.stdout,
             mime_type=mime_type,
-            dimensions=dimensions
+            dimensions=dimensions,
         )
     
     def _suggest_similar_files(self, path: str) -> ReadResult:

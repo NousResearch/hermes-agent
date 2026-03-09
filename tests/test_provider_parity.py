@@ -216,6 +216,69 @@ class TestChatMessagesToResponsesInput:
         assert items[0]["call_id"] == "call_abc"
         assert items[0]["output"] == "result here"
 
+    def test_user_multimodal_message_maps_to_codex_input_parts(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect these"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "report.pdf",
+                        "file_data": "data:application/pdf;base64,JVBERi0xLjQK",
+                    },
+                },
+            ],
+        }]
+
+        items = agent._chat_messages_to_responses_input(messages)
+
+        assert items == [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Inspect these"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                {
+                    "type": "input_file",
+                    "filename": "report.pdf",
+                    "file_data": "data:application/pdf;base64,JVBERi0xLjQK",
+                },
+            ],
+        }]
+
+
+class TestInlineReadFileAttachmentGating:
+    def test_custom_chat_completions_does_not_inject_inline_image(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "custom", api_mode="chat_completions", base_url="http://localhost:1234/v1")
+
+        messages = agent._build_tool_result_messages(
+            function_name="read_file",
+            function_args={"path": "assets/pixel.png"},
+            function_result='{"is_image":true,"is_binary":true,"mime_type":"image/png","base64_content":"AAAA"}',
+            tool_call_id="call_img",
+        )
+
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert "not supported for the current provider/API mode" in messages[0]["content"]
+
+    def test_codex_does_not_inject_inline_pdf_and_explains_limitation(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+
+        messages = agent._build_tool_result_messages(
+            function_name="read_file",
+            function_args={"path": "docs/report.pdf"},
+            function_result='{"is_pdf":true,"is_binary":true,"mime_type":"application/pdf","base64_content":"JVBERi0xLjQK"}',
+            tool_call_id="call_pdf",
+        )
+
+        assert len(messages) == 1
+        assert "supported OpenRouter chat-completions paths" in messages[0]["content"]
+
     def test_encrypted_reasoning_replayed(self, monkeypatch):
         """Encrypted reasoning items from previous turns must be included in input."""
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

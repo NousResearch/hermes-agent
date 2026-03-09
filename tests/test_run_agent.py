@@ -217,6 +217,37 @@ class TestCleanSessionContent:
         assert "after" in result
 
 
+class TestInlineReadFileAttachments:
+    def test_build_tool_result_messages_injects_image_context(self, agent):
+        tool_result = json.dumps(
+            {
+                "is_image": True,
+                "is_binary": True,
+                "file_size": 68,
+                "mime_type": "image/png",
+                "base64_content": "AAAA",
+            }
+        )
+
+        messages = agent._build_tool_result_messages(
+            function_name="read_file",
+            function_args={"path": "assets/pixel.png"},
+            function_result=tool_result,
+            tool_call_id="call_img",
+        )
+
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "call_img"
+        assert "base64_content" not in messages[0]["content"]
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"][0]["type"] == "text"
+        assert "read_file('assets/pixel.png')" in messages[1]["content"][0]["text"]
+        assert messages[1]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

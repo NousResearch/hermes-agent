@@ -8,6 +8,7 @@ Every test with output validates against a known-good value AND
 asserts zero contamination from shell noise via _assert_clean().
 """
 
+import base64
 import json
 import os
 import sys
@@ -59,6 +60,10 @@ SPECIAL_CONTENT = "single 'quotes' and \"doubles\" and $VARS and `backticks` and
 MULTIFILE_A = "def func_alpha():\n    return 42\n"
 MULTIFILE_B = "def func_bravo():\n    return 99\n"
 MULTIFILE_C = "nothing relevant here\n"
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn9l1cAAAAASUVORK5CYII="
+)
+MINIMAL_PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<<>>\n%%EOF\n"
 
 
 @pytest.fixture
@@ -353,6 +358,30 @@ class TestReadFile:
         result = ops.read_file(str(f))
         assert result.error is None
         _assert_clean(result.content)
+
+    def test_small_png_returns_inline_attachment_data(self, ops, tmp_path):
+        f = tmp_path / "pixel.png"
+        f.write_bytes(TINY_PNG)
+
+        result = ops.read_file(str(f))
+
+        assert result.error is None
+        assert result.is_image is True
+        assert result.is_binary is True
+        assert result.mime_type == "image/png"
+        assert base64.b64decode(result.base64_content) == TINY_PNG
+
+    def test_small_pdf_returns_inline_attachment_data(self, ops, tmp_path):
+        f = tmp_path / "report.pdf"
+        f.write_bytes(MINIMAL_PDF)
+
+        result = ops.read_file(str(f))
+
+        assert result.error is None
+        assert result.is_pdf is True
+        assert result.is_binary is True
+        assert result.mime_type == "application/pdf"
+        assert base64.b64decode(result.base64_content) == MINIMAL_PDF
 
 
 # ── write_file ───────────────────────────────────────────────────────────

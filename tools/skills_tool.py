@@ -219,6 +219,29 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip('"\'') for t in tags_value.split(',') if t.strip()]
 
 
+
+def _is_skill_disabled(name: str, platform: str = None) -> bool:
+    """Check if a skill is disabled in config, globally or for a specific platform.
+
+    Platform is resolved from the ``platform`` argument, then the
+    ``HERMES_PLATFORM`` env var, then falls back to the global disabled list.
+    """
+    import os
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        skills_cfg = config.get("skills", {})
+        # Resolve platform
+        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
+        if resolved_platform:
+            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            if platform_disabled is not None:
+                return name in platform_disabled
+        # Fall back to global disabled list
+        return name in skills_cfg.get("disabled", [])
+    except Exception:
+        return False
+
 def _find_all_skills() -> List[Dict[str, Any]]:
     """
     Recursively find all skills in ~/.hermes/skills/.
@@ -249,6 +272,9 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                 continue
             
             name = frontmatter.get('name', skill_dir.name)[:MAX_NAME_LENGTH]
+            # Skip disabled skills
+            if _is_skill_disabled(name):
+                continue
             
             description = frontmatter.get('description', '')
             if not description:

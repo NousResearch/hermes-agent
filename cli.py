@@ -3825,7 +3825,8 @@ class HermesCLI:
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
             from hermes_cli.config import load_config
-            _ptt_key = load_config().get("voice", {}).get("push_to_talk_key", "c-b")
+            _raw_ptt = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            _ptt_key = _raw_ptt.lower().replace("ctrl+", "c-").replace("alt+", "a-")
         except Exception:
             _ptt_key = "c-b"
         _ptt_display = _ptt_key.replace("c-", "Ctrl+").upper()
@@ -4818,11 +4819,13 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
-        # Voice push-to-talk key: configurable via config.yaml (voice.push_to_talk_key)
+        # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
+        # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
         try:
             from hermes_cli.config import load_config
-            _voice_key = load_config().get("voice", {}).get("push_to_talk_key", "c-b")
+            _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+            _voice_key = _raw_key.lower().replace("ctrl+", "c-").replace("alt+", "a-")
         except Exception:
             _voice_key = "c-b"
 

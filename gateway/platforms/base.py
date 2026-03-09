@@ -252,6 +252,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
+    LOCATION = "location"
     PHOTO = "photo"
     VIDEO = "video"
     AUDIO = "audio"

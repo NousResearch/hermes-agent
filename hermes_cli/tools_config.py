@@ -840,8 +840,14 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
-def tools_command(args=None):
-    """Entry point for `hermes tools` and `hermes setup tools`."""
+def tools_command(args=None, first_install: bool = False):
+    """Entry point for `hermes tools` and `hermes setup tools`.
+
+    Args:
+        first_install: When True (set by the setup wizard on fresh installs),
+            skip the platform menu, go straight to the CLI checklist, and
+            prompt for API keys on all enabled tools that need them.
+    """
     config = load_config()
     enabled_platforms = _get_enabled_platforms()
 
@@ -851,6 +857,55 @@ def tools_command(args=None):
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))
     print()
 
+    # ── First-time install: linear flow, no platform menu ──
+    if first_install:
+        for pkey in enabled_platforms:
+            pinfo = PLATFORMS[pkey]
+            current_enabled = _get_platform_tools(config, pkey)
+
+            # Uncheck toolsets that should be off by default
+            checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
+
+            # Show checklist
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+
+            added = new_enabled - current_enabled
+            removed = current_enabled - new_enabled
+            if added:
+                for ts in sorted(added):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                    print(color(f"  + {label}", Colors.GREEN))
+            if removed:
+                for ts in sorted(removed):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                    print(color(f"  - {label}", Colors.RED))
+
+            # Prompt for API keys on ALL selected tools that need them
+            unconfigured = [
+                ts_key for ts_key in sorted(new_enabled)
+                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+                and not _toolset_has_keys(ts_key)
+            ]
+
+            if unconfigured:
+                print()
+                print(color(f"  {len(unconfigured)} tool(s) need API keys to be configured:", Colors.YELLOW))
+                for ts_key in unconfigured:
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    print(color(f"    • {label}", Colors.DIM))
+                print(color("  Press Enter to skip any key you don't have yet.", Colors.DIM))
+                print()
+                for ts_key in unconfigured:
+                    _configure_toolset(ts_key, config)
+
+            _save_platform_tools(config, pkey, new_enabled)
+            save_config(config)
+            print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
+            print()
+
+        return
+
+    # ── Returning user: platform menu loop ──
     # Build platform choices
     platform_choices = []
     platform_keys = []
@@ -884,19 +939,10 @@ def tools_command(args=None):
         # Get current enabled toolsets for this platform
         current_enabled = _get_platform_tools(config, pkey)
 
-        # Detect first-time configuration (no saved toolsets for this platform yet)
-        is_first_config = pkey not in config.get("platform_toolsets", {})
-
-        # For first-time users, uncheck toolsets that should be off by default
-        # (MoA, Home Assistant, RL Training) so they aren't enabled blindly.
-        checklist_preselected = current_enabled
-        if is_first_config:
-            checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
-
         # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
 
-        if new_enabled != current_enabled or is_first_config:
+        if new_enabled != current_enabled:
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
 
@@ -909,28 +955,11 @@ def tools_command(args=None):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Determine which tools need API key configuration.
-            # On first-time setup, check ALL enabled tools (the defaults
-            # include everything, so "added" would be empty and no API key
-            # prompts would ever appear).  For returning users, only
-            # prompt for newly added tools.
-            tools_to_configure = new_enabled if is_first_config else added
-
-            unconfigured = [
-                ts_key for ts_key in sorted(tools_to_configure)
-                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
-                and not _toolset_has_keys(ts_key)
-            ]
-
-            if unconfigured:
-                print()
-                print(color(f"  {len(unconfigured)} tool(s) need API keys to be configured:", Colors.YELLOW))
-                for ts_key in unconfigured:
-                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
-                    print(color(f"    • {label}", Colors.DIM))
-                print()
-                for ts_key in unconfigured:
-                    _configure_toolset(ts_key, config)
+            # Configure newly enabled toolsets that need API keys
+            for ts_key in sorted(added):
+                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                    if not _toolset_has_keys(ts_key):
+                        _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)

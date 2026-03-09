@@ -36,9 +36,62 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
-#TODO: Search Capabilities over the scraped pages
-#TODO: Store the pages in something
-#TODO: Tool to see what pages are available/saved to search over
+# In-memory cache of scraped pages: url -> {"title": str, "content": str}
+_page_cache: Dict[str, Dict[str, str]] = {}
+
+
+def _cache_page(url: str, title: str, content: str) -> None:
+    """Store a scraped page in the in-memory cache."""
+    _page_cache[url] = {"title": title, "content": content}
+
+
+def web_search_cached_pages(query: str) -> str:
+    """Search previously scraped/extracted pages for a query string.
+
+    Scans the in-memory page cache populated by ``web_extract_tool`` and
+    ``web_crawl_tool`` and returns every page whose content contains the
+    query (case-insensitive).
+
+    Args:
+        query: The text to search for inside cached pages.
+
+    Returns:
+        JSON string with a ``results`` list. Each entry has ``url``,
+        ``title``, and a short ``snippet`` (first 300 chars of the
+        matching content).  Returns an empty list when nothing matches
+        or the cache is empty.
+    """
+    if not _page_cache:
+        return json.dumps({"results": [], "message": "No pages in cache. Use web_extract_tool or web_crawl_tool first."}, ensure_ascii=False)
+
+    query_lower = query.lower()
+    matches = []
+    for url, page in _page_cache.items():
+        content = page.get("content", "")
+        if query_lower in content.lower():
+            # Find the position and extract a snippet around it
+            idx = content.lower().find(query_lower)
+            start = max(0, idx - 50)
+            snippet = content[start:start + 300].strip()
+            matches.append({
+                "url": url,
+                "title": page.get("title", ""),
+                "snippet": snippet,
+            })
+
+    return json.dumps({"results": matches, "total": len(matches)}, ensure_ascii=False)
+
+
+def web_list_cached_pages() -> str:
+    """List all pages currently held in the scrape cache.
+
+    Returns:
+        JSON string with a ``pages`` list. Each entry has ``url`` and
+        ``title``.  Useful before calling ``web_search_cached_pages`` to
+        see what is available.
+    """
+    pages = [{"url": url, "title": info.get("title", "")} for url, info in _page_cache.items()]
+    return json.dumps({"pages": pages, "total": len(pages)}, ensure_ascii=False)
 
 import json
 import logging
@@ -688,6 +741,9 @@ async def web_extract_tool(
                     "raw_content": chosen_content,
                     "metadata": metadata  # Now guaranteed to be a dict
                 })
+
+                # Store in in-memory cache for web_search_cached_pages
+                _cache_page(metadata.get("sourceURL", url), title, chosen_content or "")
                 
             except Exception as scrape_err:
                 logger.debug("Scrape failed for %s: %s", url, scrape_err)
@@ -998,6 +1054,9 @@ async def web_crawl_tool(
                 "raw_content": content,
                 "metadata": metadata  # Now guaranteed to be a dict
             })
+
+            # Store in in-memory cache for web_search_cached_pages
+            _cache_page(page_url, title, content)
 
         response = {"results": pages}
         

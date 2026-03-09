@@ -308,6 +308,22 @@ def _get_enabled_platforms() -> List[str]:
     return enabled
 
 
+def _platform_toolset_summary(config: dict, platforms: List[str] | None = None) -> Dict[str, Set[str]]:
+    """Return a summary of enabled toolsets per platform.
+
+    When ``platforms`` is None, this uses ``_get_enabled_platforms`` to
+    auto-detect platforms. Tests can pass an explicit list to avoid relying
+    on environment variables.
+    """
+    if platforms is None:
+        platforms = _get_enabled_platforms()
+
+    summary: Dict[str, Set[str]] = {}
+    for pkey in platforms:
+        summary[pkey] = _get_platform_tools(config, pkey)
+    return summary
+
+
 def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     from toolsets import resolve_toolset, TOOLSETS
@@ -874,6 +890,24 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     enabled_platforms = _get_enabled_platforms()
 
     print()
+
+    # Non-interactive summary mode for CLI usage
+    if getattr(args, "summary", False):
+        summary = _platform_toolset_summary(config, enabled_platforms)
+        for pkey in enabled_platforms:
+            pinfo = PLATFORMS[pkey]
+            enabled = summary.get(pkey, set())
+            if not enabled:
+                enabled_label = "none"
+            else:
+                labels = []
+                for ts_key in sorted(enabled):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    labels.append(label)
+                enabled_label = ", ".join(labels)
+            print(color(f"- {pinfo['label']}: {enabled_label}", Colors.DIM))
+        print()
+        return
     print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
     print(color("  Enable or disable tools per platform.", Colors.DIM))
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))

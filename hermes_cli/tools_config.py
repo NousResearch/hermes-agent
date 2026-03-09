@@ -858,15 +858,19 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
-def tools_command(args=None, first_install: bool = False):
+def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` and `hermes setup tools`.
 
     Args:
         first_install: When True (set by the setup wizard on fresh installs),
             skip the platform menu, go straight to the CLI checklist, and
             prompt for API keys on all enabled tools that need them.
+        config: Optional config dict to use.  When called from the setup
+            wizard, the wizard passes its own dict so that platform_toolsets
+            are written into it and survive the wizard's final save_config().
     """
-    config = load_config()
+    if config is None:
+        config = load_config()
     enabled_platforms = _get_enabled_platforms()
 
     print()

@@ -218,6 +218,40 @@ class TestTryActivateFallback:
             call_kwargs = mock_openai.call_args[1]
             assert call_kwargs["api_key"] == "sk-alt-key"
 
+    def test_activates_codex_fallback(self):
+        """OpenAI Codex fallback should use OAuth credentials and codex_responses mode."""
+        agent = _make_agent(
+            fallback_model={"provider": "openai-codex", "model": "gpt-5.3-codex"},
+        )
+        mock_creds = {
+            "api_key": "codex-oauth-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        with (
+            patch("hermes_cli.auth.resolve_codex_runtime_credentials", return_value=mock_creds),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            result = agent._try_activate_fallback()
+            assert result is True
+            assert agent.model == "gpt-5.3-codex"
+            assert agent.provider == "openai-codex"
+            assert agent.api_mode == "codex_responses"
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "codex-oauth-token"
+            assert "chatgpt.com" in call_kwargs["base_url"]
+
+    def test_codex_fallback_fails_gracefully_without_credentials(self):
+        """Codex fallback should return False if no OAuth credentials available."""
+        agent = _make_agent(
+            fallback_model={"provider": "openai-codex", "model": "gpt-5.3-codex"},
+        )
+        with patch(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            side_effect=Exception("No Codex credentials"),
+        ):
+            assert agent._try_activate_fallback() is False
+            assert agent._fallback_activated is False
+
 
 # =============================================================================
 # Fallback config init

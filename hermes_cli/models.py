@@ -48,6 +48,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
+    "nim": [
+        "moonshotai/kimi-k2.5",
+        "meta/llama-3.3-70b-instruct",
+        "qwen/qwen3-235b-a22b",
+    ],
     "minimax-cn": [
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
@@ -62,6 +67,7 @@ _PROVIDER_LABELS = {
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
+    "nim": "NVIDIA NIM",
     "minimax-cn": "MiniMax (China)",
     "custom": "custom endpoint",
 }
@@ -73,6 +79,8 @@ _PROVIDER_ALIASES = {
     "zhipu": "zai",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "nvidia": "nim",
+    "nvidia-nim": "nim",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
 }
@@ -108,7 +116,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex",
-        "zai", "kimi-coding", "minimax", "minimax-cn",
+        "zai", "kimi-coding", "nim", "minimax", "minimax-cn",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

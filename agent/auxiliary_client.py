@@ -10,7 +10,7 @@ Resolution order for text tasks:
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
-  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, NVIDIA NIM, MiniMax, MiniMax-CN)
      — checked via PROVIDER_REGISTRY entries with auth_type='api_key'
   6. None
 
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
+    "nim": "moonshotai/kimi-k2.5",
     "minimax": "MiniMax-M2.5-highspeed",
     "minimax-cn": "MiniMax-M2.5-highspeed",
 }

@@ -490,6 +490,7 @@ def setup_model_provider(config: dict):
     existing_or = get_env_value("OPENROUTER_API_KEY")
     active_oauth = get_active_provider()
     existing_custom = get_env_value("OPENAI_BASE_URL")
+    existing_nim = get_env_value("NVIDIA_API_KEY")
 
     # Detect credentials from other CLI tools
     detected_creds = detect_external_credentials()
@@ -503,7 +504,7 @@ def setup_model_provider(config: dict):
         print()
 
     # Detect if any provider is already configured
-    has_any_provider = bool(active_oauth or existing_custom or existing_or)
+    has_any_provider = bool(active_oauth or existing_custom or existing_or or existing_nim)
     
     # Build "keep current" label
     if active_oauth and active_oauth in PROVIDER_REGISTRY:
@@ -512,6 +513,8 @@ def setup_model_provider(config: dict):
         keep_label = f"Keep current (Custom: {existing_custom})"
     elif existing_or:
         keep_label = "Keep current (OpenRouter)"
+    elif existing_nim:
+        keep_label = "Keep current (NVIDIA NIM)"
     else:
         keep_label = None  # No provider configured — don't show "Keep current"
 
@@ -522,6 +525,7 @@ def setup_model_provider(config: dict):
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
         "Z.AI / GLM (Zhipu AI models)",
         "Kimi / Moonshot (Kimi coding models)",
+        "NVIDIA NIM (NVIDIA-hosted direct API)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
     ]
@@ -538,7 +542,7 @@ def setup_model_provider(config: dict):
     provider_idx = prompt_choice("Select your inference provider:", provider_choices, default_provider)
 
     # Track which provider was selected for model step
-    selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
+    selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", "nim", or None (keep)
     nous_models = []  # populated if Nous login succeeds
 
     if provider_idx == 0:  # Nous Portal
@@ -747,7 +751,39 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
 
-    elif provider_idx == 6:  # MiniMax
+    elif provider_idx == 6:  # NVIDIA NIM
+        selected_provider = "nim"
+        print()
+        print_header("NVIDIA NIM API Key")
+        pconfig = PROVIDER_REGISTRY["nim"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info(f"Base URL: {pconfig.inference_base_url}")
+        print_info("Get your API key at: https://build.nvidia.com/")
+        print()
+
+        existing_key = get_env_value("NVIDIA_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  NVIDIA API key", password=True)
+                if api_key:
+                    save_env_value("NVIDIA_API_KEY", api_key)
+                    print_success("NVIDIA API key updated")
+        else:
+            api_key = prompt("  NVIDIA API key", password=True)
+            if api_key:
+                save_env_value("NVIDIA_API_KEY", api_key)
+                print_success("NVIDIA API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("nim", pconfig.inference_base_url)
+
+    elif provider_idx == 7:  # MiniMax
         selected_provider = "minimax"
         print()
         print_header("MiniMax API Key")
@@ -779,7 +815,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax", pconfig.inference_base_url)
 
-    elif provider_idx == 7:  # MiniMax China
+    elif provider_idx == 8:  # MiniMax China
         selected_provider = "minimax-cn"
         print()
         print_header("MiniMax China API Key")
@@ -811,12 +847,12 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "nim", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -925,6 +961,28 @@ def setup_model_provider(config: dict):
                 config['model'] = kimi_models[model_idx]
                 save_env_value("LLM_MODEL", kimi_models[model_idx])
             elif model_idx == len(kimi_models):
+                custom = prompt("Enter model name")
+                if custom:
+                    config['model'] = custom
+                    save_env_value("LLM_MODEL", custom)
+            # else: keep current
+        elif selected_provider == "nim":
+            nim_models = [
+                "moonshotai/kimi-k2.5",
+                "meta/llama-3.3-70b-instruct",
+                "qwen/qwen3-235b-a22b",
+            ]
+            model_choices = list(nim_models)
+            model_choices.append("Custom model")
+            model_choices.append(f"Keep current ({current_model})")
+
+            keep_idx = len(model_choices) - 1
+            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+
+            if model_idx < len(nim_models):
+                config['model'] = nim_models[model_idx]
+                save_env_value("LLM_MODEL", nim_models[model_idx])
+            elif model_idx == len(nim_models):
                 custom = prompt("Enter model name")
                 if custom:
                     config['model'] = custom
@@ -1719,11 +1777,18 @@ def run_setup_wizard(args):
         return
     
     # Check if this is an existing installation with a provider configured
-    from hermes_cli.auth import get_active_provider
+    from hermes_cli.auth import get_active_provider, PROVIDER_REGISTRY
     active_provider = get_active_provider()
+    has_api_key_provider_env = any(
+        bool(get_env_value(env_var))
+        for pconfig in PROVIDER_REGISTRY.values()
+        if pconfig.auth_type == "api_key"
+        for env_var in pconfig.api_key_env_vars
+    )
     is_existing = (
         bool(get_env_value("OPENROUTER_API_KEY"))
         or bool(get_env_value("OPENAI_BASE_URL"))
+        or has_api_key_provider_env
         or active_provider is not None
     )
     

@@ -555,6 +555,21 @@ toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#
+# Sampling (server-initiated LLM requests) — enabled by default.
+# Per-server config under the 'sampling' key:
+#   analysis:
+#     command: npx
+#     args: ["-y", "analysis-server"]
+#     sampling:
+#       enabled: true           # default: true
+#       model: "gemini-3-flash" # override model (optional)
+#       max_tokens_cap: 4096    # max tokens per request
+#       timeout: 30             # LLM call timeout (seconds)
+#       max_rpm: 10             # max requests per minute
+#       allowed_models: []      # model whitelist (empty = all)
+#       max_tool_rounds: 5      # tool loop limit (0 = disable)
+#       log_level: "info"       # audit verbosity
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

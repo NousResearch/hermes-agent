@@ -481,17 +481,20 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"auto"` | Best available (default). Vision tries OpenRouter → Nous → Codex. | — |
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
 | `"nous"` | Force Nous Portal | `hermes login` |
-| `"openai"` | Force OpenAI direct API (`api.openai.com`). Supports vision (GPT-4o). | `OPENAI_API_KEY` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
-| `"main"` | Use your main chat model's provider. For local/self-hosted models. | Depends on your setup |
+| `"main"` | Use your custom endpoint (`OPENAI_BASE_URL` + `OPENAI_API_KEY`). Works with OpenAI, local models, or any OpenAI-compatible API. | `OPENAI_BASE_URL` + `OPENAI_API_KEY` |
 
 ### Common Setups
 
-**Using OpenAI for vision** (if you have an OpenAI API key):
+**Using OpenAI API key for vision:**
 ```yaml
+# In ~/.hermes/.env:
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_API_KEY=sk-...
+
 auxiliary:
   vision:
-    provider: "openai"
+    provider: "main"
     model: "gpt-4o"       # or "gpt-4o-mini" for cheaper
 ```
 

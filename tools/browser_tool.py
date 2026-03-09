@@ -802,6 +802,7 @@ def _run_browser_command(
     try:
         browser_cmd = _find_agent_browser()
     except FileNotFoundError as e:
+        logger.warning("agent-browser CLI not found: %s", e)
         return {"success": False, "error": str(e)}
     
     from tools.interrupt import is_interrupted
@@ -812,6 +813,7 @@ def _run_browser_command(
     try:
         session_info = _get_session_info(task_id)
     except Exception as e:
+        logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     
     # Build the command with the appropriate backend flag.
@@ -841,6 +843,8 @@ def _run_browser_command(
             f"agent-browser-{session_info['session_name']}"
         )
         os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+        logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
+                     command, task_id, task_socket_dir, len(task_socket_dir))
         
         browser_env = {**os.environ}
         # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
@@ -882,22 +886,29 @@ def _run_browser_command(
                                        "returncode=%s", result.returncode)
                 return parsed
             except json.JSONDecodeError:
-                # If not valid JSON, return as raw output
+                # Non-JSON output indicates agent-browser crash or version mismatch
+                raw = result.stdout.strip()[:500]
+                logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
+                               command, result.returncode, raw[:200])
                 return {
                     "success": True,
-                    "data": {"raw": result.stdout.strip()}
+                    "data": {"raw": raw}
                 }
         
         # Check for errors
         if result.returncode != 0:
             error_msg = result.stderr.strip() if result.stderr else f"Command failed with code {result.returncode}"
+            logger.warning("browser '%s' failed (rc=%s): %s", command, result.returncode, error_msg[:300])
             return {"success": False, "error": error_msg}
         
         return {"success": True, "data": {}}
         
     except subprocess.TimeoutExpired:
+        logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                       command, timeout, task_id, task_socket_dir)
         return {"success": False, "error": f"Command timed out after {timeout} seconds"}
     except Exception as e:
+        logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -1426,8 +1437,11 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
 
         # Use the sync auxiliary vision client directly
         from agent.auxiliary_client import auxiliary_max_tokens_param
+        vision_model = _get_vision_model()
+        logger.debug("browser_vision: analysing screenshot (%d bytes) with model=%s",
+                     len(image_data), vision_model)
         response = _aux_vision_client.chat.completions.create(
-            model=_get_vision_model(),
+            model=vision_model,
             messages=[
                 {
                     "role": "user",
@@ -1453,6 +1467,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         # in the LLM vision analysis, not the capture.  Deleting a valid
         # screenshot loses evidence the user might need.  The 24-hour cleanup
         # in _cleanup_old_screenshots prevents unbounded disk growth.
+        logger.warning("browser_vision failed: %s", e, exc_info=True)
         error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)

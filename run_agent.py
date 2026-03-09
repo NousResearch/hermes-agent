@@ -2160,17 +2160,74 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    # Maps provider id → (default_base_url, [env_var_names])
-    # Only includes providers that Hermes actually supports.
-    # For anything else, use base_url + api_key_env in the config.
-    # Note: openai-codex is handled specially (OAuth, not env var).
-    _FALLBACK_PROVIDERS = {
+    # API-key providers: provider → (base_url, [env_var_names])
+    _FALLBACK_API_KEY_PROVIDERS = {
         "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
         "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
         "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
         "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
         "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
     }
+
+    # OAuth providers: provider → (resolver_import_path, api_mode)
+    # Each resolver returns {"api_key": ..., "base_url": ...}.
+    _FALLBACK_OAUTH_PROVIDERS = {
+        "openai-codex": ("resolve_codex_runtime_credentials", "codex_responses"),
+        "nous": ("resolve_nous_runtime_credentials", "chat_completions"),
+    }
+
+    def _resolve_fallback_credentials(
+        self, fb_provider: str, fb_config: dict
+    ) -> Optional[tuple]:
+        """Resolve credentials for a fallback provider.
+
+        Returns (api_key, base_url, api_mode) on success, or None on failure.
+        Handles three cases:
+          1. OAuth providers (openai-codex, nous) — call credential resolver
+          2. API-key providers (openrouter, zai, etc.) — read env var
+          3. Custom endpoints — use base_url + api_key_env from config
+        """
+        # ── 1. OAuth providers ────────────────────────────────────────
+        if fb_provider in self._FALLBACK_OAUTH_PROVIDERS:
+            resolver_name, api_mode = self._FALLBACK_OAUTH_PROVIDERS[fb_provider]
+            try:
+                import hermes_cli.auth as _auth
+                resolver = getattr(_auth, resolver_name)
+                creds = resolver()
+                return creds["api_key"], creds["base_url"], api_mode
+            except Exception as e:
+                logging.warning(
+                    "Fallback to %s failed (credential resolution): %s",
+                    fb_provider, e,
+                )
+                return None
+
+        # ── 2. API-key providers ──────────────────────────────────────
+        fb_key = (fb_config.get("api_key") or "").strip()
+        if not fb_key:
+            key_env = (fb_config.get("api_key_env") or "").strip()
+            if key_env:
+                fb_key = os.getenv(key_env, "")
+            elif fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+                for env_var in self._FALLBACK_API_KEY_PROVIDERS[fb_provider][1]:
+                    fb_key = os.getenv(env_var, "")
+                    if fb_key:
+                        break
+        if not fb_key:
+            logging.warning(
+                "Fallback model configured but no API key found for provider '%s'",
+                fb_provider,
+            )
+            return None
+
+        # ── 3. Resolve base URL ───────────────────────────────────────
+        fb_base_url = (fb_config.get("base_url") or "").strip()
+        if not fb_base_url and fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+            fb_base_url = self._FALLBACK_API_KEY_PROVIDERS[fb_provider][0]
+        if not fb_base_url:
+            fb_base_url = OPENROUTER_BASE_URL
+
+        return fb_key, fb_base_url, "chat_completions"
 
     def _try_activate_fallback(self) -> bool:
         """Switch to the configured fallback model/provider.
@@ -2189,47 +2246,12 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return False
 
-        # ── Resolve credentials ──────────────────────────────────────────
-        # OpenAI Codex uses OAuth (not a simple env var), so handle it
-        # separately from the standard env-var-based providers.
-        fb_api_mode = "chat_completions"
+        resolved = self._resolve_fallback_credentials(fb_provider, fb)
+        if resolved is None:
+            return False
+        fb_key, fb_base_url, fb_api_mode = resolved
 
-        if fb_provider == "openai-codex":
-            try:
-                from hermes_cli.auth import resolve_codex_runtime_credentials
-                creds = resolve_codex_runtime_credentials()
-                fb_key = creds["api_key"]
-                fb_base_url = creds["base_url"]
-                fb_api_mode = "codex_responses"
-            except Exception as e:
-                logging.warning("Fallback to openai-codex failed (no credentials): %s", e)
-                return False
-        else:
-            # Standard env-var resolution
-            fb_key = (fb.get("api_key") or "").strip()
-            if not fb_key:
-                key_env = (fb.get("api_key_env") or "").strip()
-                if key_env:
-                    fb_key = os.getenv(key_env, "")
-                elif fb_provider in self._FALLBACK_PROVIDERS:
-                    for env_var in self._FALLBACK_PROVIDERS[fb_provider][1]:
-                        fb_key = os.getenv(env_var, "")
-                        if fb_key:
-                            break
-            if not fb_key:
-                logging.warning(
-                    "Fallback model configured but no API key found for provider '%s'",
-                    fb_provider,
-                )
-                return False
-
-            fb_base_url = (fb.get("base_url") or "").strip()
-            if not fb_base_url and fb_provider in self._FALLBACK_PROVIDERS:
-                fb_base_url = self._FALLBACK_PROVIDERS[fb_provider][0]
-            if not fb_base_url:
-                fb_base_url = OPENROUTER_BASE_URL
-
-        # ── Build new client ──────────────────────────────────────────
+        # Build new client
         try:
             client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
             if "openrouter" in fb_base_url.lower():

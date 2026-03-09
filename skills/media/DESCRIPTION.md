@@ -1,1 +1,3 @@
-Media content extraction and transformation tools — YouTube transcripts, audio, video processing.
+---
+description: Skills for working with media content — YouTube transcripts, GIF search, music generation, and audio visualization.
+---

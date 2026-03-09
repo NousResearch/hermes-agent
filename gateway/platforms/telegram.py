@@ -133,6 +133,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_command
             ))
             self._app.add_handler(TelegramMessageHandler(
+                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                self._handle_location_message
+            ))
+            self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
@@ -546,6 +550,41 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
     
+    async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming location/venue pin messages."""
+        if not update.message:
+            return
+
+        msg = update.message
+        venue = getattr(msg, "venue", None)
+        location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
+
+        if not location:
+            return
+
+        lat = getattr(location, "latitude", None)
+        lon = getattr(location, "longitude", None)
+        if lat is None or lon is None:
+            return
+
+        # Build a text message with coordinates and context
+        parts = ["[The user shared a location pin.]"]
+        if venue:
+            title = getattr(venue, "title", None)
+            address = getattr(venue, "address", None)
+            if title:
+                parts.append(f"Venue: {title}")
+            if address:
+                parts.append(f"Address: {address}")
+        parts.append(f"latitude: {lat}")
+        parts.append(f"longitude: {lon}")
+        parts.append(f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+        parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
+
+        event = self._build_message_event(msg, MessageType.LOCATION)
+        event.text = "\n".join(parts)
+        await self.handle_message(event)
+
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:

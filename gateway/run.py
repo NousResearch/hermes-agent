@@ -85,6 +85,8 @@ if _config_path.exists():
                 "enabled": "CONTEXT_COMPRESSION_ENABLED",
                 "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
                 "summary_model": "CONTEXT_COMPRESSION_MODEL",
+                "prompt": "CONTEXT_COMPRESSION_PROMPT",
+                "user_message_token_budget": "CONTEXT_COMPRESSION_USER_MESSAGE_TOKEN_BUDGET",
             }
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:

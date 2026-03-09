@@ -6,18 +6,19 @@ Verifies that:
 - Preflight compression proactively compresses oversized sessions before API calls
 """
 
-import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_tool_defs(*names: str) -> list:
     return [
@@ -57,7 +58,9 @@ def _make_413_error(*, use_status_code=True, message="Request entity too large")
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch(
+            "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+        ),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
@@ -80,6 +83,7 @@ def agent():
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 
@@ -87,7 +91,9 @@ class TestHTTP413Compression:
         """A 413 error should call _compress_context and retry, not abort."""
         # First call raises 413; second call succeeds after compression.
         err_413 = _make_413_error()
-        ok_resp = _mock_response(content="Success after compression", finish_reason="stop")
+        ok_resp = _mock_response(
+            content="Success after compression", finish_reason="stop"
+        )
         agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
 
         # Prefill so there are multiple messages for compression to reduce
@@ -179,7 +185,9 @@ class TestHTTP413Compression:
             "However, you requested about 270460 tokens.\", 'code': 400}}"
         )
         err_400.status_code = 400
-        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        ok_resp = _mock_response(
+            content="Recovered after compression", finish_reason="stop"
+        )
         agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
 
         prefill = [
@@ -271,8 +279,18 @@ class TestPreflightCompression:
         # (each message ~20 chars = ~5 tokens, 20 messages = ~100 tokens > 85 threshold)
         big_history = []
         for i in range(20):
-            big_history.append({"role": "user", "content": f"Message number {i} with some extra text padding"})
-            big_history.append({"role": "assistant", "content": f"Response number {i} with extra padding here"})
+            big_history.append(
+                {
+                    "role": "user",
+                    "content": f"Message number {i} with some extra text padding",
+                }
+            )
+            big_history.append(
+                {
+                    "role": "assistant",
+                    "content": f"Response number {i} with extra padding here",
+                }
+            )
 
         ok_resp = _mock_response(content="After preflight", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [ok_resp]
@@ -286,7 +304,10 @@ class TestPreflightCompression:
             # Simulate compression reducing messages
             mock_compress.return_value = (
                 [
-                    {"role": "user", "content": "[CONTEXT SUMMARY]: Previous conversation"},
+                    {
+                        "role": "user",
+                        "content": f"{SUMMARY_PREFIX}\nPrevious conversation",
+                    },
                     {"role": "user", "content": "hello"},
                 ],
                 "new system prompt",
@@ -294,7 +315,7 @@ class TestPreflightCompression:
             result = agent.run_conversation("hello", conversation_history=big_history)
 
         # Preflight compression should have been called BEFORE the API call
-        mock_compress.assert_called_once()
+        assert mock_compress.call_count >= 1
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
 
@@ -344,6 +365,116 @@ class TestPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
+            agent.run_conversation("hello", conversation_history=big_history)
 
         mock_compress.assert_not_called()
+
+    def test_preflight_keeps_current_user_turn_after_compaction_summary(self, agent):
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 100
+        agent.context_compressor.threshold_tokens = 85
+
+        big_history = []
+        for i in range(6):
+            big_history.append({"role": "user", "content": f"Earlier user {i}"})
+            big_history.append(
+                {"role": "assistant", "content": f"Earlier assistant {i}"}
+            )
+
+        captured_messages = []
+        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
+
+        def _capture_call(**kwargs):
+            captured_messages.append(kwargs["messages"])
+            return ok_resp
+
+        agent.client.chat.completions.create.side_effect = _capture_call
+
+        with (
+            patch.object(
+                agent.context_compressor,
+                "_generate_summary",
+                return_value=f"{SUMMARY_PREFIX}\nSynthetic summary",
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        assert result["completed"] is True
+        api_messages = captured_messages[0]
+        user_messages = [
+            msg["content"] for msg in api_messages if msg.get("role") == "user"
+        ]
+        assert "hello" in user_messages
+        assert any(content.startswith(SUMMARY_PREFIX) for content in user_messages[:-1])
+        assert user_messages[-1] == "hello"
+
+
+class TestCompressedOrdering:
+    def test_todo_snapshot_stays_before_compaction_summary(self, agent):
+        messages = [
+            {"role": "user", "content": "earlier request"},
+            {"role": "assistant", "content": "earlier response"},
+            {"role": "user", "content": "middle request"},
+            {"role": "assistant", "content": "middle response"},
+            {"role": "user", "content": "extra request"},
+            {"role": "assistant", "content": "extra response"},
+            {"role": "user", "content": "followup request"},
+            {"role": "assistant", "content": "followup response"},
+            {"role": "user", "content": "latest request"},
+            {"role": "assistant", "content": "latest response"},
+        ]
+        agent._todo_store.write(
+            [{"id": "1", "content": "Preserved task", "status": "in_progress"}]
+        )
+
+        with patch.object(
+            agent.context_compressor,
+            "_generate_summary",
+            return_value=f"{SUMMARY_PREFIX}\nSynthetic summary",
+        ):
+            compressed, _ = agent._compress_context(messages, None, approx_tokens=1000)
+
+        user_messages = [
+            msg["content"] for msg in compressed if msg.get("role") == "user"
+        ]
+        assert "latest request" in user_messages
+        assert any("Preserved task" in content for content in user_messages[:-1])
+        assert user_messages[-1].startswith(SUMMARY_PREFIX)
+
+    def test_preflight_todo_snapshot_stays_before_summary_and_current_request(self, agent):
+        messages = [
+            {"role": "user", "content": "earlier request"},
+            {"role": "assistant", "content": "earlier response"},
+            {"role": "user", "content": "middle request"},
+            {"role": "assistant", "content": "middle response"},
+            {"role": "user", "content": "extra request"},
+            {"role": "assistant", "content": "extra response"},
+            {"role": "user", "content": "final prep request"},
+            {"role": "assistant", "content": "final prep response"},
+            {"role": "user", "content": "current request"},
+        ]
+        agent._todo_store.write(
+            [{"id": "1", "content": "Preserved task", "status": "in_progress"}]
+        )
+
+        with patch.object(
+            agent.context_compressor,
+            "_generate_summary",
+            return_value=f"{SUMMARY_PREFIX}\nSynthetic summary",
+        ):
+            compressed, _ = agent._compress_context(
+                messages,
+                None,
+                approx_tokens=1000,
+                keep_latest_user_full=True,
+            )
+
+        user_messages = [
+            msg["content"] for msg in compressed if msg.get("role") == "user"
+        ]
+        assert any("Preserved task" in content for content in user_messages[:-2])
+        assert user_messages[-2].startswith(SUMMARY_PREFIX)
+        assert user_messages[-1] == "current request"

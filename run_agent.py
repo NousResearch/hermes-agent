@@ -2469,7 +2469,14 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None) -> tuple:
+    def _compress_context(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: int = None,
+        keep_latest_user_full: bool = False,
+    ) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
@@ -2478,11 +2485,21 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        compressed = self.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            keep_latest_user_full=keep_latest_user_full,
+        )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            insert_at = len(compressed)
+            for idx in range(len(compressed) - 1, -1, -1):
+                msg = compressed[idx]
+                if self.context_compressor._is_compaction_summary_message(msg):
+                    insert_at = idx
+                    break
+            compressed.insert(insert_at, {"role": "user", "content": todo_snapshot})
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -3005,7 +3022,10 @@ class AIAgent:
                 for _pass in range(3):
                     _orig_len = len(messages)
                     messages, active_system_prompt = self._compress_context(
-                        messages, system_message, approx_tokens=_preflight_tokens
+                        messages,
+                        system_message,
+                        approx_tokens=_preflight_tokens,
+                        keep_latest_user_full=True,
                     )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further

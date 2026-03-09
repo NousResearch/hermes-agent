@@ -87,6 +87,8 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "threshold": 0.85,
         "summary_model": "google/gemini-3-flash-preview",
+        "prompt": "",
+        "user_message_token_budget": 20000,
     },
     
     "display": {
@@ -890,6 +892,11 @@ def show_config():
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
+        prompt = compression.get("prompt", "") or "(default Codex prompt)"
+        print(f"  Prompt:       {prompt}")
+        print(
+            f"  User budget:  {compression.get('user_message_token_budget', 20000):,} tokens"
+        )
     
     # Messaging
     print()

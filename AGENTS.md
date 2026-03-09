@@ -185,6 +185,8 @@ Key components:
 - `agent/skill_commands.py` - Scans skills and builds invocation messages (shared with gateway)
 - `load_cli_config()` - Loads config, sets environment variables for terminal
 - `build_welcome_banner()` - Displays ASCII art logo, tools, and skills summary
+- `_preload_resumed_session()` - Loads session history early (before banner) for immediate display on resume
+- `_display_resumed_history()` - Renders a compact conversation recap in a Rich Panel on session resume
 
 CLI UX notes:
 - Thinking spinner (during LLM API call) shows animated kawaii face + verb (`(⌐■_■) deliberating...`)
@@ -194,6 +196,7 @@ CLI UX notes:
 - The prompt shows `⚕ ❯` when the agent is working, `❯` when idle
 - Pasting 5+ lines auto-saves to `~/.hermes/pastes/` and collapses to a reference
 - Multi-line input via Alt+Enter or Ctrl+J
+- When resuming a session (`--continue`/`--resume`), a "Previous Conversation" panel shows previous messages before the input prompt (configurable via `display.resume_display`)
 - `/commands` - Process user commands like `/help`, `/clear`, `/personality`, etc.
 - `/skill-name` - Invoke installed skills directly (e.g., `/axolotl`, `/gif-search`)
 

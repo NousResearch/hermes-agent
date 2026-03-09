@@ -805,6 +805,41 @@ class HonchoSessionManager:
             logger.debug("Honcho search_context failed: %s", e)
             return ""
 
+    def create_conclusion(self, session_key: str, content: str) -> bool:
+        """Write a conclusion about the user back to Honcho.
+
+        Conclusions are facts the AI peer observes about the user —
+        preferences, corrections, clarifications, project context.
+        They feed into the user's peer card and representation.
+
+        Args:
+            session_key: Session to associate the conclusion with.
+            content: The conclusion text (e.g. "User prefers dark mode").
+
+        Returns:
+            True on success, False on failure.
+        """
+        if not content or not content.strip():
+            return False
+
+        session = self._cache.get(session_key)
+        if not session:
+            logger.warning("No session cached for '%s', skipping conclusion", session_key)
+            return False
+
+        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+        try:
+            conclusions_scope = assistant_peer.conclusions_of(session.user_peer_id)
+            conclusions_scope.create([{
+                "content": content.strip(),
+                "session_id": session.honcho_session_id,
+            }])
+            logger.info("Created conclusion for %s: %s", session_key, content[:80])
+            return True
+        except Exception as e:
+            logger.error("Failed to create conclusion: %s", e)
+            return False
+
     def seed_ai_identity(self, session_key: str, content: str, source: str = "manual") -> bool:
         """
         Seed the AI peer's Honcho representation from text content.

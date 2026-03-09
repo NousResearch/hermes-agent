@@ -252,6 +252,40 @@ class TestTryActivateFallback:
             assert agent._try_activate_fallback() is False
             assert agent._fallback_activated is False
 
+    def test_activates_nous_fallback(self):
+        """Nous Portal fallback should use OAuth credentials and chat_completions mode."""
+        agent = _make_agent(
+            fallback_model={"provider": "nous", "model": "nous-hermes-3"},
+        )
+        mock_creds = {
+            "api_key": "nous-agent-key-abc",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+        }
+        with (
+            patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value=mock_creds),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            result = agent._try_activate_fallback()
+            assert result is True
+            assert agent.model == "nous-hermes-3"
+            assert agent.provider == "nous"
+            assert agent.api_mode == "chat_completions"
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "nous-agent-key-abc"
+            assert "nousresearch.com" in call_kwargs["base_url"]
+
+    def test_nous_fallback_fails_gracefully_without_login(self):
+        """Nous fallback should return False if not logged in."""
+        agent = _make_agent(
+            fallback_model={"provider": "nous", "model": "nous-hermes-3"},
+        )
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            side_effect=Exception("Not logged in to Nous Portal"),
+        ):
+            assert agent._try_activate_fallback() is False
+            assert agent._fallback_activated is False
+
 
 # =============================================================================
 # Fallback config init

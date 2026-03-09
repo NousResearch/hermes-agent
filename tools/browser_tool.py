@@ -81,10 +81,20 @@ DEFAULT_SESSION_TIMEOUT = 300
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
 # Vision client — for browser_vision (screenshot analysis)
-_aux_vision_client, _DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
+# Wrapped in try/except so a broken auxiliary config doesn't prevent the entire
+# browser_tool module from importing (which would disable all 10 browser tools).
+try:
+    _aux_vision_client, _DEFAULT_VISION_MODEL = get_vision_auxiliary_client()
+except Exception as _init_err:
+    logger.debug("Could not initialise vision auxiliary client: %s", _init_err)
+    _aux_vision_client, _DEFAULT_VISION_MODEL = None, None
 
 # Text client — for page snapshot summarization (same config as web_extract)
-_aux_text_client, _DEFAULT_TEXT_MODEL = get_text_auxiliary_client("web_extract")
+try:
+    _aux_text_client, _DEFAULT_TEXT_MODEL = get_text_auxiliary_client("web_extract")
+except Exception as _init_err:
+    logger.debug("Could not initialise text auxiliary client: %s", _init_err)
+    _aux_text_client, _DEFAULT_TEXT_MODEL = None, None
 
 # Module-level alias for availability checks
 EXTRACTION_MODEL = _DEFAULT_TEXT_MODEL or _DEFAULT_VISION_MODEL
@@ -112,6 +122,23 @@ def _is_local_mode() -> bool:
     session via ``--cdp``.
     """
     return not (os.environ.get("BROWSERBASE_API_KEY") and os.environ.get("BROWSERBASE_PROJECT_ID"))
+
+
+def _socket_safe_tmpdir() -> str:
+    """Return a short temp directory path suitable for Unix domain sockets.
+
+    macOS sets ``TMPDIR`` to ``/var/folders/xx/.../T/`` (~51 chars).  When we
+    append ``agent-browser-hermes_…`` the resulting socket path exceeds the
+    104-byte macOS limit for ``AF_UNIX`` addresses, causing agent-browser to
+    fail with "Failed to create socket directory" or silent screenshot failures.
+
+    Linux ``tempfile.gettempdir()`` already returns ``/tmp``, so this is a
+    no-op there.  On macOS we bypass ``TMPDIR`` and use ``/tmp`` directly
+    (symlink to ``/private/tmp``, sticky-bit protected, always available).
+    """
+    if sys.platform == "darwin":
+        return "/tmp"
+    return tempfile.gettempdir()
 
 
 # Track active sessions per task
@@ -165,7 +192,7 @@ def _emergency_cleanup_all_sessions():
                     try:
                         browser_cmd = _find_agent_browser()
                         task_socket_dir = os.path.join(
-                            tempfile.gettempdir(),
+                            _socket_safe_tmpdir(),
                             f"agent-browser-{session_name}"
                         )
                         env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
@@ -810,10 +837,10 @@ def _run_browser_command(
         # Without this, parallel workers fight over the same default socket path,
         # causing "Failed to create socket directory: Permission denied" errors.
         task_socket_dir = os.path.join(
-            tempfile.gettempdir(), 
+            _socket_safe_tmpdir(),
             f"agent-browser-{session_info['session_name']}"
         )
-        os.makedirs(task_socket_dir, exist_ok=True)
+        os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
         
         browser_env = {**os.environ}
         # Ensure PATH includes standard dirs (systemd services may have minimal PATH)
@@ -1363,16 +1390,24 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         )
         
         if not result.get("success"):
+            error_detail = result.get("error", "Unknown error")
+            mode = "local" if _is_local_mode() else "cloud"
             return json.dumps({
                 "success": False,
-                "error": f"Failed to take screenshot: {result.get('error', 'Unknown error')}"
+                "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
             }, ensure_ascii=False)
         
         # Check if screenshot file was created
         if not screenshot_path.exists():
+            mode = "local" if _is_local_mode() else "cloud"
             return json.dumps({
                 "success": False,
-                "error": "Screenshot file was not created"
+                "error": (
+                    f"Screenshot file was not created at {screenshot_path} ({mode} mode). "
+                    f"This may indicate a socket path issue (macOS /var/folders/), "
+                    f"a missing Chromium install ('agent-browser install'), "
+                    f"or a stale daemon process."
+                ),
             }, ensure_ascii=False)
         
         # Read and convert to base64
@@ -1414,16 +1449,15 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
     
     except Exception as e:
-        # Clean up screenshot on failure
+        # Keep the screenshot if it was captured successfully — the failure is
+        # in the LLM vision analysis, not the capture.  Deleting a valid
+        # screenshot loses evidence the user might need.  The 24-hour cleanup
+        # in _cleanup_old_screenshots prevents unbounded disk growth.
+        error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
         if screenshot_path.exists():
-            try:
-                screenshot_path.unlink()
-            except Exception:
-                pass
-        return json.dumps({
-            "success": False,
-            "error": f"Error during vision analysis: {str(e)}"
-        }, ensure_ascii=False)
+            error_info["screenshot_path"] = str(screenshot_path)
+            error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
+        return json.dumps(error_info, ensure_ascii=False)
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
@@ -1537,7 +1571,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         # Kill the daemon process and clean up socket directory
         session_name = session_info.get("session_name", "")
         if session_name:
-            socket_dir = os.path.join(tempfile.gettempdir(), f"agent-browser-{session_name}")
+            socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{session_name}")
             if os.path.exists(socket_dir):
                 # agent-browser writes {session}.pid in the socket dir
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")

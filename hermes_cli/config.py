@@ -108,21 +108,17 @@ DEFAULT_CONFIG = {
     # Hermes will automatically switch to this model for the remainder of the session.
     # Set to None / omit to disable fallback.
     #
-    # Built-in providers (auto-resolve base_url and API key from env):
-    #   openrouter  (OPENROUTER_API_KEY)   — best fallback, routes to any model
-    #   openai      (OPENAI_API_KEY)       — GPT-4.1, o3, etc.
-    #   nous        (NOUS_API_KEY)         — Nous inference API
-    #   deepseek    (DEEPSEEK_API_KEY)     — DeepSeek models
-    #   together    (TOGETHER_API_KEY)     — Together AI
-    #   groq        (GROQ_API_KEY)         — Groq (fast inference)
-    #   fireworks   (FIREWORKS_API_KEY)    — Fireworks AI
-    #   mistral     (MISTRAL_API_KEY)      — Mistral models
-    #   gemini      (GEMINI_API_KEY)       — Google Gemini
+    # Supported providers (auto-resolve base_url and API key from env):
+    #   openrouter   (OPENROUTER_API_KEY)   — routes to any model
+    #   zai          (ZAI_API_KEY)          — Z.AI / GLM
+    #   kimi-coding  (KIMI_API_KEY)         — Kimi / Moonshot
+    #   minimax      (MINIMAX_API_KEY)      — MiniMax
+    #   minimax-cn   (MINIMAX_CN_API_KEY)   — MiniMax (China)
     #
     # For any other OpenAI-compatible endpoint, use base_url + api_key_env.
     "fallback_model": {
         "provider": "",   # provider name from the list above
-        "model": "",      # model slug, e.g. "anthropic/claude-sonnet-4", "gpt-4.1"
+        "model": "",      # model slug, e.g. "anthropic/claude-sonnet-4"
         # Optional overrides (usually auto-resolved from provider):
         # "base_url": "",       # custom endpoint URL
         # "api_key_env": "",    # env var name for API key (e.g. "MY_CUSTOM_KEY")

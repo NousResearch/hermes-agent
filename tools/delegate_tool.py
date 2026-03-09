@@ -321,9 +321,27 @@ def delegate_task(
             )
         })
 
-    # Load config
+    # Load config — check delegation config first, then agent.max_turns, then env var
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = cfg.get("max_iterations")
+    if default_max_iter is None:
+        # Try agent.max_turns from main config
+        try:
+            from cli import CLI_CONFIG
+            agent_cfg = CLI_CONFIG.get("agent", {})
+            default_max_iter = agent_cfg.get("max_turns")
+        except Exception:
+            pass
+    if default_max_iter is None:
+        # Check environment variable
+        env_max = os.getenv("HERMES_MAX_ITERATIONS")
+        if env_max:
+            try:
+                default_max_iter = int(env_max)
+            except ValueError:
+                pass
+    if default_max_iter is None:
+        default_max_iter = DEFAULT_MAX_ITERATIONS
     effective_max_iter = max_iterations or default_max_iter
 
     # Normalize to task list

@@ -4005,7 +4005,7 @@ def main(
         provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
+        max_turns: Maximum tool-calling iterations (default: 90)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

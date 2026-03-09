@@ -1274,7 +1274,10 @@ def setup_agent_settings(config: dict):
         max_iter = int(max_iter_str)
         if max_iter > 0:
             save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
-            config['max_turns'] = max_iter
+            # Write to agent.max_turns (the canonical location)
+            if 'agent' not in config:
+                config['agent'] = {}
+            config['agent']['max_turns'] = max_iter
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")

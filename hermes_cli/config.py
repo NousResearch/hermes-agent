@@ -62,7 +62,11 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    
+    # Agent behavior settings
+    "agent": {
+        "max_turns": 90,  # Maximum tool-calling iterations per conversation
+    },
     
     "terminal": {
         "backend": "local",
@@ -166,7 +170,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 5,
+    "_config_version": 6,
 }
 
 # =============================================================================
@@ -611,6 +615,33 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
 
+    # ── Version 5 → 6: migrate root-level max_turns to agent.max_turns ──
+    if current_ver < 6:
+        config = load_config()
+        # Check if root-level max_turns exists and agent.max_turns doesn't
+        root_max_turns = config.get("max_turns")
+        agent_section = config.get("agent", {})
+        if not isinstance(agent_section, dict):
+            agent_section = {}
+        
+        if root_max_turns is not None and "max_turns" not in agent_section:
+            # Migrate root-level max_turns to agent.max_turns
+            if "agent" not in config:
+                config["agent"] = {}
+            config["agent"]["max_turns"] = root_max_turns
+            # Remove the root-level key
+            del config["max_turns"]
+            results["config_added"].append(f"agent.max_turns={root_max_turns} (migrated from root)")
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated max_turns to agent.max_turns: {root_max_turns}")
+        elif root_max_turns is not None:
+            # Both exist, just remove root-level to avoid confusion
+            del config["max_turns"]
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Removed deprecated root-level max_turns (agent.max_turns already set)")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -908,7 +939,9 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    agent_config = config.get('agent', {})
+    max_turns = agent_config.get('max_turns') or config.get('max_turns', 90)  # backwards compat
+    print(f"  Max turns:    {max_turns}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Terminal

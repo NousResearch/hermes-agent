@@ -882,7 +882,10 @@ def tools_command(args=None):
         # Show checklist
         new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
 
-        if new_enabled != current_enabled:
+        # Detect first-time configuration (no saved toolsets for this platform yet)
+        is_first_config = pkey not in config.get("platform_toolsets", {})
+
+        if new_enabled != current_enabled or is_first_config:
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
 
@@ -895,12 +898,28 @@ def tools_command(args=None):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Configure newly enabled toolsets that need API keys
-            if added:
-                for ts_key in sorted(added):
-                    if TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key):
-                        if not _toolset_has_keys(ts_key):
-                            _configure_toolset(ts_key, config)
+            # Determine which tools need API key configuration.
+            # On first-time setup, check ALL enabled tools (the defaults
+            # include everything, so "added" would be empty and no API key
+            # prompts would ever appear).  For returning users, only
+            # prompt for newly added tools.
+            tools_to_configure = new_enabled if is_first_config else added
+
+            unconfigured = [
+                ts_key for ts_key in sorted(tools_to_configure)
+                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+                and not _toolset_has_keys(ts_key)
+            ]
+
+            if unconfigured:
+                print()
+                print(color(f"  {len(unconfigured)} tool(s) need API keys to be configured:", Colors.YELLOW))
+                for ts_key in unconfigured:
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    print(color(f"    • {label}", Colors.DIM))
+                print()
+                for ts_key in unconfigured:
+                    _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)

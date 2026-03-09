@@ -118,6 +118,12 @@ if _config_path.exists():
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
             os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+        # Security settings
+        _security_cfg = _cfg.get("security", {})
+        if isinstance(_security_cfg, dict):
+            _redact = _security_cfg.get("redact_secrets")
+            if _redact is not None:
+                os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

@@ -147,6 +147,8 @@ TOOL_CATEGORIES = {
     },
     "web": {
         "name": "Web Search & Extract",
+        "setup_title": "Select Search Provider",
+        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need Firecrawl.",
         "icon": "🔍",
         "providers": [
             {
@@ -600,11 +602,18 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
         if provider.get("tag"):
             _print_info(f"  {provider['tag']}")
+        # For single-provider tools, show a note if available
+        if cat.get("setup_note"):
+            _print_info(f"  {cat['setup_note']}")
         _configure_provider(provider, config)
     else:
         # Multiple providers - let user choose
         print()
-        print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
+        # Use custom title if provided (e.g. "Select Search Provider")
+        title = cat.get("setup_title", f"Choose a provider")
+        print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
+        if cat.get("setup_note"):
+            _print_info(f"  {cat['setup_note']}")
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
@@ -622,6 +631,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
+        # Add skip option
+        provider_choices.append("Skip — keep defaults / configure later")
+
         # Detect current provider as default
         default_idx = 0
         for i, p in enumerate(providers):
@@ -633,7 +645,13 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                 default_idx = i
                 break
 
-        provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
+        provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
+
+        # Skip selected
+        if provider_idx >= len(providers):
+            _print_info(f"  Skipped {name}")
+            return
+
         _configure_provider(providers[provider_idx], config)
 
 
@@ -880,22 +898,24 @@ def tools_command(args=None, first_install: bool = False):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Prompt for API keys on ALL selected tools that need them
-            unconfigured = [
+            # Walk through ALL selected tools that have provider options or
+            # need API keys.  This ensures browser (Local vs Browserbase),
+            # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
+            # a free provider exists.
+            to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
-                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
-                and not _toolset_has_keys(ts_key)
+                if TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)
             ]
 
-            if unconfigured:
+            if to_configure:
                 print()
-                print(color(f"  {len(unconfigured)} tool(s) need API keys to be configured:", Colors.YELLOW))
-                for ts_key in unconfigured:
+                print(color(f"  Configuring {len(to_configure)} tool(s):", Colors.YELLOW))
+                for ts_key in to_configure:
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
                     print(color(f"    • {label}", Colors.DIM))
-                print(color("  Press Enter to skip any key you don't have yet.", Colors.DIM))
+                print(color("  You can skip any tool you don't need right now.", Colors.DIM))
                 print()
-                for ts_key in unconfigured:
+                for ts_key in to_configure:
                     _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)

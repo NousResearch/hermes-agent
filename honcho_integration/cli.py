@@ -147,13 +147,13 @@ def cmd_setup(args) -> None:
         cfg["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
 
     # Recall mode
-    current_recall = cfg.get("recallMode", "auto")
+    current_recall = cfg.get("recallMode", "hybrid")
     print(f"\n  Recall mode options:")
-    print("    auto    — pre-warmed context + memory tools available (default)")
+    print("    hybrid  — pre-warmed context + memory tools available (default)")
     print("    context — pre-warmed context only, memory tools suppressed")
     print("    tools   — no pre-loaded context, rely on tool calls only")
     new_recall = _prompt("Recall mode", default=current_recall)
-    if new_recall in ("auto", "context", "tools"):
+    if new_recall in ("hybrid", "context", "tools"):
         cfg["recallMode"] = new_recall
 
     # Session strategy

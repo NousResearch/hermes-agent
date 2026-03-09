@@ -434,6 +434,23 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 # Configuration from environment variables
+
+def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
+    """Parse an environment variable with *converter*, raising a clear error on bad values.
+
+    Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
+    causes an unhandled ValueError that kills every terminal command.
+    """
+    raw = os.getenv(name, default)
+    try:
+        return converter(raw)
+    except (ValueError, json.JSONDecodeError):
+        raise ValueError(
+            f"Invalid value for {name}: {raw!r} (expected {type_label}). "
+            f"Check ~/.hermes/.env or environment variables."
+        )
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -470,19 +487,19 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
-        "timeout": int(os.getenv("TERMINAL_TIMEOUT", "180")),
-        "lifetime_seconds": int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300")),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": int(os.getenv("TERMINAL_SSH_PORT", "22")),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
         # Container resource config (applies to docker, singularity, modal, daytona -- ignored for local/ssh)
-        "container_cpu": float(os.getenv("TERMINAL_CONTAINER_CPU", "1")),
-        "container_memory": int(os.getenv("TERMINAL_CONTAINER_MEMORY", "5120")),     # MB (default 5GB)
-        "container_disk": int(os.getenv("TERMINAL_CONTAINER_DISK", "51200")),        # MB (default 50GB)
+        "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
+        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
+        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
-        "docker_volumes": json.loads(os.getenv("TERMINAL_DOCKER_VOLUMES", "[]")),
+        "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
 
 

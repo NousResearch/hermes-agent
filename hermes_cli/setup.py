@@ -1671,7 +1671,7 @@ def setup_tools(config: dict, first_install: bool = False):
             (no platform menu, prompts for all unconfigured API keys).
     """
     from hermes_cli.tools_config import tools_command
-    tools_command(first_install=first_install)
+    tools_command(first_install=first_install, config=config)
 
 
 # =============================================================================

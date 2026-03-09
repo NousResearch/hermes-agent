@@ -642,7 +642,13 @@ delegation:
     - terminal
     - file
     - web
+  # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
+  # provider: "openrouter"                  # Override provider (empty = inherit parent)
 ```
+
+**Subagent model override:** By default, subagents inherit the parent agent's model. Set `delegation.model` to use a cheaper/faster model for subtasks — they are often narrowly scoped and don't need the full reasoning power of the primary model. This can significantly reduce costs when using `delegate_task` heavily.
+
+**Precedence:** `delegation.model` in config > parent model (inherited). Provider follows the same logic.
 
 ## Clarify
 

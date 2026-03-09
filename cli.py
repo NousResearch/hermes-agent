@@ -1088,6 +1088,7 @@ class HermesCLI:
         
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
+        self._fallback_chain = None  # CLI-owned fallback chain (survives before agent init)
         self._app = None  # prompt_toolkit Application (set in run())
         
         # Conversation state
@@ -1219,25 +1220,36 @@ class HermesCLI:
         
         try:
             # Build fallback chain from config, with CLI flag override.
-            # If config has explicit chain entries, use those. Otherwise auto-build
-            # by scanning environment for known provider API keys.
+            # If /fallback setup was run before agent init, reuse that chain.
+            # Otherwise: config entries > auto-build from env vars.
             from agent.fallback_chain import FallbackChain
             fallback_override = getattr(self, "_fallback_mode_override", None)
-            fallback_chain = FallbackChain.from_config(CLI_CONFIG)
-            if not fallback_chain.has_fallbacks():
-                fallback_chain = FallbackChain.build_auto_chain(
-                    primary_provider=getattr(self, "provider", "") or "",
-                    primary_model=self.model,
-                    primary_base_url=getattr(self, "base_url", "") or "",
-                )
+            reused_from_setup = False
+            if self._fallback_chain and self._fallback_chain.has_fallbacks():
+                # Reuse chain from /fallback setup (ran before agent init)
+                fallback_chain = self._fallback_chain
+                reused_from_setup = True
+            else:
+                fallback_chain = FallbackChain.from_config(CLI_CONFIG)
+                if not fallback_chain.has_fallbacks():
+                    fallback_chain = FallbackChain.build_auto_chain(
+                        primary_provider=getattr(self, "provider", "") or "",
+                        primary_model=self.model,
+                        primary_base_url=getattr(self, "base_url", "") or "",
+                    )
 
-            # Apply mode: CLI flag > config > default (interactive for CLI)
+            # Apply mode priority: CLI flag > user-set (from /fallback cmd) > default
             if fallback_override == "off":
                 fallback_chain.enabled = False
             elif fallback_override in ("auto", "interactive"):
                 fallback_chain.mode = fallback_override
+            elif reused_from_setup:
+                pass  # User already set mode via /fallback setup or /fallback auto
             elif fallback_chain.has_fallbacks():
-                fallback_chain.mode = "interactive"  # CLI default
+                fallback_chain.mode = "interactive"  # CLI default for auto-built chains
+
+            # Keep CLI-owned reference in sync
+            self._fallback_chain = fallback_chain
 
             self.agent = AIAgent(
                 model=self.model,
@@ -1760,7 +1772,10 @@ class HermesCLI:
     def _handle_fallback_command(self, cmd: str):
         """Handle /fallback — show status, toggle mode, or interactive setup."""
         parts = cmd.split(maxsplit=1)
-        chain = getattr(self.agent, "_fallback_chain", None) if self.agent else None
+        # Read from CLI-owned chain first, fall back to agent's chain
+        chain = self._fallback_chain
+        if chain is None and self.agent:
+            chain = getattr(self.agent, "_fallback_chain", None)
 
         if len(parts) < 2 or not parts[1].strip():
             # Show current status
@@ -1921,8 +1936,9 @@ class HermesCLI:
         mode_str = str(mode_result).strip().lower() if mode_result else ""
         mode = "auto" if "auto" in mode_str else "interactive"
 
-        # Apply to current session
+        # Apply to current session — store on CLI object AND agent (if initialized)
         new_chain = FallbackChain(entries=entries, mode=mode, timeout=30, enabled=True)
+        self._fallback_chain = new_chain
         if self.agent:
             self.agent._fallback_chain = new_chain
 

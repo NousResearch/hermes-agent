@@ -280,6 +280,68 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_raw(
+        self,
+        chat_id: str,
+        content: str,
+    ) -> SendResult:
+        """Send a plain-text message without MarkdownV2 formatting.
+
+        Used for streaming intermediate updates where the content is
+        incomplete markdown that would fail MarkdownV2 parsing.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=content,
+                parse_mode=None,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def edit_message_raw(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a message with plain text (no MarkdownV2 formatting).
+
+        Used for streaming intermediate updates.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=content,
+                parse_mode=None,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a Telegram message (used to remove progress indicators)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id), message_id=int(message_id),
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.debug("Failed to delete message %s in %s: %s", message_id, chat_id, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,

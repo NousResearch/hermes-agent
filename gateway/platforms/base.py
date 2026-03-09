@@ -344,6 +344,7 @@ class BasePlatformAdapter(ABC):
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._stream_msg_ids: Dict[str, str] = {}  # chat_id -> msg_id of streamed response
     
     @property
     def name(self) -> str:
@@ -412,6 +413,32 @@ class BasePlatformAdapter(ABC):
         sending a new message.
         """
         return SendResult(success=False, error="Not supported")
+
+    @property
+    def supports_streaming(self) -> bool:
+        """Whether this platform supports response streaming via message edits.
+
+        Platforms that return True must also implement edit_message() and
+        delete_message().  The gateway will stream LLM text chunks by
+        sending an initial message and progressively editing it.
+        """
+        return False
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a previously sent message.
+
+        Used to clean up transient progress messages when streaming starts.
+        Override in subclasses if the platform supports message deletion.
+        """
+        return SendResult(success=False, error="Not supported")
+
+    async def send_raw(self, chat_id: str, content: str) -> "SendResult":
+        """Send without formatting (default: delegates to send)."""
+        return await self.send(chat_id=chat_id, content=content)
+
+    async def edit_message_raw(self, chat_id: str, message_id: str, content: str) -> "SendResult":
+        """Edit without formatting (default: delegates to edit_message)."""
+        return await self.edit_message(chat_id=chat_id, message_id=message_id, content=content)
 
     async def send_typing(self, chat_id: str) -> None:
         """
@@ -707,25 +734,39 @@ class BasePlatformAdapter(ABC):
                 
                 # Send the text portion first (if any remains after extractions)
                 if text_content:
-                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    result = await self.send(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=event.message_id
-                    )
-                    
-                    # Log send failures (don't raise - user already saw tool progress)
-                    if not result.success:
-                        print(f"[{self.name}] Failed to send response: {result.error}")
-                        # Try sending without markdown as fallback
-                        fallback_result = await self.send(
+                    # Check if streaming already delivered the text via edits.
+                    # If so, do a final formatted edit instead of a duplicate send.
+                    _stream_mid = self._stream_msg_ids.pop(event.source.chat_id, None)
+                    if _stream_mid:
+                        logger.info("[%s] Streaming delivered response, final edit on msg %s", self.name, _stream_mid)
+                        try:
+                            await self.edit_message(
+                                chat_id=event.source.chat_id,
+                                message_id=_stream_mid,
+                                content=text_content,
+                            )
+                        except Exception as _e:
+                            logger.debug("[%s] Final stream edit failed: %s", self.name, _e)
+                    else:
+                        logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                        result = await self.send(
                             chat_id=event.source.chat_id,
-                            content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
+                            content=text_content,
                             reply_to=event.message_id
                         )
-                        if not fallback_result.success:
-                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
-                
+                        
+                        # Log send failures (don't raise - user already saw tool progress)
+                        if not result.success:
+                            print(f"[{self.name}] Failed to send response: {result.error}")
+                            # Try sending without markdown as fallback
+                            fallback_result = await self.send(
+                                chat_id=event.source.chat_id,
+                                content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
+                                reply_to=event.message_id
+                            )
+                            if not fallback_result.success:
+                                print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
                 

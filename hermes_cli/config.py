@@ -107,9 +107,22 @@ DEFAULT_CONFIG = {
     # When the primary hits rate limits (429), overload (529), or service errors (503),
     # Hermes will automatically switch to this model for the remainder of the session.
     # Set to None / omit to disable fallback.
+    #
+    # Built-in providers (auto-resolve base_url and API key from env):
+    #   openrouter  (OPENROUTER_API_KEY)   — best fallback, routes to any model
+    #   openai      (OPENAI_API_KEY)       — GPT-4.1, o3, etc.
+    #   nous        (NOUS_API_KEY)         — Nous inference API
+    #   deepseek    (DEEPSEEK_API_KEY)     — DeepSeek models
+    #   together    (TOGETHER_API_KEY)     — Together AI
+    #   groq        (GROQ_API_KEY)         — Groq (fast inference)
+    #   fireworks   (FIREWORKS_API_KEY)    — Fireworks AI
+    #   mistral     (MISTRAL_API_KEY)      — Mistral models
+    #   gemini      (GEMINI_API_KEY)       — Google Gemini
+    #
+    # For any other OpenAI-compatible endpoint, use base_url + api_key_env.
     "fallback_model": {
-        "provider": "",   # e.g. "openrouter", "openai", "nous", "deepseek", "together", "groq"
-        "model": "",      # e.g. "anthropic/claude-sonnet-4", "gpt-4.1", "deepseek-chat"
+        "provider": "",   # provider name from the list above
+        "model": "",      # model slug, e.g. "anthropic/claude-sonnet-4", "gpt-4.1"
         # Optional overrides (usually auto-resolved from provider):
         # "base_url": "",       # custom endpoint URL
         # "api_key_env": "",    # env var name for API key (e.g. "MY_CUSTOM_KEY")

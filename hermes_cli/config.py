@@ -204,7 +204,7 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
-        "record_key": "ctrl+r",
+        "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
         "silence_threshold": 200,     # RMS below this = silence (0-32767)

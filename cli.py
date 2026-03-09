@@ -3605,7 +3605,7 @@ class HermesCLI:
             with self._voice_lock:
                 self._voice_recording = False
             raise
-        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+R to stop & exit continuous){_RST}")
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+B to stop & exit continuous){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
@@ -3876,7 +3876,7 @@ class HermesCLI:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _cprint(f"  Record key: Ctrl+R")
+        _cprint(f"  Record key: Ctrl+B")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
@@ -4833,7 +4833,7 @@ class HermesCLI:
                 return
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
-                # Manual stop via Ctrl+R: stop continuous mode
+                # Manual stop via push-to-talk key: stop continuous mode
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = False
                 # Flag clearing is handled atomically inside _voice_stop_and_transcribe
@@ -5003,7 +5003,7 @@ class HermesCLI:
 
         def _get_placeholder():
             if cli_ref._voice_recording:
-                return "recording... Ctrl+R to stop, Ctrl+C to cancel"
+                return "recording... Ctrl+B to stop, Ctrl+C to cancel"
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
@@ -5023,7 +5023,7 @@ class HermesCLI:
             if cli_ref._agent_running:
                 return "type a message + Enter to interrupt, Ctrl+C to cancel"
             if cli_ref._voice_mode:
-                return "type or Ctrl+R to record"
+                return "type or Ctrl+B to record"
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -5364,12 +5364,12 @@ class HermesCLI:
         # Persistent voice mode status bar (visible only when voice mode is on)
         def _get_voice_status():
             if cli_ref._voice_recording:
-                return [('class:voice-status-recording', ' ● REC  Ctrl+R to stop ')]
+                return [('class:voice-status-recording', ' ● REC  Ctrl+B to stop ')]
             if cli_ref._voice_processing:
                 return [('class:voice-status', ' ◉ Transcribing... ')]
             tts = " | TTS on" if cli_ref._voice_tts else ""
             cont = " | Continuous" if cli_ref._voice_continuous else ""
-            return [('class:voice-status', f' 🎤 Voice mode{tts}{cont}  —  Ctrl+R to record ')]
+            return [('class:voice-status', f' 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ')]
 
         voice_status_bar = ConditionalContainer(
             Window(

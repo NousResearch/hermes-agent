@@ -637,10 +637,83 @@ class AIAgent:
         return bool(cleaned.strip())
     
     def _strip_think_blocks(self, content: str) -> str:
-        """Remove <think>...</think> blocks from content, returning only visible text."""
+        """Remove <think>...</think> and <tool_call> blocks from content."""
         if not content:
             return ""
-        return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        # Strip matched blocks (including mismatched pairs like <tool_call>...</think>)
+        content = re.sub(r'<(?:think|tool_call)>.*?</(?:think|tool_call)>\s*', '', content, flags=re.DOTALL)
+        # Strip any orphaned opening/closing tags
+        content = re.sub(r'</?(?:think|tool_call)>\s*', '', content)
+        return content.strip()
+
+    def _extract_tool_calls_from_text(self, content: str) -> list:
+        """Parse tool call JSON from text content into synthetic tool calls.
+
+        Hermes models sometimes output tool calls as text instead of using the
+        API's native function calling.  This handles three variants:
+          1. <tool_call>{"name":...}</tool_call>   (full tags)
+          2. </think>{"name":...}</tool_call>       (missing open tag)
+          3. {"name":"tool_name","arguments":{...}}  (bare JSON, no tags)
+
+        Returns a list of SimpleNamespace objects matching the tool_calls format,
+        or an empty list if no valid tool calls are found.
+        """
+        if not content:
+            return []
+
+        tool_calls = []
+        candidates = []
+
+        # Pattern 1: <tool_call>...</tool_call> (full tags)
+        for m in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', content, re.DOTALL):
+            candidates.append(m.group(1).strip())
+
+        # Pattern 2: bare JSON before </tool_call> (missing open tag)
+        if not candidates:
+            for m in re.finditer(r'(\{[^{}]*"name"\s*:\s*"[^"]+"\s*,[^{}]*"arguments"\s*:\s*\{[^}]*\}[^{}]*\})\s*</tool_call>', content, re.DOTALL):
+                candidates.append(m.group(1).strip())
+
+        # Pattern 3: bare JSON with "name" and "arguments" keys (no tags at all)
+        if not candidates:
+            for m in re.finditer(r'(\{"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\})', content):
+                fn_name = m.group(2)
+                if fn_name in self.valid_tool_names:
+                    candidates.append(m.group(1).strip())
+
+        for raw in candidates:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                try:
+                    data = json.loads(raw.replace("'", '"'))
+                except json.JSONDecodeError:
+                    logger.debug("Could not parse tool_call text: %s", raw[:200])
+                    continue
+
+            fn_name = data.get("name", "")
+            arguments = data.get("arguments", {})
+            if not fn_name:
+                continue
+
+            if fn_name not in self.valid_tool_names:
+                logger.debug("Skipping text tool_call for unknown tool: %s", fn_name)
+                continue
+
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            elif not isinstance(arguments, str):
+                arguments = "{}"
+
+            call_id = f"call_{uuid.uuid4().hex[:12]}"
+            tool_calls.append(SimpleNamespace(
+                id=call_id,
+                call_id=call_id,
+                response_item_id=None,
+                type="function",
+                function=SimpleNamespace(name=fn_name, arguments=arguments),
+            ))
+
+        return tool_calls
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -2203,6 +2276,7 @@ class AIAgent:
             "model": self.model,
             "messages": api_messages,
             "tools": self.tools if self.tools else None,
+            "tool_choice": "auto" if self.tools else None,
             "timeout": 900.0,
         }
 
@@ -3738,6 +3812,22 @@ class AIAgent:
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
                 
+                # Fallback: if the model output tool call JSON in text but
+                # did not use native function calling, parse them into real calls.
+                if not assistant_message.tool_calls and assistant_message.content:
+                    synthetic_calls = self._extract_tool_calls_from_text(assistant_message.content)
+                    if synthetic_calls:
+                        if not self.quiet_mode:
+                            names = [tc.function.name for tc in synthetic_calls]
+                            print(f"{self.log_prefix}🔄 Recovered {len(synthetic_calls)} tool call(s) from text: {', '.join(names)}")
+                        assistant_message.tool_calls = synthetic_calls
+                        # Strip tool_call tags and bare JSON from text content
+                        cleaned = self._strip_think_blocks(assistant_message.content)
+                        for tc in synthetic_calls:
+                            cleaned = cleaned.replace(f'{{"name": "{tc.function.name}"', '')
+                        cleaned = re.sub(r'\{[^{}]*"arguments"\s*:\s*\{[^}]*\}\s*\}', '', cleaned)
+                        assistant_message.content = cleaned.strip()
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:

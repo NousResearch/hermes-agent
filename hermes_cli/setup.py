@@ -632,6 +632,29 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
+        # Update config.yaml and deactivate any OAuth provider so the
+        # resolver doesn't keep returning the old provider (e.g. Codex).
+        try:
+            from hermes_cli.auth import deactivate_provider
+            deactivate_provider()
+        except Exception:
+            pass
+        import yaml
+        config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        try:
+            disk_cfg = {}
+            if config_path.exists():
+                disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+            model_section = disk_cfg.get("model", {})
+            if isinstance(model_section, str):
+                model_section = {"default": model_section}
+            model_section["provider"] = "openrouter"
+            model_section.pop("base_url", None)  # OpenRouter uses default URL
+            disk_cfg["model"] = model_section
+            config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+        except Exception as e:
+            logger.debug("Could not save provider to config.yaml: %s", e)
+
     elif provider_idx == 3:  # Custom endpoint
         selected_provider = "custom"
         print()

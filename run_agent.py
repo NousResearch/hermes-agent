@@ -2519,9 +2519,10 @@ class AIAgent:
                 if remaining_calls:
                     print(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)")
                 for skipped_tc in remaining_calls:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution cancelled - user interrupted]",
+                        "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
                     }
                     messages.append(skip_msg)
@@ -2724,9 +2725,10 @@ class AIAgent:
                 remaining = len(assistant_message.tool_calls) - i
                 print(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)")
                 for skipped_tc in assistant_message.tool_calls[i:]:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution skipped - user sent a new message]",
+                        "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                         "tool_call_id": skipped_tc.id
                     }
                     messages.append(skip_msg)
@@ -3274,7 +3276,7 @@ class AIAgent:
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": "Operation interrupted.",
+                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
@@ -3383,10 +3385,11 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
+                    api_elapsed = time.time() - api_start_time
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
                     interrupted = True
-                    final_response = "Operation interrupted."
+                    final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
                     break
 
                 except Exception as api_error:
@@ -3435,7 +3438,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
-                            "final_response": "Operation interrupted.",
+                            "final_response": f"Operation interrupted: handling API error ({error_type}: {str(api_error)[:80]}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -3610,7 +3613,7 @@ class AIAgent:
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {
-                                "final_response": "Operation interrupted.",
+                                "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,

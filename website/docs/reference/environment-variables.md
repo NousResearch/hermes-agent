@@ -116,6 +116,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | Variable | Description |
 |----------|-------------|
 | `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 60) |
+| `HERMES_MAX_TOKENS` | Force the `max_tokens` request parameter for model responses |
 | `HERMES_TOOL_PROGRESS` | Send progress messages when using tools (`true`/`false`) |
 | `HERMES_TOOL_PROGRESS_MODE` | `all` (every call, default) or `new` (only when tool changes) |
 | `HERMES_HUMAN_DELAY_MODE` | Response pacing: `off`/`natural`/`custom` |

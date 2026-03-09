@@ -160,6 +160,22 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/usage` | Show token usage for this session |
 | `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
 
+#### /compress
+
+Manually triggers context compression on the current conversation. This summarizes middle turns of the conversation while preserving the first 3 and last 4 turns, significantly reducing token count. Useful when:
+
+- The conversation is getting long and you want to reduce costs
+- You're approaching the model's context limit
+- You want to continue the conversation without starting fresh
+
+Requirements: at least 4 messages in the conversation. The configured model (or `compression.summary_model` from config) is used to generate the summary. After compression, the session continues seamlessly with the compressed history.
+
+Reports the result as: `Compressed: X → Y messages, ~N → ~M tokens`.
+
+:::tip
+Compression also happens automatically when approaching context limits (configurable via `compression.threshold` in `config.yaml`). Use `/compress` when you want to trigger it early.
+:::
+
 ### Media & Input
 
 | Command | Description |

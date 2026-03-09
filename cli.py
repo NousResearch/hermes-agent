@@ -1073,17 +1073,22 @@ class HermesCLI:
         )
     
     def show_help(self):
-        """Display help information with kawaii ASCII art."""
-        print()
-        print("+" + "-" * 50 + "+")
-        print("|" + " " * 14 + "(^_^)? Available Commands" + " " * 10 + "|")
-        print("+" + "-" * 50 + "+")
-        print()
-        
-        for cmd, desc in COMMANDS.items():
-            print(f"  {cmd:<15} - {desc}")
+        """Display help information with categorized commands."""
+        from hermes_cli.commands import COMMANDS_BY_CATEGORY
         
         print()
+        print("+" + "-" * 55 + "+")
+        print("|" + " " * 14 + "(^_^)? Available Commands" + " " * 15 + "|")
+        print("+" + "-" * 55 + "+")
+        
+        for category, commands in COMMANDS_BY_CATEGORY.items():
+            print()
+            print(f"  ── {category} ──")
+            for cmd, desc in commands.items():
+                print(f"    {cmd:<14} {desc}")
+        
+        print()
+        print("  ─────────────────────────────────────────────────────")
         print("  Tip: Just type your message to chat with Hermes!")
         print("  Multi-line: Alt+Enter for a new line")
         print()

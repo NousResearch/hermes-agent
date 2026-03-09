@@ -108,6 +108,7 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
+        "bell_on_complete": False,  # Play terminal bell (\a) when agent finishes a response
     },
     
     # Text-to-speech configuration

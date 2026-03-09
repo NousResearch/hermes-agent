@@ -41,16 +41,18 @@ def temp_voice_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def mock_sd(monkeypatch):
-    """Replace tools.voice_mode.sd with a MagicMock (sounddevice may not be installed)."""
+    """Mock _import_audio to return (mock_sd, real_np) so lazy imports work."""
     mock = MagicMock()
-    monkeypatch.setattr("tools.voice_mode.sd", mock)
-    monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", True)
-    # Also ensure numpy is available (use real numpy if installed, else mock)
     try:
         import numpy as real_np
-        monkeypatch.setattr("tools.voice_mode.np", real_np)
     except ImportError:
-        monkeypatch.setattr("tools.voice_mode.np", MagicMock())
+        real_np = MagicMock()
+
+    def _fake_import_audio():
+        return mock, real_np
+
+    monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import_audio)
+    monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
     return mock
 
 
@@ -60,7 +62,9 @@ def mock_sd(monkeypatch):
 
 class TestCheckVoiceRequirements:
     def test_all_requirements_met(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
 
         from tools.voice_mode import check_voice_requirements
@@ -72,7 +76,9 @@ class TestCheckVoiceRequirements:
         assert result["missing_packages"] == []
 
     def test_missing_audio_packages(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", False)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: False)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": False, "warnings": ["Audio libraries not installed"]})
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test-key")
 
         from tools.voice_mode import check_voice_requirements
@@ -84,7 +90,9 @@ class TestCheckVoiceRequirements:
         assert "numpy" in result["missing_packages"]
 
     def test_missing_stt_key(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", True)
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
@@ -102,7 +110,9 @@ class TestCheckVoiceRequirements:
 
 class TestAudioRecorderStart:
     def test_start_raises_without_audio(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", False)
+        def _fail_import():
+            raise ImportError("no sounddevice")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
 
         from tools.voice_mode import AudioRecorder
 
@@ -334,21 +344,25 @@ class TestPlayAudioFile:
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
 
-        mock_sd = MagicMock()
-        monkeypatch.setattr("tools.voice_mode.sd", mock_sd)
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", True)
-        monkeypatch.setattr("tools.voice_mode.np", np)
+        mock_sd_obj = MagicMock()
+
+        def _fake_import():
+            return mock_sd_obj, np
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import)
 
         from tools.voice_mode import play_audio_file
 
         result = play_audio_file(sample_wav)
 
         assert result is True
-        mock_sd.play.assert_called_once()
-        mock_sd.wait.assert_called_once()
+        mock_sd_obj.play.assert_called_once()
+        mock_sd_obj.wait.assert_called_once()
 
     def test_returns_false_when_no_player(self, monkeypatch, sample_wav):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", False)
+        def _fail_import():
+            raise ImportError("no sounddevice")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
         monkeypatch.setattr("shutil.which", lambda _: None)
 
         from tools.voice_mode import play_audio_file
@@ -446,7 +460,9 @@ class TestPlayBeep:
         assert len(audio_arg) > single_beep_samples
 
     def test_beep_noop_without_audio(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._HAS_AUDIO", False)
+        def _fail_import():
+            raise ImportError("no sounddevice")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
 
         from tools.voice_mode import play_beep
 
@@ -606,4 +622,238 @@ class TestSilenceDetection:
 
         # No crash, no callback
         assert recorder._on_silence_stop is None
+        recorder.cancel()
+
+
+# ============================================================================
+# Playback interrupt
+# ============================================================================
+
+class TestPlaybackInterrupt:
+    """Verify that TTS playback can be interrupted."""
+
+    def test_stop_playback_terminates_process(self):
+        from tools.voice_mode import stop_playback, _playback_lock
+        import tools.voice_mode as vm
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # process is running
+
+        with _playback_lock:
+            vm._active_playback = mock_proc
+
+        stop_playback()
+
+        mock_proc.terminate.assert_called_once()
+
+        with _playback_lock:
+            assert vm._active_playback is None
+
+    def test_stop_playback_noop_when_nothing_playing(self):
+        import tools.voice_mode as vm
+
+        with vm._playback_lock:
+            vm._active_playback = None
+
+        vm.stop_playback()
+
+    def test_play_audio_file_sets_active_playback(self, monkeypatch, sample_wav):
+        import tools.voice_mode as vm
+
+        def _fail_import():
+            raise ImportError("no sounddevice")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+
+        mock_popen = MagicMock(return_value=mock_proc)
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/" + cmd)
+
+        vm.play_audio_file(sample_wav)
+
+        assert mock_popen.called
+        with vm._playback_lock:
+            assert vm._active_playback is None
+
+
+# ============================================================================
+# Continuous mode flow
+# ============================================================================
+
+class TestContinuousModeFlow:
+    """Verify continuous mode: auto-restart after transcription or silence."""
+
+    def test_continuous_restart_on_no_speech(self, mock_sd, temp_voice_dir):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+
+        # First recording: only silence -> stop returns None
+        recorder.start()
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        for _ in range(10):
+            silence = np.full((1600, 1), 10, dtype="int16")
+            callback(silence, 1600, None, None)
+
+        wav_path = recorder.stop()
+        assert wav_path is None
+
+        # Simulate continuous mode restart
+        recorder.start()
+        assert recorder.is_recording is True
+
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        for _ in range(10):
+            speech = np.full((1600, 1), 5000, dtype="int16")
+            callback(speech, 1600, None, None)
+
+        wav_path = recorder.stop()
+        assert wav_path is not None
+
+        recorder.cancel()
+
+    def test_recorder_reusable_after_stop(self, mock_sd, temp_voice_dir):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        results = []
+
+        for i in range(3):
+            recorder.start()
+            callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+            if callback is None:
+                callback = mock_sd.InputStream.call_args[1]["callback"]
+            loud = np.full((1600, 1), 5000, dtype="int16")
+            for _ in range(10):
+                callback(loud, 1600, None, None)
+            wav_path = recorder.stop()
+            results.append(wav_path)
+
+        assert all(r is not None for r in results)
+        assert os.path.isfile(results[-1])
+
+
+# ============================================================================
+# Audio level indicator
+# ============================================================================
+
+class TestAudioLevelIndicator:
+    """Verify current_rms property updates in real-time for UI feedback."""
+
+    def test_rms_updates_with_audio_chunks(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        assert recorder.current_rms == 0
+
+        loud = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud, 1600, None, None)
+        assert recorder.current_rms == 5000
+
+        quiet = np.full((1600, 1), 100, dtype="int16")
+        callback(quiet, 1600, None, None)
+        assert recorder.current_rms == 100
+
+        recorder.cancel()
+
+    def test_peak_rms_tracks_maximum(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        frames = [
+            np.full((1600, 1), 100, dtype="int16"),
+            np.full((1600, 1), 8000, dtype="int16"),
+            np.full((1600, 1), 500, dtype="int16"),
+            np.full((1600, 1), 3000, dtype="int16"),
+        ]
+        for frame in frames:
+            callback(frame, 1600, None, None)
+
+        assert recorder._peak_rms == 8000
+        assert recorder.current_rms == 3000
+
+        recorder.cancel()
+
+
+# ============================================================================
+# Configurable silence parameters
+# ============================================================================
+
+class TestConfigurableSilenceParams:
+    """Verify that silence detection params can be configured."""
+
+    def test_custom_threshold_and_duration(self, mock_sd):
+        np = pytest.importorskip("numpy")
+
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        import threading
+
+        recorder = AudioRecorder()
+        recorder._silence_threshold = 5000
+        recorder._silence_duration = 0.05
+        recorder._min_speech_duration = 0.05
+
+        fired = threading.Event()
+        recorder.start(on_silence_stop=lambda: fired.set())
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+
+        # Audio at RMS 1000 -- below custom threshold (5000)
+        moderate = np.full((1600, 1), 1000, dtype="int16")
+        for _ in range(5):
+            callback(moderate, 1600, None, None)
+            time.sleep(0.02)
+
+        assert recorder._has_spoken is False
+        assert fired.wait(timeout=0.2) is False
+
+        # Now send really loud audio (above 5000 threshold)
+        very_loud = np.full((1600, 1), 8000, dtype="int16")
+        callback(very_loud, 1600, None, None)
+        time.sleep(0.06)
+        callback(very_loud, 1600, None, None)
+        assert recorder._has_spoken is True
+
         recorder.cancel()

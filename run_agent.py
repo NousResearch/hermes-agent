@@ -2590,12 +2590,6 @@ class AIAgent:
         On interrupt, closes the HTTP client to cancel the in-flight request
         (stops token generation and avoids wasting money), then rebuilds the
         client for future calls.
-
-        When ``self._stream_callback`` is set (streaming TTS mode), the call
-        uses ``stream=True`` and iterates over chunks inside the background
-        thread.  Content deltas are forwarded to the callback in real-time
-        while the full response is accumulated and returned as a
-        ``SimpleNamespace`` that mimics a normal ``ChatCompletion``.
         """
         result = {"response": None, "error": None}
 
@@ -2603,30 +2597,58 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     result["response"] = self._run_codex_stream(api_kwargs)
-                    return
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_client.messages.create(**api_kwargs)
-                    return
-
-                cb = getattr(self, "_stream_callback", None)
-                if cb is None:
-                    # Non-streaming path (default)
+                else:
                     result["response"] = self.client.chat.completions.create(**api_kwargs)
-                    return
+            except Exception as e:
+                result["error"] = e
 
-                # --- Streaming path for TTS pipeline ---
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(timeout=0.3)
+            if self._interrupt_requested:
+                # Force-close the HTTP connection to stop token generation
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+                # Rebuild the client for future calls (cheap, no network)
+                try:
+                    self.client = OpenAI(**self._client_kwargs)
+                except Exception:
+                    pass
+                raise InterruptedError("Agent interrupted during API call")
+        if result["error"] is not None:
+            raise result["error"]
+        return result["response"]
+
+    def _streaming_api_call(self, api_kwargs: dict, stream_callback):
+        """Streaming variant of _interruptible_api_call for voice TTS pipeline.
+
+        Uses ``stream=True`` and forwards content deltas to *stream_callback*
+        in real-time.  Returns a ``SimpleNamespace`` that mimics a normal
+        ``ChatCompletion`` so the rest of the agent loop works unchanged.
+
+        This method is separate from ``_interruptible_api_call`` to keep the
+        core agent loop untouched for non-voice users.
+        """
+        result = {"response": None, "error": None}
+
+        def _call():
+            try:
                 stream_kwargs = {**api_kwargs, "stream": True}
                 stream = self.client.chat.completions.create(**stream_kwargs)
 
                 content_parts: list[str] = []
-                tool_calls_acc: dict[int, dict] = {}  # index -> {id, type, function:{name, arguments}}
+                tool_calls_acc: dict[int, dict] = {}
                 finish_reason = None
                 model_name = None
                 role = "assistant"
 
                 for chunk in stream:
                     if not chunk.choices:
-                        # Usage-only or empty chunk
                         if hasattr(chunk, "model") and chunk.model:
                             model_name = chunk.model
                         continue
@@ -2635,24 +2657,17 @@ class AIAgent:
                     if hasattr(chunk, "model") and chunk.model:
                         model_name = chunk.model
 
-                    # Content delta
                     if delta and delta.content:
                         content_parts.append(delta.content)
                         try:
-                            cb(delta.content)
+                            stream_callback(delta.content)
                         except Exception:
                             pass
 
-                    # Tool call deltas
                     if delta and delta.tool_calls:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index if tc_delta.index is not None else 0
-                            # Gemini may reuse index 0 for multiple tool calls,
-                            # sending a new id each time.  Detect this and assign
-                            # a fresh virtual index so calls don't merge.
                             if idx in tool_calls_acc and tc_delta.id and tc_delta.id != tool_calls_acc[idx]["id"]:
-                                # Look for existing entry with this id first
-                                # (follow-up deltas for an already-created tool call)
                                 matched = False
                                 for eidx, eentry in tool_calls_acc.items():
                                     if eentry["id"] == tc_delta.id:
@@ -2679,7 +2694,6 @@ class AIAgent:
                     if chunk.choices[0].finish_reason:
                         finish_reason = chunk.choices[0].finish_reason
 
-                # Build a mock ChatCompletion matching the non-streaming interface
                 full_content = "".join(content_parts) or None
                 mock_tool_calls = None
                 if tool_calls_acc:
@@ -2722,7 +2736,6 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
-                # Force-close the HTTP connection to stop token generation
                 try:
                     if self.api_mode == "anthropic_messages":
                         self._anthropic_client.close()
@@ -2730,7 +2743,6 @@ class AIAgent:
                         self.client.close()
                 except Exception:
                     pass
-                # Rebuild the client for future calls (cheap, no network)
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
@@ -4412,7 +4424,11 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    response = self._interruptible_api_call(api_kwargs)
+                    cb = getattr(self, "_stream_callback", None)
+                    if cb is not None:
+                        response = self._streaming_api_call(api_kwargs, cb)
+                    else:
+                        response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
                     

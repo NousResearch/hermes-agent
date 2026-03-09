@@ -92,6 +92,7 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "kawaii",
+        "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
     },
     
     # Text-to-speech configuration

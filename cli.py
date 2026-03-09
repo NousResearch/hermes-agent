@@ -193,6 +193,7 @@ def load_cli_config() -> Dict[str, Any]:
         "toolsets": ["all"],
         "display": {
             "compact": False,
+            "resume_display": "full",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -1008,6 +1009,8 @@ class HermesCLI:
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
+        # resume_display: "full" (show history) | "minimal" (one-liner only)
+        self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1266,8 +1269,11 @@ class HermesCLI:
             except Exception as e:
                 logger.debug("SQLite session store not available: %s", e)
         
-        # If resuming, validate the session exists and load its history
-        if self._resumed and self._session_db:
+        # If resuming, validate the session exists and load its history.
+        # _preload_resumed_session() may have already loaded it (called from
+        # run() for immediate display).  In that case, conversation_history
+        # is non-empty and we skip the DB round-trip.
+        if self._resumed and self._session_db and not self.conversation_history:
             session_meta = self._session_db.get_session(self.session_id)
             if not session_meta:
                 _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
@@ -1371,7 +1377,202 @@ class HermesCLI:
         self._show_tool_availability_warnings()
         
         self.console.print()
-    
+
+    def _preload_resumed_session(self) -> bool:
+        """Load a resumed session's history from the DB early (before first chat).
+
+        Called from run() so the conversation history is available for display
+        before the user sends their first message.  Sets
+        ``self.conversation_history`` and prints the one-liner status.  Returns
+        True if history was loaded, False otherwise.
+
+        The corresponding block in ``_init_agent()`` checks whether history is
+        already populated and skips the DB round-trip.
+        """
+        if not self._resumed or not self._session_db:
+            return False
+
+        session_meta = self._session_db.get_session(self.session_id)
+        if not session_meta:
+            self.console.print(
+                f"[bold red]Session not found: {self.session_id}[/]"
+            )
+            self.console.print(
+                "[dim]Use a session ID from a previous CLI run "
+                "(hermes sessions list).[/]"
+            )
+            return False
+
+        restored = self._session_db.get_messages_as_conversation(self.session_id)
+        if restored:
+            self.conversation_history = restored
+            msg_count = len([m for m in restored if m.get("role") == "user"])
+            title_part = ""
+            if session_meta.get("title"):
+                title_part = f' "{session_meta["title"]}"'
+            self.console.print(
+                f"[#DAA520]↻ Resumed session [bold]{self.session_id}[/bold]"
+                f"{title_part} "
+                f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
+                f"{len(restored)} total messages)[/]"
+            )
+        else:
+            self.console.print(
+                f"[#DAA520]Session {self.session_id} found but has no "
+                f"messages. Starting fresh.[/]"
+            )
+            return False
+
+        # Re-open the session (clear ended_at so it's active again)
+        try:
+            self._session_db._conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ?",
+                (self.session_id,),
+            )
+            self._session_db._conn.commit()
+        except Exception:
+            pass
+
+        return True
+
+    def _display_resumed_history(self):
+        """Render a compact recap of previous conversation messages.
+
+        Uses Rich markup with dim/muted styling so the recap is visually
+        distinct from the active conversation.  Caps the display at the
+        last ``MAX_DISPLAY_EXCHANGES`` user/assistant exchanges and shows
+        an indicator for earlier hidden messages.
+        """
+        if not self.conversation_history:
+            return
+
+        # Check config: resume_display setting
+        if self.resume_display == "minimal":
+            return
+
+        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
+        MAX_USER_LEN = 300           # truncate user messages
+        MAX_ASST_LEN = 200           # truncate assistant text
+        MAX_ASST_LINES = 3           # max lines of assistant text
+
+        def _strip_reasoning(text: str) -> str:
+            """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
+            from displayed text (reasoning model internal thoughts)."""
+            import re
+            cleaned = re.sub(
+                r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
+                "", text, flags=re.DOTALL,
+            )
+            # Also strip unclosed reasoning tags at the end
+            cleaned = re.sub(
+                r"<REASONING_SCRATCHPAD>.*$",
+                "", cleaned, flags=re.DOTALL,
+            )
+            return cleaned.strip()
+
+        # Collect displayable entries (skip system, tool-result messages)
+        entries = []  # list of (role, display_text)
+        for msg in self.conversation_history:
+            role = msg.get("role", "")
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls") or []
+
+            if role == "system":
+                continue
+            if role == "tool":
+                continue
+
+            if role == "user":
+                text = "" if content is None else str(content)
+                # Handle multimodal content (list of dicts)
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            parts.append(part.get("text", ""))
+                        elif isinstance(part, dict) and part.get("type") == "image_url":
+                            parts.append("[image]")
+                    text = " ".join(parts)
+                if len(text) > MAX_USER_LEN:
+                    text = text[:MAX_USER_LEN] + "..."
+                entries.append(("user", text))
+
+            elif role == "assistant":
+                text = "" if content is None else str(content)
+                text = _strip_reasoning(text)
+                parts = []
+                if text:
+                    lines = text.splitlines()
+                    if len(lines) > MAX_ASST_LINES:
+                        text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
+                    if len(text) > MAX_ASST_LEN:
+                        text = text[:MAX_ASST_LEN] + "..."
+                    parts.append(text)
+                if tool_calls:
+                    tc_count = len(tool_calls)
+                    # Extract tool names
+                    names = []
+                    for tc in tool_calls:
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
+                        if name not in names:
+                            names.append(name)
+                    names_str = ", ".join(names[:4])
+                    if len(names) > 4:
+                        names_str += ", ..."
+                    noun = "call" if tc_count == 1 else "calls"
+                    parts.append(f"[{tc_count} tool {noun}: {names_str}]")
+                if not parts:
+                    # Skip pure-reasoning messages that have no visible output
+                    continue
+                entries.append(("assistant", " ".join(parts)))
+
+        if not entries:
+            return
+
+        # Determine if we need to truncate
+        skipped = 0
+        if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
+            skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
+            entries = entries[skipped:]
+
+        # Build the display using Rich
+        from rich.panel import Panel
+        from rich.text import Text
+
+        lines = Text()
+        if skipped:
+            lines.append(
+                f"  ... {skipped} earlier messages ...\n\n",
+                style="dim italic",
+            )
+
+        for i, (role, text) in enumerate(entries):
+            if role == "user":
+                lines.append("  ● You: ", style="dim bold #DAA520")
+                # Show first line inline, indent rest
+                msg_lines = text.splitlines()
+                lines.append(msg_lines[0] + "\n", style="dim")
+                for ml in msg_lines[1:]:
+                    lines.append(f"         {ml}\n", style="dim")
+            else:
+                lines.append("  ◆ Hermes: ", style="dim bold #8FBC8F")
+                msg_lines = text.splitlines()
+                lines.append(msg_lines[0] + "\n", style="dim")
+                for ml in msg_lines[1:]:
+                    lines.append(f"            {ml}\n", style="dim")
+            if i < len(entries) - 1:
+                lines.append("")  # small gap
+
+        panel = Panel(
+            lines,
+            title="[dim #DAA520]Previous Conversation[/]",
+            border_style="dim #8B8682",
+            padding=(0, 1),
+        )
+        self.console.print(panel)
+
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
 
@@ -2948,6 +3149,13 @@ class HermesCLI:
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
+
+        # If resuming a session, load history and display it immediately
+        # so the user has context before typing their first message.
+        if self._resumed:
+            if self._preload_resumed_session():
+                self._display_resumed_history()
+
         self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
         self.console.print()
         

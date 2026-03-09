@@ -241,6 +241,9 @@ compression:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
+#   "openai"     - Force OpenAI direct API (requires OPENAI_API_KEY).
+#                  Uses api.openai.com/v1 with models like gpt-4o, gpt-4o-mini.
+#                  Great for vision since GPT-4o supports image input.
 #   "main"       - Use the same provider & credentials as your main chat model.
 #                  Skips OpenRouter/Nous and uses your custom endpoint
 #                  (OPENAI_BASE_URL), Codex OAuth, or API-key provider directly.

@@ -50,7 +50,7 @@ class ModalEnvironment(BaseEnvironment):
     def __init__(
         self,
         image: str,
-        cwd: str = "~",
+        cwd: str = "/root",
         timeout: int = 60,
         modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
         persistent_filesystem: bool = True,
@@ -95,6 +95,7 @@ class ModalEnvironment(BaseEnvironment):
             startup_timeout=180.0,
             runtime_timeout=3600.0,
             modal_sandbox_kwargs=sandbox_kwargs,
+            install_pipx=True,  # Required: installs pipx + swe-rex runtime (swerex-remote)
         )
 
     def execute(self, command: str, cwd: str = "", *,

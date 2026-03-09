@@ -1580,7 +1580,7 @@ class AIAgent:
             hcfg = self._honcho_config
             mode = hcfg.memory_mode if hcfg else "hybrid"
             freq = hcfg.write_frequency if hcfg else "async"
-            recall_mode = hcfg.recall_mode if hcfg else "auto"
+            recall_mode = hcfg.recall_mode if hcfg else "hybrid"
             honcho_block = (
                 "# Honcho memory integration\n"
                 f"Active. Session: {self._honcho_session_key}. "
@@ -3382,7 +3382,7 @@ class AIAgent:
         # Honcho: read cached context from last turn's background fetch (non-blocking),
         # then fire both fetches for next turn.  Skip in "tools" mode (no context injection).
         self._honcho_context = ""
-        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "auto")
+        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and not conversation_history and _recall_mode != "tools":
             try:
                 self._honcho_context = self._honcho_prefetch(user_message)

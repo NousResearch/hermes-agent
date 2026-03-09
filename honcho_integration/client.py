@@ -311,9 +311,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     if not config.api_key:
         raise ValueError(
-            "Honcho API key not found. Set it in ~/.honcho/config.json "
-            "or the HONCHO_API_KEY environment variable. "
-            "Get an API key from https://app.honcho.dev"
+            "Honcho API key not found. "
+            "Get your API key at https://app.honcho.dev, "
+            "then run 'hermes honcho setup' or set HONCHO_API_KEY."
         )
 
     try:

@@ -761,8 +761,31 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
+
+    # Add user-defined custom providers from config.yaml
+    custom_providers_cfg = config.get("custom_providers") or []
+    _custom_provider_map = {}  # key → {name, base_url, api_key}
+    if isinstance(custom_providers_cfg, list):
+        for entry in custom_providers_cfg:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name", "").strip()
+            base_url = entry.get("base_url", "").strip()
+            if not name or not base_url:
+                continue
+            # Generate a stable key from the name
+            key = "custom:" + name.lower().replace(" ", "-")
+            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            providers.append((key, f"{name} ({short_url})"))
+            _custom_provider_map[key] = {
+                "name": name,
+                "base_url": base_url,
+                "api_key": entry.get("api_key", ""),
+            }
+
+    # Always add the manual custom endpoint option last
+    providers.append(("custom", "Custom endpoint (enter URL manually)"))
 
     # Reorder so the active provider is at the top
     known_keys = {k for k, _ in providers}
@@ -791,6 +814,8 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
+    elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
+        _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1060,6 +1085,92 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+
+def _model_flow_named_custom(config, provider_info):
+    """Handle a named custom provider from config.yaml custom_providers list."""
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    name = provider_info["name"]
+    base_url = provider_info["base_url"]
+    api_key = provider_info.get("api_key", "")
+
+    print(f"  Provider: {name}")
+    print(f"  URL:      {base_url}")
+    print()
+
+    # Try to fetch available models from the endpoint
+    print("Fetching available models...")
+    models = fetch_api_models(api_key, base_url, timeout=8.0)
+
+    if models:
+        print(f"Found {len(models)} model(s):\n")
+        # Show model selection menu
+        try:
+            from simple_term_menu import TerminalMenu
+            menu_items = [f"  {m}" for m in models] + ["  Cancel"]
+            menu = TerminalMenu(
+                menu_items, cursor_index=0,
+                menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
+                menu_highlight_style=("fg_green",),
+                cycle_cursor=True, clear_screen=False,
+                title=f"Select model from {name}:",
+            )
+            idx = menu.show()
+            print()
+            if idx is None or idx >= len(models):
+                print("Cancelled.")
+                return
+            model_name = models[idx]
+        except (ImportError, NotImplementedError):
+            # Fallback: numbered list
+            for i, m in enumerate(models, 1):
+                print(f"  {i}. {m}")
+            print(f"  {len(models) + 1}. Cancel")
+            print()
+            try:
+                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
+                if not val:
+                    print("Cancelled.")
+                    return
+                idx = int(val) - 1
+                if idx < 0 or idx >= len(models):
+                    print("Cancelled.")
+                    return
+                model_name = models[idx]
+            except (ValueError, KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+    else:
+        print("Could not fetch models from endpoint. Enter model name manually.")
+        try:
+            model_name = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not model_name:
+            print("No model specified. Cancelled.")
+            return
+
+    # Save the endpoint + model
+    save_env_value("OPENAI_BASE_URL", base_url)
+    if api_key:
+        save_env_value("OPENAI_API_KEY", api_key)
+    _save_model_choice(model_name)
+
+    # Update config
+    cfg = load_config()
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        model["provider"] = "custom"
+        model["base_url"] = base_url
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"\n✅ Model set to: {model_name}")
+    print(f"   Provider: {name} ({base_url})")
 
 
 # Curated model lists for direct API-key providers

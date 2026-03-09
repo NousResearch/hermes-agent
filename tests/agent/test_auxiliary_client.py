@@ -167,12 +167,14 @@ class TestVisionClientFallback:
         assert client is None
         assert model is None
 
-    def test_vision_auto_skips_codex(self, codex_auth_dir):
-        """Even with Codex available, vision auto mode returns None (Codex can't do multimodal)."""
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+    def test_vision_auto_includes_codex(self, codex_auth_dir):
+        """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI"):
             client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
 
     def test_vision_auto_skips_custom_endpoint(self, monkeypatch):
         """Custom endpoint is skipped in vision auto mode."""

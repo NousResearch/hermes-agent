@@ -478,10 +478,11 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
-| `"auto"` | Best available (default). Vision only tries OpenRouter + Nous Portal. | — |
+| `"auto"` | Best available (default). Vision tries OpenRouter → Nous → Codex. | — |
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
 | `"nous"` | Force Nous Portal | `hermes login` |
 | `"openai"` | Force OpenAI direct API (`api.openai.com`). Supports vision (GPT-4o). | `OPENAI_API_KEY` |
+| `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
 | `"main"` | Use your main chat model's provider. For local/self-hosted models. | Depends on your setup |
 
 ### Common Setups
@@ -502,6 +503,14 @@ auxiliary:
     model: "openai/gpt-4o"      # or "google/gemini-2.5-flash", etc.
 ```
 
+**Using Codex OAuth** (ChatGPT Pro/Plus account — no API key needed):
+```yaml
+auxiliary:
+  vision:
+    provider: "codex"     # uses your ChatGPT OAuth token
+    # model defaults to gpt-5.3-codex (supports vision)
+```
+
 **Using a local/self-hosted model:**
 ```yaml
 auxiliary:
@@ -510,8 +519,12 @@ auxiliary:
     model: "my-local-model"
 ```
 
+:::tip
+If you use Codex OAuth as your main model provider, vision works automatically — no extra configuration needed. Codex is included in the auto-detection chain for vision.
+:::
+
 :::warning
-**Vision requires a multimodal model.** In `auto` mode, only OpenRouter and Nous Portal are tried (they route to Gemini, which supports images). If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail. The `"openai"` provider works for vision since GPT-4o supports image input.
+**Vision requires a multimodal model.** If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
 :::
 
 ### Environment Variables

@@ -87,6 +87,55 @@ _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 # read response.choices[0].message.content. This adapter translates those
 # calls to the Codex Responses API so callers don't need any changes.
 
+
+def _convert_content_for_responses(content: Any) -> Any:
+    """Convert chat.completions content to Responses API format.
+
+    chat.completions uses:
+      {"type": "text", "text": "..."}
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+
+    Responses API uses:
+      {"type": "input_text", "text": "..."}
+      {"type": "input_image", "image_url": "data:image/png;base64,..."}
+
+    If content is a plain string, it's returned as-is (the Responses API
+    accepts strings directly for text-only messages).
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content else ""
+
+    converted: List[Dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type", "")
+        if ptype == "text":
+            converted.append({"type": "input_text", "text": part.get("text", "")})
+        elif ptype == "image_url":
+            # chat.completions nests the URL: {"image_url": {"url": "..."}}
+            image_data = part.get("image_url", {})
+            url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
+            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+            # Preserve detail if specified
+            detail = image_data.get("detail") if isinstance(image_data, dict) else None
+            if detail:
+                entry["detail"] = detail
+            converted.append(entry)
+        elif ptype in ("input_text", "input_image"):
+            # Already in Responses format — pass through
+            converted.append(part)
+        else:
+            # Unknown content type — try to preserve as text
+            text = part.get("text", "")
+            if text:
+                converted.append({"type": "input_text", "text": text})
+
+    return converted or ""
+
+
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -100,30 +149,31 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
         temperature = kwargs.get("temperature")
 
-        # Separate system/instructions from conversation messages
+        # Separate system/instructions from conversation messages.
+        # Convert chat.completions multimodal content blocks to Responses
+        # API format (input_text / input_image instead of text / image_url).
         instructions = "You are a helpful assistant."
         input_msgs: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
-                instructions = content
+                instructions = content if isinstance(content, str) else str(content)
             else:
-                input_msgs.append({"role": role, "content": content})
+                input_msgs.append({
+                    "role": role,
+                    "content": _convert_content_for_responses(content),
+                })
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
             "input": input_msgs or [{"role": "user", "content": ""}],
-            "stream": True,
             "store": False,
         }
 
-        max_tokens = kwargs.get("max_output_tokens") or kwargs.get("max_completion_tokens") or kwargs.get("max_tokens")
-        if max_tokens is not None:
-            resp_kwargs["max_output_tokens"] = int(max_tokens)
-        if temperature is not None:
-            resp_kwargs["temperature"] = temperature
+        # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
+        # support max_output_tokens or temperature — omit to avoid 400 errors.
 
         # Tools support for flush_memories and similar callers
         tools = kwargs.get("tools")
@@ -438,6 +488,12 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
             logger.warning("auxiliary.provider=openai but OPENAI_API_KEY not set")
         return client, model
 
+    if forced == "codex":
+        client, model = _try_codex()
+        if client is None:
+            logger.warning("auxiliary.provider=codex but no Codex OAuth token found (run: hermes model)")
+        return client, model
+
     if forced == "main":
         # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
         for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
@@ -515,21 +571,21 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     auto-detects.  Callers may override the returned model with
     AUXILIARY_VISION_MODEL.
 
-    In auto mode, only OpenRouter and Nous Portal are tried because they
-    are known to support multimodal (Gemini).  Custom endpoints, Codex,
-    and API-key providers are skipped — they may not handle vision input
-    and would produce confusing errors.  To use one of those providers
-    for vision, set AUXILIARY_VISION_PROVIDER explicitly.
+    In auto mode, only providers known to support multimodal are tried:
+    OpenRouter, Nous Portal, and Codex OAuth (gpt-5.3-codex supports
+    vision via the Responses API).  Custom endpoints and API-key
+    providers are skipped — they may not handle vision input.  To use
+    them, set AUXILIARY_VISION_PROVIDER explicitly.
     """
     forced = _get_auxiliary_provider("vision")
     if forced != "auto":
         return _resolve_forced_provider(forced)
     # Auto: only multimodal-capable providers
-    for try_fn in (_try_openrouter, _try_nous):
+    for try_fn in (_try_openrouter, _try_nous, _try_codex):
         client, model = try_fn()
         if client is not None:
             return client, model
-    logger.debug("Auxiliary vision client: none available (auto only tries OpenRouter/Nous)")
+    logger.debug("Auxiliary vision client: none available (auto only tries OpenRouter/Nous/Codex)")
     return None, None
 
 

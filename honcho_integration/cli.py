@@ -320,13 +320,19 @@ def cmd_peer(args) -> None:
         # Show current values
         hosts = cfg.get("hosts", {})
         hermes = hosts.get(HOST, {})
-        print(f"\nHoncho peer config\n" + "─" * 40)
-        print(f"  User peer:        {cfg.get('peerName') or '(not set)'}")
-        print(f"  AI peer:          {hermes.get('aiPeer') or cfg.get('aiPeer') or HOST}")
+        user = cfg.get('peerName') or '(not set)'
+        ai = hermes.get('aiPeer') or cfg.get('aiPeer') or HOST
         lvl = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
         max_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
-        print(f"  Dialectic level:  {lvl}  (options: {', '.join(REASONING_LEVELS)})")
-        print(f"  Dialectic cap:    {max_chars} chars\n")
+        print(f"\nHoncho peers\n" + "─" * 40)
+        print(f"  User peer:   {user}")
+        print(f"    Your identity in Honcho. Messages you send build this peer's card.")
+        print(f"  AI peer:     {ai}")
+        print(f"    Hermes' identity in Honcho. Seed with 'hermes honcho identity <file>'.")
+        print(f"    Dialectic calls ask this peer questions to warm session context.")
+        print()
+        print(f"  Dialectic reasoning:  {lvl}  ({', '.join(REASONING_LEVELS)})")
+        print(f"  Dialectic cap:        {max_chars} chars\n")
         return
 
     if user_name is not None:
@@ -397,13 +403,17 @@ def cmd_tokens(args) -> None:
         ctx_tokens = hermes.get("contextTokens") or cfg.get("contextTokens") or "(Honcho default)"
         d_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
         d_level = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
-        print(f"\nHoncho token settings\n" + "─" * 40)
-        print(f"  context tokens:   {ctx_tokens}")
-        print(f"    Max tokens Honcho returns from session.context() per turn.")
-        print(f"    Injected into Hermes system prompt — counts against your LLM budget.")
-        print(f"  dialectic cap:    {d_chars} chars")
-        print(f"    Max chars of peer.chat() result injected per turn.")
-        print(f"  dialectic level:  {d_level}  (controls Honcho-side inference depth)")
+        print(f"\nHoncho budgets\n" + "─" * 40)
+        print()
+        print(f"  Context     {ctx_tokens} tokens")
+        print(f"    Raw memory retrieval. Honcho returns stored facts/history about")
+        print(f"    the user and session, injected directly into the system prompt.")
+        print()
+        print(f"  Dialectic   {d_chars} chars, reasoning: {d_level}")
+        print(f"    AI-to-AI inference. Hermes asks Honcho's AI peer a question")
+        print(f"    (e.g. \"what were we working on?\") and Honcho runs its own model")
+        print(f"    to synthesize an answer. Used for first-turn session continuity.")
+        print(f"    Level controls how much reasoning Honcho spends on the answer.")
         print(f"\n  Set with: hermes honcho tokens [--context N] [--dialectic N]\n")
         return
 

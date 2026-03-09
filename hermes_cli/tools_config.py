@@ -96,6 +96,11 @@ CONFIGURABLE_TOOLSETS = [
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
+# Toolsets that are OFF by default for new installs.
+# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
+# but the setup checklist won't pre-select them for first-time users.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+
 # Platform display config
 PLATFORMS = {
     "cli":      {"label": "🖥️  CLI",       "default_toolset": "hermes-cli"},
@@ -879,11 +884,17 @@ def tools_command(args=None):
         # Get current enabled toolsets for this platform
         current_enabled = _get_platform_tools(config, pkey)
 
-        # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
-
         # Detect first-time configuration (no saved toolsets for this platform yet)
         is_first_config = pkey not in config.get("platform_toolsets", {})
+
+        # For first-time users, uncheck toolsets that should be off by default
+        # (MoA, Home Assistant, RL Training) so they aren't enabled blindly.
+        checklist_preselected = current_enabled
+        if is_first_config:
+            checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
+
+        # Show checklist
+        new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
 
         if new_enabled != current_enabled or is_first_config:
             added = new_enabled - current_enabled

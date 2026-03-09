@@ -744,9 +744,10 @@ compression:
 | `"auto"` | Best available (default). For vision, only tries OpenRouter + Nous. |
 | `"openrouter"` | Force OpenRouter (requires `OPENROUTER_API_KEY`) |
 | `"nous"` | Force Nous Portal (requires `hermes login`) |
+| `"openai"` | Force OpenAI direct API at `api.openai.com` (requires `OPENAI_API_KEY`). Supports vision via GPT-4o. |
 | `"main"` | Use the same provider as your main chat model. Skips OpenRouter/Nous. Useful for local models. |
 
-**Important:** Vision tasks require a multimodal-capable model. In `auto` mode, only OpenRouter and Nous Portal are tried (they route to Gemini, which supports images). Setting `provider: "main"` for vision will work only if your main endpoint supports multimodal input.
+**Important:** Vision tasks require a multimodal-capable model. In `auto` mode, only OpenRouter and Nous Portal are tried (they route to Gemini, which supports images). The `"openai"` provider also works for vision since GPT-4o supports image input. Setting `provider: "main"` for vision will work only if your main endpoint supports multimodal input.
 
 **Key files:** `agent/auxiliary_client.py` (resolution chain), `tools/vision_tools.py`, `tools/browser_tool.py`, `tools/web_tools.py`
 

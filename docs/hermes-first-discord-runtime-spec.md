@@ -46,7 +46,7 @@ This design must support rich Discord interaction patterns without inheriting He
 - The initial deployment target is a single Discord server used by a personal or small trusted group.
 - The server is treated as one network of agents rather than a collection of unrelated chats.
 - The first visible topology will start with one named agent, but the model must support multiple named agents.
-- The middleware will be implemented in TypeScript/Node.
+- The middleware will be implemented in TypeScript/Node with Effect as the application runtime.
 - Hermes will run as a Python sidecar process behind a narrow API.
 - `discrawl` may be used as an operator tool in v1 and must be easy to add as an on-demand or background source later.
 
@@ -55,11 +55,13 @@ This design must support rich Discord interaction patterns without inheriting He
 The middleware owns:
 
 - Discord gateway connection and REST delivery
+- the Effect service graph, runtime lifecycle, and dependency wiring for Discord runtime components
 - surface discovery and canonical route resolution
 - authoritative surface sessions and lineage state
 - interaction handling for slash commands, buttons, selects, and modals
 - Discord-native reply delivery, retries, chunking, edits, typing, and rate-limit handling
 - context budgeting, lineage summaries, and server-state summaries before a turn reaches Hermes
+- boundary decoding and encoding for runtime contracts using `effect/Schema`
 - observability, traces, and operator tooling for Discord runtime behavior
 
 The Hermes sidecar owns:
@@ -81,12 +83,17 @@ The Hermes sidecar owns:
 
 ### 5.1 Components and Actors
 
-- `Discord Runtime`: The Node process that receives Discord events, resolves surfaces, manages authoritative state, and delivers responses.
-- `Surface Router`: The middleware component that maps Discord objects to canonical surface identities and session keys.
-- `State Store`: The authoritative store for surfaces, lineage, summaries, agent bindings, and turn metadata.
-- `Context Budgeter`: The middleware component that decides how much local, parent, and server-summary context is passed to Hermes.
-- `Lineage Manager`: The middleware component that creates parent-child links when a new surface is created from an existing workflow.
-- `Interaction Renderer`: The middleware component that validates and renders declarative reply ops into Discord-native UI and delivery actions.
+- `Discord Runtime`: The Node Effect application that receives Discord events, resolves surfaces, manages authoritative state, and delivers responses.
+- `Runtime Layer Graph`: The composed `Layer` set that builds runtime services, configuration, stores, HTTP clients, queues, telemetry, and Discord adapters without leaking construction dependencies into service interfaces.
+- `Ingress Queue`: A bounded Effect `Queue` that absorbs raw Discord events before normalization and routing.
+- `Surface Router`: An Effect service that maps Discord objects to canonical surface identities and session keys.
+- `State Store`: The authoritative Effect service for surfaces, lineage, summaries, agent bindings, and turn metadata.
+- `Context Budgeter`: An Effect service that decides how much local, parent, and server-summary context is passed to Hermes.
+- `Lineage Manager`: An Effect service that creates parent-child links when a new surface is created from an existing workflow.
+- `Interaction Renderer`: An Effect service that validates and renders declarative reply ops into Discord-native UI and delivery actions.
+- `Delivery Scheduler`: The retry and pacing component built with Effect `Schedule`, fibers, and bounded queues.
+- `Hermes Sidecar Client`: An Effect service that talks to the Python Hermes sidecar over the Turn API and debug endpoints.
+- `Trace and Metrics Pipeline`: The observability component that emits spans and metrics and should integrate with OpenTelemetry through `@effect/opentelemetry`.
 - `Hermes Sidecar`: A Python service that wraps `AIAgent` and exposes a narrow Turn API plus debug endpoints.
 - `Named Agent`: A durable identity in the server model. A named agent may own one or more surfaces over time.
 - `Subagent`: A child agent execution context that is real in the server model and may be visible as a distinct actor or may share identity, depending on policy.
@@ -108,6 +115,8 @@ Invariants:
 - Child sessions must not inherit full parent transcripts by default.
 - Middleware state is authoritative for surface lineage and routing; Hermes is not authoritative for Discord session topology.
 - Hermes must not send directly to Discord in the v1 runtime path.
+- Every external runtime boundary must decode inputs and encode outputs with `effect/Schema` contracts rather than ad hoc JSON parsing.
+- Long-lived middleware components must be constructed through `Layer` or `Effect.Service` so that dependencies remain explicit and testable.
 
 ## 6. Lifecycle and State Model
 
@@ -162,6 +171,7 @@ Behavior:
 - The runtime must resolve `parent_surface_id` for thread and forum-post thread events.
 - The runtime must extract a bounded reply excerpt when the event references another message.
 - The runtime may enrich the event with operator-visible server-state metadata.
+- The ingress boundary must decode raw event payloads into `effect/Schema`-backed contracts before they enter runtime services.
 
 Errors:
 
@@ -195,6 +205,7 @@ Behavior:
 - The sidecar must return reply ops only; the caller is responsible for Discord rendering.
 - The sidecar may return debug or trace artifact references in hybrid mode.
 - The sidecar should run with a reduced Hermes toolset that excludes gateway-shaped Discord transport behavior such as direct Discord `send_message` flows in the hot path.
+- The request and response contract must be defined in `effect/Schema` and decoded at the middleware boundary before side effects occur.
 
 Errors:
 
@@ -229,6 +240,7 @@ Behavior:
 - Ops must be validated by the middleware before rendering.
 - Middleware must reject invalid or unsupported ops and record a visible trace artifact.
 - Middleware may degrade unsupported ops into text notices according to policy.
+- Middleware renderers should model delivery work as Effect programs so validation, retries, interruption, and finalization remain explicit.
 
 Errors:
 
@@ -304,11 +316,14 @@ Observability:
 
 ### 8.1 Runtime Topology
 
-- One Node process runs the Discord runtime.
+- One Node Effect runtime process runs the Discord runtime.
 - One Python sidecar process runs the Hermes bridge service.
 - The sidecar is addressed over a local RPC or HTTP boundary.
 - The state store is owned by middleware and must be durable.
 - Observability must span both processes using shared trace ids.
+- Internal runtime services must be composed through `Layer`.
+- Event ingestion and delivery should use bounded `Queue` or `PubSub` primitives to make admission control explicit.
+- Long-running delivery or trace export work should run on fibers with explicit interruption and supervision policy.
 
 ### 8.2 Capacity and Performance Constraints
 
@@ -316,6 +331,7 @@ Observability:
 - A turn must carry only bounded local context, bounded lineage summaries, and bounded server summaries.
 - Middleware must prefer summary-based awareness over transcript sharing.
 - Backpressure must be visible in traces and operator logs.
+- Retry policy should be implemented with Effect `Schedule` so delivery and sidecar retry behavior is explicit and testable.
 
 ### 8.3 Configuration and Secret Handling
 
@@ -323,6 +339,7 @@ Observability:
 - Context, lineage, and routing policy must live primarily in middleware configuration.
 - Hermes-side provider and tool configuration may remain Hermes-owned where not transport-specific.
 - Secrets for Discord and Hermes providers must remain process-local and must not be mirrored into trace payloads.
+- Middleware configuration should be loaded through Effect configuration facilities, and secret-bearing values should remain redacted in logs and traces.
 
 ## 9. Failure Model and Recovery
 
@@ -354,12 +371,13 @@ Observability:
 - Raw Discord payload passthrough is out of scope in v1.
 - Operator tooling such as `discrawl` must not silently expand live context without explicit policy.
 - Traces must avoid secret and token leakage.
+- Schema decode failures must be surfaced as explicit validation failures rather than unchecked exceptions.
 
 ## 11. Delivery and Migration
 
 ### 11.1 Rollout Plan
 
-- Phase 1: Implement middleware ingress, state store, route resolution, and Hermes Turn API with text-only reply ops.
+- Phase 1: Implement the Effect runtime layer graph, schema package, middleware ingress, state store, route resolution, and Hermes Turn API with text-only reply ops.
 - Phase 2: Add thread and forum lineage, bounded summaries, and human-tunable context policy.
 - Phase 3: Add declarative rich reply ops: buttons, selects, modals, thread actions, and summary mutations.
 - Phase 4: Add real subagent flow, named identity modes, and child-surface spawning with lineage summaries.
@@ -380,6 +398,7 @@ Observability:
 - The sidecar must wrap `AIAgent` directly and return reply ops rather than Discord transport actions.
 - New thread or forum surfaces must create explicit lineage edges and bounded handoff summaries.
 - Cross-surface context must remain summary-based by default.
+- Runtime boundaries must reject malformed ingress or sidecar payloads through schema validation.
 
 ### 12.2 Test Matrix
 
@@ -394,15 +413,15 @@ Observability:
 
 ## 13. Initial v1 Build Sequence
 
-1. Implement the TypeScript contract package and lock the Turn API and Reply Ops schema.
-2. Build the Node Discord runtime with normalized event ingress and canonical surface routing.
+1. Implement the Effect contract package, including `effect/Schema` definitions, service tags, and the initial runtime `Layer` graph.
+2. Build the Node Discord runtime with normalized event ingress, canonical surface routing, and bounded ingress queues.
 3. Build the authoritative middleware store for surfaces, lineage, summaries, and agent bindings.
-4. Build the Hermes sidecar wrapper around `AIAgent` only.
+4. Build the Hermes sidecar wrapper around `AIAgent` only and expose it through an Effect service client.
 5. Implement text-only turn execution end to end.
 6. Add explicit lineage summaries and human-tunable context policy.
-7. Add declarative Discord-aware reply ops and middleware validation.
+7. Add declarative Discord-aware reply ops, middleware validation, and scheduled delivery retries.
 8. Add named agent bindings and real subagent spawning.
-9. Add full traces and external observability integration.
+9. Add full traces and external observability integration through OpenTelemetry.
 10. Add `discrawl` operator workflow and future on-demand hook points.
 
 ## 14. Open Questions

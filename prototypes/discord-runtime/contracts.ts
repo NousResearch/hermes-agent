@@ -1,282 +1,440 @@
-export type SurfaceKind = "channel" | "thread" | "forum_post";
+import { Schema } from "effect"
 
-export type IdentityMode = "distinct_actor" | "shared_persona";
+const StringMapSchema = Schema.Record({
+  key: Schema.String,
+  value: Schema.String,
+})
 
-export type DeliveryMode = "send" | "edit" | "interaction_reply" | "interaction_followup";
+export const SurfaceKindSchema = Schema.Literal(
+  "channel",
+  "thread",
+  "forum_post",
+)
+export type SurfaceKind = Schema.Schema.Type<typeof SurfaceKindSchema>
 
-export type SummaryScope = "local" | "parent" | "server";
+export const IdentityModeSchema = Schema.Literal(
+  "distinct_actor",
+  "shared_persona",
+)
+export type IdentityMode = Schema.Schema.Type<typeof IdentityModeSchema>
 
-export interface DiscordSurfaceRef {
-  serverId: string;
-  surfaceId: string;
-  surfaceKind: SurfaceKind;
-  channelId: string;
-  threadId?: string;
-  parentSurfaceId?: string;
-  parentChannelId?: string;
-  forumChannelId?: string;
-  name?: string;
-}
+export const DeliveryModeSchema = Schema.Literal(
+  "send",
+  "edit",
+  "interaction_reply",
+  "interaction_followup",
+)
+export type DeliveryMode = Schema.Schema.Type<typeof DeliveryModeSchema>
 
-export interface AgentRef {
-  agentId: string;
-  displayName: string;
-  identityMode: IdentityMode;
-}
+export const SummaryScopeSchema = Schema.Literal("local", "parent", "server")
+export type SummaryScope = Schema.Schema.Type<typeof SummaryScopeSchema>
 
-export interface ActorRef {
-  userId: string;
-  username?: string;
-  displayName?: string;
-  roleIds?: string[];
-}
+export const EdgeReasonSchema = Schema.Literal(
+  "surface_branch",
+  "subagent_spawn",
+  "manual_handoff",
+)
+export type EdgeReason = Schema.Schema.Type<typeof EdgeReasonSchema>
 
-export interface MessageReference {
-  messageId: string;
-  authorLabel?: string;
-  excerpt: string;
-  surfaceId?: string;
-  timestamp?: string;
-}
+export const InteractionTypeSchema = Schema.Literal(
+  "slash_command",
+  "button",
+  "select",
+  "modal",
+)
+export type InteractionType = Schema.Schema.Type<typeof InteractionTypeSchema>
 
-export interface AttachmentRef {
-  attachmentId: string;
-  kind: "image" | "audio" | "video" | "file";
-  mimeType?: string;
-  filename?: string;
-  localPath?: string;
-  sourceUrl?: string;
-  sizeBytes?: number;
-}
+export const DiscrawlModeSchema = Schema.Literal(
+  "disabled",
+  "ops_only",
+  "on_demand",
+  "background",
+)
+export type DiscrawlMode = Schema.Schema.Type<typeof DiscrawlModeSchema>
 
-export interface SummaryRef {
-  summaryId: string;
-  scope: SummaryScope;
-  sourceSessionKey?: string;
-  text: string;
-  createdAt: string;
-}
+export const DebugArtifactKindSchema = Schema.Literal(
+  "prompt_snapshot",
+  "tool_timeline",
+  "message_trace",
+  "summary_trace",
+  "raw_backend_response",
+)
+export type DebugArtifactKind = Schema.Schema.Type<
+  typeof DebugArtifactKindSchema
+>
 
-export interface LineageRef {
-  parentSessionKey?: string;
-  parentSurfaceId?: string;
-  rootSessionKey?: string;
-  edgeReason?: "surface_branch" | "subagent_spawn" | "manual_handoff";
-  handoffSummary?: SummaryRef;
-}
+export const DiscordSurfaceRefSchema = Schema.Struct({
+  serverId: Schema.String,
+  surfaceId: Schema.String,
+  surfaceKind: SurfaceKindSchema,
+  channelId: Schema.String,
+  threadId: Schema.optionalWith(Schema.String, { exact: true }),
+  parentSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+  parentChannelId: Schema.optionalWith(Schema.String, { exact: true }),
+  forumChannelId: Schema.optionalWith(Schema.String, { exact: true }),
+  name: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type DiscordSurfaceRef = Schema.Schema.Type<
+  typeof DiscordSurfaceRefSchema
+>
 
-export interface InteractionInput {
-  type: "slash_command" | "button" | "select" | "modal";
-  interactionId: string;
-  commandName?: string;
-  customId?: string;
-  values?: string[];
-  fields?: Record<string, string>;
-}
+export const AgentRefSchema = Schema.Struct({
+  agentId: Schema.String,
+  displayName: Schema.String,
+  identityMode: IdentityModeSchema,
+})
+export type AgentRef = Schema.Schema.Type<typeof AgentRefSchema>
 
-export interface HumanInput {
-  text: string;
-  messageId?: string;
-  replyTo?: MessageReference;
-  attachments?: AttachmentRef[];
-  interaction?: InteractionInput;
-}
+export const ActorRefSchema = Schema.Struct({
+  userId: Schema.String,
+  username: Schema.optionalWith(Schema.String, { exact: true }),
+  displayName: Schema.optionalWith(Schema.String, { exact: true }),
+  roleIds: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
+})
+export type ActorRef = Schema.Schema.Type<typeof ActorRefSchema>
 
-export interface TunableContextPolicy {
-  localMessageBudget: number;
-  localTokenBudget: number;
-  parentSummaryBudget: number;
-  serverSummaryBudget: number;
-  maxReplyExcerptChars: number;
-  allowServerSummaryAwareness: boolean;
-  discrawlMode: "disabled" | "ops_only" | "on_demand" | "background";
-}
+export const MessageReferenceSchema = Schema.Struct({
+  messageId: Schema.String,
+  authorLabel: Schema.optionalWith(Schema.String, { exact: true }),
+  excerpt: Schema.String,
+  surfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+  timestamp: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type MessageReference = Schema.Schema.Type<typeof MessageReferenceSchema>
 
-export interface TraceEnvelope {
-  traceId: string;
-  turnId: string;
-  parentSpanId?: string;
-  startedAt: string;
-  tags?: Record<string, string>;
-}
+export const AttachmentKindSchema = Schema.Literal(
+  "image",
+  "audio",
+  "video",
+  "file",
+)
+export type AttachmentKind = Schema.Schema.Type<typeof AttachmentKindSchema>
 
-export interface TurnRequest {
-  trace: TraceEnvelope;
-  agent: AgentRef;
-  surface: DiscordSurfaceRef;
-  sessionKey: string;
-  actor: ActorRef;
-  input: HumanInput;
-  lineage?: LineageRef;
-  localSummaries?: SummaryRef[];
-  parentSummaries?: SummaryRef[];
-  serverSummaries?: SummaryRef[];
-  channelTopic?: string;
-  policy: TunableContextPolicy;
-  metadata?: Record<string, string>;
-}
+export const AttachmentRefSchema = Schema.Struct({
+  attachmentId: Schema.String,
+  kind: AttachmentKindSchema,
+  mimeType: Schema.optionalWith(Schema.String, { exact: true }),
+  filename: Schema.optionalWith(Schema.String, { exact: true }),
+  localPath: Schema.optionalWith(Schema.String, { exact: true }),
+  sourceUrl: Schema.optionalWith(Schema.String, { exact: true }),
+  sizeBytes: Schema.optionalWith(Schema.Number, { exact: true }),
+})
+export type AttachmentRef = Schema.Schema.Type<typeof AttachmentRefSchema>
 
-export interface UsageStats {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  model?: string;
-  provider?: string;
-}
+export const SummaryRefSchema = Schema.Struct({
+  summaryId: Schema.String,
+  scope: SummaryScopeSchema,
+  sourceSessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+  text: Schema.String,
+  createdAt: Schema.String,
+})
+export type SummaryRef = Schema.Schema.Type<typeof SummaryRefSchema>
 
-export interface DebugArtifactRef {
-  artifactId: string;
-  kind:
-    | "prompt_snapshot"
-    | "tool_timeline"
-    | "message_trace"
-    | "summary_trace"
-    | "raw_backend_response";
-  uri?: string;
-}
+export const LineageRefSchema = Schema.Struct({
+  parentSessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+  parentSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+  rootSessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+  edgeReason: Schema.optionalWith(EdgeReasonSchema, { exact: true }),
+  handoffSummary: Schema.optionalWith(SummaryRefSchema, { exact: true }),
+})
+export type LineageRef = Schema.Schema.Type<typeof LineageRefSchema>
 
-export interface TextReplyOp {
-  op: "text";
-  opId: string;
-  delivery: DeliveryMode;
-  text: string;
-  replyToMessageId?: string;
-  targetSurfaceId?: string;
-  ephemeral?: boolean;
-}
+export const InteractionInputSchema = Schema.Struct({
+  type: InteractionTypeSchema,
+  interactionId: Schema.String,
+  commandName: Schema.optionalWith(Schema.String, { exact: true }),
+  customId: Schema.optionalWith(Schema.String, { exact: true }),
+  values: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
+  fields: Schema.optionalWith(StringMapSchema, { exact: true }),
+})
+export type InteractionInput = Schema.Schema.Type<typeof InteractionInputSchema>
 
-export interface AttachmentReplyOp {
-  op: "attachment";
-  opId: string;
-  delivery: DeliveryMode;
-  attachments: AttachmentRef[];
-  caption?: string;
-  replyToMessageId?: string;
-  targetSurfaceId?: string;
-}
+export const HumanInputSchema = Schema.Struct({
+  text: Schema.String,
+  messageId: Schema.optionalWith(Schema.String, { exact: true }),
+  replyTo: Schema.optionalWith(MessageReferenceSchema, { exact: true }),
+  attachments: Schema.optionalWith(Schema.Array(AttachmentRefSchema), {
+    exact: true,
+  }),
+  interaction: Schema.optionalWith(InteractionInputSchema, { exact: true }),
+})
+export type HumanInput = Schema.Schema.Type<typeof HumanInputSchema>
 
-export interface ButtonSpec {
-  actionId: string;
-  label: string;
-  style?: "primary" | "secondary" | "success" | "danger";
-  value?: string;
-}
+export const TunableContextPolicySchema = Schema.Struct({
+  localMessageBudget: Schema.Number,
+  localTokenBudget: Schema.Number,
+  parentSummaryBudget: Schema.Number,
+  serverSummaryBudget: Schema.Number,
+  maxReplyExcerptChars: Schema.Number,
+  allowServerSummaryAwareness: Schema.Boolean,
+  discrawlMode: DiscrawlModeSchema,
+})
+export type TunableContextPolicy = Schema.Schema.Type<
+  typeof TunableContextPolicySchema
+>
 
-export interface SelectOptionSpec {
-  value: string;
-  label: string;
-  description?: string;
-}
+export const TraceEnvelopeSchema = Schema.Struct({
+  traceId: Schema.String,
+  turnId: Schema.String,
+  parentSpanId: Schema.optionalWith(Schema.String, { exact: true }),
+  startedAt: Schema.String,
+  tags: Schema.optionalWith(StringMapSchema, { exact: true }),
+})
+export type TraceEnvelope = Schema.Schema.Type<typeof TraceEnvelopeSchema>
 
-export interface ButtonsReplyOp {
-  op: "buttons";
-  opId: string;
-  delivery: DeliveryMode;
-  text?: string;
-  buttons: ButtonSpec[];
-  replyToMessageId?: string;
-  targetSurfaceId?: string;
-}
+export const TurnRequestSchema = Schema.Struct({
+  trace: TraceEnvelopeSchema,
+  agent: AgentRefSchema,
+  surface: DiscordSurfaceRefSchema,
+  sessionKey: Schema.String,
+  actor: ActorRefSchema,
+  input: HumanInputSchema,
+  lineage: Schema.optionalWith(LineageRefSchema, { exact: true }),
+  localSummaries: Schema.optionalWith(Schema.Array(SummaryRefSchema), {
+    exact: true,
+  }),
+  parentSummaries: Schema.optionalWith(Schema.Array(SummaryRefSchema), {
+    exact: true,
+  }),
+  serverSummaries: Schema.optionalWith(Schema.Array(SummaryRefSchema), {
+    exact: true,
+  }),
+  channelTopic: Schema.optionalWith(Schema.String, { exact: true }),
+  policy: TunableContextPolicySchema,
+  metadata: Schema.optionalWith(StringMapSchema, { exact: true }),
+})
+export type TurnRequest = Schema.Schema.Type<typeof TurnRequestSchema>
 
-export interface SelectReplyOp {
-  op: "select";
-  opId: string;
-  delivery: DeliveryMode;
-  text?: string;
-  customId: string;
-  placeholder?: string;
-  options: SelectOptionSpec[];
-  minValues?: number;
-  maxValues?: number;
-  replyToMessageId?: string;
-  targetSurfaceId?: string;
-}
+export const UsageStatsSchema = Schema.Struct({
+  inputTokens: Schema.optionalWith(Schema.Number, { exact: true }),
+  outputTokens: Schema.optionalWith(Schema.Number, { exact: true }),
+  totalTokens: Schema.optionalWith(Schema.Number, { exact: true }),
+  model: Schema.optionalWith(Schema.String, { exact: true }),
+  provider: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type UsageStats = Schema.Schema.Type<typeof UsageStatsSchema>
 
-export interface ModalFieldSpec {
-  fieldId: string;
-  label: string;
-  style?: "short" | "paragraph";
-  required?: boolean;
-  placeholder?: string;
-  value?: string;
-}
+export const DebugArtifactRefSchema = Schema.Struct({
+  artifactId: Schema.String,
+  kind: DebugArtifactKindSchema,
+  uri: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type DebugArtifactRef = Schema.Schema.Type<typeof DebugArtifactRefSchema>
 
-export interface ModalReplyOp {
-  op: "modal";
-  opId: string;
-  delivery: DeliveryMode;
-  customId: string;
-  title: string;
-  submitLabel?: string;
-  fields: ModalFieldSpec[];
-  triggerText?: string;
-}
+export const TextReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("text"),
+  opId: Schema.String,
+  delivery: DeliveryModeSchema,
+  text: Schema.String,
+  replyToMessageId: Schema.optionalWith(Schema.String, { exact: true }),
+  targetSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+  ephemeral: Schema.optionalWith(Schema.Boolean, { exact: true }),
+})
+export type TextReplyOp = Schema.Schema.Type<typeof TextReplyOpSchema>
 
-export interface ThreadActionReplyOp {
-  op: "thread_action";
-  opId: string;
-  action: "spawn_child_surface" | "handoff_to_child" | "rebind_surface";
-  targetAgent?: AgentRef;
-  childSurfaceName?: string;
-  handoffSummary?: string;
-  parentSessionKey?: string;
-}
+export const AttachmentReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("attachment"),
+  opId: Schema.String,
+  delivery: DeliveryModeSchema,
+  attachments: Schema.Array(AttachmentRefSchema),
+  caption: Schema.optionalWith(Schema.String, { exact: true }),
+  replyToMessageId: Schema.optionalWith(Schema.String, { exact: true }),
+  targetSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type AttachmentReplyOp = Schema.Schema.Type<
+  typeof AttachmentReplyOpSchema
+>
 
-export interface SummaryMutationReplyOp {
-  op: "summary_mutation";
-  opId: string;
-  scope: SummaryScope;
-  action: "append" | "replace";
-  text: string;
-  sourceSessionKey?: string;
-}
+export const ButtonStyleSchema = Schema.Literal(
+  "primary",
+  "secondary",
+  "success",
+  "danger",
+)
+export type ButtonStyle = Schema.Schema.Type<typeof ButtonStyleSchema>
 
-export interface SpawnAgentReplyOp {
-  op: "spawn_agent";
-  opId: string;
-  agent: AgentRef;
-  reason?: string;
-  preferredSurface?: "thread" | "forum_post";
-  handoffSummary?: string;
-}
+export const ButtonSpecSchema = Schema.Struct({
+  actionId: Schema.String,
+  label: Schema.String,
+  style: Schema.optionalWith(ButtonStyleSchema, { exact: true }),
+  value: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type ButtonSpec = Schema.Schema.Type<typeof ButtonSpecSchema>
 
-export type ReplyOp =
-  | TextReplyOp
-  | AttachmentReplyOp
-  | ButtonsReplyOp
-  | SelectReplyOp
-  | ModalReplyOp
-  | ThreadActionReplyOp
-  | SummaryMutationReplyOp
-  | SpawnAgentReplyOp;
+export const SelectOptionSpecSchema = Schema.Struct({
+  value: Schema.String,
+  label: Schema.String,
+  description: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type SelectOptionSpec = Schema.Schema.Type<typeof SelectOptionSpecSchema>
 
-export interface TurnResponse {
-  trace: TraceEnvelope;
-  sessionKey: string;
-  agent: AgentRef;
-  replyOps: ReplyOp[];
-  usage?: UsageStats;
-  debugArtifacts?: DebugArtifactRef[];
-  warnings?: string[];
-}
+export const ButtonsReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("buttons"),
+  opId: Schema.String,
+  delivery: DeliveryModeSchema,
+  text: Schema.optionalWith(Schema.String, { exact: true }),
+  buttons: Schema.Array(ButtonSpecSchema),
+  replyToMessageId: Schema.optionalWith(Schema.String, { exact: true }),
+  targetSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type ButtonsReplyOp = Schema.Schema.Type<typeof ButtonsReplyOpSchema>
 
-export interface HealthResponse {
-  status: "ok" | "degraded" | "error";
-  version: string;
-  uptimeSeconds: number;
-}
+export const SelectReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("select"),
+  opId: Schema.String,
+  delivery: DeliveryModeSchema,
+  text: Schema.optionalWith(Schema.String, { exact: true }),
+  customId: Schema.String,
+  placeholder: Schema.optionalWith(Schema.String, { exact: true }),
+  options: Schema.Array(SelectOptionSpecSchema),
+  minValues: Schema.optionalWith(Schema.Number, { exact: true }),
+  maxValues: Schema.optionalWith(Schema.Number, { exact: true }),
+  replyToMessageId: Schema.optionalWith(Schema.String, { exact: true }),
+  targetSurfaceId: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type SelectReplyOp = Schema.Schema.Type<typeof SelectReplyOpSchema>
 
-export interface TurnStatusResponse {
-  turnId: string;
-  sessionKey?: string;
-  state: "running" | "completed" | "failed" | "canceled";
-  usage?: UsageStats;
-  warnings?: string[];
-}
+export const ModalFieldStyleSchema = Schema.Literal("short", "paragraph")
+export type ModalFieldStyle = Schema.Schema.Type<typeof ModalFieldStyleSchema>
 
-export interface TraceQueryResponse {
-  trace: TraceEnvelope;
-  usage?: UsageStats;
-  artifacts?: DebugArtifactRef[];
-  warnings?: string[];
-}
+export const ModalFieldSpecSchema = Schema.Struct({
+  fieldId: Schema.String,
+  label: Schema.String,
+  style: Schema.optionalWith(ModalFieldStyleSchema, { exact: true }),
+  required: Schema.optionalWith(Schema.Boolean, { exact: true }),
+  placeholder: Schema.optionalWith(Schema.String, { exact: true }),
+  value: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type ModalFieldSpec = Schema.Schema.Type<typeof ModalFieldSpecSchema>
+
+export const ModalReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("modal"),
+  opId: Schema.String,
+  delivery: DeliveryModeSchema,
+  customId: Schema.String,
+  title: Schema.String,
+  submitLabel: Schema.optionalWith(Schema.String, { exact: true }),
+  fields: Schema.Array(ModalFieldSpecSchema),
+  triggerText: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type ModalReplyOp = Schema.Schema.Type<typeof ModalReplyOpSchema>
+
+export const ThreadActionSchema = Schema.Literal(
+  "spawn_child_surface",
+  "handoff_to_child",
+  "rebind_surface",
+)
+export type ThreadAction = Schema.Schema.Type<typeof ThreadActionSchema>
+
+export const ThreadActionReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("thread_action"),
+  opId: Schema.String,
+  action: ThreadActionSchema,
+  targetAgent: Schema.optionalWith(AgentRefSchema, { exact: true }),
+  childSurfaceName: Schema.optionalWith(Schema.String, { exact: true }),
+  handoffSummary: Schema.optionalWith(Schema.String, { exact: true }),
+  parentSessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type ThreadActionReplyOp = Schema.Schema.Type<
+  typeof ThreadActionReplyOpSchema
+>
+
+export const SummaryMutationActionSchema = Schema.Literal("append", "replace")
+export type SummaryMutationAction = Schema.Schema.Type<
+  typeof SummaryMutationActionSchema
+>
+
+export const SummaryMutationReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("summary_mutation"),
+  opId: Schema.String,
+  scope: SummaryScopeSchema,
+  action: SummaryMutationActionSchema,
+  text: Schema.String,
+  sourceSessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type SummaryMutationReplyOp = Schema.Schema.Type<
+  typeof SummaryMutationReplyOpSchema
+>
+
+export const PreferredSurfaceSchema = Schema.Literal("thread", "forum_post")
+export type PreferredSurface = Schema.Schema.Type<typeof PreferredSurfaceSchema>
+
+export const SpawnAgentReplyOpSchema = Schema.Struct({
+  op: Schema.Literal("spawn_agent"),
+  opId: Schema.String,
+  agent: AgentRefSchema,
+  reason: Schema.optionalWith(Schema.String, { exact: true }),
+  preferredSurface: Schema.optionalWith(PreferredSurfaceSchema, {
+    exact: true,
+  }),
+  handoffSummary: Schema.optionalWith(Schema.String, { exact: true }),
+})
+export type SpawnAgentReplyOp = Schema.Schema.Type<
+  typeof SpawnAgentReplyOpSchema
+>
+
+export const ReplyOpSchema = Schema.Union(
+  TextReplyOpSchema,
+  AttachmentReplyOpSchema,
+  ButtonsReplyOpSchema,
+  SelectReplyOpSchema,
+  ModalReplyOpSchema,
+  ThreadActionReplyOpSchema,
+  SummaryMutationReplyOpSchema,
+  SpawnAgentReplyOpSchema,
+)
+export type ReplyOp = Schema.Schema.Type<typeof ReplyOpSchema>
+
+export const TurnResponseSchema = Schema.Struct({
+  trace: TraceEnvelopeSchema,
+  sessionKey: Schema.String,
+  agent: AgentRefSchema,
+  replyOps: Schema.Array(ReplyOpSchema),
+  usage: Schema.optionalWith(UsageStatsSchema, { exact: true }),
+  debugArtifacts: Schema.optionalWith(Schema.Array(DebugArtifactRefSchema), {
+    exact: true,
+  }),
+  warnings: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
+})
+export type TurnResponse = Schema.Schema.Type<typeof TurnResponseSchema>
+
+export const HealthStatusSchema = Schema.Literal("ok", "degraded", "error")
+export type HealthStatus = Schema.Schema.Type<typeof HealthStatusSchema>
+
+export const HealthResponseSchema = Schema.Struct({
+  status: HealthStatusSchema,
+  version: Schema.String,
+  uptimeSeconds: Schema.Number,
+})
+export type HealthResponse = Schema.Schema.Type<typeof HealthResponseSchema>
+
+export const TurnStateSchema = Schema.Literal(
+  "running",
+  "completed",
+  "failed",
+  "canceled",
+)
+export type TurnState = Schema.Schema.Type<typeof TurnStateSchema>
+
+export const TurnStatusResponseSchema = Schema.Struct({
+  turnId: Schema.String,
+  sessionKey: Schema.optionalWith(Schema.String, { exact: true }),
+  state: TurnStateSchema,
+  usage: Schema.optionalWith(UsageStatsSchema, { exact: true }),
+  warnings: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
+})
+export type TurnStatusResponse = Schema.Schema.Type<
+  typeof TurnStatusResponseSchema
+>
+
+export const TraceQueryResponseSchema = Schema.Struct({
+  trace: TraceEnvelopeSchema,
+  usage: Schema.optionalWith(UsageStatsSchema, { exact: true }),
+  artifacts: Schema.optionalWith(Schema.Array(DebugArtifactRefSchema), {
+    exact: true,
+  }),
+  warnings: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
+})
+export type TraceQueryResponse = Schema.Schema.Type<
+  typeof TraceQueryResponseSchema
+>

@@ -3834,6 +3834,27 @@ class AIAgent:
                 else:
                     assistant_message = response.choices[0].message
                 
+                # Normalize content to string — some OpenAI-compatible servers
+                # (llama-server, etc.) return content as a dict or list instead
+                # of a plain string, which crashes downstream .strip() calls.
+                if assistant_message.content is not None and not isinstance(assistant_message.content, str):
+                    raw = assistant_message.content
+                    if isinstance(raw, dict):
+                        assistant_message.content = raw.get("text", "") or raw.get("content", "") or json.dumps(raw)
+                    elif isinstance(raw, list):
+                        # Multimodal content list — extract text parts
+                        parts = []
+                        for part in raw:
+                            if isinstance(part, str):
+                                parts.append(part)
+                            elif isinstance(part, dict) and part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                            elif isinstance(part, dict) and "text" in part:
+                                parts.append(str(part["text"]))
+                        assistant_message.content = "\n".join(parts)
+                    else:
+                        assistant_message.content = str(raw)
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")

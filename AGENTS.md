@@ -8,7 +8,7 @@ Hermes Agent is an AI agent harness with tool-calling capabilities, interactive 
 
 **IMPORTANT**: Always use the virtual environment if it exists:
 ```bash
-source venv/bin/activate  # Before running any Python commands
+source .venv/bin/activate  # Before running any Python commands
 ```
 
 ## Project Structure
@@ -21,20 +21,32 @@ hermes-agent/
 │   ├── prompt_caching.py     # Anthropic prompt caching
 │   ├── prompt_builder.py     # System prompt assembly (identity, skills index, context files)
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
-│   └── trajectory.py         # Trajectory saving helpers
+│   ├── trajectory.py         # Trajectory saving helpers
+│   ├── skill_commands.py     # Skill slash command scanning + invocation (shared CLI/gateway)
+│   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
+│   ├── insights.py           # Usage analytics and session statistics
+│   └── redact.py             # Sensitive data redaction
 ├── hermes_cli/           # CLI implementation
-│   ├── main.py           # Entry point, command dispatcher
+│   ├── main.py           # Entry point, command dispatcher (all `hermes` subcommands)
 │   ├── banner.py         # Welcome banner, ASCII art, skills summary
-│   ├── commands.py       # Slash command definitions + autocomplete
+│   ├── commands.py       # Slash command definitions + SlashCommandCompleter
 │   ├── callbacks.py      # Interactive prompt callbacks (clarify, sudo, approval)
 │   ├── setup.py          # Interactive setup wizard
-│   ├── config.py         # Config management & migration
+│   ├── config.py         # Config management, DEFAULT_CONFIG, migration
 │   ├── status.py         # Status display
 │   ├── doctor.py         # Diagnostics
-│   ├── gateway.py        # Gateway management
+│   ├── gateway.py        # Gateway management (start/stop/install)
 │   ├── uninstall.py      # Uninstaller
 │   ├── cron.py           # Cron job management
-│   └── skills_hub.py     # Skills Hub CLI + /skills slash command
+│   ├── skills_hub.py     # Skills Hub CLI + /skills slash command
+│   ├── tools_config.py   # `hermes tools` command — per-platform tool toggling
+│   ├── pairing.py        # DM pairing management CLI
+│   ├── auth.py           # Provider OAuth authentication
+│   ├── models.py         # Model selection and listing
+│   ├── runtime_provider.py # Runtime provider resolution
+│   ├── clipboard.py      # Clipboard image paste support
+│   ├── colors.py         # Terminal color utilities
+│   └── codex_models.py   # Codex/Responses API model definitions
 ├── tools/                # Tool implementations
 │   ├── registry.py            # Central tool registry (schemas, handlers, dispatch)
 │   ├── approval.py            # Dangerous command detection + per-session approval
@@ -47,22 +59,73 @@ hermes-agent/
 │   │   ├── modal.py           # Modal cloud execution
 │   │   └── daytona.py         # Daytona cloud sandboxes
 │   ├── terminal_tool.py       # Terminal orchestration (sudo, lifecycle, factory)
-│   ├── todo_tool.py           # Planning & task management
 │   ├── process_registry.py    # Background process management
-│   └── ...                    # Other tool files
+│   ├── todo_tool.py           # Planning & task management
+│   ├── memory_tool.py         # Persistent memory read/write
+│   ├── skills_tool.py         # Agent-facing skill list/view (progressive disclosure)
+│   ├── skill_manager_tool.py  # Skill CRUD operations
+│   ├── session_search_tool.py # FTS5 session search
+│   ├── file_tools.py          # File read/write/search/patch tools
+│   ├── file_operations.py     # File operations helpers
+│   ├── web_tools.py           # Firecrawl search/extract
+│   ├── browser_tool.py        # Browserbase browser automation
+│   ├── vision_tools.py        # Image analysis via auxiliary LLM
+│   ├── image_generation_tool.py # FLUX image generation via fal.ai
+│   ├── tts_tool.py            # Text-to-speech
+│   ├── transcription_tools.py # Whisper voice transcription
+│   ├── code_execution_tool.py # execute_code sandbox
+│   ├── delegate_tool.py       # Subagent delegation
+│   ├── clarify_tool.py        # User clarification prompts
+│   ├── send_message_tool.py   # Cross-platform message sending
+│   ├── cronjob_tools.py       # Scheduled task management
+│   ├── mcp_tool.py            # MCP (Model Context Protocol) client
+│   ├── mixture_of_agents_tool.py # Mixture-of-Agents orchestration
+│   ├── homeassistant_tool.py  # Home Assistant integration
+│   ├── honcho_tools.py        # Honcho context management
+│   ├── rl_training_tool.py    # RL training environment tools
+│   ├── openrouter_client.py   # OpenRouter API helpers
+│   ├── patch_parser.py        # V4A patch format parser
+│   ├── fuzzy_match.py         # Multi-strategy fuzzy string matching
+│   ├── interrupt.py           # Agent interrupt handling
+│   ├── debug_helpers.py       # Debug/diagnostic helpers
+│   ├── skills_guard.py        # Security scanner (regex + LLM audit)
+│   ├── skills_hub.py          # Source adapters for skills marketplace
+│   └── skills_sync.py         # Skill synchronization
 ├── gateway/              # Messaging platform adapters
-│   ├── platforms/        # Platform-specific adapters (telegram, discord, slack, whatsapp)
-│   └── ...
+│   ├── run.py            # Main gateway loop, slash commands, message dispatch
+│   ├── session.py        # SessionStore — conversation persistence
+│   ├── config.py         # Gateway-specific config helpers
+│   ├── delivery.py       # Message delivery (origin, telegram, discord, etc.)
+│   ├── hooks.py          # Event hook system
+│   ├── pairing.py        # DM pairing system (code generation, verification)
+│   ├── mirror.py         # Message mirroring
+│   ├── status.py         # Gateway status reporting
+│   ├── sticker_cache.py  # Telegram sticker description cache
+│   ├── channel_directory.py # Channel/chat directory management
+│   └── platforms/        # Platform-specific adapters
+│       ├── base.py           # BasePlatform ABC
+│       ├── telegram.py       # Telegram bot adapter
+│       ├── discord.py        # Discord bot adapter
+│       ├── slack.py          # Slack bot adapter (Socket Mode)
+│       ├── whatsapp.py       # WhatsApp adapter
+│       └── homeassistant.py  # Home Assistant adapter
 ├── cron/                 # Scheduler implementation
 ├── environments/         # RL training environments (Atropos integration)
+├── honcho_integration/   # Honcho client & session management
 ├── skills/               # Bundled skill sources
 ├── optional-skills/      # Official optional skills (not activated by default)
+├── scripts/              # Install scripts, utilities
+├── tests/                # Full pytest suite (~2300+ tests)
 ├── cli.py                # Interactive CLI orchestrator (HermesCLI class)
 ├── hermes_state.py       # SessionDB — SQLite session store (schema, titles, FTS5 search)
+├── hermes_constants.py   # OpenRouter URL constants
+├── hermes_time.py        # Timezone-aware timestamp utilities
 ├── run_agent.py          # AIAgent class (core conversation loop)
 ├── model_tools.py        # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py           # Tool groupings
+├── toolsets.py           # Tool groupings and platform toolset definitions
 ├── toolset_distributions.py  # Probability-based tool selection
+├── trajectory_compressor.py  # Trajectory post-processing
+├── utils.py              # Shared utilities
 └── batch_runner.py       # Parallel batch processing
 ```
 
@@ -99,33 +162,55 @@ The main agent is implemented in `run_agent.py`:
 class AIAgent:
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4.6",
+        base_url: str = None,
         api_key: str = None,
-        base_url: str = "https://openrouter.ai/api/v1",
-        max_iterations: int = 60,        # Max tool-calling loops
+        provider: str = None,             # Provider identifier (routing hints)
+        api_mode: str = None,             # "chat_completions" or "codex_responses"
+        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
+        max_iterations: int = 90,         # Max tool-calling loops
+        tool_delay: float = 1.0,
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
+        save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,         # Suppress progress output
+        session_id: str = None,
         tool_progress_callback: callable = None,  # Called on each tool use
+        clarify_callback: callable = None,
+        step_callback: callable = None,
+        max_tokens: int = None,
+        reasoning_config: dict = None,
+        platform: str = None,             # Platform identifier (cli, telegram, etc.)
+        skip_context_files: bool = False,
+        skip_memory: bool = False,
+        session_db = None,
+        iteration_budget: "IterationBudget" = None,
+        # ... plus OpenRouter provider routing params
     ):
         # Initialize OpenAI client, load tools based on toolsets
         ...
     
-    def chat(self, user_message: str, task_id: str = None) -> str:
-        # Main entry point - runs the agent loop
+    def chat(self, message: str) -> str:
+        # Simple interface — returns just the final response string
+        ...
+    
+    def run_conversation(
+        self, user_message: str, system_message: str = None,
+        conversation_history: list = None, task_id: str = None
+    ) -> dict:
+        # Full interface — returns dict with final_response + message history
         ...
 ```
 
 ### Agent Loop
 
-The core loop in `_run_agent_loop()`:
+The core loop is inside `run_conversation()` (there is no separate `_run_agent_loop()` method):
 
 ```
 1. Add user message to conversation
 2. Call LLM with tools
 3. If LLM returns tool calls:
-   - Execute each tool
+   - Execute each tool (synchronously)
    - Add tool results to conversation
    - Go to step 2
 4. If LLM returns text response:
@@ -133,7 +218,7 @@ The core loop in `_run_agent_loop()`:
 ```
 
 ```python
-while turns < max_turns:
+while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -142,12 +227,14 @@ while turns < max_turns:
     
     if response.tool_calls:
         for tool_call in response.tool_calls:
-            result = await execute_tool(tool_call)
+            result = handle_function_call(tool_call.name, tool_call.args, task_id)
             messages.append(tool_result_message(result))
-        turns += 1
+        api_call_count += 1
     else:
         return response.content
 ```
+
+Note: The agent is **entirely synchronous** — no async/await anywhere.
 
 ### Conversation Management
 
@@ -177,7 +264,7 @@ For models that support chain-of-thought reasoning:
 The interactive CLI uses:
 - **Rich** - For the welcome banner and styled panels
 - **prompt_toolkit** - For fixed input area with history, `patch_stdout`, slash command autocomplete, and floating completion menus
-- **KawaiiSpinner** (in run_agent.py) - Animated kawaii faces during API calls; clean `┊` activity feed for tool execution results
+- **KawaiiSpinner** (in agent/display.py) - Animated kawaii faces during API calls; clean `┊` activity feed for tool execution results
 
 Key components:
 - `HermesCLI` class - Main CLI controller with commands and conversation loop
@@ -213,8 +300,8 @@ Implementation (`agent/skill_commands.py`, shared between CLI and gateway):
 
 ### Adding CLI Commands
 
-1. Add to `COMMANDS` dict with description
-2. Add handler in `process_command()` method
+1. Add to `COMMANDS` dict in `hermes_cli/commands.py`
+2. Add handler in `process_command()` method (in `HermesCLI` class, `cli.py`)
 3. For persistent settings, use `save_config_value()` to update config
 
 ---
@@ -227,16 +314,23 @@ The unified `hermes` command provides all functionality:
 |---------|-------------|
 | `hermes` | Interactive chat (default) |
 | `hermes chat -q "..."` | Single query mode |
+| `hermes chat -m <model>` | Chat with a specific model |
+| `hermes chat --provider <name>` | Chat with a specific provider |
 | `hermes -c` / `hermes --continue` | Resume the most recent session |
 | `hermes -c "my project"` | Resume a session by name (latest in lineage) |
 | `hermes --resume <session_id>` | Resume a specific session by ID or title |
 | `hermes -w` / `hermes --worktree` | Start in isolated git worktree (for parallel agents) |
+| `hermes model` | Interactive provider and model selection |
+| `hermes login <provider>` | OAuth login to inference providers (nous, openai-codex) |
+| `hermes logout <provider>` | Clear authentication credentials |
 | `hermes setup` | Configure API keys and settings |
-| `hermes config` | View current configuration |
+| `hermes config` / `hermes config show` | View current configuration |
 | `hermes config edit` | Open config in editor |
 | `hermes config set KEY VAL` | Set a specific value |
 | `hermes config check` | Check for missing config |
 | `hermes config migrate` | Prompt for missing config interactively |
+| `hermes config path` | Show config file path |
+| `hermes config env-path` | Show .env file path |
 | `hermes status` | Show configuration status |
 | `hermes doctor` | Diagnose issues |
 | `hermes update` | Update to latest (checks for new config) |
@@ -244,10 +338,25 @@ The unified `hermes` command provides all functionality:
 | `hermes gateway` | Start gateway (messaging + cron scheduler) |
 | `hermes gateway setup` | Configure messaging platforms interactively |
 | `hermes gateway install` | Install gateway as system service |
+| `hermes gateway start/stop/restart` | Manage gateway service |
+| `hermes gateway status` | Check gateway service status |
+| `hermes gateway uninstall` | Remove gateway service |
+| `hermes whatsapp` | WhatsApp setup and QR pairing wizard |
+| `hermes tools` | Interactive tool configuration per platform |
+| `hermes skills browse/search` | Browse and search skills marketplace |
+| `hermes skills install/uninstall` | Install or remove skills |
+| `hermes skills list` | List installed skills |
+| `hermes skills audit` | Security audit installed skills |
+| `hermes skills tap add/remove/list` | Manage custom skill sources |
 | `hermes sessions list` | List past sessions (title, preview, last active) |
 | `hermes sessions rename <id> <title>` | Rename/title a session |
+| `hermes sessions export <id>` | Export a session |
+| `hermes sessions delete <id>` | Delete a session |
+| `hermes sessions prune` | Remove old sessions |
+| `hermes sessions stats` | Session statistics |
 | `hermes cron list` | View scheduled jobs |
 | `hermes cron status` | Check if cron scheduler is running |
+| `hermes insights` | Usage analytics and session statistics |
 | `hermes version` | Show version info |
 | `hermes pairing list/approve/revoke` | Manage DM pairing codes |
 
@@ -255,7 +364,7 @@ The unified `hermes` command provides all functionality:
 
 ## Messaging Gateway
 
-The gateway connects Hermes to Telegram, Discord, Slack, and WhatsApp.
+The gateway connects Hermes to Telegram, Discord, Slack, WhatsApp, and Home Assistant.
 
 ### Setup
 
@@ -281,7 +390,7 @@ DISCORD_BOT_TOKEN=MTIz...                 # From Developer Portal
 DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
 
 # Agent Behavior
-HERMES_MAX_ITERATIONS=60                  # Max tool-calling iterations
+HERMES_MAX_ITERATIONS=90                  # Max tool-calling iterations (default: 90)
 MESSAGING_CWD=/home/myuser                # Terminal working directory for messaging
 
 # Tool progress is configured in config.yaml (display.tool_progress: off|new|all|verbose)
@@ -347,16 +456,43 @@ Modes:
 - `new`: Only when switching to a different tool (less spam)
 - `all`: Every single tool call
 
+### Gateway Slash Commands
+
+The gateway supports these slash commands in messaging chats:
+- `/new` - Start a new conversation
+- `/reset` - Reset conversation history
+- `/retry` - Retry last message
+- `/undo` - Remove the last exchange
+- `/compress` - Compress conversation context
+- `/stop` - Interrupt the running agent
+- `/model` - Show/change model
+- `/provider` - Show available providers and auth status
+- `/personality` - Set a personality
+- `/title` - Set or show session title
+- `/resume` - Resume a previously-named session
+- `/usage` - Show token usage for this session
+- `/insights` - Show usage analytics
+- `/sethome` - Set this chat as the home channel
+- `/reload-mcp` - Reload MCP servers from config
+- `/update` - Update Hermes Agent to latest version
+- `/help` - Show command list
+- `/status` - Show session info
+- Plus dynamic `/skill-name` commands (loaded from agent/skill_commands.py)
+
 ### Typing Indicator
 
 The gateway keeps the "typing..." indicator active throughout processing, refreshing every 4 seconds. This lets users know the bot is working even during long tool-calling sequences.
 
 ### Platform Toolsets:
 
-Each platform has a dedicated toolset in `toolsets.py`:
+Each platform has a dedicated toolset in `toolsets.py` (all share the same `_HERMES_CORE_TOOLS` list):
+- `hermes-cli`: CLI-specific toolset
 - `hermes-telegram`: Full tools including terminal (with safety checks)
 - `hermes-discord`: Full tools including terminal
 - `hermes-whatsapp`: Full tools including terminal
+- `hermes-slack`: Full tools including terminal
+- `hermes-homeassistant`: Home Assistant integration tools
+- `hermes-gateway`: Meta-toolset including all platform toolsets
 
 ---
 
@@ -393,7 +529,7 @@ DEFAULT_CONFIG = {
 
 #### For .env variables (API keys/secrets):
 
-1. Add to `REQUIRED_ENV_VARS` or `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
+1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` (note: `REQUIRED_ENV_VARS` exists but is intentionally empty — provider setup is handled by the setup wizard)
 2. Include metadata for the migration system:
 
 ```python
@@ -405,6 +541,7 @@ OPTIONAL_ENV_VARS = {
         "url": "https://where-to-get-it.com/",
         "tools": ["tools_it_enables"],  # What tools need this
         "password": True,  # Mask input
+        "category": "tool",  # One of: provider, tool, messaging, setting
     },
 }
 ```
@@ -417,11 +554,12 @@ OPTIONAL_ENV_VARS = {
 
 ### Config Version Migration
 
-The system uses `_config_version` to detect outdated configs:
+The system uses `_config_version` (currently at version 5) to detect outdated configs:
 
-1. `check_for_missing_config()` compares user config to `DEFAULT_CONFIG`
-2. `migrate_config()` interactively prompts for missing values
-3. Called automatically by `hermes update` and optionally by `hermes setup`
+1. `check_config_version()` compares user config version to `DEFAULT_CONFIG` version
+2. `get_missing_env_vars()` identifies missing environment variables
+3. `migrate_config()` interactively prompts for missing values and handles version-specific migrations (e.g., v3→4: tool progress, v4→5: timezone)
+4. Called automatically by `hermes update` and optionally by `hermes setup`
 
 ---
 
@@ -433,7 +571,7 @@ API keys are loaded from `~/.hermes/.env`:
 - `FIRECRAWL_API_URL` - Self-hosted Firecrawl endpoint (optional)
 - `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID` - Browser automation
 - `FAL_KEY` - Image generation (FLUX model)
-- `NOUS_API_KEY` - Vision and Mixture-of-Agents tools
+- `VOICE_TOOLS_OPENAI_KEY` - Voice transcription (Whisper STT) and OpenAI TTS
 
 Terminal tool configuration (in `~/.hermes/config.yaml`):
 - `terminal.backend` - Backend: local, docker, singularity, modal, daytona, or ssh
@@ -446,10 +584,9 @@ Terminal tool configuration (in `~/.hermes/config.yaml`):
 - SSH: `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, `TERMINAL_SSH_KEY` in .env
 
 Agent behavior (in `~/.hermes/.env`):
-- `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 60)
+- `HERMES_MAX_ITERATIONS` - Max tool-calling iterations (default: 90)
 - `MESSAGING_CWD` - Working directory for messaging platforms (default: ~)
 - `display.tool_progress` in config.yaml - Tool progress: `off`, `new`, `all`, `verbose`
-- `OPENAI_API_KEY` - Voice transcription (Whisper STT)
 - `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` - Slack integration (Socket Mode)
 - `SLACK_ALLOWED_USERS` - Comma-separated Slack user IDs
 - `HERMES_HUMAN_DELAY_MODE` - Response pacing: off/natural/custom
@@ -519,7 +656,7 @@ Files: `tools/process_registry.py` (registry + handler), `tools/terminal_tool.py
 
 ## Adding New Tools
 
-Adding a tool requires changes in **2 files** (the tool file and `toolsets.py`):
+Adding a tool requires changes in **3 files** (the tool file, `model_tools.py`, and `toolsets.py`):
 
 1. **Create `tools/your_tool.py`** with handler, schema, check function, and registry call:
 
@@ -564,11 +701,11 @@ registry.register(
 )
 ```
 
-2. **Add to `toolsets.py`**: Add `"example_tool"` to `_HERMES_CORE_TOOLS` if it should be in all platform toolsets, or create a new toolset entry.
+2. **Add discovery import** in `model_tools.py`'s `_discover_tools()` list: `"tools.example_tool"`.
 
-3. **Add discovery import** in `model_tools.py`'s `_discover_tools()` list: `"tools.example_tool"`.
+3. **Add to `toolsets.py`**: Add `"example_tool"` to `_HERMES_CORE_TOOLS` if it should be in all platform toolsets, or create a new toolset entry.
 
-That's it. The registry handles schema collection, dispatch, availability checking, and error wrapping automatically. No edits to `TOOLSET_REQUIREMENTS`, `handle_function_call()`, `get_all_tool_names()`, or any other data structure.
+That's it. The registry handles schema collection, dispatch, availability checking, and error wrapping automatically. No edits to `handle_function_call()`, `get_all_tool_names()`, or any other data structure.
 
 **Optional:** Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` for the setup wizard, and to `toolset_distributions.py` for batch processing.
 
@@ -608,7 +745,7 @@ Tool calls use `<tool_call>` XML tags, responses use `<tool_response>` tags, rea
 ```python
 agent = AIAgent(save_trajectories=True)
 agent.chat("Do something")
-# Saves to trajectories/*.jsonl in ShareGPT format
+# Saves to trajectory_samples.jsonl (or failed_trajectories.jsonl) in ShareGPT format
 ```
 
 ---

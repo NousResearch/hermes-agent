@@ -422,7 +422,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 60)",
+        "description": "Maximum tool-calling iterations per conversation (default: 90)",
         "prompt": "Max iterations",
         "url": None,
         "password": False,

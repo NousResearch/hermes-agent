@@ -654,6 +654,27 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+        @tree.command(name="insights", description="Show usage insights and analytics")
+        @discord.app_commands.describe(days="Number of days to analyze (default: 7)")
+        async def slash_insights(interaction: discord.Interaction, days: int = 7):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/insights {days}")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
+        @tree.command(name="reload-mcp", description="Reload MCP servers from config")
+        async def slash_reload_mcp(interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, "/reload-mcp")
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)

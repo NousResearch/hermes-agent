@@ -710,8 +710,8 @@ class GatewayRunner:
         # Emit command:* hook for any recognized slash command
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
-                          "compress", "usage", "insights", "reload-mcp", "update",
-                          "title"}
+                          "compress", "usage", "insights", "reload-mcp", "reload_mcp",
+                          "update", "title", "resume", "provider"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -759,7 +759,7 @@ class GatewayRunner:
         if command == "insights":
             return await self._handle_insights_command(event)
 
-        if command == "reload-mcp":
+        if command in ("reload-mcp", "reload_mcp"):
             return await self._handle_reload_mcp_command(event)
 
         if command == "update":

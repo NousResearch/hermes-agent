@@ -1135,14 +1135,18 @@ class HermesCLI:
             self._app.invalidate()
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
-        """Normalize obviously incompatible model/provider pairings.
+        """Strip provider prefixes and swap the default model for Codex.
 
-        When the resolved provider is ``openai-codex``, the Codex Responses API
-        only accepts Codex-compatible model slugs (e.g. ``gpt-5.3-codex``).
-        If the active model is incompatible (e.g. the OpenRouter default
-        ``anthropic/claude-opus-4.6``), swap it for the best available Codex
-        model.  Also strips provider prefixes the API does not accept
-        (``openai/gpt-5.3-codex`` → ``gpt-5.3-codex``).
+        When the resolved provider is ``openai-codex``:
+
+        1. Strip any ``provider/`` prefix (the Codex Responses API only
+           accepts bare model slugs like ``gpt-5.4``, not ``openai/gpt-5.4``).
+        2. If the active model is still the *untouched default* (user never
+           explicitly chose a model), replace it with a Codex-compatible
+           default so the first session doesn't immediately error.
+
+        If the user explicitly chose a model — *any* model — we trust them
+        and let the API be the judge.  No allowlists, no slug checks.
 
         Returns True when the active model was changed.
         """
@@ -1150,46 +1154,39 @@ class HermesCLI:
             return False
 
         current_model = (self.model or "").strip()
-        current_slug = current_model.split("/")[-1] if current_model else ""
+        changed = False
 
-        # Keep explicit Codex models, but strip any provider prefix that the
-        # Codex Responses API does not accept.
-        if current_slug and "codex" in current_slug.lower():
-            if current_slug != current_model:
-                self.model = current_slug
-                if not self._model_is_default:
-                    self.console.print(
-                        f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
-                        f"using '{current_slug}' for OpenAI Codex.[/]"
-                    )
-                return True
-            return False
-
-        # Model is not Codex-compatible — replace with the best available
-        fallback_model = "gpt-5.3-codex"
-        try:
-            from hermes_cli.codex_models import get_codex_model_ids
-
-            codex_models = get_codex_model_ids(
-                access_token=self.api_key if self.api_key else None,
-            )
-            fallback_model = next(
-                (mid for mid in codex_models if "codex" in mid.lower()),
-                fallback_model,
-            )
-        except Exception:
-            pass
-
-        if current_model != fallback_model:
+        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
+        if "/" in current_model:
+            slug = current_model.split("/", 1)[1]
             if not self._model_is_default:
                 self.console.print(
-                    f"[yellow]⚠️  Model '{current_model}' is not supported with "
-                    f"OpenAI Codex; switching to '{fallback_model}'.[/]"
+                    f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
+                    f"using '{slug}' for OpenAI Codex.[/]"
                 )
-            self.model = fallback_model
-            return True
+            self.model = slug
+            current_model = slug
+            changed = True
 
-        return False
+        # 2. Replace untouched default with a Codex model
+        if self._model_is_default:
+            fallback_model = "gpt-5.3-codex"
+            try:
+                from hermes_cli.codex_models import get_codex_model_ids
+
+                available = get_codex_model_ids(
+                    access_token=self.api_key if self.api_key else None,
+                )
+                if available:
+                    fallback_model = available[0]
+            except Exception:
+                pass
+
+            if current_model != fallback_model:
+                self.model = fallback_model
+                changed = True
+
+        return changed
 
     def _ensure_runtime_credentials(self) -> bool:
         """

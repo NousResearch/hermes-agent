@@ -254,6 +254,7 @@ def _wayland_save(dest: Path) -> bool:
             )
 
         if not dest.exists() or dest.stat().st_size == 0:
+            dest.unlink(missing_ok=True)
             return False
 
         # BMP needs conversion to PNG (common in WSLg where only BMP

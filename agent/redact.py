@@ -8,6 +8,7 @@ the first 6 and last 4 characters for debuggability.
 """
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -73,8 +74,11 @@ def redact_sensitive_text(text: str) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
+    Disabled when security.redact_secrets is false in config.yaml.
     """
     if not text:
+        return text
+    if os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off"):
         return text
 
     # Known prefixes (sk-, ghp_, etc.)

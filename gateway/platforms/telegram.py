@@ -111,11 +111,14 @@ class TelegramAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
         if not TELEGRAM_AVAILABLE:
-            print(f"[{self.name}] python-telegram-bot not installed. Run: pip install python-telegram-bot")
+            logger.error(
+                "[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot",
+                self.name,
+            )
             return False
         
         if not self.config.token:
-            print(f"[{self.name}] No bot token configured")
+            logger.error("[%s] No bot token configured", self.name)
             return False
         
         try:
@@ -169,15 +172,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("reload_mcp", "Reload MCP servers from config"),
                     BotCommand("help", "Show available commands"),
                 ])
-            except Exception as e:
-                print(f"[{self.name}] Could not register command menu: {e}")
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "[%s] Could not register Telegram command menu: %s",
+                    self.name,
+                    e,
+                    exc_info=True,
+                )
             
             self._running = True
-            print(f"[{self.name}] Connected and polling for updates")
+            logger.info("[%s] Connected and polling for Telegram updates", self.name)
             return True
             
-        except Exception as e:
-            print(f"[{self.name}] Failed to connect: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
     
     async def disconnect(self) -> None:
@@ -187,13 +195,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.stop()
                 await self._app.stop()
                 await self._app.shutdown()
-            except Exception as e:
-                print(f"[{self.name}] Error during disconnect: {e}")
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[%s] Error during Telegram disconnect: %s", self.name, e, exc_info=True)
         
         self._running = False
         self._app = None
         self._bot = None
-        print(f"[{self.name}] Disconnected")
+        logger.info("[%s] Disconnected from Telegram", self.name)
     
     async def send(
         self,
@@ -248,7 +256,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 raw_response={"message_ids": message_ids}
             )
             
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def edit_message(
@@ -269,7 +278,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
-            except Exception:
+            except Exception:  # pragma: no cover - defensive logging
                 # Fallback: retry without markdown formatting
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -277,7 +286,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     text=content,
                 )
             return SendResult(success=True, message_id=message_id)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to edit Telegram message %s: %s",
+                self.name,
+                message_id,
+                e,
+                exc_info=True,
+            )
             return SendResult(success=False, error=str(e))
 
     async def send_voice(
@@ -314,8 +330,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=int(reply_to) if reply_to else None,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            print(f"[{self.name}] Failed to send voice/audio: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
     
     async def send_image_file(
@@ -342,8 +363,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=int(reply_to) if reply_to else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            print(f"[{self.name}] Failed to send local image: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send Telegram local image, falling back to base adapter: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
     async def send_image(
@@ -371,7 +397,12 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] URL-based send_photo failed (%s), trying file upload", self.name, e)
+            logger.warning(
+                "[%s] URL-based send_photo failed, trying file upload: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             # Fallback: download and upload as file (supports up to 10MB)
             try:
                 import httpx
@@ -387,8 +418,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=int(reply_to) if reply_to else None,
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
-            except Exception as e2:
-                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2)
+            except Exception as e2:  # pragma: no cover - defensive logging
+                logger.error(
+                    "[%s] File upload send_photo also failed: %s",
+                    self.name,
+                    e2,
+                    exc_info=True,
+                )
                 # Final fallback: send URL as text
                 return await super().send_image(chat_id, image_url, caption, reply_to)
     
@@ -411,8 +447,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=int(reply_to) if reply_to else None,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
-        except Exception as e:
-            print(f"[{self.name}] Failed to send animation, falling back to photo: {e}")
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to send Telegram animation, falling back to photo: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
             # Fallback: try as a regular photo
             return await self.send_image(chat_id, animation_url, caption, reply_to)
 
@@ -424,8 +465,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=int(chat_id),
                     action="typing"
                 )
-            except Exception:
-                pass  # Ignore typing indicator failures
+            except Exception as e:  # pragma: no cover - defensive logging
+                # Typing failures are non-fatal; log at debug level only.
+                logger.debug(
+                    "[%s] Failed to send Telegram typing indicator: %s",
+                    self.name,
+                    e,
+                    exc_info=True,
+                )
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
@@ -451,7 +498,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 "username": chat.username,
                 "is_forum": getattr(chat, "is_forum", False),
             }
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[%s] Failed to get Telegram chat info for %s: %s",
+                self.name,
+                chat_id,
+                e,
+                exc_info=True,
+            )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
     
     def format_message(self, content: str) -> str:
@@ -640,9 +694,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}"]
-                print(f"[Telegram] Cached user photo: {cached_path}", flush=True)
-            except Exception as e:
-                print(f"[Telegram] Failed to cache photo: {e}", flush=True)
+                logger.info("[Telegram] Cached user photo at %s", cached_path)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
         
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
@@ -652,9 +706,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/ogg"]
-                print(f"[Telegram] Cached user voice: {cached_path}", flush=True)
-            except Exception as e:
-                print(f"[Telegram] Failed to cache voice: {e}", flush=True)
+                logger.info("[Telegram] Cached user voice at %s", cached_path)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
         elif msg.audio:
             try:
                 file_obj = await msg.audio.get_file()
@@ -662,9 +716,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/mp3"]
-                print(f"[Telegram] Cached user audio: {cached_path}", flush=True)
-            except Exception as e:
-                print(f"[Telegram] Failed to cache audio: {e}", flush=True)
+                logger.info("[Telegram] Cached user audio at %s", cached_path)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
         # Download document files to cache for agent processing
         elif msg.document:
@@ -689,7 +743,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Unsupported document type '{ext or 'unknown'}'. "
                         f"Supported types: {supported_list}"
                     )
-                    print(f"[Telegram] Unsupported document type: {ext or 'unknown'}", flush=True)
+                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
                     await self.handle_message(event)
                     return
 
@@ -700,7 +754,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "The document is too large or its size could not be verified. "
                         "Maximum: 20 MB."
                     )
-                    print(f"[Telegram] Document too large: {doc.file_size} bytes", flush=True)
+                    logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
                     await self.handle_message(event)
                     return
 
@@ -712,7 +766,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
-                print(f"[Telegram] Cached user document: {cached_path}", flush=True)
+                logger.info("[Telegram] Cached user document at %s", cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
@@ -726,11 +780,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             event.text = f"{injection}\n\n{event.text}"
                         else:
                             event.text = injection
-                    except UnicodeDecodeError:
-                        print(f"[Telegram] Could not decode text file as UTF-8, skipping content injection", flush=True)
+                    except UnicodeDecodeError:  # pragma: no cover - defensive logging
+                        logger.warning(
+                            "[Telegram] Could not decode text file as UTF-8, skipping content injection",
+                            exc_info=True,
+                        )
 
-            except Exception as e:
-                print(f"[Telegram] Failed to cache document: {e}", flush=True)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
 
         await self.handle_message(event)
     
@@ -765,7 +822,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.text = build_sticker_injection(
                 cached["description"], cached.get("emoji", emoji), cached.get("set_name", set_name)
             )
-            print(f"[Telegram] Sticker cache hit: {sticker.file_unique_id}", flush=True)
+            logger.info("[Telegram] Sticker cache hit: %s", sticker.file_unique_id)
             return
 
         # Cache miss -- download and analyze
@@ -773,7 +830,7 @@ class TelegramAdapter(BasePlatformAdapter):
             file_obj = await sticker.get_file()
             image_bytes = await file_obj.download_as_bytearray()
             cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
-            print(f"[Telegram] Analyzing sticker: {cached_path}", flush=True)
+            logger.info("[Telegram] Analyzing sticker at %s", cached_path)
 
             from tools.vision_tools import vision_analyze_tool
             import json as _json
@@ -794,8 +851,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"a sticker with emoji {emoji}" if emoji else "a sticker",
                     emoji, set_name,
                 )
-        except Exception as e:
-            print(f"[Telegram] Sticker analysis error: {e}", flush=True)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning("[Telegram] Sticker analysis error: %s", e, exc_info=True)
             event.text = build_sticker_injection(
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",
                 emoji, set_name,

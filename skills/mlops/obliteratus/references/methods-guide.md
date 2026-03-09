@@ -1,132 +1,141 @@
 # OBLITERATUS Methods — Detailed Guide
 
-> **Important:** The CLI (`obliteratus obliterate --method`) accepts 9 methods:
-> basic, advanced, aggressive, spectral_cascade, informed, surgical, optimized,
-> inverted, nuclear. Four additional methods (failspy, gabliteration, heretic, rdo)
-> are available only via the Python API and will be rejected by argparse if used on CLI.
+> The CLI accepts 9 methods via `--method`: basic, advanced, aggressive, spectral_cascade,
+> informed, surgical, optimized, inverted, nuclear.
+> Four additional methods (failspy, gabliteration, heretic, rdo) are available only via the Python API.
 
 ## How Abliteration Works (Theory)
 
-When a model is trained with RLHF/DPO/CAI, it learns to represent "should I refuse?"
-as a direction in its internal activation space. When processing a "harmful" prompt,
-activations shift in this direction, causing the model to generate refusal text.
-
-Abliteration works by:
-1. Measuring this direction (the difference between harmful and harmless activations)
-2. Removing it from the model's weight matrices via orthogonal projection
-3. The model can no longer "point toward" refusal, so it responds normally
+Abliteration identifies a "refusal direction" — a vector in the model's activation space that
+corresponds to refusal behavior — and projects it out of the weight matrices.
 
 Mathematically: `W_new = W_old - (W_old @ d @ d.T)` where `d` is the refusal direction.
+
+The key challenge is finding accurate refusal directions without damaging other capabilities.
+
+---
+
+## Direction Extraction Methods
+
+Before projecting, OBLITERATUS extracts refusal directions using one of three methods:
+
+| Method | Flag | Description | Best For |
+|:-------|:-----|:------------|:---------|
+| Diff-in-Means | `--direction-method diff_means` | Difference between mean activations on refused vs. complied prompts | Default, fast, robust |
+| SVD | `--direction-method svd` | Multi-direction extraction via Singular Value Decomposition | Complex alignment, multiple refusal mechanisms |
+| LEACE | `--direction-method leace` | Linear Erasure via Closed-form Estimation — mathematically optimal | Maximum precision, research |
+
+---
 
 ## Method Details
 
 ### basic
-**Technique:** Single refusal direction via diff-in-means
-**Based on:** Arditi et al. 2024 ("Refusal in Language Models Is Mediated by a Single Direction")
-**Speed:** Fast (~5-10 min for 8B)
-**Quality:** Moderate — works for simple refusal patterns
-**Best for:** Quick tests, models with clean single-direction refusal
-**Limitation:** Misses complex multi-direction refusal patterns
+- **Directions:** 1 (single diff-in-means vector)
+- **Speed:** Fast (~5-10 min for 8B model)
+- **Risk:** Low
+- **Use case:** Quick tests, prototyping, evaluating if abliteration works for a model
+- **How it works:** Extracts one refusal direction and projects it out uniformly across all layers.
 
-### advanced (DEFAULT)
-**Technique:** Multiple SVD directions with norm-preserving projection
-**Speed:** Medium (~10-20 min for 8B)
-**Quality:** Good — handles multi-direction refusal
-**Best for:** Dense models (Llama, Qwen, Mistral) as a reliable default
-**Key improvement:** Norm preservation prevents weight magnitude drift
-
-### informed (RECOMMENDED)
-**Technique:** Analysis-guided auto-configuration
-**Speed:** Slow (~20-40 min for 8B, runs 4 analysis modules first)
-**Quality:** Best — adapts to each model's specific refusal implementation
-**Best for:** Any model when quality matters more than speed
-
-The informed pipeline runs these analysis modules during abliteration:
-1. **AlignmentImprintDetector** — Detects DPO/RLHF/CAI/SFT → sets regularization
-2. **ConceptConeAnalyzer** — Polyhedral vs linear refusal → sets n_directions
-3. **CrossLayerAlignmentAnalyzer** — Cluster-aware → selects target layers
-4. **DefenseRobustnessEvaluator** — Self-repair risk → sets refinement passes
-5. **Ouroboros loop** — Re-probes after excision, re-excises if refusal persists
+### advanced (DEFAULT — RECOMMENDED)
+- **Directions:** 4 (multi-direction SVD)
+- **Speed:** Medium (~10-20 min for 8B model)
+- **Risk:** Low-Medium
+- **Refinement passes:** 2
+- **Use case:** Default for most models. Well-tested and reliable.
+- **How it works:** Extracts multiple refusal directions via SVD, applies norm-preserving bi-projection to maintain weight matrix norms. Two refinement passes catch residual refusal.
 
 ### aggressive
-**Technique:** Whitened SVD + jailbreak-contrastive activations + attention head surgery
-**Speed:** Slow (~30-60 min for 8B)
-**Quality:** High but higher risk of coherence damage
-**Best for:** Models that resist gentler methods
-**Key feature:** Whitened SVD separates refusal signal from natural activation variance
-
-### surgical
-**Technique:** SAE features + neuron masking + head surgery + per-expert directions
-**Speed:** Very slow (~1-2 hrs for 8B, needs SAE)
-**Quality:** Highest precision
-**Best for:** Reasoning models (R1 distills) where you must preserve CoT
-**Key feature:** CoT-Aware — explicitly protects reasoning-critical directions
-
-### nuclear
-**Technique:** Everything combined — expert transplant + steering + per-expert directions
-**Speed:** Very slow
-**Quality:** Most thorough removal, highest risk of side effects
-**Best for:** Stubborn MoE models (DeepSeek, Mixtral, DBRX) that resist other methods
-**Key feature:** Expert-granular abliteration decomposes signals per MoE expert
-
-### optimized
-**Technique:** Bayesian hyperparameter search via Optuna TPE
-**Speed:** Very slow (runs many trials)
-**Quality:** Finds optimal configuration automatically
-**Best for:** Research, when you want the mathematically best parameters
-**Requires:** optuna package
+- **Directions:** 8+ (whitened SVD + jailbreak-contrastive)
+- **Speed:** Medium-Slow
+- **Risk:** Medium-High (may damage coherence)
+- **Use case:** When `advanced` leaves > 10% refusals. Stubborn models.
+- **How it works:** Uses whitened SVD for covariance-normalized extraction, adds jailbreak-contrastive directions, performs attention head surgery on the most refusal-active heads.
 
 ### spectral_cascade
-**Technique:** DCT frequency-domain decomposition of refusal signal
-**Speed:** Medium-slow
-**Quality:** Novel approach, less battle-tested
-**Best for:** Research, exploring alternative decomposition strategies
+- **Speed:** Medium
+- **Risk:** Medium
+- **Use case:** Research, novel approaches
+- **How it works:** DCT (Discrete Cosine Transform) frequency-domain decomposition of refusal signals. Separates high-frequency (surface-level) from low-frequency (deep) refusal patterns.
+
+### informed (EXPERIMENTAL)
+- **Speed:** Slow (~20-40 min for 8B model)
+- **Risk:** Variable — results depend on analysis quality
+- **Use case:** When you want auto-configuration, but be aware this is experimental and may not outperform `advanced`.
+- **How it works:** Runs 4 analysis modules first (alignment imprint, concept geometry, logit lens, ouroboros detection), then auto-configures extraction strategy. Includes an "Ouroboros loop" that detects and counteracts self-repair.
+- **Note:** The auto-detection can sometimes misconfigure. If results are poor, fall back to `advanced`.
+
+### surgical
+- **Speed:** Very slow (~1-2 hrs for 8B model)
+- **Risk:** Low (very precise)
+- **Use case:** Reasoning models (R1 distills, QwQ, etc.) where chain-of-thought must be preserved.
+- **How it works:** Uses SAE (Sparse Autoencoder) features + individual neuron masking + attention head surgery + per-expert decomposition (for MoE). CoT-aware — identifies and protects reasoning-critical directions before projecting.
+
+### optimized
+- **Speed:** Very slow (hours — runs many trials)
+- **Risk:** Low (finds optimal parameters)
+- **Use case:** When quality matters more than speed. Production models.
+- **How it works:** Bayesian hyperparameter search via Optuna TPE sampler. Optimizes n_directions, regularization, refinement passes, and layer selection jointly. Evaluates each configuration on refusal rate + perplexity.
 
 ### inverted
-**Technique:** Reflects (inverts) the refusal direction instead of removing it
-**Speed:** Fast (same as basic)
-**Quality:** Aggressive — model becomes actively willing, not just neutral
-**Best for:** When you want the model to be maximally helpful
-**Warning:** Can make the model too eager; may reduce safety-adjacent reasoning
+- **Speed:** Fast
+- **Risk:** High (model behavior changes dramatically)
+- **Use case:** Research, studying refusal mechanisms
+- **How it works:** Instead of projecting out the refusal direction, reflects it. The model actively complies rather than passively not-refusing. Useful for understanding the geometry of alignment.
 
-### failspy / gabliteration / heretic / rdo (PYTHON API ONLY)
-**Technique:** Faithful reproductions of prior community/academic work
-**Speed:** Varies
-**Quality:** Known baselines
-**Best for:** Reproducing published results, comparing methods
-**⚠️ NOT available via CLI** — these methods are only accessible via the Python API.
-Do not use `--method failspy` etc. in CLI commands; argparse will reject them.
+### nuclear
+- **Speed:** Slow
+- **Risk:** Medium-High
+- **Use case:** Stubborn MoE models (DeepSeek-MoE, Mixtral, etc.)
+- **How it works:** Combines expert-granular abliteration (EGA), steering vector injection, attention head pruning, and multi-pass refinement. Decomposes refusal signals into per-expert components for MoE architectures.
+
+---
 
 ## Method Selection Flowchart
 
 ```
 Is this a quick test?
-├─ YES → basic
-└─ NO → Is the model MoE (DeepSeek, Mixtral)?
-         ├─ YES → nuclear
-         └─ NO → Is it a reasoning model (R1 distill)?
-                  ├─ YES → surgical
-                  └─ NO → Do you care about speed?
-                           ├─ YES → advanced
-                           └─ NO → informed
+  → YES: basic
+  → NO: continue
+
+Is it an MoE model (Mixtral, DeepSeek-MoE)?
+  → YES: nuclear
+  → NO: continue
+
+Is it a reasoning model (R1, QwQ, CoT-focused)?
+  → YES: surgical
+  → NO: continue
+
+Do you need the absolute best quality and have time?
+  → YES: optimized
+  → NO: advanced (recommended default)
+
+Did advanced leave > 10% refusals?
+  → YES: aggressive
+  → Still refusing: nuclear
 ```
+
+---
 
 ## Key Parameters
 
-| Parameter           | Range    | Default | Effect                                      |
-|:--------------------|:---------|:--------|:--------------------------------------------|
-| n_directions        | 1-32     | auto    | More = more thorough but riskier             |
-| regularization      | 0.0-1.0  | 0.0     | Higher preserves more original behavior      |
-| refinement_passes   | 1-5      | 1       | More catches self-repair (Ouroboros effect)   |
-| quantization        | 4/8 bit  | none    | Saves VRAM, slight quality tradeoff          |
+| Parameter | Range | Default | Effect |
+|:----------|:------|:--------|:-------|
+| `--n-directions` | 1-32 | method-dependent | More directions = more complete removal, but higher damage risk |
+| `--regularization` | 0.0-1.0 | 0.1 | Higher = more conservative (less removal, less damage) |
+| `--refinement-passes` | 1-5 | 2 | More passes catch residual refusal, but diminishing returns |
+| `--quantization` | 4bit, 8bit | none | Reduces VRAM usage; quality impact minimal for extraction |
+| `--verify-sample-size` | 10-200 | 20 | More samples = more accurate refusal rate estimate |
+
+---
 
 ## Troubleshooting
 
-| Problem                    | Solution                                          |
-|:---------------------------|:--------------------------------------------------|
-| Refusal rate still > 10%   | Try aggressive/nuclear, add refinement passes     |
-| Perplexity up > 20%        | Reduce n_directions, increase regularization       |
-| Model generates nonsense   | Regularization too low, try 0.2-0.3               |
-| OOM on GPU                 | Use 4-bit quantization, or try smaller model       |
-| MoE model barely changes   | Use nuclear method (expert-granular)               |
-| CoT reasoning broken       | Use surgical method (CoT-aware)                    |
+| Problem | Likely Cause | Fix |
+|:--------|:-------------|:----|
+| Refusal rate > 20% | Too few directions | Increase `--n-directions`, try `aggressive` |
+| Refusal rate 5-20% | Residual refusal | Add `--refinement-passes 3`, try `--direction-method svd` |
+| Perplexity spike > 20% | Over-aggressive removal | Reduce `--n-directions`, increase `--regularization` |
+| Repetitive output | Weight matrix damage | Use `basic` with fewer directions, check norm preservation |
+| MoE model still refuses | Non-expert-aware method | Switch to `nuclear` |
+| Reasoning degraded | CoT directions damaged | Use `surgical` method |
+| OOM during extraction | Insufficient VRAM | Add `--quantization 4bit` and/or `--large-model` |

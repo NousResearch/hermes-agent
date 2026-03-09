@@ -147,6 +147,8 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+    # User-defined quick commands that bypass the agent loop (type: exec only)
+    "quick_commands": {},
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 5,

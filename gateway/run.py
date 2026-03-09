@@ -771,6 +771,33 @@ class GatewayRunner:
         if command == "resume":
             return await self._handle_resume_command(event)
         
+        # User-defined quick commands (bypass agent loop, no LLM call)
+        if command:
+            quick_commands = self.config.get("quick_commands", {})
+            if command in quick_commands:
+                qcmd = quick_commands[command]
+                if qcmd.get("type") == "exec":
+                    import asyncio
+                    exec_cmd = qcmd.get("command", "")
+                    if exec_cmd:
+                        try:
+                            proc = await asyncio.create_subprocess_shell(
+                                exec_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+                    else:
+                        return f"Quick command '/{command}' has no command defined."
+                else:
+                    return f"Quick command '/{command}' has unsupported type (only 'exec' is supported)."
+
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
             try:

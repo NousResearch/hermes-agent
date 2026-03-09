@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -103,6 +104,27 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
 
 
+def _render_mentions(text: str, mentions: list) -> str:
+    """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
+
+    Signal encodes @mentions as the Unicode object replacement character
+    with out-of-band metadata containing the mentioned user's UUID/number.
+    """
+    if not mentions or "\uFFFC" not in text:
+        return text
+    # Sort mentions by start position (reverse) to replace from end to start
+    # so indices don't shift as we replace
+    sorted_mentions = sorted(mentions, key=lambda m: m.get("start", 0), reverse=True)
+    for mention in sorted_mentions:
+        start = mention.get("start", 0)
+        length = mention.get("length", 1)
+        # Use the mention's number or UUID as the replacement
+        identifier = mention.get("number") or mention.get("uuid") or "user"
+        replacement = f"@{identifier}"
+        text = text[:start] + replacement + text[start + length:]
+    return text
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal is configured (has URL and account)."""
     return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
@@ -123,13 +145,9 @@ class SignalAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
-        self.dm_policy = extra.get("dm_policy", "pairing")
-        self.group_policy = extra.get("group_policy", "disabled")
         self.ignore_stories = extra.get("ignore_stories", True)
 
-        # Parse allowlists
-        allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "")
-        self.allowed_users = set(_parse_comma_list(allowed_str))
+        # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
@@ -144,16 +162,12 @@ class SignalAdapter(BasePlatformAdapter):
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
 
-        # Pairing store (lazy import to avoid circular deps)
-        from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
+        # Normalize account for self-message filtering
+        self._account_normalized = self.account.strip()
 
-        # Debug logging (scoped to this module, NOT root logger)
-        if os.getenv("SIGNAL_DEBUG", "").lower() in ("true", "1", "yes"):
-            logger.setLevel(logging.DEBUG)
-
-        logger.info("Signal adapter initialized: url=%s account=%s dm_policy=%s group_policy=%s",
-                     self.http_url, _redact_phone(self.account), self.dm_policy, self.group_policy)
+        logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
+                     self.http_url, _redact_phone(self.account),
+                     "enabled" if self.group_allow_from else "disabled")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -270,7 +284,9 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
 
             if self._running:
-                await asyncio.sleep(backoff)
+                # Add 20% jitter to prevent thundering herd on reconnection
+                jitter = backoff * 0.2 * random.random()
+                await asyncio.sleep(backoff + jitter)
                 backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
 
         self._sse_response = None
@@ -323,6 +339,11 @@ class SignalAdapter(BasePlatformAdapter):
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 
+        # Filter syncMessage envelopes (sent transcripts, read receipts, etc.)
+        # signal-cli may set syncMessage to null vs omitting it, so check key existence
+        if "syncMessage" in envelope_data:
+            return
+
         # Extract sender info
         sender = (
             envelope_data.get("sourceNumber")
@@ -336,12 +357,20 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
+        # Self-message filtering — prevent reply loops
+        if self._account_normalized and sender == self._account_normalized:
+            return
+
         # Filter stories
         if self.ignore_stories and envelope_data.get("storyMessage"):
             return
 
-        # Get data message (skip receipts, typing indicators, etc.)
-        data_message = envelope_data.get("dataMessage")
+        # Get data message — also check editMessage (edited messages contain
+        # their updated dataMessage inside editMessage.dataMessage)
+        data_message = (
+            envelope_data.get("dataMessage")
+            or (envelope_data.get("editMessage") or {}).get("dataMessage")
+        )
         if not data_message:
             return
 
@@ -350,29 +379,28 @@ class SignalAdapter(BasePlatformAdapter):
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
 
-        # Authorization check — delegated to run.py's _is_user_authorized()
-        # for DM allowlists. We only do group policy filtering here since
-        # that's Signal-specific and not in the base auth system.
+        # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
+        # - No env var set → groups disabled (default safe behavior)
+        # - Env var set with group IDs → only those groups allowed
+        # - Env var set with "*" → all groups allowed
+        # DM auth is fully handled by run.py (_is_user_authorized)
         if is_group:
-            if self.group_policy == "disabled":
-                logger.debug("Signal: ignoring group message (group_policy=disabled)")
+            if not self.group_allow_from:
+                logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
                 return
-            if self.group_policy == "allowlist":
-                if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
-                    logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
-                    return
-            # group_policy == "open" — allow through
-
-        # DM policy "open" — for non-group, let all through to run.py auth
-        # (run.py will still check SIGNAL_ALLOWED_USERS / pairing)
-        # DM policy "pairing" / "allowlist" — handled by run.py
+            if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+                logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
+                return
 
         # Build chat info
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
 
-        # Extract text
+        # Extract text and render mentions
         text = data_message.get("message", "")
+        mentions = data_message.get("mentions", [])
+        if text and mentions:
+            text = _render_mentions(text, mentions)
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])

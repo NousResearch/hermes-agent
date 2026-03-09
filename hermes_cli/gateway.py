@@ -757,42 +757,25 @@ def _setup_signal():
 
     save_env_value("SIGNAL_ALLOWED_USERS", allowed)
 
-    # DM policy
+    # Group messaging
     print()
-    policies = ["pairing (default — new users get a pairing code to approve)",
-                 "allowlist (only explicitly listed users)",
-                 "open (anyone can message)"]
-    dm_choice = prompt_choice("  DM access policy:", policies, 0)
-    dm_policy = ["pairing", "allowlist", "open"][dm_choice]
-    save_env_value("SIGNAL_DM_POLICY", dm_policy)
-
-    # Group policy
-    print()
-    group_policies = ["disabled (default — ignore group messages)",
-                      "allowlist (only specific groups)",
-                      "open (respond in any group the bot is in)"]
-    group_choice = prompt_choice("  Group message policy:", group_policies, 0)
-    group_policy = ["disabled", "allowlist", "open"][group_choice]
-    save_env_value("SIGNAL_GROUP_POLICY", group_policy)
-
-    if group_policy == "allowlist":
+    if prompt_yes_no("  Enable group messaging? (disabled by default for security)", False):
         print()
-        print_info("  Enter group IDs to allow (comma-separated).")
+        print_info("  Enter group IDs to allow, or * for all groups.")
         existing_groups = get_env_value("SIGNAL_GROUP_ALLOWED_USERS") or ""
         try:
-            groups = input(f"  Group IDs [{existing_groups}]: ").strip() or existing_groups
+            groups = input(f"  Group IDs [{existing_groups or '*'}]: ").strip() or existing_groups or "*"
         except (EOFError, KeyboardInterrupt):
             print("\n  Setup cancelled.")
             return
-        if groups:
-            save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
+        save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
 
     print()
     print_success("Signal configured!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
-    print_info(f"  DM policy: {dm_policy}")
-    print_info(f"  Group policy: {group_policy}")
+    print_info(f"  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
+    print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
 def gateway_setup():

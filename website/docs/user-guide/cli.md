@@ -65,6 +65,10 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
+### Session Resume Display
+
+When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Previous Conversation" panel appears between the banner and the input prompt, showing a compact recap of the conversation history. See [Sessions — Conversation Recap on Resume](sessions.md#conversation-recap-on-resume) for details and configuration.
+
 ## Keybindings
 
 | Key | Action |

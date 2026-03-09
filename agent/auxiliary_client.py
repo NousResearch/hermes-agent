@@ -21,7 +21,7 @@ Resolution order for vision/multimodal tasks (auto mode):
 
 Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
 CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task:
-"openrouter", "nous", or "main" (= steps 3-5).
+"openrouter", "nous", "openai", or "main" (= steps 3-5).
 Default "auto" follows the chains above.
 
 Per-task model overrides (e.g. AUXILIARY_VISION_MODEL,
@@ -70,6 +70,11 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "gemini-3-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _AUTH_JSON_PATH = Path.home() / ".hermes" / "auth.json"
+
+# OpenAI direct: uses OPENAI_API_KEY with the official API endpoint.
+# gpt-4o-mini is cheap/fast and supports vision — good default for auxiliary tasks.
+_OPENAI_AUX_MODEL = "gpt-4o-mini"
+_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
@@ -385,6 +390,15 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     )
 
 
+def _try_openai() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try OpenAI direct API (api.openai.com) using OPENAI_API_KEY."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None, None
+    logger.debug("Auxiliary client: OpenAI direct (%s)", _OPENAI_AUX_MODEL)
+    return OpenAI(api_key=api_key, base_url=_OPENAI_BASE_URL), _OPENAI_AUX_MODEL
+
+
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base = os.getenv("OPENAI_BASE_URL")
     custom_key = os.getenv("OPENAI_API_KEY")
@@ -416,6 +430,12 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
         client, model = _try_nous()
         if client is None:
             logger.warning("auxiliary.provider=nous but Nous Portal not configured (run: hermes login)")
+        return client, model
+
+    if forced == "openai":
+        client, model = _try_openai()
+        if client is None:
+            logger.warning("auxiliary.provider=openai but OPENAI_API_KEY not set")
         return client, model
 
     if forced == "main":
@@ -530,6 +550,10 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     The Codex adapter translates max_tokens internally, so we use max_tokens
     for it as well.
     """
+    # Check if any auxiliary task is explicitly forced to "openai"
+    for task in ("vision", "web_extract", "compression"):
+        if _get_auxiliary_provider(task) == "openai":
+            return {"max_completion_tokens": value}
     custom_base = os.getenv("OPENAI_BASE_URL", "")
     or_key = os.getenv("OPENROUTER_API_KEY")
     # Only use max_completion_tokens for direct OpenAI custom endpoints

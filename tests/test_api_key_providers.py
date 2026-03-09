@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, NIM, MiniMax)."""
 
 import os
 import sys
@@ -35,6 +35,7 @@ class TestProviderRegistry:
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
+        ("nim", "NVIDIA NIM", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
     ])
@@ -60,6 +61,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_BASE_URL"
 
+    def test_nim_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["nim"]
+        assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
+        assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
+
     def test_minimax_cn_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax-cn"]
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
@@ -68,6 +74,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
+        assert PROVIDER_REGISTRY["nim"].inference_base_url == "https://integrate.api.nvidia.com/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
 
@@ -86,7 +93,8 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "KIMI_API_KEY", "KIMI_BASE_URL", "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
+    "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "OPENAI_BASE_URL",
 )
 
@@ -109,6 +117,9 @@ class TestResolveProvider:
     def test_explicit_minimax(self):
         assert resolve_provider("minimax") == "minimax"
 
+    def test_explicit_nim(self):
+        assert resolve_provider("nim") == "nim"
+
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
 
@@ -127,6 +138,9 @@ class TestResolveProvider:
     def test_alias_moonshot(self):
         assert resolve_provider("moonshot") == "kimi-coding"
 
+    def test_alias_nvidia(self):
+        assert resolve_provider("nvidia") == "nim"
+
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
 
@@ -134,6 +148,7 @@ class TestResolveProvider:
         assert resolve_provider("GLM") == "zai"
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
+        assert resolve_provider("NVIDIA") == "nim"
 
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
@@ -158,6 +173,10 @@ class TestResolveProvider:
     def test_auto_detects_minimax_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-mm-key")
         assert resolve_provider("auto") == "minimax"
+
+    def test_auto_detects_nim_key(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "test-nvidia-key")
+        assert resolve_provider("auto") == "nim"
 
     def test_auto_detects_minimax_cn_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
@@ -208,6 +227,13 @@ class TestApiKeyProviderStatus:
         assert status["configured"] is True
         assert status["provider"] == "minimax"
 
+    def test_nim_status_uses_base_url_override(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nim-key")
+        monkeypatch.setenv("NVIDIA_BASE_URL", "https://nim.example/v1")
+        status = get_api_key_provider_status("nim")
+        assert status["configured"] is True
+        assert status["base_url"] == "https://nim.example/v1"
+
     def test_non_api_key_provider(self):
         status = get_api_key_provider_status("nous")
         assert status["configured"] is False
@@ -240,6 +266,13 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["provider"] == "minimax"
         assert creds["api_key"] == "mm-secret-key"
         assert creds["base_url"] == "https://api.minimax.io/v1"
+
+    def test_resolve_nim_with_key(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nim-secret-key")
+        creds = resolve_api_key_provider_credentials("nim")
+        assert creds["provider"] == "nim"
+        assert creds["api_key"] == "nim-secret-key"
+        assert creds["base_url"] == "https://integrate.api.nvidia.com/v1"
 
     def test_resolve_minimax_cn_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "mmcn-secret-key")
@@ -309,6 +342,15 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "minimax"
         assert result["api_key"] == "mm-key"
 
+    def test_runtime_nim(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nim-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="nim")
+        assert result["provider"] == "nim"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "nim-key"
+        assert result["base_url"] == "https://integrate.api.nvidia.com/v1"
+
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -336,6 +378,16 @@ class TestHasAnyProviderConfigured:
     def test_minimax_key_counts(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_module
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_nim_key_counts(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+        monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")

@@ -26,6 +26,29 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_nim(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nim")
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider_id: {
+            "provider": provider_id,
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "nim-key",
+            "source": "NVIDIA_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nim")
+
+    assert resolved["provider"] == "nim"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert resolved["api_key"] == "nim-key"
+    assert resolved["source"] == "NVIDIA_API_KEY"
+    assert resolved["requested_provider"] == "nim"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

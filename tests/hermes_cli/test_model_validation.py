@@ -57,6 +57,11 @@ class TestParseModelInput:
         assert provider == "nous"
         assert model == "hermes-3"
 
+    def test_nim_provider_alias_switch(self):
+        provider, model = parse_model_input("nvidia:moonshotai/kimi-k2.5", "openrouter")
+        assert provider == "nim"
+        assert model == "moonshotai/kimi-k2.5"
+
     def test_empty_model_after_colon_keeps_current(self):
         provider, model = parse_model_input("openrouter:", "nous")
         assert provider == "nous"
@@ -106,6 +111,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("nvidia") == "nim"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -124,6 +130,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_nim_returns_curated_models(self):
+        assert "moonshotai/kimi-k2.5" in provider_model_ids("nim")
 
 
 # -- fetch_api_models --------------------------------------------------------

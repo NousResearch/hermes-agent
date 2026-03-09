@@ -148,6 +148,7 @@ def load_cli_config() -> Dict[str, Any]:
             "default": "anthropic/claude-opus-4.6",
             "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
+            "max_tokens": None,
         },
         "terminal": {
             "env_type": "local",
@@ -1091,6 +1092,7 @@ class HermesCLI:
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
+        self.max_tokens: Optional[int] = None
         self.base_url = (
             base_url
             or os.getenv("OPENAI_BASE_URL")
@@ -1276,6 +1278,7 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_max_tokens = runtime.get("max_tokens")
         if not isinstance(api_key, str) or not api_key:
             self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
             return False
@@ -1288,11 +1291,13 @@ class HermesCLI:
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
         )
+        max_tokens_changed = resolved_max_tokens != self.max_tokens
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self.max_tokens = resolved_max_tokens
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -1300,7 +1305,7 @@ class HermesCLI:
 
         # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
         # routing, or the effective model changed.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (credentials_changed or routing_changed or model_changed or max_tokens_changed) and self.agent is not None:
             self.agent = None
 
         return True
@@ -1369,6 +1374,7 @@ class HermesCLI:
                 provider=self.provider,
                 api_mode=self.api_mode,
                 max_iterations=self.max_turns,
+                max_tokens=self.max_tokens,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=True,

@@ -15,7 +15,7 @@ Tools are functions that extend the agent's capabilities. They're organized into
 | **Web** | `web_search`, `web_extract` | Search the web, extract page content |
 | **Terminal** | `terminal`, `process` | Execute commands (local/docker/singularity/modal/daytona/ssh backends), manage background processes |
 | **File** | `read_file`, `write_file`, `patch`, `search_files` | Read, write, edit, and search files |
-| **Browser** | `browser_navigate`, `browser_click`, `browser_type`, etc. | Full browser automation via Browserbase |
+| **Browser** | `browser_navigate`, `browser_click`, `browser_type`, `browser_console`, etc. | Full browser automation via Browserbase |
 | **Vision** | `vision_analyze` | Image analysis via multimodal models |
 | **Image Gen** | `image_generate` | Generate images (FLUX via FAL) |
 | **TTS** | `text_to_speech` | Text-to-speech (Edge TTS / ElevenLabs / OpenAI) |

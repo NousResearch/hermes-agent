@@ -144,6 +144,7 @@ def _socket_safe_tmpdir() -> str:
 # Track active sessions per task
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
+_recording_sessions: set = set()  # task_ids with active recordings
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -478,9 +479,29 @@ BROWSER_TOOL_SCHEMAS = [
                 "question": {
                     "type": "string",
                     "description": "What you want to know about the page visually. Be specific about what you're looking for."
+                },
+                "annotate": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout."
                 }
             },
             "required": ["question"]
+        }
+    },
+    {
+        "name": "browser_console",
+        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "clear": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, clear the message buffers after reading"
+                }
+            },
+            "required": []
         }
     },
 ]
@@ -998,9 +1019,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     session_info = _get_session_info(effective_task_id)
     is_first_nav = session_info.get("_first_nav", True)
     
-    # Mark that we've done at least one navigation
+    # Auto-start recording if configured and this is first navigation
     if is_first_nav:
         session_info["_first_nav"] = False
+        _maybe_start_recording(effective_task_id)
     
     result = _run_browser_command(effective_task_id, "open", [url], timeout=60)
     
@@ -1264,6 +1286,10 @@ def browser_close(task_id: Optional[str] = None) -> str:
         JSON string with close result
     """
     effective_task_id = task_id or "default"
+    
+    # Stop auto-recording before closing
+    _maybe_stop_recording(effective_task_id)
+    
     result = _run_browser_command(effective_task_id, "close", [])
     
     # Close the backend session (Browserbase API in cloud mode, nothing extra in local mode)
@@ -1292,6 +1318,103 @@ def browser_close(task_id: Optional[str] = None) -> str:
             "closed": True,
             "warning": result.get("error", "Session may not have been active")
         }, ensure_ascii=False)
+
+
+def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
+    """Get browser console messages and JavaScript errors.
+    
+    Returns both console output (log/warn/error/info from the page's JS)
+    and uncaught exceptions (crashes, unhandled promise rejections).
+    
+    Args:
+        clear: If True, clear the message/error buffers after reading
+        task_id: Task identifier for session isolation
+        
+    Returns:
+        JSON string with console messages and JS errors
+    """
+    effective_task_id = task_id or "default"
+    
+    console_args = ["--clear"] if clear else []
+    error_args = ["--clear"] if clear else []
+    
+    console_result = _run_browser_command(effective_task_id, "console", console_args)
+    errors_result = _run_browser_command(effective_task_id, "errors", error_args)
+    
+    messages = []
+    if console_result.get("success"):
+        for msg in console_result.get("data", {}).get("messages", []):
+            messages.append({
+                "type": msg.get("type", "log"),
+                "text": msg.get("text", ""),
+                "source": "console",
+            })
+    
+    errors = []
+    if errors_result.get("success"):
+        for err in errors_result.get("data", {}).get("errors", []):
+            errors.append({
+                "message": err.get("message", ""),
+                "source": "exception",
+            })
+    
+    return json.dumps({
+        "success": True,
+        "console_messages": messages,
+        "js_errors": errors,
+        "total_messages": len(messages),
+        "total_errors": len(errors),
+    }, ensure_ascii=False)
+
+
+def _maybe_start_recording(task_id: str):
+    """Start recording if browser.record_sessions is enabled in config."""
+    if task_id in _recording_sessions:
+        return
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        record_enabled = False
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            record_enabled = cfg.get("browser", {}).get("record_sessions", False)
+        
+        if not record_enabled:
+            return
+        
+        recordings_dir = hermes_home / "browser_recordings"
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+        _cleanup_old_recordings(max_age_hours=72)
+        
+        import time
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        recording_path = recordings_dir / f"session_{timestamp}_{task_id[:16]}.webm"
+        
+        result = _run_browser_command(task_id, "record", ["start", str(recording_path)])
+        if result.get("success"):
+            _recording_sessions.add(task_id)
+            logger.info("Auto-recording browser session %s to %s", task_id, recording_path)
+        else:
+            logger.debug("Could not start auto-recording: %s", result.get("error"))
+    except Exception as e:
+        logger.debug("Auto-recording setup failed: %s", e)
+
+
+def _maybe_stop_recording(task_id: str):
+    """Stop recording if one is active for this session."""
+    if task_id not in _recording_sessions:
+        return
+    try:
+        result = _run_browser_command(task_id, "record", ["stop"])
+        if result.get("success"):
+            path = result.get("data", {}).get("path", "")
+            logger.info("Saved browser recording for session %s: %s", task_id, path)
+    except Exception as e:
+        logger.debug("Could not stop recording for %s: %s", task_id, e)
+    finally:
+        _recording_sessions.discard(task_id)
 
 
 def browser_get_images(task_id: Optional[str] = None) -> str:
@@ -1348,7 +1471,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
-def browser_vision(question: str, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
     
@@ -1362,6 +1485,7 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
     
     Args:
         question: What you want to know about the page visually
+        annotate: If True, overlay numbered [N] labels on interactive elements
         task_id: Task identifier for session isolation
         
     Returns:
@@ -1393,10 +1517,13 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
         
         # Take screenshot using agent-browser
+        screenshot_args = [str(screenshot_path)]
+        if annotate:
+            screenshot_args.insert(0, "--annotate")
         result = _run_browser_command(
             effective_task_id, 
             "screenshot", 
-            [str(screenshot_path)],
+            screenshot_args,
             timeout=30
         )
         
@@ -1456,11 +1583,15 @@ def browser_vision(question: str, task_id: Optional[str] = None) -> str:
         )
         
         analysis = response.choices[0].message.content
-        return json.dumps({
+        response_data = {
             "success": True,
             "analysis": analysis,
             "screenshot_path": str(screenshot_path),
-        }, ensure_ascii=False)
+        }
+        # Include annotation data if annotated screenshot was taken
+        if annotate and result.get("data", {}).get("annotations"):
+            response_data["annotations"] = result["data"]["annotations"]
+        return json.dumps(response_data, ensure_ascii=False)
     
     except Exception as e:
         # Keep the screenshot if it was captured successfully — the failure is
@@ -1488,6 +1619,25 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
                 pass
     except Exception:
         pass  # Non-critical — don't fail the screenshot operation
+
+
+def _cleanup_old_recordings(max_age_hours=72):
+    """Remove browser recordings older than max_age_hours to prevent disk bloat."""
+    import time
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        recordings_dir = hermes_home / "browser_recordings"
+        if not recordings_dir.exists():
+            return
+        cutoff = time.time() - (max_age_hours * 3600)
+        for f in recordings_dir.glob("session_*.webm"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -1560,6 +1710,9 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
+        
+        # Stop auto-recording before closing (saves the file)
+        _maybe_stop_recording(task_id)
         
         # Try to close via agent-browser first (needs session in _active_sessions)
         try:
@@ -1776,6 +1929,13 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+)
+registry.register(
+    name="browser_console",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_console"],
+    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
 )

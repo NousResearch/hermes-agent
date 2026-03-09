@@ -75,7 +75,7 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
+Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](#auxiliary-models) below.
 :::
 
 ### First-Class Chinese AI Providers
@@ -432,8 +432,77 @@ node_modules/
 ```yaml
 compression:
   enabled: true
-  threshold: 0.85    # Compress at 85% of context limit
+  threshold: 0.85              # Compress at 85% of context limit
+  summary_model: "google/gemini-3-flash-preview"   # Model for summarization
+  # summary_provider: "auto"   # "auto", "openrouter", "nous", "main"
 ```
+
+The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
+
+## Auxiliary Models
+
+Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via OpenRouter or Nous Portal — you don't need to configure anything.
+
+To use a different model, add an `auxiliary` section to `~/.hermes/config.yaml`:
+
+```yaml
+auxiliary:
+  # Image analysis (vision_analyze tool + browser screenshots)
+  vision:
+    provider: "auto"           # "auto", "openrouter", "nous", "main"
+    model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
+
+  # Web page summarization + browser page text extraction
+  web_extract:
+    provider: "auto"
+    model: ""                  # e.g. "google/gemini-2.5-flash"
+```
+
+### Changing the Vision Model
+
+To use GPT-4o instead of Gemini Flash for image analysis:
+
+```yaml
+auxiliary:
+  vision:
+    model: "openai/gpt-4o"
+```
+
+Or via environment variable (in `~/.hermes/.env`):
+
+```bash
+AUXILIARY_VISION_MODEL=openai/gpt-4o
+```
+
+### Provider Options
+
+| Provider | Description |
+|----------|-------------|
+| `"auto"` | Best available (default). Vision only tries OpenRouter + Nous Portal. |
+| `"openrouter"` | Force OpenRouter (requires `OPENROUTER_API_KEY`) |
+| `"nous"` | Force Nous Portal (requires `hermes login`) |
+| `"main"` | Use your main chat model's provider. Useful for local/self-hosted models. |
+
+:::warning
+**Vision requires a multimodal model.** In `auto` mode, only OpenRouter and Nous Portal are tried because they support image input (via Gemini). If you set `provider: "main"`, make sure your endpoint supports multimodal/vision — otherwise image analysis will fail.
+:::
+
+### Environment Variables
+
+You can also configure auxiliary models via environment variables instead of `config.yaml`:
+
+| Setting | Environment Variable |
+|---------|---------------------|
+| Vision provider | `AUXILIARY_VISION_PROVIDER` |
+| Vision model | `AUXILIARY_VISION_MODEL` |
+| Web extract provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
+| Web extract model | `AUXILIARY_WEB_EXTRACT_MODEL` |
+| Compression provider | `CONTEXT_COMPRESSION_PROVIDER` |
+| Compression model | `CONTEXT_COMPRESSION_MODEL` |
+
+:::tip
+Run `hermes config` to see your current auxiliary model settings. Overrides only show up when they differ from the defaults.
+:::
 
 ## Reasoning Effort
 

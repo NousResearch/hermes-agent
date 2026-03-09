@@ -537,7 +537,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         debug_call_data["results_count"] = results_count
         
         # Convert to JSON
+        # Add hint to guide agent toward web_extract for full content
+        _search_hint = ""
+        if web_results:
+            top_url = web_results[0].get("url", "") if isinstance(web_results[0], dict) else ""
+            _search_hint = f'[Hint: Use web_extract(["{top_url}"]) to read the full content of a promising result.]'
+        else:
+            _search_hint = "[Hint: No results found. Try rephrasing the query or using different keywords.]"
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+        if _search_hint:
+            result_json += "\n\n" + _search_hint
         
         debug_call_data["final_response_size"] = len(result_json)
         
@@ -813,6 +822,14 @@ async def web_extract_tool(
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
         
+        # Add hint if content was summarized (large page)
+        try:
+            _cr = json.loads(cleaned_result)
+            results = _cr.get("results", [])
+            if results and any(r.get("summary") for r in results):
+                cleaned_result += "\n\n[Hint: Content was summarized. Use browser_navigate for the full page, or web_extract on specific sub-pages for more detail.]"
+        except Exception:
+            pass
         return cleaned_result
             
     except Exception as e:

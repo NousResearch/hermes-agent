@@ -1036,7 +1036,11 @@ def browser_snapshot(
             "element_count": len(refs) if refs else 0
         }
         
-        return json.dumps(response, ensure_ascii=False)
+        result_json = json.dumps(response, ensure_ascii=False)
+        # Add hint if snapshot was truncated
+        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+            result_json += "\n\n[Hint: Page content was truncated. Use browser_scroll(\"down\") to reveal more, or browser_vision for visual analysis of the full page.]"
+        return result_json
     else:
         return json.dumps({
             "success": False,

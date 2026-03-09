@@ -173,8 +173,8 @@ class TestSearchHandler:
         mock_get.return_value = mock_ops
 
         from tools.file_tools import search_tool
-        result = json.loads(search_tool(pattern="TODO", target="content", path="."))
-        assert "matches" in result
+        raw = search_tool(pattern="TODO", target="content", path=".")
+        result = json.loads(raw.split("\n\n[Hint:")[0])
         mock_ops.search.assert_called_once()
 
     @patch("tools.file_tools._get_file_ops")
@@ -200,3 +200,74 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Hint tests
+# ---------------------------------------------------------------------------
+
+class TestPatchToolHints:
+    @patch("tools.file_tools._get_file_ops")
+    def test_no_match_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"error": "Could not find match for old_string in foo.py"}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+        from tools.file_tools import patch_tool
+        result = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
+        assert "[Hint:" in result
+        assert "read_file" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_success_no_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"success": True, "diff": "..."}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+        from tools.file_tools import patch_tool
+        result = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
+        assert "[Hint:" not in result
+
+
+class TestSearchToolHints:
+    @patch("tools.file_tools._get_file_ops")
+    def test_zero_results_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"total_matches": 0, "matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+        from tools.file_tools import search_tool
+        result = search_tool(pattern="xyz")
+        assert "[Hint:" in result
+        assert "broader" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_truncated_results_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_matches": 100, "matches": [{"file": "a.py"}] * 50, "truncated": True
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+        from tools.file_tools import search_tool
+        result = search_tool(pattern="foo", offset=0, limit=50)
+        assert "[Hint:" in result
+        assert "offset=50" in result
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_content_results_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_matches": 3, "matches": [{"file": "a.py", "line": 1}] * 3
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+        from tools.file_tools import search_tool
+        result = search_tool(pattern="foo", target="content")
+        assert "[Hint:" in result
+        assert "read_file" in result

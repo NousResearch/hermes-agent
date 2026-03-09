@@ -1054,11 +1054,18 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
-            return json.dumps({
+            result_data = {
                 "output": output,
                 "exit_code": returncode,
                 "error": None
-            }, ensure_ascii=False)
+            }
+            result_json = json.dumps(result_data, ensure_ascii=False)
+            # Add hints based on exit code and truncation
+            if "OUTPUT TRUNCATED" in output:
+                result_json += "\n\n[Hint: Output was truncated. Pipe to head/tail for specific sections, or redirect output to a file and use read_file to inspect it.]"
+            elif returncode != 0:
+                result_json += f"\n\n[Hint: Exit code {returncode}. Check the error output above. If permission denied, try with appropriate privileges. If command not found, verify the tool is installed.]"
+            return result_json
 
     except Exception as e:
         return json.dumps({

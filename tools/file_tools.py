@@ -164,7 +164,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Add hint when old_string not found
+        if result_dict.get("error") and "Could not find match" in str(result_dict["error"]):
+            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text before patching.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -180,7 +185,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Add hints based on search result
+        total = result_dict.get("total_matches", 0)
+        returned = len(result_dict.get("matches", []))
+        if total == 0:
+            result_json += "\n\n[Hint: No matches found. Try a broader pattern, different file_glob, or verify the path is correct.]"
+        elif returned > 0 and result_dict.get("truncated"):
+            result_json += f"\n\n[Hint: Results truncated ({returned} shown). Use offset={offset + limit} to see more, or narrow the search with a more specific pattern or file_glob.]"
+        elif returned > 0 and target == "content":
+            result_json += "\n\n[Hint: Use read_file(<path>, offset=N) to see more context around a match.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

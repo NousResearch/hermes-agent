@@ -86,10 +86,29 @@ if _config_path.exists():
                 "enabled": "CONTEXT_COMPRESSION_ENABLED",
                 "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
                 "summary_model": "CONTEXT_COMPRESSION_MODEL",
+                "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
             }
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:
                     os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        # Auxiliary model overrides (vision, web_extract).
+        # Each task has provider + model; bridge non-default values to env vars.
+        _auxiliary_cfg = _cfg.get("auxiliary", {})
+        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
+            _aux_task_env = {
+                "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
+                "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+            }
+            for _task_key, (_prov_env, _model_env) in _aux_task_env.items():
+                _task_cfg = _auxiliary_cfg.get(_task_key, {})
+                if not isinstance(_task_cfg, dict):
+                    continue
+                _prov = str(_task_cfg.get("provider", "")).strip()
+                _model = str(_task_cfg.get("model", "")).strip()
+                if _prov and _prov != "auto":
+                    os.environ[_prov_env] = _prov
+                if _model:
+                    os.environ[_model_env] = _model
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:

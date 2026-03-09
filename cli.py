@@ -1035,6 +1035,8 @@ class HermesCLI:
         self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
+        # bell_on_complete: play terminal bell (\a) when agent finishes a response
+        self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
         # Configuration - priority: CLI args > env vars > config file
@@ -3119,6 +3121,12 @@ class HermesCLI:
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
                 _cprint(f"\n{top}\n{response}\n\n{bot}")
+            
+            # Play terminal bell when agent finishes (if enabled).
+            # Works over SSH — the bell propagates to the user's terminal.
+            if self.bell_on_complete:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
             
             # Combine all interrupt messages (user may have typed multiple while waiting)
             # and re-queue as one prompt for process_loop

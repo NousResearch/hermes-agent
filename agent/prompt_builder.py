@@ -179,7 +179,58 @@ def _skill_is_platform_compatible(skill_file: Path) -> bool:
         return True  # Err on the side of showing the skill
 
 
-def build_skills_system_prompt() -> str:
+def _read_skill_conditions(skill_file: Path) -> dict:
+    """Extract conditional activation fields from SKILL.md frontmatter."""
+    try:
+        from tools.skills_tool import _parse_frontmatter
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        hermes = frontmatter.get("metadata", {}).get("hermes", {})
+        return {
+            "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes.get("requires_toolsets", []),
+            "fallback_for_tools": hermes.get("fallback_for_tools", []),
+            "requires_tools": hermes.get("requires_tools", []),
+        }
+    except Exception:
+        return {}
+
+
+def _skill_should_show(
+    conditions: dict,
+    available_tools: "set[str] | None",
+    available_toolsets: "set[str] | None",
+) -> bool:
+    """Return False if the skill's conditional activation rules exclude it."""
+    if available_tools is None and available_toolsets is None:
+        return True  # No filtering info — show everything (backward compat)
+
+    at = available_tools or set()
+    ats = available_toolsets or set()
+
+    # fallback_for: hide when the primary tool/toolset IS available
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if ts in ats:
+            return False
+    for t in conditions.get("fallback_for_tools", []):
+        if t in at:
+            return False
+
+    # requires: hide when a required tool/toolset is NOT available
+    for ts in conditions.get("requires_toolsets", []):
+        if ts not in ats:
+            return False
+    for t in conditions.get("requires_tools", []):
+        if t not in at:
+            return False
+
+    return True
+
+
+def build_skills_system_prompt(
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> str:
     """Build a compact skill index for the system prompt.
 
     Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
@@ -201,6 +252,10 @@ def build_skills_system_prompt() -> str:
     for skill_file in skills_dir.rglob("SKILL.md"):
         # Skip skills incompatible with the current OS platform
         if not _skill_is_platform_compatible(skill_file):
+            continue
+        # Skip skills whose conditional activation rules exclude them
+        conditions = _read_skill_conditions(skill_file)
+        if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts

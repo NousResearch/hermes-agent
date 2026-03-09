@@ -45,7 +45,7 @@ def agent():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-key-1234567890",
+            api_key="test-k...7890",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -63,7 +63,25 @@ def agent_with_memory_tool():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-key-1234567890",
+            api_key="test-k...7890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        a.client = MagicMock()
+        return a
+
+
+@pytest.fixture()
+def agent_with_terminal_tool():
+    """Agent whose valid_tool_names includes 'terminal'."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search", "terminal")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="test-k...7890",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -354,7 +372,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(
-                api_key="test-key-1234567890",
+                api_key="test-k...7890",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -369,7 +387,7 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(
-                api_key="test-key-1234567890",
+                api_key="test-k...7890",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -461,6 +479,16 @@ class TestBuildSystemPrompt:
         from agent.prompt_builder import MEMORY_GUIDANCE
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
+
+    def test_terminal_guidance_when_terminal_tool_loaded(self, agent_with_terminal_tool):
+        from agent.prompt_builder import TERMINAL_GUIDANCE
+        prompt = agent_with_terminal_tool._build_system_prompt()
+        assert TERMINAL_GUIDANCE in prompt
+
+    def test_no_terminal_guidance_without_tool(self, agent):
+        from agent.prompt_builder import TERMINAL_GUIDANCE
+        prompt = agent._build_system_prompt()
+        assert TERMINAL_GUIDANCE not in prompt
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()

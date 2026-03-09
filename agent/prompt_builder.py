@@ -88,6 +88,12 @@ SKILLS_GUIDANCE = (
     "skill with skill_manage so you can reuse it next time."
 )
 
+TERMINAL_GUIDANCE = (
+    "When the terminal tool is available, you already have shell access in this "
+    "environment. Use the terminal tool directly instead of asking the user to "
+    "run commands for you."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "

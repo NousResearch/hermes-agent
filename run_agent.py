@@ -77,7 +77,7 @@ from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, TERMINAL_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
@@ -1390,6 +1390,8 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if "terminal" in self.valid_tool_names:
+            tool_guidance.append(TERMINAL_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

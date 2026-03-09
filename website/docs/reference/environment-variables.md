@@ -107,6 +107,13 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code) |
+| `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (e.g., `http://127.0.0.1:8080`) |
+| `SIGNAL_ACCOUNT` | Bot phone number in E.164 format (e.g., `+15551234567`) |
+| `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
+| `SIGNAL_DM_POLICY` | DM access: `pairing` (default), `allowlist`, or `open` |
+| `SIGNAL_GROUP_POLICY` | Group access: `disabled` (default), `allowlist`, or `open` |
+| `SIGNAL_GROUP_ALLOWED_USERS` | Comma-separated group IDs (for `allowlist` group policy) |
+| `SIGNAL_DEBUG` | Enable Signal debug logging (`true`/`false`) |
 | `MESSAGING_CWD` | Working directory for terminal in messaging (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlist (`true`/`false`, default: `false`) |

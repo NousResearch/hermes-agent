@@ -20,6 +20,7 @@ import re
 import sys
 import signal
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -1213,6 +1214,15 @@ class GatewayRunner:
             
             response = agent_result.get("final_response", "")
             agent_messages = agent_result.get("messages", [])
+
+            # If streaming delivered the response, store the message ID on the
+            # adapter so _process_message_background can do a final formatted
+            # edit instead of sending a duplicate message.
+            _smid = agent_result.get("stream_msg_id")
+            if _smid:
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, '_stream_msg_ids'):
+                    adapter._stream_msg_ids[source.chat_id] = _smid
             
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -2450,6 +2460,34 @@ class GatewayRunner:
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
+
+        # ── Streaming config ──────────────────────────────────────────
+        # Read from config.yaml: streaming.enabled (default false)
+        _streaming_cfg = {}
+        try:
+            _s_cfg_path = _hermes_home / "config.yaml"
+            if _s_cfg_path.exists():
+                import yaml as _s_yaml
+                with open(_s_cfg_path) as _s_f:
+                    _s_data = _s_yaml.safe_load(_s_f) or {}
+                _streaming_cfg = _s_data.get("streaming", {})
+        except Exception:
+            pass
+
+        streaming_enabled = bool(_streaming_cfg.get("enabled", False))
+        _stream_edit_interval = float(_streaming_cfg.get("edit_interval", 1.5))
+        _stream_buffer_threshold = int(_streaming_cfg.get("buffer_threshold", 300))
+        _stream_cursor = str(_streaming_cfg.get("cursor", " ▉"))
+
+        # Queue for streaming text chunks (thread-safe, sync -> async bridge)
+        stream_queue = queue.Queue() if streaming_enabled else None
+        stream_msg_holder = [None]  # Holds the Telegram message ID of the stream
+
+        def stream_callback_sync(chunk: str, is_done: bool):
+            """Called from the agent thread with LLM text chunks."""
+            if stream_queue is not None:
+                stream_queue.put((chunk, is_done))
+
         
         def progress_callback(tool_name: str, preview: str = None, args: dict = None):
             """Callback invoked by agent when a tool is called."""
@@ -2524,6 +2562,10 @@ class GatewayRunner:
             
             progress_queue.put(msg)
         
+        # Shared between progress and stream consumers so that the
+        # stream consumer can delete the progress message when streaming starts.
+        progress_msg_id_holder = [None]
+
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited
         async def send_progress_messages():
@@ -2566,6 +2608,7 @@ class GatewayRunner:
                             result = await adapter.send(chat_id=source.chat_id, content=msg)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            progress_msg_id_holder[0] = progress_msg_id
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
@@ -2597,6 +2640,126 @@ class GatewayRunner:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
         
+        # ── Streaming consumer ─────────────────────────────────────
+        # Reads text chunks from stream_queue (fed by the agent thread)
+        # and progressively edits a Telegram message.
+
+        async def send_stream_messages():
+            """Consume LLM text chunks and display them via progressive edits."""
+            if not stream_queue:
+                return
+
+            adapter = self.adapters.get(source.platform)
+            if not adapter or not adapter.supports_streaming:
+                while True:
+                    try:
+                        stream_queue.get_nowait()
+                    except Exception:
+                        break
+                return
+
+            stream_buffer = ""
+            stream_msg_id = None
+            last_edit_time = time.time()
+            is_complete = False
+            chunk_count = 0
+            edit_count = 0
+
+            logger.debug("[stream] consumer started, interval=%ss, threshold=%s", _stream_edit_interval, _stream_buffer_threshold)
+
+            while not is_complete:
+                # Drain ALL available chunks from queue at once
+                got_any = False
+                while True:
+                    try:
+                        chunk, is_done = stream_queue.get_nowait()
+                        stream_buffer += chunk
+                        chunk_count += 1
+                        got_any = True
+                        if is_done:
+                            is_complete = True
+                            break
+                    except queue.Empty:
+                        break
+
+                if not got_any:
+                    await asyncio.sleep(0.05)
+                    continue
+
+                if not stream_buffer.strip():
+                    continue
+
+                now = time.time()
+                elapsed = now - last_edit_time
+
+                # Decide whether to edit now
+                if stream_msg_id is None:
+                    # First message: send as soon as we have any text
+                    should_edit = len(stream_buffer.strip()) >= 5 or is_complete
+                else:
+                    should_edit = (
+                        is_complete
+                        or len(stream_buffer) >= _stream_buffer_threshold
+                        or elapsed >= _stream_edit_interval
+                    )
+
+                if not should_edit:
+                    continue
+
+                try:
+                    if stream_msg_id is None:
+                        # Delete tool progress message
+                        pmid = progress_msg_id_holder[0]
+                        if pmid:
+                            try:
+                                await adapter.delete_message(source.chat_id, pmid)
+                            except Exception:
+                                pass
+                            progress_msg_id_holder[0] = None
+
+                        display = stream_buffer if is_complete else stream_buffer + _stream_cursor
+                        logger.debug("[stream] sending first msg (%d chars, %d chunks)", len(stream_buffer), chunk_count)
+                        result = await adapter.send_raw(
+                            chat_id=source.chat_id,
+                            content=display,
+                        )
+                        if result.success and result.message_id:
+                            stream_msg_id = result.message_id
+                            edit_count += 1
+                            logger.debug("[stream] first msg sent: id=%s", stream_msg_id)
+                        else:
+                            logger.warning("[stream] first msg failed: %s", result.error)
+                    else:
+                        display = stream_buffer if is_complete else stream_buffer + _stream_cursor
+                        try:
+                            await adapter.edit_message_raw(
+                                chat_id=source.chat_id,
+                                message_id=stream_msg_id,
+                                content=display,
+                            )
+                            edit_count += 1
+                        except Exception as e:
+                            logger.debug("[stream] edit failed (non-fatal): %s", e)
+
+                    last_edit_time = time.time()
+
+                except asyncio.CancelledError:
+                    if stream_msg_id and stream_buffer.strip():
+                        try:
+                            await adapter.edit_message_raw(
+                                chat_id=source.chat_id,
+                                message_id=stream_msg_id,
+                                content=stream_buffer,
+                            )
+                        except Exception:
+                            pass
+                    stream_msg_holder[0] = stream_msg_id
+                    logger.debug("[stream] cancelled. %d chars, %d edits", len(stream_buffer), edit_count)
+                    return
+
+            logger.debug("[stream] done. %d chars, %d chunks, %d edits", len(stream_buffer), chunk_count, edit_count)
+            stream_msg_holder[0] = stream_msg_id
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
@@ -2759,7 +2922,7 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
-            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id, stream_callback=stream_callback_sync if stream_queue else None)
             result_holder[0] = result
             
             # Return final response, or a message if something went wrong
@@ -2821,6 +2984,11 @@ class GatewayRunner:
         progress_task = None
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
+
+        # Start streaming consumer if enabled
+        stream_task = None
+        if streaming_enabled:
+            stream_task = asyncio.create_task(send_stream_messages())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -2858,6 +3026,18 @@ class GatewayRunner:
             # Run in thread pool to not block
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, run_sync)
+
+            # Give the stream consumer a moment to process the final chunk
+            # (the is_done=True signal) before we proceed.
+            if stream_task and not stream_task.done():
+                try:
+                    await asyncio.wait_for(stream_task, timeout=3.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
+            # Attach streaming message ID so base.py can skip duplicate send
+            if stream_msg_holder[0] and response:
+                response["stream_msg_id"] = stream_msg_holder[0]
             
             # Check if we were interrupted and have a pending message
             result = result_holder[0]
@@ -2896,9 +3076,11 @@ class GatewayRunner:
                     session_key=session_key
                 )
         finally:
-            # Stop progress sender and interrupt monitor
+            # Stop progress sender, stream consumer, and interrupt monitor
             if progress_task:
                 progress_task.cancel()
+            if stream_task:
+                stream_task.cancel()
             interrupt_monitor.cancel()
             
             # Clean up tracking
@@ -2907,7 +3089,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, stream_task, interrupt_monitor, tracking_task]:
                 if task:
                     try:
                         await task

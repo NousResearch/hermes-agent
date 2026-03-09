@@ -13,10 +13,6 @@ metadata:
 ## Requirements
 
 - **AgentMail API key** (required) — sign up at https://console.agentmail.to (free tier: 3 inboxes, 3,000 emails/month; paid plans from $20/mo)
-- Add your key to `~/.hermes/.env`:
-  ```
-  AGENTMAIL_API_KEY=am_your_key_here
-  ```
 - Node.js 18+ (for the MCP server)
 
 ## When to Use
@@ -36,17 +32,16 @@ AgentMail gives the agent its own identity and inbox.
 ### 1. Get an API Key
 - Go to https://console.agentmail.to
 - Create an account and generate an API key (starts with `am_`)
-- Add it to `~/.hermes/.env` (see Requirements above)
 
 ### 2. Configure MCP Server
-Add to `~/.hermes/config.yaml`:
+Add to `~/.hermes/config.yaml` (paste your actual key — MCP env vars are not expanded from .env):
 ```yaml
 mcp_servers:
   agentmail:
     command: "npx"
     args: ["-y", "agentmail-mcp"]
     env:
-      AGENTMAIL_API_KEY: "${AGENTMAIL_API_KEY}"
+      AGENTMAIL_API_KEY: "am_your_key_here"
 ```
 
 ### 3. Restart Hermes

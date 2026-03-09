@@ -45,6 +45,8 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
+    user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
+    chat_id_alt: Optional[str] = None  # Signal group internal ID
     
     @property
     def description(self) -> str:
@@ -68,7 +70,7 @@ class SessionSource:
         return ", ".join(parts)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "platform": self.platform.value,
             "chat_id": self.chat_id,
             "chat_name": self.chat_name,
@@ -78,6 +80,11 @@ class SessionSource:
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
         }
+        if self.user_id_alt:
+            d["user_id_alt"] = self.user_id_alt
+        if self.chat_id_alt:
+            d["chat_id_alt"] = self.chat_id_alt
+        return d
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
@@ -90,6 +97,8 @@ class SessionSource:
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
+            user_id_alt=data.get("user_id_alt"),
+            chat_id_alt=data.get("chat_id_alt"),
         )
     
     @classmethod
@@ -333,7 +342,7 @@ class SessionStore:
         
         if sessions_file.exists():
             try:
-                with open(sessions_file, "r") as f:
+                with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for key, entry_data in data.items():
                         self._entries[key] = SessionEntry.from_dict(entry_data)
@@ -348,7 +357,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
         
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w") as f:
+        with open(sessions_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     
     def _generate_session_key(self, source: SessionSource) -> str:
@@ -593,7 +602,49 @@ class SessionStore:
                 logger.debug("Session DB operation failed: %s", e)
         
         return new_entry
-    
+
+    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+        """Switch a session key to point at an existing session ID.
+
+        Used by ``/resume`` to restore a previously-named session.
+        Ends the current session in SQLite (like reset), but instead of
+        generating a fresh session ID, re-uses ``target_session_id`` so the
+        old transcript is loaded on the next message.
+        """
+        self._ensure_loaded()
+
+        if session_key not in self._entries:
+            return None
+
+        old_entry = self._entries[session_key]
+
+        # Don't switch if already on that session
+        if old_entry.session_id == target_session_id:
+            return old_entry
+
+        # End the current session in SQLite
+        if self._db:
+            try:
+                self._db.end_session(old_entry.session_id, "session_switch")
+            except Exception as e:
+                logger.debug("Session DB end_session failed: %s", e)
+
+        now = datetime.now()
+        new_entry = SessionEntry(
+            session_key=session_key,
+            session_id=target_session_id,
+            created_at=now,
+            updated_at=now,
+            origin=old_entry.origin,
+            display_name=old_entry.display_name,
+            platform=old_entry.platform,
+            chat_type=old_entry.chat_type,
+        )
+
+        self._entries[session_key] = new_entry
+        self._save()
+        return new_entry
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         self._ensure_loaded()
@@ -630,7 +681,7 @@ class SessionStore:
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a") as f:
+        with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
@@ -657,7 +708,7 @@ class SessionStore:
         
         # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w") as f:
+        with open(transcript_path, "w", encoding="utf-8") as f:
             for msg in messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
@@ -679,7 +730,7 @@ class SessionStore:
             return []
         
         messages = []
-        with open(transcript_path, "r") as f:
+        with open(transcript_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

@@ -507,6 +507,12 @@ _PLATFORMS = [
         "emoji": "📲",
         "token_var": "WHATSAPP_ENABLED",
     },
+    {
+        "key": "signal",
+        "label": "Signal",
+        "emoji": "📡",
+        "token_var": "SIGNAL_HTTP_URL",
+    },
 ]
 
 
@@ -524,6 +530,13 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if platform.get("key") == "signal":
+        account = get_env_value("SIGNAL_ACCOUNT")
+        if val and account:
+            return "configured"
+        if val or account:
+            return "partially configured"
         return "not configured"
     if val:
         return "configured"
@@ -650,6 +663,121 @@ def _is_service_running() -> bool:
     return len(find_gateway_pids()) > 0
 
 
+def _setup_signal():
+    """Interactive setup for Signal messenger."""
+    import shutil
+
+    print()
+    print(color("  ─── 📡 Signal Setup ───", Colors.CYAN))
+
+    existing_url = get_env_value("SIGNAL_HTTP_URL")
+    existing_account = get_env_value("SIGNAL_ACCOUNT")
+    if existing_url and existing_account:
+        print()
+        print_success("Signal is already configured.")
+        if not prompt_yes_no("  Reconfigure Signal?", False):
+            return
+
+    # Check if signal-cli is available
+    print()
+    if shutil.which("signal-cli"):
+        print_success("signal-cli found on PATH.")
+    else:
+        print_warning("signal-cli not found on PATH.")
+        print_info("  Signal requires signal-cli running as an HTTP daemon.")
+        print_info("  Install options:")
+        print_info("    Linux:  sudo apt install signal-cli")
+        print_info("            or download from https://github.com/AsamK/signal-cli")
+        print_info("    macOS:  brew install signal-cli")
+        print_info("    Docker: bbernhard/signal-cli-rest-api")
+        print()
+        print_info("  After installing, link your account and start the daemon:")
+        print_info("    signal-cli link -n \"HermesAgent\"")
+        print_info("    signal-cli --account +YOURNUMBER daemon --http 127.0.0.1:8080")
+        print()
+
+    # HTTP URL
+    print()
+    print_info("  Enter the URL where signal-cli HTTP daemon is running.")
+    default_url = existing_url or "http://127.0.0.1:8080"
+    try:
+        url = input(f"  HTTP URL [{default_url}]: ").strip() or default_url
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    # Test connectivity
+    print_info("  Testing connection...")
+    try:
+        import httpx
+        resp = httpx.get(f"{url.rstrip('/')}/api/v1/check", timeout=10.0)
+        if resp.status_code == 200:
+            print_success("  signal-cli daemon is reachable!")
+        else:
+            print_warning(f"  signal-cli responded with status {resp.status_code}.")
+            if not prompt_yes_no("  Continue anyway?", False):
+                return
+    except Exception as e:
+        print_warning(f"  Could not reach signal-cli at {url}: {e}")
+        if not prompt_yes_no("  Save this URL anyway? (you can start signal-cli later)", True):
+            return
+
+    save_env_value("SIGNAL_HTTP_URL", url)
+
+    # Account phone number
+    print()
+    print_info("  Enter your Signal account phone number in E.164 format.")
+    print_info("  Example: +15551234567")
+    default_account = existing_account or ""
+    try:
+        account = input(f"  Account number{f' [{default_account}]' if default_account else ''}: ").strip()
+        if not account:
+            account = default_account
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    if not account:
+        print_error("  Account number is required.")
+        return
+
+    save_env_value("SIGNAL_ACCOUNT", account)
+
+    # Allowed users
+    print()
+    print_info("  The gateway DENIES all users by default for security.")
+    print_info("  Enter phone numbers or UUIDs of allowed users (comma-separated).")
+    existing_allowed = get_env_value("SIGNAL_ALLOWED_USERS") or ""
+    default_allowed = existing_allowed or account
+    try:
+        allowed = input(f"  Allowed users [{default_allowed}]: ").strip() or default_allowed
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    save_env_value("SIGNAL_ALLOWED_USERS", allowed)
+
+    # Group messaging
+    print()
+    if prompt_yes_no("  Enable group messaging? (disabled by default for security)", False):
+        print()
+        print_info("  Enter group IDs to allow, or * for all groups.")
+        existing_groups = get_env_value("SIGNAL_GROUP_ALLOWED_USERS") or ""
+        try:
+            groups = input(f"  Group IDs [{existing_groups or '*'}]: ").strip() or existing_groups or "*"
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup cancelled.")
+            return
+        save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups)
+
+    print()
+    print_success("Signal configured!")
+    print_info(f"  URL: {url}")
+    print_info(f"  Account: {account}")
+    print_info(f"  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
+    print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
 
@@ -702,6 +830,8 @@ def gateway_setup():
 
         if platform["key"] == "whatsapp":
             _setup_whatsapp()
+        elif platform["key"] == "signal":
+            _setup_signal()
         else:
             _setup_standard_platform(platform)
 

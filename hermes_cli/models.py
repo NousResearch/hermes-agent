@@ -63,7 +63,7 @@ _PROVIDER_LABELS = {
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
-    "custom": "custom endpoint",
+    "custom": "Custom endpoint",
 }
 
 _PROVIDER_ALIASES = {

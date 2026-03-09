@@ -7,6 +7,7 @@ import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
+        if result.content:
+            result.content = redact_sensitive_text(result.content)
         result_dict = result.to_dict()
 
         # Track reads to detect re-read loops (e.g. after context compression)
@@ -224,7 +227,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Hint when old_string not found — saves iterations where the agent
+        # retries with stale content instead of re-reading the file.
+        if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
+            result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -258,6 +267,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             pattern=pattern, path=path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
+        if hasattr(result, 'matches'):
+            for m in result.matches:
+                if hasattr(m, 'content') and m.content:
+                    m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
 
         if count > 1:
@@ -266,7 +279,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have not changed. Use the information you already have."
             )
 
-        return json.dumps(result_dict, ensure_ascii=False)
+        result_json = json.dumps(result_dict, ensure_ascii=False)
+        # Hint when results were truncated — explicit next offset is clearer
+        # than relying on the model to infer it from total_count vs match count.
+        if result_dict.get("truncated"):
+            next_offset = offset + limit
+            result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
+        return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 

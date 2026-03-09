@@ -69,10 +69,36 @@ def _read_manifest() -> Dict[str, str]:
 
 
 def _write_manifest(entries: Dict[str, str]):
-    """Write the manifest file in v2 format (name:hash)."""
+    """Write the manifest file atomically in v2 format (name:hash).
+
+    Uses a temp file + os.replace() to avoid corruption if the process
+    crashes or is interrupted mid-write.
+    """
+    import tempfile
+
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())]
-    MANIFEST_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(MANIFEST_FILE.parent),
+            prefix=".bundled_manifest_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, MANIFEST_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
 
 
 def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:

@@ -8,6 +8,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 import json
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', or 'platform:chat_id'. Examples: 'telegram', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
             },
             "message": {
                 "type": "string",
@@ -107,6 +108,7 @@ def _handle_send(args):
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
+        "signal": Platform.SIGNAL,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -160,6 +162,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message):
         return await _send_discord(pconfig.token, chat_id, message)
     elif platform == Platform.SLACK:
         return await _send_slack(pconfig.token, chat_id, message)
+    elif platform == Platform.SIGNAL:
+        return await _send_signal(pconfig.extra, chat_id, message)
     return {"error": f"Direct sending not yet implemented for {platform.value}"}
 
 
@@ -217,6 +221,42 @@ async def _send_slack(token, chat_id, message):
                 return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
+
+
+async def _send_signal(extra, chat_id, message):
+    """Send via signal-cli JSON-RPC API."""
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed"}
+    try:
+        http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
+        account = extra.get("account", "")
+        if not account:
+            return {"error": "Signal account not configured"}
+
+        params = {"account": account, "message": message}
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [chat_id]
+
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "send",
+            "params": params,
+            "id": f"send_{int(time.time() * 1000)}",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{http_url}/api/v1/rpc", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                return {"error": f"Signal RPC error: {data['error']}"}
+            return {"success": True, "platform": "signal", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"Signal send failed: {e}"}
 
 
 def _check_send_message():

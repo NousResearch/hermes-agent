@@ -183,6 +183,7 @@ class AIAgent:
         session_db=None,
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
+        fallback_model: Dict[str, Any] = None,
     ):
         """
         Initialize the AI Agent.
@@ -406,6 +407,17 @@ class AIAgent:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
+        # Provider fallback — a single backup model/provider tried when the
+        # primary is exhausted (rate-limit, overload, connection failure).
+        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        self._fallback_activated = False
+        if self._fallback_model:
+            fb_p = self._fallback_model.get("provider", "")
+            fb_m = self._fallback_model.get("model", "")
+            if fb_p and fb_m and not self.quiet_mode:
+                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+
         # Get available tools with filtering
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
@@ -2146,6 +2158,141 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Provider fallback ──────────────────────────────────────────────────
+
+    # API-key providers: provider → (base_url, [env_var_names])
+    _FALLBACK_API_KEY_PROVIDERS = {
+        "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
+        "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
+        "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
+        "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
+        "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
+    }
+
+    # OAuth providers: provider → (resolver_import_path, api_mode)
+    # Each resolver returns {"api_key": ..., "base_url": ...}.
+    _FALLBACK_OAUTH_PROVIDERS = {
+        "openai-codex": ("resolve_codex_runtime_credentials", "codex_responses"),
+        "nous": ("resolve_nous_runtime_credentials", "chat_completions"),
+    }
+
+    def _resolve_fallback_credentials(
+        self, fb_provider: str, fb_config: dict
+    ) -> Optional[tuple]:
+        """Resolve credentials for a fallback provider.
+
+        Returns (api_key, base_url, api_mode) on success, or None on failure.
+        Handles three cases:
+          1. OAuth providers (openai-codex, nous) — call credential resolver
+          2. API-key providers (openrouter, zai, etc.) — read env var
+          3. Custom endpoints — use base_url + api_key_env from config
+        """
+        # ── 1. OAuth providers ────────────────────────────────────────
+        if fb_provider in self._FALLBACK_OAUTH_PROVIDERS:
+            resolver_name, api_mode = self._FALLBACK_OAUTH_PROVIDERS[fb_provider]
+            try:
+                import hermes_cli.auth as _auth
+                resolver = getattr(_auth, resolver_name)
+                creds = resolver()
+                return creds["api_key"], creds["base_url"], api_mode
+            except Exception as e:
+                logging.warning(
+                    "Fallback to %s failed (credential resolution): %s",
+                    fb_provider, e,
+                )
+                return None
+
+        # ── 2. API-key providers ──────────────────────────────────────
+        fb_key = (fb_config.get("api_key") or "").strip()
+        if not fb_key:
+            key_env = (fb_config.get("api_key_env") or "").strip()
+            if key_env:
+                fb_key = os.getenv(key_env, "")
+            elif fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+                for env_var in self._FALLBACK_API_KEY_PROVIDERS[fb_provider][1]:
+                    fb_key = os.getenv(env_var, "")
+                    if fb_key:
+                        break
+        if not fb_key:
+            logging.warning(
+                "Fallback model configured but no API key found for provider '%s'",
+                fb_provider,
+            )
+            return None
+
+        # ── 3. Resolve base URL ───────────────────────────────────────
+        fb_base_url = (fb_config.get("base_url") or "").strip()
+        if not fb_base_url and fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+            fb_base_url = self._FALLBACK_API_KEY_PROVIDERS[fb_provider][0]
+        if not fb_base_url:
+            fb_base_url = OPENROUTER_BASE_URL
+
+        return fb_key, fb_base_url, "chat_completions"
+
+    def _try_activate_fallback(self) -> bool:
+        """Switch to the configured fallback model/provider.
+
+        Called when the primary model is failing after retries.  Swaps the
+        OpenAI client, model slug, and provider in-place so the retry loop
+        can continue with the new backend.  One-shot: returns False if
+        already activated or not configured.
+        """
+        if self._fallback_activated or not self._fallback_model:
+            return False
+
+        fb = self._fallback_model
+        fb_provider = (fb.get("provider") or "").strip().lower()
+        fb_model = (fb.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            return False
+
+        resolved = self._resolve_fallback_credentials(fb_provider, fb)
+        if resolved is None:
+            return False
+        fb_key, fb_base_url, fb_api_mode = resolved
+
+        # Build new client
+        try:
+            client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
+            if "openrouter" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "X-OpenRouter-Title": "Hermes Agent",
+                    "X-OpenRouter-Categories": "productivity,cli-agent",
+                }
+            elif "api.kimi.com" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+
+            self.client = OpenAI(**client_kwargs)
+            self._client_kwargs = client_kwargs
+            old_model = self.model
+            self.model = fb_model
+            self.provider = fb_provider
+            self.base_url = fb_base_url
+            self.api_mode = fb_api_mode
+            self._fallback_activated = True
+
+            # Re-evaluate prompt caching for the new provider/model
+            self._use_prompt_caching = (
+                "openrouter" in fb_base_url.lower()
+                and "claude" in fb_model.lower()
+            )
+
+            print(
+                f"{self.log_prefix}🔄 Primary model failed — switching to fallback: "
+                f"{fb_model} via {fb_provider}"
+            )
+            logging.info(
+                "Fallback activated: %s → %s (%s)",
+                old_model, fb_model, fb_provider,
+            )
+            return True
+        except Exception as e:
+            logging.error("Failed to activate fallback model: %s", e)
+            return False
+
+    # ── End provider fallback ──────────────────────────────────────────────
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "codex_responses":
@@ -2503,6 +2650,8 @@ class AIAgent:
 
         if self._session_db:
             try:
+                # Propagate title to the new session with auto-numbering
+                old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -2512,6 +2661,13 @@ class AIAgent:
                     model=self.model,
                     parent_session_id=old_session_id,
                 )
+                # Auto-number the title for the continuation session
+                if old_title:
+                    try:
+                        new_title = self._session_db.get_next_title_in_lineage(old_title)
+                        self._session_db.set_session_title(self.session_id, new_title)
+                    except (ValueError, Exception) as e:
+                        logger.debug("Could not propagate title on compression: %s", e)
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
@@ -2529,9 +2685,10 @@ class AIAgent:
                 if remaining_calls:
                     print(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)")
                 for skipped_tc in remaining_calls:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution cancelled - user interrupted]",
+                        "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
                     }
                     messages.append(skip_msg)
@@ -2734,9 +2891,10 @@ class AIAgent:
                 remaining = len(assistant_message.tool_calls) - i
                 print(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)")
                 for skipped_tc in assistant_message.tool_calls[i:]:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution skipped - user sent a new message]",
+                        "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                         "tool_call_id": skipped_tc.id
                     }
                     messages.append(skip_msg)
@@ -2953,9 +3111,14 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho prefetch: retrieve user context for system prompt injection
+        # Honcho prefetch: retrieve user context for system prompt injection.
+        # Only on the FIRST turn of a session (empty history).  On subsequent
+        # turns the model already has all prior context in its conversation
+        # history, and the Honcho context is baked into the stored system
+        # prompt — re-fetching it would change the system message and break
+        # Anthropic prompt caching.
         self._honcho_context = ""
-        if self._honcho and self._honcho_session_key:
+        if self._honcho and self._honcho_session_key and not conversation_history:
             try:
                 self._honcho_context = self._honcho_prefetch(user_message)
             except Exception as e:
@@ -2973,14 +3136,42 @@ class AIAgent:
         # Built once on first call, reused for all subsequent calls.
         # Only rebuilt after context compression events (which invalidate
         # the cache and reload memory from disk).
+        #
+        # For continuing sessions (gateway creates a fresh AIAgent per
+        # message), we load the stored system prompt from the session DB
+        # instead of rebuilding.  Rebuilding would pick up memory changes
+        # from disk that the model already knows about (it wrote them!),
+        # producing a different system prompt and breaking the Anthropic
+        # prefix cache.
         if self._cached_system_prompt is None:
-            self._cached_system_prompt = self._build_system_prompt(system_message)
-            # Store the system prompt snapshot in SQLite
-            if self._session_db:
+            stored_prompt = None
+            if conversation_history and self._session_db:
                 try:
-                    self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
-                except Exception as e:
-                    logger.debug("Session DB update_system_prompt failed: %s", e)
+                    session_row = self._session_db.get_session(self.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass  # Fall through to build fresh
+
+            if stored_prompt:
+                # Continuing session — reuse the exact system prompt from
+                # the previous turn so the Anthropic cache prefix matches.
+                self._cached_system_prompt = stored_prompt
+            else:
+                # First turn of a new session — build from scratch.
+                self._cached_system_prompt = self._build_system_prompt(system_message)
+                # Bake Honcho context into the prompt so it's stable for
+                # the entire session (not re-fetched per turn).
+                if self._honcho_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Store the system prompt snapshot in SQLite
+                if self._session_db:
+                    try:
+                        self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                    except Exception as e:
+                        logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 
@@ -3106,11 +3297,13 @@ class AIAgent:
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)
             # so it stays out of the session DB and logs.
+            # Note: Honcho context is baked into _cached_system_prompt on the first
+            # turn and stored in the session DB, so it does NOT need to be injected
+            # here.  This keeps the system message identical across all turns in a
+            # session, maximizing Anthropic prompt cache hits.
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if self._honcho_context:
-                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             
@@ -3261,6 +3454,10 @@ class AIAgent:
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
                         if retry_count >= max_retries:
+                            # Try fallback before giving up
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3285,7 +3482,7 @@ class AIAgent:
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": "Operation interrupted.",
+                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
@@ -3394,10 +3591,11 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
+                    api_elapsed = time.time() - api_start_time
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
                     interrupted = True
-                    final_response = "Operation interrupted."
+                    final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
                     break
 
                 except Exception as api_error:
@@ -3446,7 +3644,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
-                            "final_response": "Operation interrupted.",
+                            "final_response": f"Operation interrupted: handling API error ({error_type}: {str(api_error)[:80]}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -3586,6 +3784,11 @@ class AIAgent:
                     ])) and not is_context_length_error
 
                     if is_client_error:
+                        # Try fallback before aborting — a different provider
+                        # may not have the same issue (rate limit, auth, etc.)
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
@@ -3603,6 +3806,10 @@ class AIAgent:
                         }
 
                     if retry_count >= max_retries:
+                        # Try fallback before giving up entirely
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
@@ -3623,7 +3830,7 @@ class AIAgent:
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {
-                                "final_response": "Operation interrupted.",
+                                "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,

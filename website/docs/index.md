@@ -25,6 +25,7 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 |---|---|
 | 🚀 **[Installation](/docs/getting-started/installation)** | Install in 60 seconds on Linux, macOS, or WSL2 |
 | 📖 **[Quickstart Tutorial](/docs/getting-started/quickstart)** | Your first conversation and key features to try |
+| 🗺️ **[Learning Path](/docs/getting-started/learning-path)** | Find the right docs for your experience level |
 | ⚙️ **[Configuration](/docs/user-guide/configuration)** | Config file, providers, models, and options |
 | 💬 **[Messaging Gateway](/docs/user-guide/messaging)** | Set up Telegram, Discord, Slack, or WhatsApp |
 | 🔧 **[Tools & Toolsets](/docs/user-guide/features/tools)** | 40+ built-in tools and how to configure them |
@@ -33,8 +34,9 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 | 🔌 **[MCP Integration](/docs/user-guide/features/mcp)** | Connect to any MCP server for extended capabilities |
 | 📄 **[Context Files](/docs/user-guide/features/context-files)** | Project context files that shape every conversation |
 | 🔒 **[Security](/docs/user-guide/security)** | Command approval, authorization, container isolation |
+| 💡 **[Tips & Best Practices](/docs/guides/tips)** | Quick wins to get the most out of Hermes |
 | 🏗️ **[Architecture](/docs/developer-guide/architecture)** | How it works under the hood |
-| 🤝 **[Contributing](/docs/developer-guide/contributing)** | Development setup and PR process |
+| ❓ **[FAQ & Troubleshooting](/docs/reference/faq)** | Common questions and solutions |
 
 ## Key Features
 

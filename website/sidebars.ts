@@ -10,6 +10,18 @@ const sidebars: SidebarsConfig = {
         'getting-started/quickstart',
         'getting-started/installation',
         'getting-started/updating',
+        'getting-started/learning-path',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Guides & Tutorials',
+      collapsed: false,
+      items: [
+        'guides/tips',
+        'guides/daily-briefing-bot',
+        'guides/team-telegram-assistant',
+        'guides/python-library',
       ],
     },
     {
@@ -35,24 +47,48 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
-          label: 'Features',
+          label: 'Core Features',
           items: [
             'user-guide/features/tools',
             'user-guide/features/skills',
             'user-guide/features/memory',
             'user-guide/features/context-files',
             'user-guide/features/personality',
-            'user-guide/features/mcp',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Automation',
+          items: [
             'user-guide/features/cron',
-            'user-guide/features/hooks',
             'user-guide/features/delegation',
             'user-guide/features/code-execution',
+            'user-guide/features/hooks',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Web & Media',
+          items: [
             'user-guide/features/browser',
-            'user-guide/features/image-generation',
             'user-guide/features/vision',
+            'user-guide/features/image-generation',
             'user-guide/features/tts',
-            'user-guide/features/provider-routing',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Integrations',
+          items: [
+            'user-guide/features/mcp',
             'user-guide/features/honcho',
+            'user-guide/features/provider-routing',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Advanced',
+          items: [
             'user-guide/features/batch-processing',
             'user-guide/features/rl-training',
           ],
@@ -76,6 +112,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'reference/cli-commands',
         'reference/environment-variables',
+        'reference/faq',
       ],
     },
   ],

@@ -38,7 +38,6 @@ class TestExplicitAllowlist:
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "NOUS_API_KEY",
         "WANDB_API_KEY",
         "TINKER_API_KEY",
         "HONCHO_API_KEY",

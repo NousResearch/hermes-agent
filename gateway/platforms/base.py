@@ -252,6 +252,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
+    LOCATION = "location"
     PHOTO = "photo"
     VIDEO = "video"
     AUDIO = "audio"
@@ -838,6 +839,8 @@ class BasePlatformAdapter(ABC):
         user_name: Optional[str] = None,
         thread_id: Optional[str] = None,
         chat_topic: Optional[str] = None,
+        user_id_alt: Optional[str] = None,
+        chat_id_alt: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -852,6 +855,8 @@ class BasePlatformAdapter(ABC):
             user_name=user_name,
             thread_id=str(thread_id) if thread_id else None,
             chat_topic=chat_topic.strip() if chat_topic else None,
+            user_id_alt=user_id_alt,
+            chat_id_alt=chat_id_alt,
         )
     
     @abstractmethod

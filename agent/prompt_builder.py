@@ -122,6 +122,15 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
+    "signal": (
+        "You are on a text messaging communication platform, Signal. "
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "
+        "files arrive as downloadable documents. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as photos."
+    ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
         "renderable inside a terminal."
@@ -186,6 +195,8 @@ def build_skills_system_prompt() -> str:
 
     # Collect skills with descriptions, grouped by category
     # Each entry: (skill_name, description)
+    # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
+    # → category "mlops/training", skill "axolotl"
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
         # Skip skills incompatible with the current OS platform
@@ -194,8 +205,13 @@ def build_skills_system_prompt() -> str:
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:
-            category = parts[0]
+            # Category is everything between skills_dir and the skill folder
+            # e.g. parts = ("mlops", "training", "axolotl", "SKILL.md")
+            #   → category = "mlops/training", skill_name = "axolotl"
+            # e.g. parts = ("github", "github-auth", "SKILL.md")
+            #   → category = "github", skill_name = "github-auth"
             skill_name = parts[-2]
+            category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
         else:
             category = "general"
             skill_name = skill_file.parent.name
@@ -206,9 +222,11 @@ def build_skills_system_prompt() -> str:
         return ""
 
     # Read category-level descriptions from DESCRIPTION.md
+    # Checks both the exact category path and parent directories
     category_descriptions = {}
     for category in skills_by_category:
-        desc_file = skills_dir / category / "DESCRIPTION.md"
+        cat_path = Path(category)
+        desc_file = skills_dir / cat_path / "DESCRIPTION.md"
         if desc_file.exists():
             try:
                 content = desc_file.read_text(encoding="utf-8")

@@ -86,10 +86,29 @@ if _config_path.exists():
                 "enabled": "CONTEXT_COMPRESSION_ENABLED",
                 "threshold": "CONTEXT_COMPRESSION_THRESHOLD",
                 "summary_model": "CONTEXT_COMPRESSION_MODEL",
+                "summary_provider": "CONTEXT_COMPRESSION_PROVIDER",
             }
             for _cfg_key, _env_var in _compression_env_map.items():
                 if _cfg_key in _compression_cfg:
                     os.environ[_env_var] = str(_compression_cfg[_cfg_key])
+        # Auxiliary model overrides (vision, web_extract).
+        # Each task has provider + model; bridge non-default values to env vars.
+        _auxiliary_cfg = _cfg.get("auxiliary", {})
+        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
+            _aux_task_env = {
+                "vision":      ("AUXILIARY_VISION_PROVIDER",      "AUXILIARY_VISION_MODEL"),
+                "web_extract": ("AUXILIARY_WEB_EXTRACT_PROVIDER",  "AUXILIARY_WEB_EXTRACT_MODEL"),
+            }
+            for _task_key, (_prov_env, _model_env) in _aux_task_env.items():
+                _task_cfg = _auxiliary_cfg.get(_task_key, {})
+                if not isinstance(_task_cfg, dict):
+                    continue
+                _prov = str(_task_cfg.get("provider", "")).strip()
+                _model = str(_task_cfg.get("model", "")).strip()
+                if _prov and _prov != "auto":
+                    os.environ[_prov_env] = _prov
+                if _model:
+                    os.environ[_model_env] = _model
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
@@ -99,6 +118,12 @@ if _config_path.exists():
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
             os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+        # Security settings
+        _security_cfg = _cfg.get("security", {})
+        if isinstance(_security_cfg, dict):
+            _redact = _security_cfg.get("redact_secrets")
+            if _redact is not None:
+                os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -175,6 +200,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._provider_routing = self._load_provider_routing()
+        self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -262,6 +288,12 @@ class GatewayRunner:
                 conversation_history=msgs,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            # Flush any queued Honcho writes before the session is dropped
+            if getattr(tmp_agent, '_honcho', None):
+                try:
+                    tmp_agent._honcho.shutdown()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
@@ -373,6 +405,26 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_fallback_model() -> dict | None:
+        """Load fallback model config from config.yaml.
+
+        Returns a dict with 'provider' and 'model' keys, or None if
+        not configured / both fields empty.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                fb = cfg.get("fallback_model", {}) or {}
+                if fb.get("provider") and fb.get("model"):
+                    return fb
+        except Exception:
+            pass
+        return None
 
     async def start(self) -> bool:
         """
@@ -572,6 +624,13 @@ class GatewayRunner:
                 return None
             return SlackAdapter(config)
 
+        elif platform == Platform.SIGNAL:
+            from gateway.platforms.signal import SignalAdapter, check_signal_requirements
+            if not check_signal_requirements():
+                logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
+                return None
+            return SignalAdapter(config)
+
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
@@ -607,12 +666,14 @@ class GatewayRunner:
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -851,159 +912,187 @@ class GatewayRunner:
         # every new message rehydrates an oversized transcript, causing
         # repeated truncation/context failures.  Detect this early and
         # compress proactively — before the agent even starts.  (#628)
+        #
+        # Thresholds are derived from the SAME compression config the
+        # agent uses (compression.threshold × model context length) so
+        # CLI and messaging platforms behave identically.
         # -----------------------------------------------------------------
         if history and len(history) >= 4:
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.model_metadata import (
+                estimate_messages_tokens_rough,
+                get_model_context_length,
+            )
 
-            # Read thresholds from config.yaml → session_hygiene section
-            _hygiene_cfg = {}
+            # Read model + compression config from config.yaml — same
+            # source of truth the agent itself uses.
+            _hyg_model = "anthropic/claude-sonnet-4.6"
+            _hyg_threshold_pct = 0.85
+            _hyg_compression_enabled = True
             try:
                 _hyg_cfg_path = _hermes_home / "config.yaml"
                 if _hyg_cfg_path.exists():
                     import yaml as _hyg_yaml
                     with open(_hyg_cfg_path) as _hyg_f:
                         _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
-                    _hygiene_cfg = _hyg_data.get("session_hygiene", {})
-                    if not isinstance(_hygiene_cfg, dict):
-                        _hygiene_cfg = {}
+
+                    # Resolve model name (same logic as run_sync)
+                    _model_cfg = _hyg_data.get("model", {})
+                    if isinstance(_model_cfg, str):
+                        _hyg_model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        _hyg_model = _model_cfg.get("default", _hyg_model)
+
+                    # Read compression settings
+                    _comp_cfg = _hyg_data.get("compression", {})
+                    if isinstance(_comp_cfg, dict):
+                        _hyg_threshold_pct = float(
+                            _comp_cfg.get("threshold", _hyg_threshold_pct)
+                        )
+                        _hyg_compression_enabled = str(
+                            _comp_cfg.get("enabled", True)
+                        ).lower() in ("true", "1", "yes")
             except Exception:
                 pass
 
-            _compress_token_threshold = int(
-                _hygiene_cfg.get("auto_compress_tokens", 100_000)
+            # Also check env overrides (same as run_agent.py)
+            _hyg_threshold_pct = float(
+                os.getenv("CONTEXT_COMPRESSION_THRESHOLD", str(_hyg_threshold_pct))
             )
-            _compress_msg_threshold = int(
-                _hygiene_cfg.get("auto_compress_messages", 200)
-            )
-            _warn_token_threshold = int(
-                _hygiene_cfg.get("warn_tokens", 200_000)
-            )
+            if os.getenv("CONTEXT_COMPRESSION_ENABLED", "").lower() in ("false", "0", "no"):
+                _hyg_compression_enabled = False
 
-            _msg_count = len(history)
-            _approx_tokens = estimate_messages_tokens_rough(history)
-
-            _needs_compress = (
-                _approx_tokens >= _compress_token_threshold
-                or _msg_count >= _compress_msg_threshold
-            )
-
-            if _needs_compress:
-                logger.info(
-                    "Session hygiene: %s messages, ~%s tokens — auto-compressing "
-                    "(thresholds: %s msgs / %s tokens)",
-                    _msg_count, f"{_approx_tokens:,}",
-                    _compress_msg_threshold, f"{_compress_token_threshold:,}",
+            if _hyg_compression_enabled:
+                _hyg_context_length = get_model_context_length(_hyg_model)
+                _compress_token_threshold = int(
+                    _hyg_context_length * _hyg_threshold_pct
                 )
+                # Warn if still huge after compression (95% of context)
+                _warn_token_threshold = int(_hyg_context_length * 0.95)
 
-                _hyg_adapter = self.adapters.get(source.platform)
-                if _hyg_adapter:
+                _msg_count = len(history)
+                _approx_tokens = estimate_messages_tokens_rough(history)
+
+                _needs_compress = _approx_tokens >= _compress_token_threshold
+
+                if _needs_compress:
+                    logger.info(
+                        "Session hygiene: %s messages, ~%s tokens — auto-compressing "
+                        "(threshold: %s%% of %s = %s tokens)",
+                        _msg_count, f"{_approx_tokens:,}",
+                        int(_hyg_threshold_pct * 100),
+                        f"{_hyg_context_length:,}",
+                        f"{_compress_token_threshold:,}",
+                    )
+
+                    _hyg_adapter = self.adapters.get(source.platform)
+                    if _hyg_adapter:
+                        try:
+                            await _hyg_adapter.send(
+                                source.chat_id,
+                                f"🗜️ Session is large ({_msg_count} messages, "
+                                f"~{_approx_tokens:,} tokens). Auto-compressing..."
+                            )
+                        except Exception:
+                            pass
+
                     try:
-                        await _hyg_adapter.send(
-                            source.chat_id,
-                            f"🗜️ Session is large ({_msg_count} messages, "
-                            f"~{_approx_tokens:,} tokens). Auto-compressing..."
-                        )
-                    except Exception:
-                        pass
+                        from run_agent import AIAgent
 
-                try:
-                    from run_agent import AIAgent
+                        _hyg_runtime = _resolve_runtime_agent_kwargs()
+                        if _hyg_runtime.get("api_key"):
+                            _hyg_msgs = [
+                                {"role": m.get("role"), "content": m.get("content")}
+                                for m in history
+                                if m.get("role") in ("user", "assistant")
+                                and m.get("content")
+                            ]
 
-                    _hyg_runtime = _resolve_runtime_agent_kwargs()
-                    if _hyg_runtime.get("api_key"):
-                        _hyg_msgs = [
-                            {"role": m.get("role"), "content": m.get("content")}
-                            for m in history
-                            if m.get("role") in ("user", "assistant")
-                            and m.get("content")
-                        ]
-
-                        if len(_hyg_msgs) >= 4:
-                            _hyg_agent = AIAgent(
-                                **_hyg_runtime,
-                                max_iterations=4,
-                                quiet_mode=True,
-                                enabled_toolsets=["memory"],
-                                session_id=session_entry.session_id,
-                            )
-
-                            loop = asyncio.get_event_loop()
-                            _compressed, _ = await loop.run_in_executor(
-                                None,
-                                lambda: _hyg_agent._compress_context(
-                                    _hyg_msgs, "",
-                                    approx_tokens=_approx_tokens,
-                                ),
-                            )
-
-                            self.session_store.rewrite_transcript(
-                                session_entry.session_id, _compressed
-                            )
-                            history = _compressed
-                            _new_count = len(_compressed)
-                            _new_tokens = estimate_messages_tokens_rough(
-                                _compressed
-                            )
-
-                            logger.info(
-                                "Session hygiene: compressed %s → %s msgs, "
-                                "~%s → ~%s tokens",
-                                _msg_count, _new_count,
-                                f"{_approx_tokens:,}", f"{_new_tokens:,}",
-                            )
-
-                            if _hyg_adapter:
-                                try:
-                                    await _hyg_adapter.send(
-                                        source.chat_id,
-                                        f"🗜️ Compressed: {_msg_count} → "
-                                        f"{_new_count} messages, "
-                                        f"~{_approx_tokens:,} → "
-                                        f"~{_new_tokens:,} tokens"
-                                    )
-                                except Exception:
-                                    pass
-
-                            # Still too large after compression — warn user
-                            if _new_tokens >= _warn_token_threshold:
-                                logger.warning(
-                                    "Session hygiene: still ~%s tokens after "
-                                    "compression — suggesting /reset",
-                                    f"{_new_tokens:,}",
+                            if len(_hyg_msgs) >= 4:
+                                _hyg_agent = AIAgent(
+                                    **_hyg_runtime,
+                                    max_iterations=4,
+                                    quiet_mode=True,
+                                    enabled_toolsets=["memory"],
+                                    session_id=session_entry.session_id,
                                 )
+
+                                loop = asyncio.get_event_loop()
+                                _compressed, _ = await loop.run_in_executor(
+                                    None,
+                                    lambda: _hyg_agent._compress_context(
+                                        _hyg_msgs, "",
+                                        approx_tokens=_approx_tokens,
+                                    ),
+                                )
+
+                                self.session_store.rewrite_transcript(
+                                    session_entry.session_id, _compressed
+                                )
+                                history = _compressed
+                                _new_count = len(_compressed)
+                                _new_tokens = estimate_messages_tokens_rough(
+                                    _compressed
+                                )
+
+                                logger.info(
+                                    "Session hygiene: compressed %s → %s msgs, "
+                                    "~%s → ~%s tokens",
+                                    _msg_count, _new_count,
+                                    f"{_approx_tokens:,}", f"{_new_tokens:,}",
+                                )
+
                                 if _hyg_adapter:
                                     try:
                                         await _hyg_adapter.send(
                                             source.chat_id,
-                                            "⚠️ Session is still very large "
-                                            "after compression "
-                                            f"(~{_new_tokens:,} tokens). "
-                                            "Consider using /reset to start "
-                                            "fresh if you experience issues."
+                                            f"🗜️ Compressed: {_msg_count} → "
+                                            f"{_new_count} messages, "
+                                            f"~{_approx_tokens:,} → "
+                                            f"~{_new_tokens:,} tokens"
                                         )
                                     except Exception:
                                         pass
 
-                except Exception as e:
-                    logger.warning(
-                        "Session hygiene auto-compress failed: %s", e
-                    )
-                    # Compression failed and session is dangerously large
-                    if _approx_tokens >= _warn_token_threshold:
-                        _hyg_adapter = self.adapters.get(source.platform)
-                        if _hyg_adapter:
-                            try:
-                                await _hyg_adapter.send(
-                                    source.chat_id,
-                                    f"⚠️ Session is very large "
-                                    f"({_msg_count} messages, "
-                                    f"~{_approx_tokens:,} tokens) and "
-                                    "auto-compression failed. Consider "
-                                    "using /compress or /reset to avoid "
-                                    "issues."
-                                )
-                            except Exception:
-                                pass
+                                # Still too large after compression — warn user
+                                if _new_tokens >= _warn_token_threshold:
+                                    logger.warning(
+                                        "Session hygiene: still ~%s tokens after "
+                                        "compression — suggesting /reset",
+                                        f"{_new_tokens:,}",
+                                    )
+                                    if _hyg_adapter:
+                                        try:
+                                            await _hyg_adapter.send(
+                                                source.chat_id,
+                                                "⚠️ Session is still very large "
+                                                "after compression "
+                                                f"(~{_new_tokens:,} tokens). "
+                                                "Consider using /reset to start "
+                                                "fresh if you experience issues."
+                                            )
+                                        except Exception:
+                                            pass
+
+                    except Exception as e:
+                        logger.warning(
+                            "Session hygiene auto-compress failed: %s", e
+                        )
+                        # Compression failed and session is dangerously large
+                        if _approx_tokens >= _warn_token_threshold:
+                            _hyg_adapter = self.adapters.get(source.platform)
+                            if _hyg_adapter:
+                                try:
+                                    await _hyg_adapter.send(
+                                        source.chat_id,
+                                        f"⚠️ Session is very large "
+                                        f"({_msg_count} messages, "
+                                        f"~{_approx_tokens:,} tokens) and "
+                                        "auto-compression failed. Consider "
+                                        "using /compress or /reset to avoid "
+                                        "issues."
+                                    )
+                                except Exception:
+                                    pass
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
@@ -1366,6 +1455,11 @@ class GatewayRunner:
             except Exception:
                 current_provider = "openrouter"
 
+        # Detect custom endpoint: provider resolved to openrouter but a custom
+        # base URL is configured — the user set up a custom endpoint.
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
+
         if not args:
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
             lines = [
@@ -1491,6 +1585,10 @@ class GatewayRunner:
                 current_provider = _resolve_provider(current_provider)
             except Exception:
                 current_provider = "openrouter"
+
+        # Detect custom endpoint
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
 
         current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
 
@@ -2604,6 +2702,7 @@ class GatewayRunner:
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,
+                fallback_model=self._fallback_model,
             )
             
             # Store agent reference for interrupt support

@@ -183,6 +183,7 @@ class AIAgent:
         session_db=None,
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
+        fallback_model: Dict[str, Any] = None,
     ):
         """
         Initialize the AI Agent.
@@ -406,6 +407,17 @@ class AIAgent:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
+        # Provider fallback — a single backup model/provider tried when the
+        # primary is exhausted (rate-limit, overload, connection failure).
+        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        self._fallback_activated = False
+        if self._fallback_model:
+            fb_p = self._fallback_model.get("provider", "")
+            fb_m = self._fallback_model.get("model", "")
+            if fb_p and fb_m and not self.quiet_mode:
+                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+
         # Get available tools with filtering
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
@@ -522,10 +534,12 @@ class AIAgent:
         # Reads ~/.honcho/config.json as the single source of truth.
         self._honcho = None  # HonchoSessionManager | None
         self._honcho_session_key = honcho_session_key
+        self._honcho_config = None  # HonchoClientConfig | None
         if not skip_memory:
             try:
                 from honcho_integration.client import HonchoClientConfig, get_honcho_client
                 hcfg = HonchoClientConfig.from_global_config()
+                self._honcho_config = hcfg
                 if hcfg.enabled and hcfg.api_key:
                     from honcho_integration.session import HonchoSessionManager
                     client = get_honcho_client(hcfg)
@@ -534,29 +548,143 @@ class AIAgent:
                         config=hcfg,
                         context_tokens=hcfg.context_tokens,
                     )
-                    # Resolve session key: explicit arg > global sessions map > fallback
+                    # Resolve session key: explicit arg > sessions map > title > per-session id > directory
                     if not self._honcho_session_key:
+                        # Pull title from SessionDB if available
+                        session_title = None
+                        if session_db is not None:
+                            try:
+                                session_title = session_db.get_session_title(session_id or "")
+                            except Exception:
+                                pass
                         self._honcho_session_key = (
-                            hcfg.resolve_session_name()
+                            hcfg.resolve_session_name(
+                                session_title=session_title,
+                                session_id=self.session_id,
+                            )
                             or "hermes-default"
                         )
-                    # Ensure session exists in Honcho
-                    self._honcho.get_or_create(self._honcho_session_key)
+                    # Ensure session exists in Honcho; migrate local data on first activation
+                    honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
+                    if not honcho_sess.messages:
+                        # New Honcho session — migrate any existing local data
+                        _conv = getattr(self, 'conversation_history', None) or []
+                        if _conv:
+                            try:
+                                self._honcho.migrate_local_history(
+                                    self._honcho_session_key, _conv
+                                )
+                                logger.info("Migrated %d local messages to Honcho", len(_conv))
+                            except Exception as _e:
+                                logger.debug("Local history migration failed (non-fatal): %s", _e)
+                        try:
+                            from hermes_cli.config import get_hermes_home
+                            _mem_dir = str(get_hermes_home() / "memories")
+                            self._honcho.migrate_memory_files(
+                                self._honcho_session_key, _mem_dir
+                            )
+                        except Exception as _e:
+                            logger.debug("Memory files migration failed (non-fatal): %s", _e)
                     # Inject session context into the honcho tool module
                     from tools.honcho_tools import set_session_context
                     set_session_context(self._honcho, self._honcho_session_key)
+
+                    # In "context" mode, skip honcho tool registration entirely —
+                    # all memory retrieval comes from the pre-warmed system prompt.
+                    if hcfg.recall_mode != "context":
+                        # Rebuild tool definitions now that Honcho check_fn will pass.
+                        # (Tools were built before Honcho init, so query_user_context
+                        # was filtered out by _check_honcho_available() returning False.)
+                        self.tools = get_tool_definitions(
+                            enabled_toolsets=enabled_toolsets,
+                            disabled_toolsets=disabled_toolsets,
+                            quiet_mode=True,  # already printed tool list above
+                        )
+                        self.valid_tool_names = {
+                            tool["function"]["name"] for tool in self.tools
+                        } if self.tools else set()
+                        if not self.quiet_mode:
+                            print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
+                    else:
+                        if not self.quiet_mode:
+                            print("  Honcho active — recall_mode: context (tools suppressed)")
+
                     logger.info(
-                        "Honcho active (session: %s, user: %s, workspace: %s)",
+                        "Honcho active (session: %s, user: %s, workspace: %s, "
+                        "write_frequency: %s, memory_mode: %s)",
                         self._honcho_session_key, hcfg.peer_name, hcfg.workspace_id,
+                        hcfg.write_frequency, hcfg.memory_mode,
                     )
+
+                    # Warm caches when recall_mode allows pre-loaded context.
+                    # "tools" mode skips warm entirely (tool calls handle recall).
+                    _recall_mode = hcfg.recall_mode
+                    if _recall_mode != "tools":
+                        try:
+                            _ctx = self._honcho.get_prefetch_context(self._honcho_session_key)
+                            if _ctx:
+                                self._honcho._context_cache[self._honcho_session_key] = _ctx
+                                logger.debug("Honcho context pre-warmed for first turn")
+                        except Exception as _e:
+                            logger.debug("Honcho context prefetch failed (non-fatal): %s", _e)
+
+                        try:
+                            _cwd = os.path.basename(os.getcwd())
+                            _dialectic = self._honcho.dialectic_query(
+                                self._honcho_session_key,
+                                f"What has the user been working on recently in {_cwd}? "
+                                "Summarize the current project context and where we left off.",
+                            )
+                            if _dialectic:
+                                self._honcho._dialectic_cache[self._honcho_session_key] = _dialectic
+                                logger.debug("Honcho dialectic pre-warmed for first turn")
+                        except Exception as _e:
+                            logger.debug("Honcho dialectic prefetch failed (non-fatal): %s", _e)
+
+                    # Register SIGTERM/SIGINT handlers to flush pending async writes
+                    # before the process exits. signal.signal() only works on the main
+                    # thread; AIAgent may be initialised from a worker thread in cli.py.
+                    import signal as _signal
+                    import threading as _threading
+                    _honcho_ref = self._honcho
+
+                    if _threading.current_thread() is _threading.main_thread():
+                        def _honcho_flush_handler(signum, frame):
+                            try:
+                                _honcho_ref.flush_all()
+                            except Exception:
+                                pass
+                            if signum == _signal.SIGINT:
+                                raise KeyboardInterrupt
+                            raise SystemExit(0)
+
+                        _signal.signal(_signal.SIGTERM, _honcho_flush_handler)
+                        _signal.signal(_signal.SIGINT, _honcho_flush_handler)
                 else:
                     if not hcfg.enabled:
                         logger.debug("Honcho disabled in global config")
                     elif not hcfg.api_key:
                         logger.debug("Honcho enabled but no API key configured")
             except Exception as e:
-                logger.debug("Honcho init failed (non-fatal): %s", e)
+                logger.warning("Honcho init failed — memory disabled: %s", e)
+                print(f"  Honcho init failed: {e}")
+                print("  Run 'hermes honcho setup' to reconfigure.")
                 self._honcho = None
+
+        # Gate local memory writes based on per-peer memory modes.
+        # AI peer governs MEMORY.md; user peer governs USER.md.
+        # "honcho" = Honcho only, disable local; "local" = local only, no Honcho sync.
+        if self._honcho_config and self._honcho:
+            _hcfg = self._honcho_config
+            _agent_mode = _hcfg.peer_memory_mode(_hcfg.ai_peer)
+            _user_mode = _hcfg.peer_memory_mode(_hcfg.peer_name or "user")
+            if _agent_mode == "honcho":
+                self._memory_flush_min_turns = 0
+                self._memory_enabled = False
+                logger.debug("peer %s memory_mode=honcho: local MEMORY.md writes disabled", _hcfg.ai_peer)
+            if _user_mode == "honcho":
+                self._user_profile_enabled = False
+                logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 15
@@ -1295,29 +1423,58 @@ class AIAgent:
     # ── Honcho integration helpers ──
 
     def _honcho_prefetch(self, user_message: str) -> str:
-        """Fetch user context from Honcho for system prompt injection.
+        """Assemble Honcho context from cached background fetches.
 
-        Returns a formatted context block, or empty string if unavailable.
+        Both session.context() and peer.chat() (dialectic) are fired as
+        background threads at the end of each turn via _honcho_fire_prefetch().
+        This method just reads the cached results — no blocking HTTP calls.
+
+        First turn uses synchronously pre-warmed caches from init.
+        Subsequent turns use async prefetch results from the previous turn end.
         """
         if not self._honcho or not self._honcho_session_key:
             return ""
         try:
-            ctx = self._honcho.get_prefetch_context(self._honcho_session_key, user_message)
-            if not ctx:
-                return ""
             parts = []
-            rep = ctx.get("representation", "")
-            card = ctx.get("card", "")
-            if rep:
-                parts.append(rep)
-            if card:
-                parts.append(card)
+
+            ctx = self._honcho.pop_context_result(self._honcho_session_key)
+            if ctx:
+                rep = ctx.get("representation", "")
+                card = ctx.get("card", "")
+                if rep:
+                    parts.append(f"## User representation\n{rep}")
+                if card:
+                    parts.append(card)
+                ai_rep = ctx.get("ai_representation", "")
+                ai_card = ctx.get("ai_card", "")
+                if ai_rep:
+                    parts.append(f"## AI peer representation\n{ai_rep}")
+                if ai_card:
+                    parts.append(ai_card)
+
+            dialectic = self._honcho.pop_dialectic_result(self._honcho_session_key)
+            if dialectic:
+                parts.append(f"[Honcho dialectic]\n{dialectic}")
+
             if not parts:
                 return ""
-            return "# Honcho User Context\n" + "\n\n".join(parts)
+            header = (
+                "# Honcho Memory (persistent cross-session context)\n"
+                "Use this to answer questions about the user, prior sessions, "
+                "and what you were working on together. Do not call tools to "
+                "look up information that is already present here.\n"
+            )
+            return header + "\n\n".join(parts)
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
+
+    def _honcho_fire_prefetch(self, user_message: str) -> None:
+        """Fire both Honcho background fetches for the next turn (non-blocking)."""
+        if not self._honcho or not self._honcho_session_key:
+            return
+        self._honcho.prefetch_context(self._honcho_session_key, user_message)
+        self._honcho.prefetch_dialectic(self._honcho_session_key, user_message)
 
     def _honcho_save_user_observation(self, content: str) -> str:
         """Route a memory tool target=user add to Honcho.
@@ -1344,13 +1501,24 @@ class AIAgent:
         """Sync the user/assistant message pair to Honcho."""
         if not self._honcho or not self._honcho_session_key:
             return
+        # Skip Honcho sync only if BOTH peer modes are local
+        _cfg = self._honcho_config
+        if _cfg and all(
+            _cfg.peer_memory_mode(p) == "local"
+            for p in (_cfg.ai_peer, _cfg.peer_name or "user")
+        ):
+            return
         try:
             session = self._honcho.get_or_create(self._honcho_session_key)
             session.add_message("user", user_content)
             session.add_message("assistant", assistant_content)
             self._honcho.save(session)
+            logger.info("Honcho sync queued for session %s (%d messages)",
+                        self._honcho_session_key, len(session.messages))
         except Exception as e:
-            logger.debug("Honcho sync failed (non-fatal): %s", e)
+            logger.warning("Honcho sync failed: %s", e)
+            if not self.quiet_mode:
+                print(f"  Honcho write failed: {e}")
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -1368,7 +1536,21 @@ class AIAgent:
         #   5. Context files (SOUL.md, AGENTS.md, .cursorrules)
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
-        prompt_parts = [DEFAULT_AGENT_IDENTITY]
+        # If an AI peer name is configured in Honcho, personalise the identity line.
+        _ai_peer_name = (
+            self._honcho_config.ai_peer
+            if self._honcho_config and self._honcho_config.ai_peer != "hermes"
+            else None
+        )
+        if _ai_peer_name:
+            _identity = DEFAULT_AGENT_IDENTITY.replace(
+                "You are Hermes Agent",
+                f"You are {_ai_peer_name}",
+                1,
+            )
+        else:
+            _identity = DEFAULT_AGENT_IDENTITY
+        prompt_parts = [_identity]
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -1380,6 +1562,58 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
+
+        # Honcho CLI awareness: tell Hermes about its own management commands
+        # so it can refer the user to them rather than reinventing answers.
+        if self._honcho and self._honcho_session_key:
+            hcfg = self._honcho_config
+            mode = hcfg.memory_mode if hcfg else "hybrid"
+            freq = hcfg.write_frequency if hcfg else "async"
+            recall_mode = hcfg.recall_mode if hcfg else "auto"
+            honcho_block = (
+                "# Honcho memory integration\n"
+                f"Active. Session: {self._honcho_session_key}. "
+                f"Mode: {mode}. Write frequency: {freq}. Recall: {recall_mode}.\n"
+            )
+            if recall_mode == "context":
+                honcho_block += (
+                    "Honcho context is pre-loaded into this system prompt below. "
+                    "All memory retrieval comes from this context — no memory tools "
+                    "are available. Answer questions about the user, prior sessions, "
+                    "and recent work directly from the Honcho Memory section.\n"
+                )
+            elif recall_mode == "tools":
+                honcho_block += (
+                    "Memory tools (most capable first; use cheaper tools when sufficient):\n"
+                    "  query_user_context <question>           — dialectic Q&A, LLM-synthesized answer\n"
+                    "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
+                    "  honcho_profile                          — peer card, key facts, no LLM\n"
+                )
+            else:  # auto
+                honcho_block += (
+                    "Honcho context (user representation, peer card, and recent session summary) "
+                    "is pre-loaded into this system prompt below. Use it to answer continuity "
+                    "questions ('where were we?', 'what were we working on?') WITHOUT calling "
+                    "any tools. Only call memory tools when you need information beyond what is "
+                    "already present in the Honcho Memory section.\n"
+                    "Memory tools (most capable first; use cheaper tools when sufficient):\n"
+                    "  query_user_context <question>           — dialectic Q&A, LLM-synthesized answer\n"
+                    "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
+                    "  honcho_profile                          — peer card, key facts, no LLM\n"
+                )
+            honcho_block += (
+                "Management commands (refer users here instead of explaining manually):\n"
+                "  hermes honcho status                    — show full config + connection\n"
+                "  hermes honcho mode [hybrid|honcho|local] — show or set memory mode\n"
+                "  hermes honcho tokens [--context N] [--dialectic N] — show or set token budgets\n"
+                "  hermes honcho peer [--user NAME] [--ai NAME] [--reasoning LEVEL]\n"
+                "  hermes honcho sessions                  — list directory→session mappings\n"
+                "  hermes honcho map <name>                — map cwd to a session name\n"
+                "  hermes honcho identity [<file>] [--show] — seed or show AI peer identity\n"
+                "  hermes honcho migrate                   — migration guide from openclaw-honcho\n"
+                "  hermes honcho setup                     — full interactive wizard"
+            )
+            prompt_parts.append(honcho_block)
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
@@ -2146,6 +2380,141 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Provider fallback ──────────────────────────────────────────────────
+
+    # API-key providers: provider → (base_url, [env_var_names])
+    _FALLBACK_API_KEY_PROVIDERS = {
+        "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
+        "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
+        "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
+        "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
+        "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
+    }
+
+    # OAuth providers: provider → (resolver_import_path, api_mode)
+    # Each resolver returns {"api_key": ..., "base_url": ...}.
+    _FALLBACK_OAUTH_PROVIDERS = {
+        "openai-codex": ("resolve_codex_runtime_credentials", "codex_responses"),
+        "nous": ("resolve_nous_runtime_credentials", "chat_completions"),
+    }
+
+    def _resolve_fallback_credentials(
+        self, fb_provider: str, fb_config: dict
+    ) -> Optional[tuple]:
+        """Resolve credentials for a fallback provider.
+
+        Returns (api_key, base_url, api_mode) on success, or None on failure.
+        Handles three cases:
+          1. OAuth providers (openai-codex, nous) — call credential resolver
+          2. API-key providers (openrouter, zai, etc.) — read env var
+          3. Custom endpoints — use base_url + api_key_env from config
+        """
+        # ── 1. OAuth providers ────────────────────────────────────────
+        if fb_provider in self._FALLBACK_OAUTH_PROVIDERS:
+            resolver_name, api_mode = self._FALLBACK_OAUTH_PROVIDERS[fb_provider]
+            try:
+                import hermes_cli.auth as _auth
+                resolver = getattr(_auth, resolver_name)
+                creds = resolver()
+                return creds["api_key"], creds["base_url"], api_mode
+            except Exception as e:
+                logging.warning(
+                    "Fallback to %s failed (credential resolution): %s",
+                    fb_provider, e,
+                )
+                return None
+
+        # ── 2. API-key providers ──────────────────────────────────────
+        fb_key = (fb_config.get("api_key") or "").strip()
+        if not fb_key:
+            key_env = (fb_config.get("api_key_env") or "").strip()
+            if key_env:
+                fb_key = os.getenv(key_env, "")
+            elif fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+                for env_var in self._FALLBACK_API_KEY_PROVIDERS[fb_provider][1]:
+                    fb_key = os.getenv(env_var, "")
+                    if fb_key:
+                        break
+        if not fb_key:
+            logging.warning(
+                "Fallback model configured but no API key found for provider '%s'",
+                fb_provider,
+            )
+            return None
+
+        # ── 3. Resolve base URL ───────────────────────────────────────
+        fb_base_url = (fb_config.get("base_url") or "").strip()
+        if not fb_base_url and fb_provider in self._FALLBACK_API_KEY_PROVIDERS:
+            fb_base_url = self._FALLBACK_API_KEY_PROVIDERS[fb_provider][0]
+        if not fb_base_url:
+            fb_base_url = OPENROUTER_BASE_URL
+
+        return fb_key, fb_base_url, "chat_completions"
+
+    def _try_activate_fallback(self) -> bool:
+        """Switch to the configured fallback model/provider.
+
+        Called when the primary model is failing after retries.  Swaps the
+        OpenAI client, model slug, and provider in-place so the retry loop
+        can continue with the new backend.  One-shot: returns False if
+        already activated or not configured.
+        """
+        if self._fallback_activated or not self._fallback_model:
+            return False
+
+        fb = self._fallback_model
+        fb_provider = (fb.get("provider") or "").strip().lower()
+        fb_model = (fb.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            return False
+
+        resolved = self._resolve_fallback_credentials(fb_provider, fb)
+        if resolved is None:
+            return False
+        fb_key, fb_base_url, fb_api_mode = resolved
+
+        # Build new client
+        try:
+            client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
+            if "openrouter" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "X-OpenRouter-Title": "Hermes Agent",
+                    "X-OpenRouter-Categories": "productivity,cli-agent",
+                }
+            elif "api.kimi.com" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+
+            self.client = OpenAI(**client_kwargs)
+            self._client_kwargs = client_kwargs
+            old_model = self.model
+            self.model = fb_model
+            self.provider = fb_provider
+            self.base_url = fb_base_url
+            self.api_mode = fb_api_mode
+            self._fallback_activated = True
+
+            # Re-evaluate prompt caching for the new provider/model
+            self._use_prompt_caching = (
+                "openrouter" in fb_base_url.lower()
+                and "claude" in fb_model.lower()
+            )
+
+            print(
+                f"{self.log_prefix}🔄 Primary model failed — switching to fallback: "
+                f"{fb_model} via {fb_provider}"
+            )
+            logging.info(
+                "Fallback activated: %s → %s (%s)",
+                old_model, fb_model, fb_provider,
+            )
+            return True
+        except Exception as e:
+            logging.error("Failed to activate fallback model: %s", e)
+            return False
+
+    # ── End provider fallback ──────────────────────────────────────────────
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "codex_responses":
@@ -2344,6 +2713,10 @@ class AIAgent:
             return
         if "memory" not in self.valid_tool_names or not self._memory_store:
             return
+        # honcho-only agent mode: skip local MEMORY.md flush
+        _hcfg = getattr(self, '_honcho_config', None)
+        if _hcfg and _hcfg.peer_memory_mode(_hcfg.ai_peer) == "honcho":
+            return
         effective_min = min_turns if min_turns is not None else self._memory_flush_min_turns
         if self._user_turn_count < effective_min:
             return
@@ -2519,9 +2892,10 @@ class AIAgent:
                 if remaining_calls:
                     print(f"{self.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)")
                 for skipped_tc in remaining_calls:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution cancelled - user interrupted]",
+                        "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                         "tool_call_id": skipped_tc.id,
                     }
                     messages.append(skip_msg)
@@ -2724,9 +3098,10 @@ class AIAgent:
                 remaining = len(assistant_message.tool_calls) - i
                 print(f"{self.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)")
                 for skipped_tc in assistant_message.tool_calls[i:]:
+                    skipped_name = skipped_tc.function.name
                     skip_msg = {
                         "role": "tool",
-                        "content": "[Tool execution skipped - user sent a new message]",
+                        "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                         "tool_call_id": skipped_tc.id
                     }
                     messages.append(skip_msg)
@@ -2943,13 +3318,16 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho prefetch: retrieve user context for system prompt injection
+        # Honcho: read cached context from last turn's background fetch (non-blocking),
+        # then fire both fetches for next turn.  Skip in "tools" mode (no context injection).
         self._honcho_context = ""
-        if self._honcho and self._honcho_session_key:
+        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "auto")
+        if self._honcho and self._honcho_session_key and not conversation_history and _recall_mode != "tools":
             try:
                 self._honcho_context = self._honcho_prefetch(user_message)
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+            self._honcho_fire_prefetch(user_message)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -2963,14 +3341,42 @@ class AIAgent:
         # Built once on first call, reused for all subsequent calls.
         # Only rebuilt after context compression events (which invalidate
         # the cache and reload memory from disk).
+        #
+        # For continuing sessions (gateway creates a fresh AIAgent per
+        # message), we load the stored system prompt from the session DB
+        # instead of rebuilding.  Rebuilding would pick up memory changes
+        # from disk that the model already knows about (it wrote them!),
+        # producing a different system prompt and breaking the Anthropic
+        # prefix cache.
         if self._cached_system_prompt is None:
-            self._cached_system_prompt = self._build_system_prompt(system_message)
-            # Store the system prompt snapshot in SQLite
-            if self._session_db:
+            stored_prompt = None
+            if conversation_history and self._session_db:
                 try:
-                    self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
-                except Exception as e:
-                    logger.debug("Session DB update_system_prompt failed: %s", e)
+                    session_row = self._session_db.get_session(self.session_id)
+                    if session_row:
+                        stored_prompt = session_row.get("system_prompt") or None
+                except Exception:
+                    pass  # Fall through to build fresh
+
+            if stored_prompt:
+                # Continuing session — reuse the exact system prompt from
+                # the previous turn so the Anthropic cache prefix matches.
+                self._cached_system_prompt = stored_prompt
+            else:
+                # First turn of a new session — build from scratch.
+                self._cached_system_prompt = self._build_system_prompt(system_message)
+                # Bake Honcho context into the prompt so it's stable for
+                # the entire session (not re-fetched per turn).
+                if self._honcho_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Store the system prompt snapshot in SQLite
+                if self._session_db:
+                    try:
+                        self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                    except Exception as e:
+                        logger.debug("Session DB update_system_prompt failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 
@@ -3095,11 +3501,13 @@ class AIAgent:
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)
             # so it stays out of the session DB and logs.
+            # Note: Honcho context is baked into _cached_system_prompt on the first
+            # turn and stored in the session DB, so it does NOT need to be injected
+            # here.  This keeps the system message identical across all turns in a
+            # session, maximizing Anthropic prompt cache hits.
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if self._honcho_context:
-                effective_system = (effective_system + "\n\n" + self._honcho_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             
@@ -3250,6 +3658,10 @@ class AIAgent:
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
                         if retry_count >= max_retries:
+                            # Try fallback before giving up
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3274,7 +3686,7 @@ class AIAgent:
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": "Operation interrupted.",
+                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
@@ -3383,10 +3795,11 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
+                    api_elapsed = time.time() - api_start_time
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
                     interrupted = True
-                    final_response = "Operation interrupted."
+                    final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
                     break
 
                 except Exception as api_error:
@@ -3435,7 +3848,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
-                            "final_response": "Operation interrupted.",
+                            "final_response": f"Operation interrupted: handling API error ({error_type}: {str(api_error)[:80]}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -3573,6 +3986,11 @@ class AIAgent:
                     ])) and not is_context_length_error
 
                     if is_client_error:
+                        # Try fallback before aborting — a different provider
+                        # may not have the same issue (rate limit, auth, etc.)
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
@@ -3590,6 +4008,10 @@ class AIAgent:
                         }
 
                     if retry_count >= max_retries:
+                        # Try fallback before giving up entirely
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
@@ -3610,7 +4032,7 @@ class AIAgent:
                             self._persist_session(messages, conversation_history)
                             self.clear_interrupt()
                             return {
-                                "final_response": "Operation interrupted.",
+                                "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -3636,6 +4058,27 @@ class AIAgent:
                 else:
                     assistant_message = response.choices[0].message
                 
+                # Normalize content to string — some OpenAI-compatible servers
+                # (llama-server, etc.) return content as a dict or list instead
+                # of a plain string, which crashes downstream .strip() calls.
+                if assistant_message.content is not None and not isinstance(assistant_message.content, str):
+                    raw = assistant_message.content
+                    if isinstance(raw, dict):
+                        assistant_message.content = raw.get("text", "") or raw.get("content", "") or json.dumps(raw)
+                    elif isinstance(raw, list):
+                        # Multimodal content list — extract text parts
+                        parts = []
+                        for part in raw:
+                            if isinstance(part, str):
+                                parts.append(part)
+                            elif isinstance(part, dict) and part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                            elif isinstance(part, dict) and "text" in part:
+                                parts.append(str(part["text"]))
+                        assistant_message.content = "\n".join(parts)
+                    else:
+                        assistant_message.content = str(raw)
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     print(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
@@ -3892,6 +4335,7 @@ class AIAgent:
                                     msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
                                     break
                             final_response = self._strip_think_blocks(fallback).strip()
+                            self._response_was_previewed = True
                             break
 
                         # No fallback available — this is a genuine empty response.
@@ -3934,6 +4378,7 @@ class AIAgent:
                                         break
                                 # Strip <think> blocks from fallback content for user display
                                 final_response = self._strip_think_blocks(fallback).strip()
+                                self._response_was_previewed = True
                                 break
                             
                             # No fallback -- append the empty message as-is
@@ -4087,7 +4532,9 @@ class AIAgent:
             "completed": completed,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
+            "response_previewed": getattr(self, "_response_was_previewed", False),
         }
+        self._response_was_previewed = False
         
         # Include interrupt message if one triggered the interrupt
         if interrupted and self._interrupt_message:

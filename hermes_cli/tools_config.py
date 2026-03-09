@@ -96,6 +96,11 @@ CONFIGURABLE_TOOLSETS = [
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
+# Toolsets that are OFF by default for new installs.
+# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
+# but the setup checklist won't pre-select them for first-time users.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+
 # Platform display config
 PLATFORMS = {
     "cli":      {"label": "🖥️  CLI",       "default_toolset": "hermes-cli"},
@@ -142,6 +147,8 @@ TOOL_CATEGORIES = {
     },
     "web": {
         "name": "Web Search & Extract",
+        "setup_title": "Select Search Provider",
+        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need Firecrawl.",
         "icon": "🔍",
         "providers": [
             {
@@ -595,11 +602,18 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
         if provider.get("tag"):
             _print_info(f"  {provider['tag']}")
+        # For single-provider tools, show a note if available
+        if cat.get("setup_note"):
+            _print_info(f"  {cat['setup_note']}")
         _configure_provider(provider, config)
     else:
         # Multiple providers - let user choose
         print()
-        print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
+        # Use custom title if provided (e.g. "Select Search Provider")
+        title = cat.get("setup_title", f"Choose a provider")
+        print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
+        if cat.get("setup_note"):
+            _print_info(f"  {cat['setup_note']}")
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
@@ -617,6 +631,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
+        # Add skip option
+        provider_choices.append("Skip — keep defaults / configure later")
+
         # Detect current provider as default
         default_idx = 0
         for i, p in enumerate(providers):
@@ -628,7 +645,13 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                 default_idx = i
                 break
 
-        provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
+        provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
+
+        # Skip selected
+        if provider_idx >= len(providers):
+            _print_info(f"  Skipped {name}")
+            return
+
         _configure_provider(providers[provider_idx], config)
 
 
@@ -835,9 +858,19 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
-def tools_command(args=None):
-    """Entry point for `hermes tools` and `hermes setup tools`."""
-    config = load_config()
+def tools_command(args=None, first_install: bool = False, config: dict = None):
+    """Entry point for `hermes tools` and `hermes setup tools`.
+
+    Args:
+        first_install: When True (set by the setup wizard on fresh installs),
+            skip the platform menu, go straight to the CLI checklist, and
+            prompt for API keys on all enabled tools that need them.
+        config: Optional config dict to use.  When called from the setup
+            wizard, the wizard passes its own dict so that platform_toolsets
+            are written into it and survive the wizard's final save_config().
+    """
+    if config is None:
+        config = load_config()
     enabled_platforms = _get_enabled_platforms()
 
     print()
@@ -846,6 +879,57 @@ def tools_command(args=None):
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))
     print()
 
+    # ── First-time install: linear flow, no platform menu ──
+    if first_install:
+        for pkey in enabled_platforms:
+            pinfo = PLATFORMS[pkey]
+            current_enabled = _get_platform_tools(config, pkey)
+
+            # Uncheck toolsets that should be off by default
+            checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
+
+            # Show checklist
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+
+            added = new_enabled - current_enabled
+            removed = current_enabled - new_enabled
+            if added:
+                for ts in sorted(added):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                    print(color(f"  + {label}", Colors.GREEN))
+            if removed:
+                for ts in sorted(removed):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts), ts)
+                    print(color(f"  - {label}", Colors.RED))
+
+            # Walk through ALL selected tools that have provider options or
+            # need API keys.  This ensures browser (Local vs Browserbase),
+            # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
+            # a free provider exists.
+            to_configure = [
+                ts_key for ts_key in sorted(new_enabled)
+                if TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)
+            ]
+
+            if to_configure:
+                print()
+                print(color(f"  Configuring {len(to_configure)} tool(s):", Colors.YELLOW))
+                for ts_key in to_configure:
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    print(color(f"    • {label}", Colors.DIM))
+                print(color("  You can skip any tool you don't need right now.", Colors.DIM))
+                print()
+                for ts_key in to_configure:
+                    _configure_toolset(ts_key, config)
+
+            _save_platform_tools(config, pkey, new_enabled)
+            save_config(config)
+            print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
+            print()
+
+        return
+
+    # ── Returning user: platform menu loop ──
     # Build platform choices
     platform_choices = []
     platform_keys = []
@@ -896,11 +980,10 @@ def tools_command(args=None):
                     print(color(f"  - {label}", Colors.RED))
 
             # Configure newly enabled toolsets that need API keys
-            if added:
-                for ts_key in sorted(added):
-                    if TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key):
-                        if not _toolset_has_keys(ts_key):
-                            _configure_toolset(ts_key, config)
+            for ts_key in sorted(added):
+                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
+                    if not _toolset_has_keys(ts_key):
+                        _configure_toolset(ts_key, config)
 
             _save_platform_tools(config, pkey, new_enabled)
             save_config(config)

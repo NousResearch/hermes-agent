@@ -18,6 +18,22 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
+    hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes honcho status                   # Show Honcho config and connection status
+    hermes honcho sessions                 # List directory → session name mappings
+    hermes honcho map <name>               # Map current directory to a session name
+    hermes honcho peer                     # Show peer names and dialectic settings
+    hermes honcho peer --user NAME         # Set user peer name
+    hermes honcho peer --ai NAME           # Set AI peer name
+    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    hermes honcho mode                     # Show current memory mode
+    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
+    hermes honcho tokens                   # Show token budget settings
+    hermes honcho tokens --context N       # Set session.context() token cap
+    hermes honcho tokens --dialectic N     # Set dialectic result char cap
+    hermes honcho identity                 # Show AI peer identity representation
+    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
     hermes version             # Show version
     hermes update              # Update to latest version
     hermes uninstall           # Uninstall Hermes Agent
@@ -761,8 +777,38 @@ def cmd_model(args):
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
+
+    # Add user-defined custom providers from config.yaml
+    custom_providers_cfg = config.get("custom_providers") or []
+    _custom_provider_map = {}  # key → {name, base_url, api_key}
+    if isinstance(custom_providers_cfg, list):
+        for entry in custom_providers_cfg:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name", "").strip()
+            base_url = entry.get("base_url", "").strip()
+            if not name or not base_url:
+                continue
+            # Generate a stable key from the name
+            key = "custom:" + name.lower().replace(" ", "-")
+            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            saved_model = entry.get("model", "")
+            model_hint = f" — {saved_model}" if saved_model else ""
+            providers.append((key, f"{name} ({short_url}){model_hint}"))
+            _custom_provider_map[key] = {
+                "name": name,
+                "base_url": base_url,
+                "api_key": entry.get("api_key", ""),
+                "model": saved_model,
+            }
+
+    # Always add the manual custom endpoint option last
+    providers.append(("custom", "Custom endpoint (enter URL manually)"))
+
+    # Add removal option if there are saved custom providers
+    if _custom_provider_map:
+        providers.append(("remove-custom", "Remove a saved custom provider"))
 
     # Reorder so the active provider is at the top
     known_keys = {k for k, _ in providers}
@@ -791,6 +837,10 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
+    elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
+        _model_flow_named_custom(config, _custom_provider_map[selected_provider])
+    elif selected_provider == "remove-custom":
+        _remove_custom_provider(config)
     elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1006,7 +1056,11 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_custom(config):
-    """Custom endpoint: collect URL, API key, and model name."""
+    """Custom endpoint: collect URL, API key, and model name.
+
+    Automatically saves the endpoint to ``custom_providers`` in config.yaml
+    so it appears in the provider menu on subsequent runs.
+    """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
 
@@ -1038,6 +1092,8 @@ def _model_flow_custom(config):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
 
+    effective_key = api_key or current_key
+
     if base_url:
         save_env_value("OPENAI_BASE_URL", base_url)
     if api_key:
@@ -1050,7 +1106,7 @@ def _model_flow_custom(config):
         cfg = load_config()
         model = cfg.get("model")
         if isinstance(model, dict):
-            model["provider"] = "auto"
+            model["provider"] = "custom"
             model["base_url"] = effective_url
         save_config(cfg)
         deactivate_provider()
@@ -1060,6 +1116,223 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+    # Auto-save to custom_providers so it appears in the menu next time
+    _save_custom_provider(effective_url, effective_key, model_name or "")
+
+
+def _save_custom_provider(base_url, api_key="", model=""):
+    """Save a custom endpoint to custom_providers in config.yaml.
+
+    Deduplicates by base_url — if the URL already exists, updates the
+    model name but doesn't add a duplicate entry.
+    Auto-generates a display name from the URL hostname.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    providers = cfg.get("custom_providers") or []
+    if not isinstance(providers, list):
+        providers = []
+
+    # Check if this URL is already saved — update model if so
+    for entry in providers:
+        if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
+            if model and entry.get("model") != model:
+                entry["model"] = model
+                cfg["custom_providers"] = providers
+                save_config(cfg)
+            return  # already saved, updated model if needed
+
+    # Auto-generate a name from the URL
+    import re
+    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+    # Remove /v1 suffix for cleaner names
+    clean = re.sub(r"/v1/?$", "", clean)
+    # Use hostname:port as the name
+    name = clean.split("/")[0]
+    # Capitalize for readability
+    if "localhost" in name or "127.0.0.1" in name:
+        name = f"Local ({name})"
+    elif "runpod" in name.lower():
+        name = f"RunPod ({name})"
+    else:
+        name = name.capitalize()
+
+    entry = {"name": name, "base_url": base_url}
+    if api_key:
+        entry["api_key"] = api_key
+    if model:
+        entry["model"] = model
+
+    providers.append(entry)
+    cfg["custom_providers"] = providers
+    save_config(cfg)
+    print(f"  💾 Saved to custom providers as \"{name}\" (edit in config.yaml)")
+
+
+def _remove_custom_provider(config):
+    """Let the user remove a saved custom provider from config.yaml."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    providers = cfg.get("custom_providers") or []
+    if not isinstance(providers, list) or not providers:
+        print("No custom providers configured.")
+        return
+
+    print("Remove a custom provider:\n")
+
+    choices = []
+    for entry in providers:
+        if isinstance(entry, dict):
+            name = entry.get("name", "unnamed")
+            url = entry.get("base_url", "")
+            short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
+            choices.append(f"{name} ({short_url})")
+        else:
+            choices.append(str(entry))
+    choices.append("Cancel")
+
+    try:
+        from simple_term_menu import TerminalMenu
+        menu = TerminalMenu(
+            [f"  {c}" for c in choices], cursor_index=0,
+            menu_cursor="-> ", menu_cursor_style=("fg_red", "bold"),
+            menu_highlight_style=("fg_red",),
+            cycle_cursor=True, clear_screen=False,
+            title="Select provider to remove:",
+        )
+        idx = menu.show()
+        print()
+    except (ImportError, NotImplementedError):
+        for i, c in enumerate(choices, 1):
+            print(f"  {i}. {c}")
+        print()
+        try:
+            val = input(f"Choice [1-{len(choices)}]: ").strip()
+            idx = int(val) - 1 if val else None
+        except (ValueError, KeyboardInterrupt, EOFError):
+            idx = None
+
+    if idx is None or idx >= len(providers):
+        print("No change.")
+        return
+
+    removed = providers.pop(idx)
+    cfg["custom_providers"] = providers
+    save_config(cfg)
+    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
+    print(f"✅ Removed \"{removed_name}\" from custom providers.")
+
+
+def _model_flow_named_custom(config, provider_info):
+    """Handle a named custom provider from config.yaml custom_providers list.
+
+    If the entry has a saved model name, activates it immediately.
+    Otherwise probes the endpoint's /models API to let the user pick one.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    name = provider_info["name"]
+    base_url = provider_info["base_url"]
+    api_key = provider_info.get("api_key", "")
+    saved_model = provider_info.get("model", "")
+
+    # If a model is saved, just activate immediately — no probing needed
+    if saved_model:
+        save_env_value("OPENAI_BASE_URL", base_url)
+        if api_key:
+            save_env_value("OPENAI_API_KEY", api_key)
+        _save_model_choice(saved_model)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = "custom"
+            model["base_url"] = base_url
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"✅ Switched to: {saved_model}")
+        print(f"   Provider: {name} ({base_url})")
+        return
+
+    # No saved model — probe endpoint and let user pick
+    print(f"  Provider: {name}")
+    print(f"  URL:      {base_url}")
+    print()
+    print("No model saved for this provider. Fetching available models...")
+    models = fetch_api_models(api_key, base_url, timeout=8.0)
+
+    if models:
+        print(f"Found {len(models)} model(s):\n")
+        try:
+            from simple_term_menu import TerminalMenu
+            menu_items = [f"  {m}" for m in models] + ["  Cancel"]
+            menu = TerminalMenu(
+                menu_items, cursor_index=0,
+                menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
+                menu_highlight_style=("fg_green",),
+                cycle_cursor=True, clear_screen=False,
+                title=f"Select model from {name}:",
+            )
+            idx = menu.show()
+            print()
+            if idx is None or idx >= len(models):
+                print("Cancelled.")
+                return
+            model_name = models[idx]
+        except (ImportError, NotImplementedError):
+            for i, m in enumerate(models, 1):
+                print(f"  {i}. {m}")
+            print(f"  {len(models) + 1}. Cancel")
+            print()
+            try:
+                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
+                if not val:
+                    print("Cancelled.")
+                    return
+                idx = int(val) - 1
+                if idx < 0 or idx >= len(models):
+                    print("Cancelled.")
+                    return
+                model_name = models[idx]
+            except (ValueError, KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+    else:
+        print("Could not fetch models from endpoint. Enter model name manually.")
+        try:
+            model_name = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not model_name:
+            print("No model specified. Cancelled.")
+            return
+
+    # Activate and save the model to the custom_providers entry
+    save_env_value("OPENAI_BASE_URL", base_url)
+    if api_key:
+        save_env_value("OPENAI_API_KEY", api_key)
+    _save_model_choice(model_name)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if isinstance(model, dict):
+        model["provider"] = "custom"
+        model["base_url"] = base_url
+    save_config(cfg)
+    deactivate_provider()
+
+    # Save model name to the custom_providers entry for next time
+    _save_custom_provider(base_url, api_key, model_name)
+
+    print(f"\n✅ Model set to: {model_name}")
+    print(f"   Provider: {name} ({base_url})")
 
 
 # Curated model lists for direct API-key providers
@@ -1978,6 +2251,94 @@ For more help on a command:
         skills_command(args)
 
     skills_parser.set_defaults(func=cmd_skills)
+
+    # =========================================================================
+    # honcho command
+    # =========================================================================
+    honcho_parser = subparsers.add_parser(
+        "honcho",
+        help="Manage Honcho AI memory integration",
+        description=(
+            "Honcho is a memory layer that persists across sessions.\n\n"
+            "Each conversation is stored as a peer interaction in a workspace. "
+            "Honcho builds a representation of the user over time — conclusions, "
+            "patterns, context — and surfaces the relevant slice at the start of "
+            "each turn so Hermes knows who you are without you having to repeat yourself.\n\n"
+            "Modes: hybrid (Honcho + local MEMORY.md), honcho (Honcho only), "
+            "local (MEMORY.md only). Write frequency is configurable so memory "
+            "writes never block the response."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
+
+    honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")
+    honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
+    honcho_subparsers.add_parser("sessions", help="List known Honcho session mappings")
+
+    honcho_map = honcho_subparsers.add_parser(
+        "map", help="Map current directory to a Honcho session name (no arg = list mappings)"
+    )
+    honcho_map.add_argument(
+        "session_name", nargs="?", default=None,
+        help="Session name to associate with this directory. Omit to list current mappings.",
+    )
+
+    honcho_peer = honcho_subparsers.add_parser(
+        "peer", help="Show or update peer names and dialectic reasoning level"
+    )
+    honcho_peer.add_argument("--user", metavar="NAME", help="Set user peer name")
+    honcho_peer.add_argument("--ai", metavar="NAME", help="Set AI peer name")
+    honcho_peer.add_argument(
+        "--reasoning",
+        metavar="LEVEL",
+        choices=("minimal", "low", "medium", "high", "max"),
+        help="Set default dialectic reasoning level (minimal/low/medium/high/max)",
+    )
+
+    honcho_mode = honcho_subparsers.add_parser(
+        "mode", help="Show or set memory mode (hybrid/honcho/local)"
+    )
+    honcho_mode.add_argument(
+        "mode", nargs="?", metavar="MODE",
+        choices=("hybrid", "honcho", "local"),
+        help="Memory mode to set (hybrid/honcho/local). Omit to show current.",
+    )
+
+    honcho_tokens = honcho_subparsers.add_parser(
+        "tokens", help="Show or set token budget for context and dialectic"
+    )
+    honcho_tokens.add_argument(
+        "--context", type=int, metavar="N",
+        help="Max tokens Honcho returns from session.context() per turn",
+    )
+    honcho_tokens.add_argument(
+        "--dialectic", type=int, metavar="N",
+        help="Max chars of dialectic result to inject into system prompt",
+    )
+
+    honcho_identity = honcho_subparsers.add_parser(
+        "identity", help="Seed or show the AI peer's Honcho identity representation"
+    )
+    honcho_identity.add_argument(
+        "file", nargs="?", default=None,
+        help="Path to file to seed from (e.g. SOUL.md). Omit to show usage.",
+    )
+    honcho_identity.add_argument(
+        "--show", action="store_true",
+        help="Show current AI peer representation from Honcho",
+    )
+
+    honcho_subparsers.add_parser(
+        "migrate",
+        help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
+    )
+
+    def cmd_honcho(args):
+        from honcho_integration.cli import honcho_command
+        honcho_command(args)
+
+    honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
     # tools command

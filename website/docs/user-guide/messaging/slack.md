@@ -1,57 +1,214 @@
 ---
 sidebar_position: 4
 title: "Slack"
-description: "Set up Hermes Agent as a Slack bot"
+description: "Set up Hermes Agent as a Slack bot using Socket Mode"
 ---
 
 # Slack Setup
 
-Connect Hermes Agent to Slack using Socket Mode for real-time communication.
+Connect Hermes Agent to Slack as a bot using Socket Mode. Socket Mode uses WebSockets instead of
+public HTTP endpoints, so your Hermes instance doesn't need to be publicly accessible — it works
+behind firewalls, on your laptop, or on a private server.
 
-## Setup Steps
+:::warning Classic Slack Apps Deprecated
+Classic Slack apps (using RTM API) were **fully deprecated in March 2025**. Hermes uses the modern
+Bolt SDK with Socket Mode. If you have an old classic app, you must create a new one following
+the steps below.
+:::
 
-1. **Create an app:** Go to [Slack API](https://api.slack.com/apps), create a new app
-2. **Enable Socket Mode:** In app settings → Socket Mode → Enable
-3. **Get tokens:**
-   - Bot Token (`xoxb-...`): OAuth & Permissions → Install to Workspace
-   - App Token (`xapp-...`): Basic Information → App-Level Tokens → Generate (with `connections:write` scope)
-4. **Configure:** Run `hermes gateway setup` and select Slack, or add to `~/.hermes/.env` manually:
+## Overview
+
+| Component | Value |
+|-----------|-------|
+| **Library** | `@slack/bolt` (Socket Mode) |
+| **Connection** | WebSocket — no public URL required |
+| **Auth tokens needed** | Bot Token (`xoxb-`) + App-Level Token (`xapp-`) |
+| **User identification** | Slack Member IDs (e.g., `U01ABC2DEF3`) |
+
+---
+
+## Step 1: Create a Slack App
+
+1. Go to [https://api.slack.com/apps](https://api.slack.com/apps)
+2. Click **Create New App**
+3. Choose **From scratch**
+4. Enter an app name (e.g., "Hermes Agent") and select your workspace
+5. Click **Create App**
+
+You'll land on the app's **Basic Information** page.
+
+---
+
+## Step 2: Configure Bot Token Scopes
+
+Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Scopes → Bot Token Scopes** and add the following:
+
+| Scope | Purpose |
+|-------|---------|
+| `chat:write` | Send messages as the bot |
+| `app_mentions:read` | Respond when @mentioned in channels |
+| `channels:history` | Read messages in public channels the bot is in |
+| `channels:read` | List and get info about public channels |
+| `im:history` | Read direct message history |
+| `im:read` | View basic DM info |
+| `im:write` | Open and manage DMs |
+| `users:read` | Look up user information |
+
+**Optional scopes:**
+
+| Scope | Purpose |
+|-------|---------|
+| `groups:history` | Read messages in private channels the bot is invited to |
+| `files:write` | Upload files (audio, images) |
+
+---
+
+## Step 3: Enable Socket Mode
+
+Socket Mode lets the bot connect via WebSocket instead of requiring a public URL.
+
+1. In the sidebar, go to **Settings → Socket Mode**
+2. Toggle **Enable Socket Mode** to ON
+3. You'll be prompted to create an **App-Level Token**:
+   - Name it something like `hermes-socket` (the name doesn't matter)
+   - Add the **`connections:write`** scope
+   - Click **Generate**
+4. **Copy the token** — it starts with `xapp-`. This is your `SLACK_APP_TOKEN`
+
+:::tip
+You can always find or regenerate app-level tokens under **Settings → Basic Information → App-Level Tokens**.
+:::
+
+---
+
+## Step 4: Subscribe to Events
+
+1. In the sidebar, go to **Features → Event Subscriptions**
+2. Toggle **Enable Events** to ON
+3. Expand **Subscribe to bot events** and add:
+
+| Event | Purpose |
+|-------|---------|
+| `app_mention` | Bot responds when @mentioned in any channel |
+| `message.im` | Bot responds to direct messages |
+
+**Optional event:**
+
+| Event | Purpose |
+|-------|---------|
+| `message.channels` | Bot sees all messages in public channels it's added to |
+
+4. Click **Save Changes** at the bottom of the page
+
+---
+
+## Step 5: Install App to Workspace
+
+1. In the sidebar, go to **Settings → Install App**
+2. Click **Install to Workspace**
+3. Review the permissions and click **Allow**
+4. After authorization, you'll see a **Bot User OAuth Token** starting with `xoxb-`
+5. **Copy this token** — this is your `SLACK_BOT_TOKEN`
+
+:::tip
+If you change scopes later, you'll need to **reinstall the app** for the new scopes to take effect.
+The Install App page will show a banner prompting you to do so.
+:::
+
+---
+
+## Step 6: Find User IDs for the Allowlist
+
+Hermes uses Slack **Member IDs** (not usernames or display names) for the allowlist.
+
+To find a Member ID:
+
+1. In Slack, click on the user's name or avatar
+2. Click **View full profile**
+3. Click the **⋮** (more) button
+4. Select **Copy member ID**
+
+Member IDs look like `U01ABC2DEF3`. You need your own Member ID at minimum.
+
+---
+
+## Step 7: Configure Hermes
+
+Add the following to your `~/.hermes/.env` file:
 
 ```bash
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-SLACK_ALLOWED_USERS=U01234ABCDE    # Comma-separated Slack user IDs
+# Required
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_APP_TOKEN=xapp-your-app-level-token-here
+SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
+
+# Optional
+SLACK_HOME_CHANNEL=C01234567890              # Default channel for cron/scheduled messages
 ```
 
-5. **Start the gateway:**
+Or run the interactive setup:
 
 ```bash
-hermes gateway
+hermes gateway setup    # Select Slack when prompted
 ```
 
-## Optional: Home Channel
+Then start the gateway:
 
-Set a default channel for cron job delivery:
+```bash
+hermes gateway              # Foreground
+hermes gateway install      # Install as a system service
+```
+
+---
+
+## Home Channel
+
+Set `SLACK_HOME_CHANNEL` to a channel ID where Hermes will deliver scheduled messages,
+cron job results, and other proactive notifications. To find a channel ID:
+
+1. Right-click the channel name in Slack
+2. Click **View channel details**
+3. Scroll to the bottom — the Channel ID is shown there
 
 ```bash
 SLACK_HOME_CHANNEL=C01234567890
 ```
 
-## Required Bot Scopes
+Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 
-Make sure your Slack app has these OAuth scopes:
-
-- `chat:write` — Send messages
-- `channels:history` — Read channel messages
-- `im:history` — Read DM messages
-- `files:write` — Upload files (audio, images)
+---
 
 ## Voice Messages
 
-Voice messages on Slack are automatically transcribed (requires `VOICE_TOOLS_OPENAI_KEY`). TTS audio is sent as file attachments.
+Hermes supports voice on Slack:
+
+- **Incoming:** Voice/audio messages are automatically transcribed using Whisper (requires `VOICE_TOOLS_OPENAI_KEY`)
+- **Outgoing:** TTS responses are sent as audio file attachments
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Bot doesn't respond to DMs | Verify `message.im` is in your event subscriptions and the app is reinstalled |
+| Bot doesn't respond to @mentions | Verify `app_mention` is in your event subscriptions |
+| "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
+| Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
+| "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
+| Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
+
+---
 
 ## Security
 
 :::warning
-Always set `SLACK_ALLOWED_USERS` to restrict who can use the bot. Without it, the gateway denies all users by default.
+**Always set `SLACK_ALLOWED_USERS`** with the Member IDs of authorized users. Without this setting,
+the gateway will **deny all messages** by default as a safety measure. Never share your bot tokens —
+treat them like passwords.
 :::
+
+- Tokens should be stored in `~/.hermes/.env` (file permissions `600`)
+- Rotate tokens periodically via the Slack app settings
+- Audit who has access to your Hermes config directory
+- Socket Mode means no public endpoint is exposed — one less attack surface

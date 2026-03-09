@@ -94,8 +94,6 @@ def _read_cache_models(codex_home: Path) -> List[str]:
             if not isinstance(slug, str) or not slug.strip():
                 continue
             slug = slug.strip()
-            if "codex" not in slug.lower():
-                continue
             if item.get("supported_in_api") is False:
                 continue
             visibility = item.get("visibility")

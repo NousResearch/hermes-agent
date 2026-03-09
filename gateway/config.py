@@ -26,6 +26,7 @@ class Platform(Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
+    SIGNAL = "signal"
     HOMEASSISTANT = "homeassistant"
 
 
@@ -155,7 +156,16 @@ class GatewayConfig:
         """Return list of platforms that are enabled and configured."""
         connected = []
         for platform, config in self.platforms.items():
-            if config.enabled and (config.token or config.api_key):
+            if not config.enabled:
+                continue
+            # Platforms that use token/api_key auth
+            if config.token or config.api_key:
+                connected.append(platform)
+            # WhatsApp uses enabled flag only (bridge handles auth)
+            elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # Signal uses extra dict for config (http_url + account)
+            elif platform == Platform.SIGNAL and config.extra.get("http_url"):
                 connected.append(platform)
         return connected
     
@@ -379,6 +389,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             )
     
+    # Signal
+    signal_url = os.getenv("SIGNAL_HTTP_URL")
+    signal_account = os.getenv("SIGNAL_ACCOUNT")
+    if signal_url and signal_account:
+        if Platform.SIGNAL not in config.platforms:
+            config.platforms[Platform.SIGNAL] = PlatformConfig()
+        config.platforms[Platform.SIGNAL].enabled = True
+        config.platforms[Platform.SIGNAL].extra.update({
+            "http_url": signal_url,
+            "account": signal_account,
+            "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
+        })
+        signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
+        if signal_home:
+            config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
+                platform=Platform.SIGNAL,
+                chat_id=signal_home,
+                name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+            )
+
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
     if hass_token:

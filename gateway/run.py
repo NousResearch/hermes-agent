@@ -767,6 +767,9 @@ class GatewayRunner:
 
         if command == "title":
             return await self._handle_title_command(event)
+
+        if command == "resume":
+            return await self._handle_resume_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1306,6 +1309,7 @@ class GatewayRunner:
             "`/sethome` — Set this chat as the home channel",
             "`/compress` — Compress conversation context",
             "`/title [name]` — Set or show the session title",
+            "`/resume [name]` — Resume a previously-named session",
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
             "`/reload-mcp` — Reload MCP servers from config",
@@ -1729,6 +1733,79 @@ class GatewayRunner:
                 return f"📌 Session title: **{title}**"
             else:
                 return "No title set. Usage: `/title My Session Name`"
+
+    async def _handle_resume_command(self, event: MessageEvent) -> str:
+        """Handle /resume command — switch to a previously-named session."""
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        session_key = build_session_key(source)
+        name = event.get_command_args().strip()
+
+        if not name:
+            # List recent titled sessions for this user/platform
+            try:
+                user_source = source.platform.value if source.platform else None
+                sessions = self._session_db.list_sessions_rich(
+                    source=user_source, limit=10
+                )
+                titled = [s for s in sessions if s.get("title")]
+                if not titled:
+                    return (
+                        "No named sessions found.\n"
+                        "Use `/title My Session` to name your current session, "
+                        "then `/resume My Session` to return to it later."
+                    )
+                lines = ["📋 **Named Sessions**\n"]
+                for s in titled[:10]:
+                    title = s["title"]
+                    preview = s.get("preview", "")[:40]
+                    preview_part = f" — _{preview}_" if preview else ""
+                    lines.append(f"• **{title}**{preview_part}")
+                lines.append("\nUsage: `/resume <session name>`")
+                return "\n".join(lines)
+            except Exception as e:
+                logger.debug("Failed to list titled sessions: %s", e)
+                return f"Could not list sessions: {e}"
+
+        # Resolve the name to a session ID
+        target_id = self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            return (
+                f"No session found matching '**{name}**'.\n"
+                "Use `/resume` with no arguments to see available sessions."
+            )
+
+        # Check if already on that session
+        current_entry = self.session_store.get_or_create_session(source)
+        if current_entry.session_id == target_id:
+            return f"📌 Already on session **{name}**."
+
+        # Flush memories for current session before switching
+        try:
+            asyncio.create_task(self._async_flush_memories(current_entry.session_id))
+        except Exception as e:
+            logger.debug("Memory flush on resume failed: %s", e)
+
+        # Clear any running agent for this session key
+        if session_key in self._running_agents:
+            del self._running_agents[session_key]
+
+        # Switch the session entry to point at the old session
+        new_entry = self.session_store.switch_session(session_key, target_id)
+        if not new_entry:
+            return "Failed to switch session."
+
+        # Get the title for confirmation
+        title = self._session_db.get_session_title(target_id) or name
+
+        # Count messages for context
+        history = self.session_store.load_transcript(target_id)
+        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+
+        return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""

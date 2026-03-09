@@ -61,7 +61,7 @@ _HERMES_CORE_TOOLS = [
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Honcho user context (gated on honcho being active via check_fn)
-    "query_user_context",
+    "honcho_context",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -192,7 +192,7 @@ TOOLSETS = {
 
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
-        "tools": ["query_user_context"],
+        "tools": ["honcho_context"],
         "includes": []
     },
 

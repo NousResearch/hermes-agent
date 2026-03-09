@@ -293,6 +293,12 @@ class GatewayRunner:
                 conversation_history=msgs,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+            # Flush any queued Honcho writes before the session is dropped
+            if getattr(tmp_agent, '_honcho', None):
+                try:
+                    tmp_agent._honcho.shutdown()
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 

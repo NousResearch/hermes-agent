@@ -1,8 +1,16 @@
-"""Honcho tool for querying user context via dialectic reasoning.
+"""Honcho tools for user context retrieval.
 
-Registers ``query_user_context`` -- an LLM-callable tool that asks Honcho
-about the current user's history, preferences, goals, and communication
-style. The session key is injected at runtime by the agent loop via
+Registers three complementary tools, ordered by capability:
+
+  query_user_context   — dialectic Q&A (LLM-powered, direct answers)
+  honcho_search        — semantic search (fast, no LLM, raw excerpts)
+  honcho_profile       — peer card (fast, no LLM, structured facts)
+
+Use query_user_context when you need Honcho to synthesize an answer.
+Use honcho_search or honcho_profile when you want raw data to reason
+over yourself.
+
+The session key is injected at runtime by the agent loop via
 ``set_session_context()``.
 """
 
@@ -34,54 +42,6 @@ def clear_session_context() -> None:
     _session_key = None
 
 
-# ── Tool schema ──
-
-HONCHO_TOOL_SCHEMA = {
-    "name": "query_user_context",
-    "description": (
-        "Query Honcho to retrieve relevant context about the user based on their "
-        "history and preferences. Use this when you need to understand the user's "
-        "background, preferences, past interactions, or goals. This helps you "
-        "personalize your responses and provide more relevant assistance."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": (
-                    "A natural language question about the user. Examples: "
-                    "'What are this user's main goals?', "
-                    "'What communication style does this user prefer?', "
-                    "'What topics has this user discussed recently?', "
-                    "'What is this user's technical expertise level?'"
-                ),
-            }
-        },
-        "required": ["query"],
-    },
-}
-
-
-# ── Tool handler ──
-
-def _handle_query_user_context(args: dict, **kw) -> str:
-    """Execute the Honcho context query."""
-    query = args.get("query", "")
-    if not query:
-        return json.dumps({"error": "Missing required parameter: query"})
-
-    if not _session_manager or not _session_key:
-        return json.dumps({"error": "Honcho is not active for this session."})
-
-    try:
-        result = _session_manager.get_user_context(_session_key, query)
-        return json.dumps({"result": result})
-    except Exception as e:
-        logger.error("Error querying Honcho user context: %s", e)
-        return json.dumps({"error": f"Failed to query user context: {e}"})
-
-
 # ── Availability check ──
 
 def _check_honcho_available() -> bool:
@@ -89,14 +49,145 @@ def _check_honcho_available() -> bool:
     return _session_manager is not None and _session_key is not None
 
 
+# ── honcho_profile ──
+
+_PROFILE_SCHEMA = {
+    "name": "honcho_profile",
+    "description": (
+        "Retrieve the user's peer card from Honcho — a curated list of key facts "
+        "about them (name, role, preferences, communication style, patterns). "
+        "Fast, no LLM reasoning, minimal cost. "
+        "Use this at conversation start or when you need a quick factual snapshot. "
+        "Use query_user_context instead when you need Honcho to synthesize an answer."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+
+def _handle_honcho_profile(args: dict, **kw) -> str:
+    if not _session_manager or not _session_key:
+        return json.dumps({"error": "Honcho is not active for this session."})
+    try:
+        card = _session_manager.get_peer_card(_session_key)
+        if not card:
+            return json.dumps({"result": "No profile facts available yet. The user's profile builds over time through conversations."})
+        return json.dumps({"result": card})
+    except Exception as e:
+        logger.error("Error fetching Honcho peer card: %s", e)
+        return json.dumps({"error": f"Failed to fetch profile: {e}"})
+
+
+# ── honcho_search ──
+
+_SEARCH_SCHEMA = {
+    "name": "honcho_search",
+    "description": (
+        "Semantic search over Honcho's stored context about the user. "
+        "Returns raw excerpts ranked by relevance to your query — no LLM synthesis. "
+        "Cheaper and faster than query_user_context. "
+        "Good when you want to find specific past facts and reason over them yourself. "
+        "Use query_user_context when you need a direct synthesized answer."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for in Honcho's memory (e.g. 'programming languages', 'past projects', 'timezone').",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Token budget for returned context (default 800, max 2000).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _handle_honcho_search(args: dict, **kw) -> str:
+    query = args.get("query", "")
+    if not query:
+        return json.dumps({"error": "Missing required parameter: query"})
+    if not _session_manager or not _session_key:
+        return json.dumps({"error": "Honcho is not active for this session."})
+    max_tokens = min(int(args.get("max_tokens", 800)), 2000)
+    try:
+        result = _session_manager.search_context(_session_key, query, max_tokens=max_tokens)
+        if not result:
+            return json.dumps({"result": "No relevant context found."})
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("Error searching Honcho context: %s", e)
+        return json.dumps({"error": f"Failed to search context: {e}"})
+
+
+# ── query_user_context (dialectic — LLM-powered) ──
+
+_QUERY_SCHEMA = {
+    "name": "query_user_context",
+    "description": (
+        "Ask Honcho a natural language question about the user and get a synthesized answer. "
+        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
+        "Use this when you need a direct answer synthesized from the user's full history. "
+        "Examples: 'What are this user's main goals?', 'How does this user prefer to communicate?', "
+        "'What is this user's technical expertise level?'"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "A natural language question about the user.",
+            }
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _handle_query_user_context(args: dict, **kw) -> str:
+    query = args.get("query", "")
+    if not query:
+        return json.dumps({"error": "Missing required parameter: query"})
+    if not _session_manager or not _session_key:
+        return json.dumps({"error": "Honcho is not active for this session."})
+    try:
+        result = _session_manager.dialectic_query(_session_key, query)
+        return json.dumps({"result": result or "No result from Honcho."})
+    except Exception as e:
+        logger.error("Error querying Honcho user context: %s", e)
+        return json.dumps({"error": f"Failed to query user context: {e}"})
+
+
 # ── Registration ──
 
 from tools.registry import registry
 
 registry.register(
+    name="honcho_profile",
+    toolset="honcho",
+    schema=_PROFILE_SCHEMA,
+    handler=_handle_honcho_profile,
+    check_fn=_check_honcho_available,
+)
+
+registry.register(
+    name="honcho_search",
+    toolset="honcho",
+    schema=_SEARCH_SCHEMA,
+    handler=_handle_honcho_search,
+    check_fn=_check_honcho_available,
+)
+
+registry.register(
     name="query_user_context",
     toolset="honcho",
-    schema=HONCHO_TOOL_SCHEMA,
+    schema=_QUERY_SCHEMA,
     handler=_handle_query_user_context,
     check_fn=_check_honcho_available,
 )

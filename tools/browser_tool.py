@@ -1640,6 +1640,25 @@ def _cleanup_old_recordings(max_age_hours=72):
         logger.debug("Recording cleanup error (non-critical): %s", e)
 
 
+def _cleanup_old_recordings(max_age_hours=72):
+    """Remove browser recordings older than max_age_hours to prevent disk bloat."""
+    import time
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        recordings_dir = hermes_home / "browser_recordings"
+        if not recordings_dir.exists():
+            return
+        cutoff = time.time() - (max_age_hours * 3600)
+        for f in recordings_dir.glob("session_*.webm"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # ============================================================================
 # Cleanup and Management Functions
 # ============================================================================

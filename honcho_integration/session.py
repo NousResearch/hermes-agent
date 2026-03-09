@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import queue
 import re
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -14,6 +16,9 @@ if TYPE_CHECKING:
     from honcho import Honcho
 
 logger = logging.getLogger(__name__)
+
+# Sentinel to signal the async writer thread to shut down
+_ASYNC_SHUTDOWN = object()
 
 
 @dataclass
@@ -80,7 +85,8 @@ class HonchoSessionManager:
         Args:
             honcho: Optional Honcho client. If not provided, uses the singleton.
             context_tokens: Max tokens for context() calls (None = Honcho default).
-            config: HonchoClientConfig from global config (provides peer_name, ai_peer, etc.).
+            config: HonchoClientConfig from global config (provides peer_name, ai_peer,
+                    write_frequency, memory_mode, etc.).
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
@@ -88,6 +94,33 @@ class HonchoSessionManager:
         self._cache: dict[str, HonchoSession] = {}
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
+
+        # Write frequency state
+        write_frequency = (config.write_frequency if config else "async")
+        self._write_frequency = write_frequency
+        self._turn_counter: int = 0
+
+        # Prefetch caches: session_key → last result (consumed once per turn)
+        self._context_cache: dict[str, dict] = {}
+        self._dialectic_cache: dict[str, str] = {}
+        self._dialectic_reasoning_level: str = (
+            config.dialectic_reasoning_level if config else "low"
+        )
+        self._dialectic_max_chars: int = (
+            config.dialectic_max_chars if config else 600
+        )
+
+        # Async write queue — started lazily on first enqueue
+        self._async_queue: queue.Queue | None = None
+        self._async_thread: threading.Thread | None = None
+        if write_frequency == "async":
+            self._async_queue = queue.Queue()
+            self._async_thread = threading.Thread(
+                target=self._async_writer_loop,
+                name="honcho-async-writer",
+                daemon=True,
+            )
+            self._async_thread.start()
 
     @property
     def honcho(self) -> Honcho:
@@ -125,10 +158,12 @@ class HonchoSessionManager:
 
         session = self.honcho.session(session_id)
 
-        # Configure peer observation settings
+        # Configure peer observation settings.
+        # observe_me=True for AI peer so Honcho watches what the agent says
+        # and builds its representation over time — enabling identity formation.
         from honcho.session import SessionPeerConfig
         user_config = SessionPeerConfig(observe_me=True, observe_others=True)
-        ai_config = SessionPeerConfig(observe_me=False, observe_others=True)
+        ai_config = SessionPeerConfig(observe_me=True, observe_others=True)
 
         session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
 
@@ -234,16 +269,11 @@ class HonchoSessionManager:
         self._cache[key] = session
         return session
 
-    def save(self, session: HonchoSession) -> None:
-        """
-        Save messages to Honcho.
-
-        Syncs only new (unsynced) messages from the local cache.
-        """
+    def _flush_session(self, session: HonchoSession) -> None:
+        """Internal: write unsynced messages to Honcho synchronously."""
         if not session.messages:
             return
 
-        # Get the Honcho session and peers
         user_peer = self._get_or_create_peer(session.user_peer_id)
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
@@ -253,9 +283,7 @@ class HonchoSessionManager:
                 session.honcho_session_id, user_peer, assistant_peer
             )
 
-        # Only send new messages (those without a '_synced' flag)
         new_messages = [m for m in session.messages if not m.get("_synced")]
-
         if not new_messages:
             return
 
@@ -274,8 +302,82 @@ class HonchoSessionManager:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
 
-        # Update cache
         self._cache[session.key] = session
+
+    def _async_writer_loop(self) -> None:
+        """Background daemon thread: drains the async write queue."""
+        while True:
+            try:
+                item = self._async_queue.get(timeout=5)
+                if item is _ASYNC_SHUTDOWN:
+                    break
+                try:
+                    self._flush_session(item)
+                except Exception as e:
+                    logger.warning("Honcho async write failed, retrying once: %s", e)
+                    import time as _time
+                    _time.sleep(2)
+                    try:
+                        self._flush_session(item)
+                    except Exception as e2:
+                        logger.error("Honcho async write retry failed, dropping batch: %s", e2)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error("Honcho async writer error: %s", e)
+
+    def save(self, session: HonchoSession) -> None:
+        """Save messages to Honcho, respecting write_frequency.
+
+        write_frequency modes:
+          "async"   — enqueue for background thread (zero blocking, zero token cost)
+          "turn"    — flush synchronously every turn
+          "session" — defer until flush_session() is called explicitly
+          N (int)   — flush every N turns
+        """
+        self._turn_counter += 1
+        wf = self._write_frequency
+
+        if wf == "async":
+            if self._async_queue is not None:
+                self._async_queue.put(session)
+        elif wf == "turn":
+            self._flush_session(session)
+        elif wf == "session":
+            # Accumulate; caller must call flush_all() at session end
+            pass
+        elif isinstance(wf, int) and wf > 0:
+            if self._turn_counter % wf == 0:
+                self._flush_session(session)
+
+    def flush_all(self) -> None:
+        """Flush all pending unsynced messages for all cached sessions.
+
+        Called at session end for "session" write_frequency, or to force
+        a sync before process exit regardless of mode.
+        """
+        for session in list(self._cache.values()):
+            try:
+                self._flush_session(session)
+            except Exception as e:
+                logger.error("Honcho flush_all error for %s: %s", session.key, e)
+
+        # Drain async queue synchronously if it exists
+        if self._async_queue is not None:
+            while not self._async_queue.empty():
+                try:
+                    item = self._async_queue.get_nowait()
+                    if item is not _ASYNC_SHUTDOWN:
+                        self._flush_session(item)
+                except queue.Empty:
+                    break
+
+    def shutdown(self) -> None:
+        """Gracefully shut down the async writer thread."""
+        if self._async_queue is not None and self._async_thread is not None:
+            self.flush_all()
+            self._async_queue.put(_ASYNC_SHUTDOWN)
+            self._async_thread.join(timeout=10)
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -305,49 +407,141 @@ class HonchoSessionManager:
         # get_or_create will create a fresh session
         session = self.get_or_create(new_key)
 
-        # Cache under both original key and timestamped key
+        # Cache under the original key so callers find it by the expected name
         self._cache[key] = session
-        self._cache[new_key] = session
 
         logger.info("Created new session for %s (honcho: %s)", key, session.honcho_session_id)
         return session
 
-    def get_user_context(self, session_key: str, query: str) -> str:
+    _REASONING_LEVELS = ("minimal", "low", "medium", "high", "max")
+
+    def _dynamic_reasoning_level(self, query: str) -> str:
         """
-        Query Honcho's dialectic chat for user context.
+        Pick a reasoning level based on message complexity.
+
+        Uses the configured default as a floor; bumps up for longer or
+        more complex messages so Honcho applies more inference where it matters.
+
+          < 120 chars  → default (typically "low")
+          120–400 chars → one level above default (cap at "high")
+          > 400 chars  → two levels above default (cap at "high")
+
+        "max" is never selected automatically — reserve it for explicit config.
+        """
+        levels = self._REASONING_LEVELS
+        default_idx = levels.index(self._dialectic_reasoning_level) if self._dialectic_reasoning_level in levels else 1
+        n = len(query)
+        if n < 120:
+            bump = 0
+        elif n < 400:
+            bump = 1
+        else:
+            bump = 2
+        # Cap at "high" (index 3) for auto-selection
+        idx = min(default_idx + bump, 3)
+        return levels[idx]
+
+    def dialectic_query(self, session_key: str, query: str, reasoning_level: str | None = None) -> str:
+        """
+        Query Honcho's dialectic endpoint about the user.
+
+        Runs an LLM on Honcho's backend against the user peer's full
+        representation. Higher latency than context() — call async via
+        prefetch_dialectic() to avoid blocking the response.
 
         Args:
-            session_key: The session key to get context for.
+            session_key: The session key to query against.
             query: Natural language question about the user.
+            reasoning_level: Override the config default. If None, uses
+                             _dynamic_reasoning_level(query).
 
         Returns:
-            Honcho's response about the user.
+            Honcho's synthesized answer, or empty string on failure.
         """
         session = self._cache.get(session_key)
         if not session:
-            return "No session found for this context."
+            return ""
 
         user_peer = self._get_or_create_peer(session.user_peer_id)
+        level = reasoning_level or self._dynamic_reasoning_level(query)
 
         try:
-            return user_peer.chat(query)
+            result = user_peer.chat(query, reasoning_level=level) or ""
+            # Apply Hermes-side char cap before caching
+            if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
+                result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
+            return result
         except Exception as e:
-            logger.error("Failed to get user context from Honcho: %s", e)
-            return f"Unable to retrieve user context: {e}"
+            logger.warning("Honcho dialectic query failed: %s", e)
+            return ""
+
+    def prefetch_dialectic(self, session_key: str, query: str) -> None:
+        """
+        Fire a dialectic_query in a background thread, caching the result.
+
+        Non-blocking. The result is available via pop_dialectic_result()
+        on the next call (typically the following turn). Reasoning level
+        is selected dynamically based on query complexity.
+
+        Args:
+            session_key: The session key to query against.
+            query: The user's current message, used as the query.
+        """
+        def _run():
+            result = self.dialectic_query(session_key, query)
+            if result:
+                self._dialectic_cache[session_key] = result
+
+        t = threading.Thread(target=_run, name="honcho-dialectic-prefetch", daemon=True)
+        t.start()
+
+    def pop_dialectic_result(self, session_key: str) -> str:
+        """
+        Return and clear the cached dialectic result for this session.
+
+        Returns empty string if no result is ready yet.
+        """
+        return self._dialectic_cache.pop(session_key, "")
+
+    def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
+        """
+        Fire get_prefetch_context in a background thread, caching the result.
+
+        Non-blocking. Consumed next turn via pop_context_result(). This avoids
+        a synchronous HTTP round-trip blocking every response.
+        """
+        def _run():
+            result = self.get_prefetch_context(session_key, user_message)
+            if result:
+                self._context_cache[session_key] = result
+
+        t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        t.start()
+
+    def pop_context_result(self, session_key: str) -> dict[str, str]:
+        """
+        Return and clear the cached context result for this session.
+
+        Returns empty dict if no result is ready yet (first turn).
+        """
+        return self._context_cache.pop(session_key, {})
 
     def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
         """
-        Pre-fetch user context using Honcho's context() method.
+        Pre-fetch user and AI peer context from Honcho.
 
-        Single API call that returns the user's representation
-        and peer card, using semantic search based on the user's message.
+        Fetches peer_representation and peer_card for both peers. search_query
+        is intentionally omitted — it would only affect additional excerpts
+        that this code does not consume, and passing the raw message exposes
+        conversation content in server access logs.
 
         Args:
             session_key: The session key to get context for.
-            user_message: The user's message for semantic search.
+            user_message: Unused; kept for call-site compatibility.
 
         Returns:
-            Dictionary with 'representation' and 'card' keys.
+            Dictionary with 'representation', 'card', 'ai_representation',
+            and 'ai_card' keys.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -357,23 +551,35 @@ class HonchoSessionManager:
         if not honcho_session:
             return {}
 
+        result: dict[str, str] = {}
         try:
             ctx = honcho_session.context(
                 summary=False,
                 tokens=self._context_tokens,
                 peer_target=session.user_peer_id,
-                search_query=user_message,
+                peer_perspective=session.assistant_peer_id,
             )
-            # peer_card is list[str] in SDK v2, join for prompt injection
             card = ctx.peer_card or []
-            card_str = "\n".join(card) if isinstance(card, list) else str(card)
-            return {
-                "representation": ctx.peer_representation or "",
-                "card": card_str,
-            }
+            result["representation"] = ctx.peer_representation or ""
+            result["card"] = "\n".join(card) if isinstance(card, list) else str(card)
         except Exception as e:
-            logger.warning("Failed to fetch context from Honcho: %s", e)
-            return {}
+            logger.warning("Failed to fetch user context from Honcho: %s", e)
+
+        # Also fetch AI peer's own representation so Hermes knows itself.
+        try:
+            ai_ctx = honcho_session.context(
+                summary=False,
+                tokens=self._context_tokens,
+                peer_target=session.assistant_peer_id,
+                peer_perspective=session.user_peer_id,
+            )
+            ai_card = ai_ctx.peer_card or []
+            result["ai_representation"] = ai_ctx.peer_representation or ""
+            result["ai_card"] = "\n".join(ai_card) if isinstance(ai_card, list) else str(ai_card)
+        except Exception as e:
+            logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
+
+        return result
 
     def migrate_local_history(self, session_key: str, messages: list[dict[str, Any]]) -> bool:
         """
@@ -491,6 +697,7 @@ class HonchoSessionManager:
         files = [
             ("MEMORY.md", "consolidated_memory.md", "Long-term agent notes and preferences"),
             ("USER.md", "user_profile.md", "User profile and preferences"),
+            ("SOUL.md", "agent_soul.md", "Agent persona and identity configuration"),
         ]
 
         for filename, upload_name, description in files:
@@ -524,6 +731,150 @@ class HonchoSessionManager:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)
 
         return uploaded
+
+    def get_peer_card(self, session_key: str) -> list[str]:
+        """
+        Fetch the user peer's card — a curated list of key facts.
+
+        Fast, no LLM reasoning. Returns raw structured facts Honcho has
+        inferred about the user (name, role, preferences, patterns).
+        Empty list if unavailable.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return []
+
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
+        if not honcho_session:
+            return []
+
+        try:
+            ctx = honcho_session.context(
+                summary=False,
+                tokens=200,
+                peer_target=session.user_peer_id,
+                peer_perspective=session.assistant_peer_id,
+            )
+            card = ctx.peer_card or []
+            return card if isinstance(card, list) else [str(card)]
+        except Exception as e:
+            logger.debug("Failed to fetch peer card from Honcho: %s", e)
+            return []
+
+    def search_context(self, session_key: str, query: str, max_tokens: int = 800) -> str:
+        """
+        Semantic search over Honcho session context.
+
+        Returns raw excerpts ranked by relevance to the query. No LLM
+        reasoning — cheaper and faster than dialectic_query. Good for
+        factual lookups where the model will do its own synthesis.
+
+        Args:
+            session_key: Session to search against.
+            query: Search query for semantic matching.
+            max_tokens: Token budget for returned content.
+
+        Returns:
+            Relevant context excerpts as a string, or empty string if none.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return ""
+
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
+        if not honcho_session:
+            return ""
+
+        try:
+            ctx = honcho_session.context(
+                summary=False,
+                tokens=max_tokens,
+                peer_target=session.user_peer_id,
+                peer_perspective=session.assistant_peer_id,
+                search_query=query,
+            )
+            parts = []
+            if ctx.peer_representation:
+                parts.append(ctx.peer_representation)
+            card = ctx.peer_card or []
+            if card:
+                facts = card if isinstance(card, list) else [str(card)]
+                parts.append("\n".join(f"- {f}" for f in facts))
+            return "\n\n".join(parts)
+        except Exception as e:
+            logger.debug("Honcho search_context failed: %s", e)
+            return ""
+
+    def seed_ai_identity(self, session_key: str, content: str, source: str = "manual") -> bool:
+        """
+        Seed the AI peer's Honcho representation from text content.
+
+        Useful for priming AI identity from SOUL.md, exported chats, or
+        any structured description. The content is sent as an assistant
+        peer message so Honcho's reasoning model can incorporate it.
+
+        Args:
+            session_key: The session key to associate with.
+            content: The identity/persona content to seed.
+            source: Metadata tag for the source (e.g. "soul_md", "export").
+
+        Returns:
+            True on success, False on failure.
+        """
+        if not content or not content.strip():
+            return False
+
+        session = self._cache.get(session_key)
+        if not session:
+            logger.warning("No session cached for '%s', skipping AI seed", session_key)
+            return False
+
+        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+        try:
+            wrapped = (
+                f"<ai_identity_seed>\n"
+                f"<source>{source}</source>\n"
+                f"\n"
+                f"{content.strip()}\n"
+                f"</ai_identity_seed>"
+            )
+            assistant_peer.add_message("assistant", wrapped)
+            logger.info("Seeded AI identity from '%s' into %s", source, session_key)
+            return True
+        except Exception as e:
+            logger.error("Failed to seed AI identity: %s", e)
+            return False
+
+    def get_ai_representation(self, session_key: str) -> dict[str, str]:
+        """
+        Fetch the AI peer's current Honcho representation.
+
+        Returns:
+            Dict with 'representation' and 'card' keys, empty strings if unavailable.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return {"representation": "", "card": ""}
+
+        honcho_session = self._sessions_cache.get(session.honcho_session_id)
+        if not honcho_session:
+            return {"representation": "", "card": ""}
+
+        try:
+            ctx = honcho_session.context(
+                summary=False,
+                tokens=self._context_tokens,
+                peer_target=session.assistant_peer_id,
+                peer_perspective=session.user_peer_id,
+            )
+            ai_card = ctx.peer_card or []
+            return {
+                "representation": ctx.peer_representation or "",
+                "card": "\n".join(ai_card) if isinstance(ai_card, list) else str(ai_card),
+            }
+        except Exception as e:
+            logger.debug("Failed to fetch AI representation: %s", e)
+            return {"representation": "", "card": ""}
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """List all cached sessions."""

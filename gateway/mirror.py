@@ -73,7 +73,7 @@ def _find_session_id(platform: str, chat_id: str) -> Optional[str]:
         return None
 
     try:
-        with open(_SESSIONS_INDEX) as f:
+        with open(_SESSIONS_INDEX, encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return None
@@ -103,7 +103,7 @@ def _append_to_jsonl(session_id: str, message: dict) -> None:
     """Append a message to the JSONL transcript file."""
     transcript_path = _SESSIONS_DIR / f"{session_id}.jsonl"
     try:
-        with open(transcript_path, "a") as f:
+        with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.debug("Mirror JSONL write failed: %s", e)

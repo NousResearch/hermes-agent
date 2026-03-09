@@ -194,6 +194,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._provider_routing = self._load_provider_routing()
+        self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -392,6 +393,26 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def _load_fallback_model() -> dict | None:
+        """Load fallback model config from config.yaml.
+
+        Returns a dict with 'provider' and 'model' keys, or None if
+        not configured / both fields empty.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path) as _f:
+                    cfg = _y.safe_load(_f) or {}
+                fb = cfg.get("fallback_model", {}) or {}
+                if fb.get("provider") and fb.get("model"):
+                    return fb
+        except Exception:
+            pass
+        return None
 
     async def start(self) -> bool:
         """
@@ -2623,6 +2644,7 @@ class GatewayRunner:
                 platform=platform_key,
                 honcho_session_key=session_key,
                 session_db=self._session_db,
+                fallback_model=self._fallback_model,
             )
             
             # Store agent reference for interrupt support

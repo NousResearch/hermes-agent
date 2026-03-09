@@ -103,6 +103,18 @@ DEFAULT_CONFIG = {
         },
     },
     
+    # Fallback model — used when the primary model/provider fails after retries.
+    # When the primary hits rate limits (429), overload (529), or service errors (503),
+    # Hermes will automatically switch to this model for the remainder of the session.
+    # Set to None / omit to disable fallback.
+    "fallback_model": {
+        "provider": "",   # e.g. "openrouter", "openai", "nous", "deepseek", "together", "groq"
+        "model": "",      # e.g. "anthropic/claude-sonnet-4", "gpt-4.1", "deepseek-chat"
+        # Optional overrides (usually auto-resolved from provider):
+        # "base_url": "",       # custom endpoint URL
+        # "api_key_env": "",    # env var name for API key (e.g. "MY_CUSTOM_KEY")
+    },
+
     "display": {
         "compact": False,
         "personality": "kawaii",

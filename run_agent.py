@@ -183,6 +183,7 @@ class AIAgent:
         session_db=None,
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
+        fallback_model: Dict[str, Any] = None,
     ):
         """
         Initialize the AI Agent.
@@ -406,6 +407,17 @@ class AIAgent:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
+        # Provider fallback — a single backup model/provider tried when the
+        # primary is exhausted (rate-limit, overload, connection failure).
+        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        self._fallback_activated = False
+        if self._fallback_model:
+            fb_p = self._fallback_model.get("provider", "")
+            fb_m = self._fallback_model.get("model", "")
+            if fb_p and fb_m and not self.quiet_mode:
+                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+
         # Get available tools with filtering
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
@@ -2146,6 +2158,103 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    # ── Provider fallback ──────────────────────────────────────────────────
+
+    # Maps provider id → (default_base_url, [env_var_names])
+    _FALLBACK_PROVIDERS = {
+        "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
+        "openai": ("https://api.openai.com/v1", ["OPENAI_API_KEY"]),
+        "nous": ("https://inference-api.nousresearch.com/v1", ["NOUS_API_KEY"]),
+        "deepseek": ("https://api.deepseek.com/v1", ["DEEPSEEK_API_KEY"]),
+        "together": ("https://api.together.xyz/v1", ["TOGETHER_API_KEY"]),
+        "groq": ("https://api.groq.com/openai/v1", ["GROQ_API_KEY"]),
+        "fireworks": ("https://api.fireworks.ai/inference/v1", ["FIREWORKS_API_KEY"]),
+        "mistral": ("https://api.mistral.ai/v1", ["MISTRAL_API_KEY"]),
+        "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    }
+
+    def _try_activate_fallback(self) -> bool:
+        """Switch to the configured fallback model/provider.
+
+        Called when the primary model is failing after retries.  Swaps the
+        OpenAI client, model slug, and provider in-place so the retry loop
+        can continue with the new backend.  One-shot: returns False if
+        already activated or not configured.
+        """
+        if self._fallback_activated or not self._fallback_model:
+            return False
+
+        fb = self._fallback_model
+        fb_provider = (fb.get("provider") or "").strip().lower()
+        fb_model = (fb.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            return False
+
+        # Resolve API key
+        fb_key = (fb.get("api_key") or "").strip()
+        if not fb_key:
+            key_env = (fb.get("api_key_env") or "").strip()
+            if key_env:
+                fb_key = os.getenv(key_env, "")
+            elif fb_provider in self._FALLBACK_PROVIDERS:
+                for env_var in self._FALLBACK_PROVIDERS[fb_provider][1]:
+                    fb_key = os.getenv(env_var, "")
+                    if fb_key:
+                        break
+        if not fb_key:
+            logging.warning(
+                "Fallback model configured but no API key found for provider '%s'",
+                fb_provider,
+            )
+            return False
+
+        # Resolve base URL
+        fb_base_url = (fb.get("base_url") or "").strip()
+        if not fb_base_url and fb_provider in self._FALLBACK_PROVIDERS:
+            fb_base_url = self._FALLBACK_PROVIDERS[fb_provider][0]
+        if not fb_base_url:
+            fb_base_url = OPENROUTER_BASE_URL
+
+        # Build new client
+        try:
+            client_kwargs = {"api_key": fb_key, "base_url": fb_base_url}
+            if "openrouter" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                    "X-OpenRouter-Title": "Hermes Agent",
+                    "X-OpenRouter-Categories": "productivity,cli-agent",
+                }
+
+            self.client = OpenAI(**client_kwargs)
+            self._client_kwargs = client_kwargs
+            old_model = self.model
+            self.model = fb_model
+            self.provider = fb_provider
+            self.base_url = fb_base_url
+            self.api_mode = "chat_completions"
+            self._fallback_activated = True
+
+            # Re-evaluate prompt caching for the new provider/model
+            self._use_prompt_caching = (
+                "openrouter" in fb_base_url.lower()
+                and "claude" in fb_model.lower()
+            )
+
+            print(
+                f"{self.log_prefix}🔄 Primary model failed — switching to fallback: "
+                f"{fb_model} via {fb_provider}"
+            )
+            logging.info(
+                "Fallback activated: %s → %s (%s)",
+                old_model, fb_model, fb_provider,
+            )
+            return True
+        except Exception as e:
+            logging.error("Failed to activate fallback model: %s", e)
+            return False
+
+    # ── End provider fallback ──────────────────────────────────────────────
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "codex_responses":
@@ -3252,6 +3361,10 @@ class AIAgent:
                         print(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)")
                         
                         if retry_count >= max_retries:
+                            # Try fallback before giving up
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
                             print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
@@ -3576,6 +3689,11 @@ class AIAgent:
                     ])) and not is_context_length_error
 
                     if is_client_error:
+                        # Try fallback before aborting — a different provider
+                        # may not have the same issue (rate limit, auth, etc.)
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
@@ -3593,6 +3711,10 @@ class AIAgent:
                         }
 
                     if retry_count >= max_retries:
+                        # Try fallback before giving up entirely
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
                         print(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.")
                         logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")

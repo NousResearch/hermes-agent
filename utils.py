@@ -33,7 +33,7 @@ def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2) -> 
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
-    except BaseException:
+    except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:

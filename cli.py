@@ -429,7 +429,8 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
 
     repo_root = repo_root or _git_repo_root()
     if not repo_root:
-        print("\033[33m⚠ --worktree: not inside a git repository, skipping.\033[0m")
+        print("\033[31m✗ --worktree requires being inside a git repository.\033[0m")
+        print("  cd into your project repo first, then run hermes -w")
         return None
 
     short_id = uuid.uuid4().hex[:8]
@@ -3810,6 +3811,10 @@ def main(
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]
                 atexit.register(_cleanup_worktree, wt_info)
+            else:
+                # Worktree was explicitly requested but setup failed —
+                # don't silently run without isolation.
+                return
     else:
         wt_info = None
     

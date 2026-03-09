@@ -33,7 +33,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -1973,15 +1973,40 @@ class AIAgent:
             finish_reason = "stop"
         return assistant_message, finish_reason
 
-    def _run_codex_stream(self, api_kwargs: dict):
-        """Execute one streaming Responses API request and return the final response."""
+    def _run_codex_stream(self, api_kwargs: dict, stream_callback=None):
+        """Execute one streaming Responses API request and return the final response.
+        
+        If stream_callback is provided, text delta events are forwarded to the
+        caller in real time.  The callback is suppressed when the response
+        contains tool calls (intermediate turn, not the final answer).
+        """
         max_stream_retries = 1
         for attempt in range(max_stream_retries + 1):
             try:
                 with self.client.responses.stream(**api_kwargs) as stream:
-                    for _ in stream:
-                        pass
-                    return stream.get_final_response()
+                    _has_tool_calls = False
+                    for event in stream:
+                        if not stream_callback:
+                            continue
+                        etype = getattr(event, "type", None)
+                        if etype == "response.output_text.delta":
+                            delta = getattr(event, "delta", "")
+                            if delta and not _has_tool_calls:
+                                try:
+                                    stream_callback(delta, False)
+                                except Exception:
+                                    pass
+                        elif etype == "response.output_item.added":
+                            item = getattr(event, "item", None)
+                            if getattr(item, "type", None) == "function_call":
+                                _has_tool_calls = True
+                    final_resp = stream.get_final_response()
+                    if stream_callback and not _has_tool_calls:
+                        try:
+                            stream_callback("", True)
+                        except Exception:
+                            pass
+                    return final_resp
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -2037,6 +2062,118 @@ class AIAgent:
         if terminal_response is not None:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+
+    def _run_chat_completions_stream(self, api_kwargs: dict, stream_callback=None):
+        """Execute a chat completions request with streaming, forwarding text
+        chunks via stream_callback.  Returns a reconstructed response object
+        compatible with the non-streaming path.
+
+        Tool-call responses are detected early and the callback is suppressed
+        so only the final text answer is streamed to the user.
+        """
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs["stream"] = True
+        # Request usage stats in the final chunk (OpenAI stream_options)
+        stream_kwargs.setdefault("stream_options", {"include_usage": True})
+
+        accumulated_content = ""
+        accumulated_tool_calls = {}  # index -> {id, type, function: {name, arguments}}
+        finish_reason = None
+        model = None
+        usage = None
+        has_tool_calls = False
+
+        stream_resp = self.client.chat.completions.create(**stream_kwargs)
+        try:
+            for chunk in stream_resp:
+                if not chunk.choices and hasattr(chunk, "usage") and chunk.usage:
+                    usage = chunk.usage
+                    continue
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                model = model or getattr(chunk, "model", None)
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+                # Accumulate text content
+                if delta and delta.content:
+                    accumulated_content += delta.content
+                    if stream_callback and not has_tool_calls:
+                        try:
+                            stream_callback(delta.content, False)
+                        except Exception:
+                            pass
+
+                # Detect and accumulate tool calls
+                if delta and delta.tool_calls:
+                    has_tool_calls = True
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {
+                                "id": tc_delta.id or "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        entry = accumulated_tool_calls[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["function"]["arguments"] += tc_delta.function.arguments
+        finally:
+            close_fn = getattr(stream_resp, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        # Signal completion for text-only responses
+        if stream_callback and not has_tool_calls:
+            try:
+                stream_callback("", True)
+            except Exception:
+                pass
+
+        # Reconstruct a response object that matches the non-streaming shape.
+        # We build a lightweight namespace so downstream code (.choices[0].message,
+        # .usage, .model) works without changes.
+        from types import SimpleNamespace
+
+        tool_calls_list = None
+        if accumulated_tool_calls:
+            tool_calls_list = [
+                SimpleNamespace(**{
+                    "id": v["id"],
+                    "type": v["type"],
+                    "function": SimpleNamespace(
+                        name=v["function"]["name"],
+                        arguments=v["function"]["arguments"],
+                    ),
+                })
+                for _, v in sorted(accumulated_tool_calls.items())
+            ]
+
+        message = SimpleNamespace(
+            role="assistant",
+            content=accumulated_content or None,
+            tool_calls=tool_calls_list,
+        )
+        choice = SimpleNamespace(
+            index=0,
+            message=message,
+            finish_reason=finish_reason or "stop",
+        )
+        response = SimpleNamespace(
+            choices=[choice],
+            model=model,
+            usage=usage,
+        )
+        return response
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider != "openai-codex":
@@ -2118,7 +2255,7 @@ class AIAgent:
 
         return True
 
-    def _interruptible_api_call(self, api_kwargs: dict):
+    def _interruptible_api_call(self, api_kwargs: dict, stream_callback=None):
         """
         Run the API call in a background thread so the main conversation loop
         can detect interrupts without waiting for the full HTTP round-trip.
@@ -2126,15 +2263,24 @@ class AIAgent:
         On interrupt, closes the HTTP client to cancel the in-flight request
         (stops token generation and avoids wasting money), then rebuilds the
         client for future calls.
+
+        If stream_callback is provided, text chunks are forwarded in real time
+        for streaming display.  The callback is automatically suppressed for
+        responses that contain tool calls (intermediate agent turns).
         """
         result = {"response": None, "error": None}
 
         def _call():
             try:
                 if self.api_mode == "codex_responses":
-                    result["response"] = self._run_codex_stream(api_kwargs)
+                    result["response"] = self._run_codex_stream(api_kwargs, stream_callback=stream_callback)
                 else:
-                    result["response"] = self.client.chat.completions.create(**api_kwargs)
+                    if stream_callback:
+                        result["response"] = self._run_chat_completions_stream(
+                            api_kwargs, stream_callback=stream_callback,
+                        )
+                    else:
+                        result["response"] = self.client.chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
 
@@ -3020,7 +3166,8 @@ class AIAgent:
         user_message: str,
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
-        task_id: str = None
+        task_id: str = None,
+        stream_callback: "Optional[Callable[[str, bool], None]]" = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -3030,12 +3177,20 @@ class AIAgent:
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
             conversation_history (List[Dict]): Previous conversation messages (optional)
             task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+            stream_callback: Optional callback for streaming text chunks to the caller.
+                Signature: (chunk: str, is_done: bool) -> None.
+                Called with partial text as it arrives from the LLM. is_done=True
+                signals the final chunk of the response (no more text coming).
+                Only fires for text-only responses (tool-call responses are skipped).
 
         Returns:
             Dict: Complete conversation result with final response and message history
         """
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+
+        # Store streaming callback for use in API calls
+        self._stream_callback = stream_callback
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -3353,7 +3508,7 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    response = self._interruptible_api_call(api_kwargs)
+                    response = self._interruptible_api_call(api_kwargs, stream_callback=self._stream_callback)
                     
                     api_duration = time.time() - api_start_time
                     

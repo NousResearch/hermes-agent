@@ -368,7 +368,7 @@ The unified `hermes` command provides all functionality:
 
 ## Messaging Gateway
 
-The gateway connects Hermes to Telegram, Discord, Slack, WhatsApp, and Home Assistant.
+The gateway connects Hermes to Telegram, Discord, Slack, WhatsApp, Signal, and Home Assistant.
 
 ### Setup
 
@@ -392,6 +392,11 @@ TELEGRAM_ALLOWED_USERS=123456789,987654   # Comma-separated user IDs (from @user
 # Discord  
 DISCORD_BOT_TOKEN=MTIz...                 # From Developer Portal
 DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
+
+# Signal
+SIGNAL_HTTP_URL=http://127.0.0.1:8080    # signal-cli daemon URL
+SIGNAL_ACCOUNT=+1234567890               # Bot phone number (E.164)
+SIGNAL_ALLOWED_USERS=+1234567890         # Comma-separated E.164 numbers or UUIDs
 
 # Agent Behavior
 HERMES_MAX_ITERATIONS=90                  # Max tool-calling iterations (default: 90)

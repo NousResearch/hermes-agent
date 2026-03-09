@@ -1777,6 +1777,20 @@ class HermesCLI:
         if chain is None and self.agent:
             chain = getattr(self.agent, "_fallback_chain", None)
 
+        # Lazy auto-build: if no chain exists yet (agent not initialized),
+        # try scanning env vars now so /fallback commands work before first message
+        if chain is None or not chain.entries:
+            from agent.fallback_chain import FallbackChain
+            chain = FallbackChain.build_auto_chain(
+                primary_provider=getattr(self, "provider", "") or "",
+                primary_model=self.model,
+                primary_base_url=getattr(self, "base_url", "") or "",
+            )
+            if chain.has_fallbacks():
+                self._fallback_chain = chain
+                if self.agent:
+                    self.agent._fallback_chain = chain
+
         if len(parts) < 2 or not parts[1].strip():
             # Show current status
             print()

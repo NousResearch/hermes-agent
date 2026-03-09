@@ -52,6 +52,10 @@ _TELEGRAM_RE = re.compile(
     r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})",
 )
 
+# E.164 phone numbers: +<country><number>, 7-15 digits
+# Negative lookahead prevents matching hex strings or identifiers
+_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -100,6 +104,14 @@ def redact_sensitive_text(text: str) -> str:
         digits = m.group(2)
         return f"{prefix}{digits}:***"
     text = _TELEGRAM_RE.sub(_redact_telegram, text)
+
+    # E.164 phone numbers (Signal, WhatsApp)
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
+    text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
 

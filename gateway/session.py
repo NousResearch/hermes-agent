@@ -45,6 +45,8 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
+    user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
+    chat_id_alt: Optional[str] = None  # Signal group internal ID
     
     @property
     def description(self) -> str:
@@ -68,7 +70,7 @@ class SessionSource:
         return ", ".join(parts)
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "platform": self.platform.value,
             "chat_id": self.chat_id,
             "chat_name": self.chat_name,
@@ -78,6 +80,11 @@ class SessionSource:
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
         }
+        if self.user_id_alt:
+            d["user_id_alt"] = self.user_id_alt
+        if self.chat_id_alt:
+            d["chat_id_alt"] = self.chat_id_alt
+        return d
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
@@ -90,6 +97,8 @@ class SessionSource:
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
+            user_id_alt=data.get("user_id_alt"),
+            chat_id_alt=data.get("chat_id_alt"),
         )
     
     @classmethod

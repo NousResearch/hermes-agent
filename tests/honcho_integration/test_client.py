@@ -26,7 +26,7 @@ class TestHonchoClientConfigDefaults:
         assert config.enabled is False
         assert config.save_messages is True
         assert config.session_strategy == "per-session"
-        assert config.recall_mode == "auto"
+        assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.linked_hosts == []
         assert config.sessions == {}
@@ -168,7 +168,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "key"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.recall_mode == "auto"
+        assert config.recall_mode == "hybrid"
 
     def test_corrupt_config_falls_back_to_env(self, tmp_path):
         config_file = tmp_path / "config.json"

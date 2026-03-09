@@ -412,7 +412,7 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """
         Send a typing indicator.
         
@@ -426,6 +426,7 @@ class BasePlatformAdapter(ABC):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an image natively via the platform API.
@@ -444,6 +445,7 @@ class BasePlatformAdapter(ABC):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
@@ -514,6 +516,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
@@ -533,6 +536,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a video natively via the platform API.
@@ -552,6 +556,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a document/file natively via the platform API.
@@ -570,6 +575,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a local image file natively via the platform API.
@@ -619,7 +625,7 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
     
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
+    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata: Optional[Dict[str, Any]] = None) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -628,7 +634,7 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
-                await self.send_typing(chat_id)
+                await self.send_typing(chat_id, metadata=metadata)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
@@ -686,7 +692,8 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id))
+        _typing_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_typing_metadata))
         
         try:
             # Call the handler (this can take a while with tool calls)
@@ -701,16 +708,20 @@ class BasePlatformAdapter(ABC):
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
-                if images:
-                    logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
+                # Build metadata with thread_id for forum topic routing
+                _response_metadata = {}
+                if event.source.thread_id:
+                    _response_metadata["thread_id"] = event.source.thread_id
+
                 # Send the text portion first (if any remains after extractions)
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self.send(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id
+                        reply_to=event.message_id,
+                        metadata=_response_metadata or None,
                     )
                     
                     # Log send failures (don't raise - user already saw tool progress)
@@ -720,7 +731,8 @@ class BasePlatformAdapter(ABC):
                         fallback_result = await self.send(
                             chat_id=event.source.chat_id,
                             content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
-                            reply_to=event.message_id
+                            reply_to=event.message_id,
+                            metadata=_response_metadata or None,
                         )
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
@@ -729,30 +741,29 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
                 
                 # Send extracted images as native attachments
-                if images:
-                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                 for image_url, alt_text in images:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(
                                 chat_id=event.source.chat_id,
                                 animation_url=image_url,
                                 caption=alt_text if alt_text else None,
+                                metadata=_response_metadata or None,
                             )
                         else:
                             img_result = await self.send_image(
                                 chat_id=event.source.chat_id,
                                 image_url=image_url,
                                 caption=alt_text if alt_text else None,
+                                metadata=_response_metadata or None,
                             )
                         if not img_result.success:
-                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                            print(f"[{self.name}] Failed to send image: {img_result.error}")
                     except Exception as img_err:
-                        logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                        print(f"[{self.name}] Error sending image: {img_err}")
                 
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
@@ -768,21 +779,25 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
+                                metadata=_response_metadata or None,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
+                                metadata=_response_metadata or None,
                             )
                         elif ext in _IMAGE_EXTS:
                             media_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=media_path,
+                                metadata=_response_metadata or None,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
+                                metadata=_response_metadata or None,
                             )
 
                         if not media_result.success:

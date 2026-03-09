@@ -274,6 +274,7 @@ class TelegramAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
@@ -287,19 +288,23 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(audio_path, "rb") as audio_file:
                 # .ogg files -> send as voice (round playable bubble)
                 if audio_path.endswith(".ogg") or audio_path.endswith(".opus"):
+                    _voice_thread = metadata.get("thread_id") if metadata else None
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
                         voice=audio_file,
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
+                        message_thread_id=int(_voice_thread) if _voice_thread else None,
                     )
                 else:
                     # .mp3 and others -> send as audio file
+                    _audio_thread = metadata.get("thread_id") if metadata else None
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
                         audio=audio_file,
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
+                        message_thread_id=int(_audio_thread) if _audio_thread else None,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -340,45 +345,27 @@ class TelegramAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image natively as a Telegram photo.
-        
-        Tries URL-based send first (fast, works for <5MB images).
-        Falls back to downloading and uploading as file (supports up to 10MB).
-        """
+        """Send an image natively as a Telegram photo."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
         try:
-            # Telegram can send photos directly from URLs (up to ~5MB)
+            # Telegram can send photos directly from URLs
+            _photo_thread = metadata.get("thread_id") if metadata else None
             msg = await self._bot.send_photo(
                 chat_id=int(chat_id),
                 photo=image_url,
                 caption=caption[:1024] if caption else None,  # Telegram caption limit
                 reply_to_message_id=int(reply_to) if reply_to else None,
+                message_thread_id=int(_photo_thread) if _photo_thread else None,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] URL-based send_photo failed (%s), trying file upload", self.name, e)
-            # Fallback: download and upload as file (supports up to 10MB)
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.get(image_url)
-                    resp.raise_for_status()
-                    image_data = resp.content
-                
-                msg = await self._bot.send_photo(
-                    chat_id=int(chat_id),
-                    photo=image_data,
-                    caption=caption[:1024] if caption else None,
-                    reply_to_message_id=int(reply_to) if reply_to else None,
-                )
-                return SendResult(success=True, message_id=str(msg.message_id))
-            except Exception as e2:
-                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2)
-                # Final fallback: send URL as text
-                return await super().send_image(chat_id, image_url, caption, reply_to)
+            print(f"[{self.name}] Failed to send photo, falling back to URL: {e}")
+            # Fallback: send as text link
+            return await super().send_image(chat_id, image_url, caption, reply_to)
     
     async def send_animation(
         self,
@@ -386,17 +373,20 @@ class TelegramAdapter(BasePlatformAdapter):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
         try:
+            _anim_thread = metadata.get("thread_id") if metadata else None
             msg = await self._bot.send_animation(
                 chat_id=int(chat_id),
                 animation=animation_url,
                 caption=caption[:1024] if caption else None,
                 reply_to_message_id=int(reply_to) if reply_to else None,
+                message_thread_id=int(_anim_thread) if _anim_thread else None,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -404,13 +394,15 @@ class TelegramAdapter(BasePlatformAdapter):
             # Fallback: try as a regular photo
             return await self.send_image(chat_id, animation_url, caption, reply_to)
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if self._bot:
             try:
+                _typing_thread = metadata.get("thread_id") if metadata else None
                 await self._bot.send_chat_action(
                     chat_id=int(chat_id),
-                    action="typing"
+                    action="typing",
+                    message_thread_id=int(_typing_thread) if _typing_thread else None,
                 )
             except Exception:
                 pass  # Ignore typing indicator failures

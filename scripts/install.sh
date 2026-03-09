@@ -492,9 +492,23 @@ install_system_packages() {
                         return 0
                     fi
                 fi
+            elif [ -e /dev/tty ]; then
+                # Non-interactive (e.g. curl | bash) but a terminal is available.
+                # Read the prompt from /dev/tty (same approach the setup wizard uses).
+                echo ""
+                log_info "Installing ${description} requires sudo."
+                read -p "Install? [Y/n] " -n 1 -r < /dev/tty
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+                    if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
+                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+                        return 0
+                    fi
+                fi
             else
-                log_warn "Non-interactive mode: cannot prompt for sudo password"
-                log_info "Install missing packages manually: sudo $install_cmd"
+                log_warn "Non-interactive mode and no terminal available — cannot install system packages"
+                log_info "Install manually after setup completes: sudo $install_cmd"
             fi
         fi
     fi

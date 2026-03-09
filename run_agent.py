@@ -2161,16 +2161,14 @@ class AIAgent:
     # ── Provider fallback ──────────────────────────────────────────────────
 
     # Maps provider id → (default_base_url, [env_var_names])
+    # Only includes providers that Hermes actually supports.
+    # For anything else, use base_url + api_key_env in the config.
     _FALLBACK_PROVIDERS = {
         "openrouter": (OPENROUTER_BASE_URL, ["OPENROUTER_API_KEY"]),
-        "openai": ("https://api.openai.com/v1", ["OPENAI_API_KEY"]),
-        "nous": ("https://inference-api.nousresearch.com/v1", ["NOUS_API_KEY"]),
-        "deepseek": ("https://api.deepseek.com/v1", ["DEEPSEEK_API_KEY"]),
-        "together": ("https://api.together.xyz/v1", ["TOGETHER_API_KEY"]),
-        "groq": ("https://api.groq.com/openai/v1", ["GROQ_API_KEY"]),
-        "fireworks": ("https://api.fireworks.ai/inference/v1", ["FIREWORKS_API_KEY"]),
-        "mistral": ("https://api.mistral.ai/v1", ["MISTRAL_API_KEY"]),
-        "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", ["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+        "zai": ("https://api.z.ai/api/paas/v4", ["ZAI_API_KEY", "Z_AI_API_KEY"]),
+        "kimi-coding": ("https://api.moonshot.ai/v1", ["KIMI_API_KEY"]),
+        "minimax": ("https://api.minimax.io/v1", ["MINIMAX_API_KEY"]),
+        "minimax-cn": ("https://api.minimaxi.com/v1", ["MINIMAX_CN_API_KEY"]),
     }
 
     def _try_activate_fallback(self) -> bool:
@@ -2224,6 +2222,8 @@ class AIAgent:
                     "X-OpenRouter-Title": "Hermes Agent",
                     "X-OpenRouter-Categories": "productivity,cli-agent",
                 }
+            elif "api.kimi.com" in fb_base_url.lower():
+                client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
 
             self.client = OpenAI(**client_kwargs)
             self._client_kwargs = client_kwargs

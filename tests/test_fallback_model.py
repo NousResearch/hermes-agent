@@ -64,7 +64,7 @@ class TestTryActivateFallback:
         assert agent._try_activate_fallback() is False
 
     def test_returns_false_for_missing_model(self):
-        agent = _make_agent(fallback_model={"provider": "openai"})
+        agent = _make_agent(fallback_model={"provider": "openrouter"})
         assert agent._try_activate_fallback() is False
 
     def test_activates_openrouter_fallback(self):
@@ -88,33 +88,47 @@ class TestTryActivateFallback:
             # OpenRouter should get attribution headers
             assert "default_headers" in call_kwargs
 
-    def test_activates_openai_fallback(self):
+    def test_activates_zai_fallback(self):
         agent = _make_agent(
-            fallback_model={"provider": "openai", "model": "gpt-4.1"},
+            fallback_model={"provider": "zai", "model": "glm-5"},
         )
         with (
-            patch.dict("os.environ", {"OPENAI_API_KEY": "sk-openai-key"}),
+            patch.dict("os.environ", {"ZAI_API_KEY": "sk-zai-key"}),
             patch("run_agent.OpenAI") as mock_openai,
         ):
             result = agent._try_activate_fallback()
             assert result is True
-            assert agent.model == "gpt-4.1"
-            assert agent.provider == "openai"
+            assert agent.model == "glm-5"
+            assert agent.provider == "zai"
             call_kwargs = mock_openai.call_args[1]
-            assert call_kwargs["api_key"] == "sk-openai-key"
-            assert "openai.com" in call_kwargs["base_url"]
+            assert call_kwargs["api_key"] == "sk-zai-key"
+            assert "z.ai" in call_kwargs["base_url"].lower()
 
-    def test_activates_deepseek_fallback(self):
+    def test_activates_kimi_fallback(self):
         agent = _make_agent(
-            fallback_model={"provider": "deepseek", "model": "deepseek-chat"},
+            fallback_model={"provider": "kimi-coding", "model": "kimi-k2.5"},
         )
         with (
-            patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-ds-key"}),
+            patch.dict("os.environ", {"KIMI_API_KEY": "sk-kimi-key"}),
             patch("run_agent.OpenAI"),
         ):
             assert agent._try_activate_fallback() is True
-            assert agent.model == "deepseek-chat"
-            assert agent.provider == "deepseek"
+            assert agent.model == "kimi-k2.5"
+            assert agent.provider == "kimi-coding"
+
+    def test_activates_minimax_fallback(self):
+        agent = _make_agent(
+            fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
+        )
+        with (
+            patch.dict("os.environ", {"MINIMAX_API_KEY": "sk-mm-key"}),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "MiniMax-M2.5"
+            assert agent.provider == "minimax"
+            call_kwargs = mock_openai.call_args[1]
+            assert "minimax.io" in call_kwargs["base_url"]
 
     def test_only_fires_once(self):
         agent = _make_agent(
@@ -131,10 +145,10 @@ class TestTryActivateFallback:
     def test_returns_false_when_no_api_key(self):
         """Fallback should fail gracefully when the API key env var is unset."""
         agent = _make_agent(
-            fallback_model={"provider": "deepseek", "model": "deepseek-chat"},
+            fallback_model={"provider": "minimax", "model": "MiniMax-M2.5"},
         )
-        # Ensure DEEPSEEK_API_KEY is not in the environment
-        env = {k: v for k, v in os.environ.items() if k != "DEEPSEEK_API_KEY"}
+        # Ensure MINIMAX_API_KEY is not in the environment
+        env = {k: v for k, v in os.environ.items() if k != "MINIMAX_API_KEY"}
         with patch.dict("os.environ", env, clear=True):
             assert agent._try_activate_fallback() is False
             assert agent._fallback_activated is False
@@ -182,14 +196,27 @@ class TestTryActivateFallback:
 
     def test_prompt_caching_disabled_for_non_openrouter(self):
         agent = _make_agent(
-            fallback_model={"provider": "openai", "model": "gpt-4.1"},
+            fallback_model={"provider": "zai", "model": "glm-5"},
         )
         with (
-            patch.dict("os.environ", {"OPENAI_API_KEY": "sk-oai-key"}),
+            patch.dict("os.environ", {"ZAI_API_KEY": "sk-zai-key"}),
             patch("run_agent.OpenAI"),
         ):
             agent._try_activate_fallback()
             assert agent._use_prompt_caching is False
+
+    def test_zai_alt_env_var(self):
+        """Z.AI should also check Z_AI_API_KEY as fallback env var."""
+        agent = _make_agent(
+            fallback_model={"provider": "zai", "model": "glm-5"},
+        )
+        with (
+            patch.dict("os.environ", {"Z_AI_API_KEY": "sk-alt-key"}),
+            patch("run_agent.OpenAI") as mock_openai,
+        ):
+            assert agent._try_activate_fallback() is True
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "sk-alt-key"
 
 
 # =============================================================================
@@ -220,18 +247,14 @@ class TestFallbackInit:
 # =============================================================================
 
 class TestProviderCredentials:
-    """Verify that each known provider resolves its API key correctly."""
+    """Verify that each supported provider resolves its API key correctly."""
 
     @pytest.mark.parametrize("provider,env_var,base_url_fragment", [
         ("openrouter", "OPENROUTER_API_KEY", "openrouter"),
-        ("openai", "OPENAI_API_KEY", "openai.com"),
-        ("deepseek", "DEEPSEEK_API_KEY", "deepseek.com"),
-        ("together", "TOGETHER_API_KEY", "together.xyz"),
-        ("groq", "GROQ_API_KEY", "groq.com"),
-        ("fireworks", "FIREWORKS_API_KEY", "fireworks.ai"),
-        ("mistral", "MISTRAL_API_KEY", "mistral.ai"),
-        ("gemini", "GEMINI_API_KEY", "googleapis.com"),
-        ("nous", "NOUS_API_KEY", "nousresearch.com"),
+        ("zai", "ZAI_API_KEY", "z.ai"),
+        ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
+        ("minimax", "MINIMAX_API_KEY", "minimax.io"),
+        ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
     ])
     def test_provider_resolves(self, provider, env_var, base_url_fragment):
         agent = _make_agent(

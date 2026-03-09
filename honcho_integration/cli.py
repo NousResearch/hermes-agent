@@ -97,7 +97,7 @@ def cmd_setup(args) -> None:
         cfg["apiKey"] = new_key
 
     if not cfg.get("apiKey"):
-        print("\n  No API key configured. Get one at https://app.honcho.dev")
+        print("\n  No API key configured. Get your API key at https://app.honcho.dev")
         print("  Run 'hermes honcho setup' again once you have a key.\n")
         return
 
@@ -542,12 +542,12 @@ def cmd_migrate(args) -> None:
         print(f"  Honcho API key already configured: {masked}")
         print("  Skip to Step 2.")
     else:
-        print("  Honcho is a cloud memory service. You need a free account to use it.")
+        print("  Honcho is a cloud memory service that gives Hermes persistent memory")
+        print("  across sessions. You need an API key to use it.")
         print()
-        print("  1. Go to https://app.honcho.dev and create an account.")
-        print("  2. Copy your API key from the dashboard.")
-        print("  3. Run:  hermes honcho setup")
-        print("     This will store the key and create a workspace for this project.")
+        print("  1. Get your API key at https://app.honcho.dev")
+        print("  2. Run:  hermes honcho setup")
+        print("     Paste the key when prompted.")
         print()
         answer = _prompt("  Run 'hermes honcho setup' now?", default="y")
         if answer.lower() in ("y", "yes"):

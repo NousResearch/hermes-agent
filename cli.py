@@ -1963,14 +1963,54 @@ class HermesCLI:
         print()
     
     def reset_conversation(self):
-        """Reset the conversation history."""
+        """Reset the conversation history (keep same session)."""
         if self.agent and self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
             except Exception:
                 pass
         self.conversation_history = []
-        print("(^_^)b Conversation reset!")
+        print("(^_^)b Conversation reset! (same session)")
+
+    def new_session(self):
+        """Start a completely new session with a fresh session ID.
+        
+        This creates a new session context, unlike reset_conversation which
+        just clears history within the same session.
+        """
+        # Flush memories from current conversation before switching
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
+        
+        # End current session in DB if we have one
+        if self._session_db and self.session_id:
+            try:
+                self._session_db.end_session(self.session_id, "new_session")
+            except Exception:
+                pass
+        
+        # Generate fresh session ID
+        from datetime import datetime
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        self.session_id = f"{timestamp_str}_{short_uuid}"
+        
+        # Reset state
+        self.conversation_history = []
+        self._pending_title = None
+        self._resumed = False
+        
+        # Update agent's session ID if it exists
+        if self.agent:
+            self.agent.session_id = self.session_id
+            # Invalidate system prompt cache to pick up new session context
+            if hasattr(self.agent, '_invalidate_system_prompt'):
+                self.agent._invalidate_system_prompt()
+        
+        print(f"(^_^)v New session started: {self.session_id}")
     
     def save_conversation(self):
         """Save the current conversation to a file."""
@@ -2459,8 +2499,10 @@ class HermesCLI:
                         _cprint(f"  No title set. Usage: /title <your session title>")
                 else:
                     _cprint("  Session database not available.")
-        elif cmd_lower in ("/reset", "/new"):
+        elif cmd_lower == "/reset":
             self.reset_conversation()
+        elif cmd_lower == "/new":
+            self.new_session()
         elif cmd_lower.startswith("/model"):
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)

@@ -329,6 +329,75 @@ class TelegramAdapter(BasePlatformAdapter):
     def supports_streaming(self) -> bool:
         return True
 
+
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether this adapter supports Telegram Bot API sendMessageDraft.
+
+        Draft streaming (Bot API 9.3+) pushes partial text to the client
+        natively without message edits.  The client animates incremental
+        updates for the same ``draft_id``, producing a smoother experience
+        than edit-based streaming and avoiding edit rate limits entirely.
+        """
+        return True
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        text: str,
+    ) -> bool:
+        """Push a draft update via sendMessageDraft (Bot API 9.3+).
+
+        Each call with the same ``draft_id`` animates the growing text on
+        the client.  Returns True on success, False on failure (caller
+        should fall back to edit-based streaming).
+        """
+        if not self._bot:
+            return False
+        try:
+            return await self._bot.send_message_draft(
+                chat_id=int(chat_id),
+                draft_id=draft_id,
+                text=text,
+                parse_mode=None,  # raw text during streaming, same as edit path
+            )
+        except Exception as e:
+            logger.warning("[%s] send_message_draft failed: %s", self.name, e)
+            return False
+
+    async def finalize_draft(
+        self,
+        chat_id: str,
+        content: str,
+    ) -> SendResult:
+        """Finalize a draft stream by sending the completed message.
+
+        After the last ``send_draft`` call, this sends a persistent
+        ``sendMessage`` with full MarkdownV2 formatting.  The draft
+        bubble is automatically replaced by the final message on the client.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            formatted = self.format_message(content)
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            except Exception as fmt_err:
+                logger.debug("[%s] finalize_draft markdown failed, using plain text: %s", self.name, fmt_err)
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=content,
+                    parse_mode=None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
         """Delete a Telegram message (used to remove progress indicators)."""
         if not self._bot:

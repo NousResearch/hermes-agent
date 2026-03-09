@@ -424,6 +424,25 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether this platform supports native draft streaming (Bot API 9.3+).
+
+        Platforms that return True must implement send_draft() and
+        finalize_draft().  The gateway tries draft transport first and
+        falls back to edit-based streaming on failure.
+        """
+        return False
+
+    async def send_draft(self, chat_id: str, draft_id: int, text: str) -> bool:
+        """Push a draft text update.  Override in subclasses."""
+        return False
+
+    async def finalize_draft(self, chat_id: str, content: str) -> "SendResult":
+        """Finalize a draft stream with the completed message."""
+        return SendResult(success=False, error="Not supported")
+
     async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
         """Delete a previously sent message.
 

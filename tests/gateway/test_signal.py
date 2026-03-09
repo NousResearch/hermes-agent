@@ -23,8 +23,6 @@ class TestSignalConfigLoading:
     def test_apply_env_overrides_signal(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
-        monkeypatch.setenv("SIGNAL_DM_POLICY", "open")
-        monkeypatch.setenv("SIGNAL_GROUP_POLICY", "allowlist")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
@@ -35,8 +33,6 @@ class TestSignalConfigLoading:
         assert sc.enabled is True
         assert sc.extra["http_url"] == "http://localhost:9090"
         assert sc.extra["account"] == "+15551234567"
-        assert sc.extra["dm_policy"] == "open"
-        assert sc.extra["group_policy"] == "allowlist"
 
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
@@ -71,48 +67,43 @@ class TestSignalAdapterInit:
         config.extra = {
             "http_url": "http://localhost:8080",
             "account": "+15551234567",
-            "dm_policy": "pairing",
-            "group_policy": "disabled",
             **extra,
         }
         return config
 
     def test_init_parses_config(self, monkeypatch):
-        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15559876543,+15551111111")
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "group123,group456")
-        monkeypatch.delenv("SIGNAL_DEBUG", raising=False)
 
         from gateway.platforms.signal import SignalAdapter
         adapter = SignalAdapter(self._make_config())
 
         assert adapter.http_url == "http://localhost:8080"
         assert adapter.account == "+15551234567"
-        assert adapter.dm_policy == "pairing"
-        assert adapter.group_policy == "disabled"
-        assert "+15559876543" in adapter.allowed_users
-        assert "+15551111111" in adapter.allowed_users
         assert "group123" in adapter.group_allow_from
 
     def test_init_empty_allowlist(self, monkeypatch):
-        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "")
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        monkeypatch.delenv("SIGNAL_DEBUG", raising=False)
 
         from gateway.platforms.signal import SignalAdapter
         adapter = SignalAdapter(self._make_config())
 
-        assert len(adapter.allowed_users) == 0
         assert len(adapter.group_allow_from) == 0
 
     def test_init_strips_trailing_slash(self, monkeypatch):
-        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "")
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
-        monkeypatch.delenv("SIGNAL_DEBUG", raising=False)
 
         from gateway.platforms.signal import SignalAdapter
         adapter = SignalAdapter(self._make_config(http_url="http://localhost:8080/"))
 
         assert adapter.http_url == "http://localhost:8080"
+
+    def test_self_message_filtering(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config())
+
+        assert adapter._account_normalized == "+15551234567"
 
 
 class TestSignalHelpers:
@@ -176,6 +167,20 @@ class TestSignalHelpers:
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
         assert check_signal_requirements() is True
+
+    def test_render_mentions(self):
+        from gateway.platforms.signal import _render_mentions
+        text = "Hello \uFFFC, how are you?"
+        mentions = [{"start": 6, "length": 1, "number": "+15559999999"}]
+        result = _render_mentions(text, mentions)
+        assert "@+15559999999" in result
+        assert "\uFFFC" not in result
+
+    def test_render_mentions_no_mentions(self):
+        from gateway.platforms.signal import _render_mentions
+        text = "Hello world"
+        result = _render_mentions(text, [])
+        assert result == "Hello world"
 
     def test_check_requirements_missing(self, monkeypatch):
         from gateway.platforms.signal import check_signal_requirements

@@ -396,7 +396,7 @@ DISCORD_ALLOWED_USERS=123456789012345678  # Comma-separated user IDs
 # Signal
 SIGNAL_HTTP_URL=http://127.0.0.1:8080    # signal-cli daemon URL
 SIGNAL_ACCOUNT=+1234567890               # Bot phone number (E.164)
-SIGNAL_ALLOWED_USERS=+1234567890         # Comma-separated E.164 numbers or UUIDs
+SIGNAL_ALLOWED_USERS=+1234567890         # Comma-separated E.164 numbers/UUIDs
 
 # Agent Behavior
 HERMES_MAX_ITERATIONS=90                  # Max tool-calling iterations (default: 90)

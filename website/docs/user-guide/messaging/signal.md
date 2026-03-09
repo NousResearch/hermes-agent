@@ -115,16 +115,12 @@ Add to `~/.hermes/.env`:
 SIGNAL_HTTP_URL=http://127.0.0.1:8080
 SIGNAL_ACCOUNT=+1234567890
 
-# Security (at least one is recommended)
+# Security (recommended)
 SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers or UUIDs
-SIGNAL_DM_POLICY=pairing                          # pairing | allowlist | open
-SIGNAL_GROUP_POLICY=disabled                      # disabled | allowlist | open
 
 # Optional
-SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # For group_policy=allowlist
+SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
-SIGNAL_IGNORE_STORIES=true                       # Ignore Signal story messages
-SIGNAL_DEBUG=false                                # Enable verbose Signal debug logging
 ```
 
 Then start the gateway:
@@ -136,23 +132,25 @@ hermes gateway install      # Install as a system service
 
 ---
 
-## Access Policies
+## Access Control
 
-### DM Policy
+### DM Access
 
-| Policy | Behavior |
-|--------|----------|
-| `pairing` (default) | Unknown users get a one-time pairing code. You approve via `hermes pairing approve signal CODE`. |
-| `allowlist` | Only users in `SIGNAL_ALLOWED_USERS` can message. Others are silently ignored. |
-| `open` | Anyone can message the bot. Use with caution — the bot has terminal access. |
+DM access follows the same pattern as all other Hermes platforms:
 
-### Group Policy
+1. **`SIGNAL_ALLOWED_USERS` set** → only those users can message
+2. **No allowlist set** → unknown users get a DM pairing code (approve via `hermes pairing approve signal CODE`)
+3. **`SIGNAL_ALLOW_ALL_USERS=true`** → anyone can message (use with caution)
 
-| Policy | Behavior |
-|--------|----------|
-| `disabled` (default) | All group messages are ignored. The bot only responds to DMs. |
-| `allowlist` | Only groups in `SIGNAL_GROUP_ALLOWED_USERS` are monitored. |
-| `open` | The bot responds in any group it's a member of. |
+### Group Access
+
+Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
+
+| Configuration | Behavior |
+|---------------|----------|
+| Not set (default) | All group messages are ignored. The bot only responds to DMs. |
+| Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
+| Set to `*` | The bot responds in any group it's a member of. |
 
 ---
 
@@ -221,10 +219,5 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | `SIGNAL_HTTP_URL` | Yes | — | signal-cli HTTP endpoint |
 | `SIGNAL_ACCOUNT` | Yes | — | Bot phone number (E.164) |
 | `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
-| `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow all users (dangerous) |
-| `SIGNAL_DM_POLICY` | No | `pairing` | DM access policy |
-| `SIGNAL_GROUP_POLICY` | No | `disabled` | Group message policy |
-| `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Allowed group IDs |
-| `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target |
-| `SIGNAL_IGNORE_STORIES` | No | `true` | Ignore story messages |
-| `SIGNAL_DEBUG` | No | `false` | Debug logging (Signal module only) |
+| `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

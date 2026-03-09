@@ -399,8 +399,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.SIGNAL].extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "dm_policy": os.getenv("SIGNAL_DM_POLICY", "pairing"),
-            "group_policy": os.getenv("SIGNAL_GROUP_POLICY", "disabled"),
             "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
         })
         signal_home = os.getenv("SIGNAL_HOME_CHANNEL")

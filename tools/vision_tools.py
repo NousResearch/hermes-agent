@@ -27,14 +27,15 @@ Usage:
     )
 """
 
+import asyncio
+import base64
 import json
 import logging
 import os
-import asyncio
 import uuid
-import base64
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Awaitable, Dict, Optional
+from urllib.parse import urlparse
 import httpx
 from openai import AsyncOpenAI
 from agent.auxiliary_client import get_vision_auxiliary_client
@@ -73,15 +74,18 @@ def _validate_image_url(url: str) -> bool:
     """
     if not url or not isinstance(url, str):
         return False
-    
-    # Check if it's a valid URL format
-    if not (url.startswith('http://') or url.startswith('https://')):
+
+    # Basic HTTP/HTTPS URL check
+    if not (url.startswith("http://") or url.startswith("https://")):
         return False
-    
-    # Check for common image extensions (optional, as URLs may not have extensions)
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
-    
-    return True  # Allow all HTTP/HTTPS URLs for flexibility
+
+    # Parse to ensure we at least have a network location; still allow URLs
+    # without file extensions (e.g. CDN endpoints that redirect to images).
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return False
+
+    return True  # Allow all well-formed HTTP/HTTPS URLs for flexibility
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -131,7 +135,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 logger.warning("Retrying in %ss...", wait_time)
                 await asyncio.sleep(wait_time)
             else:
-                logger.error("Image download failed after %s attempts: %s", max_retries, str(e)[:100])
+                logger.error(
+                    "Image download failed after %s attempts: %s",
+                    max_retries,
+                    str(e)[:100],
+                    exc_info=True,
+                )
     
     raise last_error
 
@@ -188,7 +197,7 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
-    model: str = DEFAULT_VISION_MODEL
+    model: str = DEFAULT_VISION_MODEL,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -347,7 +356,7 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg)
+        logger.error("%s", error_msg, exc_info=True)
         
         # Prepare error response
         result = {
@@ -368,7 +377,9 @@ async def vision_analyze_tool(
                 temp_image_path.unlink()
                 logger.debug("Cleaned up temporary image file")
             except Exception as cleanup_error:
-                logger.warning("Could not delete temporary file: %s", cleanup_error)
+                logger.warning(
+                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
+                )
 
 
 def check_vision_requirements() -> bool:
@@ -464,10 +475,13 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args, **kw):
+def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
-    full_prompt = f"Fully describe and explain everything about this image, then answer the following question:\n\n{question}"
+    full_prompt = (
+        "Fully describe and explain everything about this image, then answer the "
+        f"following question:\n\n{question}"
+    )
     model = (os.getenv("AUXILIARY_VISION_MODEL", "").strip()
              or DEFAULT_VISION_MODEL
              or "google/gemini-3-flash-preview")

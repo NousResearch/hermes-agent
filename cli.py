@@ -1118,6 +1118,10 @@ class HermesCLI:
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
         
+        # Fallback model config — tried when primary provider fails after retries
+        fb = CLI_CONFIG.get("fallback_model") or {}
+        self._fallback_model = fb if fb.get("provider") and fb.get("model") else None
+
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
@@ -1349,6 +1353,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
+                fallback_model=self._fallback_model,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:

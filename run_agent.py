@@ -1595,22 +1595,24 @@ class AIAgent:
                 )
             elif recall_mode == "tools":
                 honcho_block += (
-                    "Memory tools (most capable first; use cheaper tools when sufficient):\n"
-                    "  query_user_context <question>           — dialectic Q&A, LLM-synthesized answer\n"
+                    "Memory tools:\n"
+                    "  query_user_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
-                    "  honcho_profile                          — peer card, key facts, no LLM\n"
+                    "  honcho_profile                          — user's peer card, key facts, no LLM\n"
+                    "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"
                 )
-            else:  # auto
+            else:  # hybrid
                 honcho_block += (
                     "Honcho context (user representation, peer card, and recent session summary) "
                     "is pre-loaded into this system prompt below. Use it to answer continuity "
                     "questions ('where were we?', 'what were we working on?') WITHOUT calling "
                     "any tools. Only call memory tools when you need information beyond what is "
                     "already present in the Honcho Memory section.\n"
-                    "Memory tools (most capable first; use cheaper tools when sufficient):\n"
-                    "  query_user_context <question>           — dialectic Q&A, LLM-synthesized answer\n"
+                    "Memory tools:\n"
+                    "  query_user_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
                     "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
-                    "  honcho_profile                          — peer card, key facts, no LLM\n"
+                    "  honcho_profile                          — user's peer card, key facts, no LLM\n"
+                    "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"
                 )
             honcho_block += (
                 "Management commands (refer users here instead of explaining manually):\n"

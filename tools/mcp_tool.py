@@ -538,6 +538,14 @@ class SamplingHandler:
                 f"Sampling LLM call failed: {_sanitize_error(str(exc))}"
             )
 
+        # Guard against empty choices (content filtering, provider errors)
+        if not getattr(response, "choices", None):
+            self.metrics["errors"] += 1
+            return self._error(
+                f"LLM returned empty response (no choices) for server "
+                f"'{self.server_name}'"
+            )
+
         # Track metrics
         choice = response.choices[0]
         self.metrics["requests"] += 1

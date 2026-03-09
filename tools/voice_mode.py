@@ -25,17 +25,69 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Optional imports with graceful degradation
+# Lazy audio imports -- never imported at module level to avoid crashing
+# in headless environments (SSH, Docker, WSL, no PortAudio).
 # ---------------------------------------------------------------------------
-try:
+
+def _import_audio():
+    """Lazy-import sounddevice and numpy.  Returns (sd, np).
+
+    Raises ImportError or OSError if the libraries are not available
+    (e.g. PortAudio missing on headless servers).
+    """
     import sounddevice as sd
     import numpy as np
+    return sd, np
 
-    _HAS_AUDIO = True
-except (ImportError, OSError):
-    sd = None  # type: ignore[assignment]
-    np = None  # type: ignore[assignment]
-    _HAS_AUDIO = False
+
+def _audio_available() -> bool:
+    """Return True if audio libraries can be imported."""
+    try:
+        _import_audio()
+        return True
+    except (ImportError, OSError):
+        return False
+
+
+def detect_audio_environment() -> dict:
+    """Detect if the current environment supports audio I/O.
+
+    Returns dict with 'available' (bool) and 'warnings' (list of strings).
+    """
+    warnings = []
+
+    # SSH detection
+    if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
+        warnings.append("Running over SSH -- no audio devices available")
+
+    # Docker detection
+    if os.path.exists('/.dockerenv'):
+        warnings.append("Running inside Docker container -- no audio devices")
+
+    # WSL detection
+    try:
+        with open('/proc/version', 'r') as f:
+            if 'microsoft' in f.read().lower():
+                warnings.append("Running in WSL -- audio requires PulseAudio bridge to Windows")
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+
+    # Check audio libraries
+    try:
+        sd, _ = _import_audio()
+        try:
+            devices = sd.query_devices()
+            if not devices:
+                warnings.append("No audio input/output devices detected")
+        except Exception:
+            warnings.append("Audio subsystem error (PortAudio cannot query devices)")
+    except (ImportError, OSError):
+        warnings.append("Audio libraries not installed (pip install sounddevice numpy)")
+
+    return {
+        "available": len(warnings) == 0,
+        "warnings": warnings,
+    }
 
 # ---------------------------------------------------------------------------
 # Recording parameters
@@ -65,7 +117,9 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         duration: Duration of each beep in seconds.
         count: Number of beeps to play (with short gap between).
     """
-    if not _HAS_AUDIO:
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
         return
     try:
         gap = 0.06  # seconds between beeps
@@ -161,12 +215,14 @@ class AudioRecorder:
         Raises ``RuntimeError`` if sounddevice/numpy are not installed
         or if a recording is already in progress.
         """
-        if not _HAS_AUDIO:
+        try:
+            sd, np = _import_audio()
+        except (ImportError, OSError) as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
                 "Install with: pip install sounddevice numpy\n"
                 "Or: pip install hermes-agent[voice]"
-            )
+            ) from e
 
         with self._lock:
             if self._recording:
@@ -269,6 +325,7 @@ class AudioRecorder:
                 return None
 
             # Concatenate frames and write WAV
+            _, np = _import_audio()
             audio_data = np.concatenate(self._frames, axis=0)
             self._frames = []
 
@@ -434,11 +491,11 @@ def stop_playback() -> None:
         except Exception:
             pass
     # Also stop sounddevice playback if active
-    if _HAS_AUDIO:
-        try:
-            sd.stop()
-        except Exception:
-            pass
+    try:
+        sd, _ = _import_audio()
+        sd.stop()
+    except Exception:
+        pass
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -461,8 +518,9 @@ def play_audio_file(file_path: str) -> bool:
         return False
 
     # Try sounddevice for WAV files
-    if _HAS_AUDIO and file_path.endswith(".wav"):
+    if file_path.endswith(".wav"):
         try:
+            sd, np = _import_audio()
             with wave.open(file_path, "rb") as wf:
                 frames = wf.readframes(wf.getnframes())
                 audio_data = np.frombuffer(frames, dtype=np.int16)
@@ -471,6 +529,8 @@ def play_audio_file(file_path: str) -> bool:
             sd.play(audio_data, samplerate=sample_rate)
             sd.wait()
             return True
+        except (ImportError, OSError):
+            pass  # audio libs not available, fall through to system players
         except Exception as e:
             logger.debug("sounddevice playback failed: %s", e)
 
@@ -518,14 +578,18 @@ def check_voice_requirements() -> Dict[str, Any]:
     groq_key = bool(os.getenv("GROQ_API_KEY"))
     stt_key_set = openai_key or groq_key
     missing: List[str] = []
+    has_audio = _audio_available()
 
-    if not _HAS_AUDIO:
+    if not has_audio:
         missing.extend(["sounddevice", "numpy"])
 
-    available = _HAS_AUDIO and stt_key_set
+    # Environment detection
+    env_check = detect_audio_environment()
+
+    available = has_audio and stt_key_set and env_check["available"]
     details_parts = []
 
-    if _HAS_AUDIO:
+    if has_audio:
         details_parts.append("Audio capture: OK")
     else:
         details_parts.append("Audio capture: MISSING (pip install sounddevice numpy)")
@@ -537,12 +601,16 @@ def check_voice_requirements() -> Dict[str, Any]:
     else:
         details_parts.append("STT API key: MISSING (set GROQ_API_KEY or VOICE_TOOLS_OPENAI_KEY)")
 
+    for warning in env_check["warnings"]:
+        details_parts.append(f"Environment: {warning}")
+
     return {
         "available": available,
-        "audio_available": _HAS_AUDIO,
+        "audio_available": has_audio,
         "stt_key_set": stt_key_set,
         "missing_packages": missing,
         "details": "\n".join(details_parts),
+        "environment": env_check,
     }
 
 

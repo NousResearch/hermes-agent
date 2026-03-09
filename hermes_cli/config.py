@@ -104,10 +104,6 @@ DEFAULT_CONFIG = {
         },
     },
     
-    "security": {
-        "redact_secrets": True,  # Mask API keys, tokens, passwords in tool output
-    },
-
     "display": {
         "compact": False,
         "personality": "kawaii",
@@ -763,8 +759,16 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
-_FALLBACK_MODEL_COMMENT = """
-# Fallback model — automatic provider failover when primary is unavailable.
+_COMMENTED_SECTIONS = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+#
+# security:
+#   redact_secrets: false
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
 # overload (529), service errors (503), or connection failures.
 #
@@ -792,10 +796,18 @@ def save_config(config: Dict[str, Any]):
     
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        # Append commented-out fallback_model docs if user hasn't configured it
-        fb = config.get("fallback_model")
+        # Append commented-out sections for features that are off by default
+        # or only relevant when explicitly configured. Skip sections the
+        # user has already uncommented and configured.
+        sections = []
+        sec = config.get("security", {})
+        if not sec or sec.get("redact_secrets") is None:
+            sections.append("security")
+        fb = config.get("fallback_model", {})
         if not fb or not (fb.get("provider") and fb.get("model")):
-            f.write(_FALLBACK_MODEL_COMMENT)
+            sections.append("fallback")
+        if sections:
+            f.write(_COMMENTED_SECTIONS)
 
 
 def load_env() -> Dict[str, str]:

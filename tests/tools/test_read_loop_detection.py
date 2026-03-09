@@ -29,11 +29,11 @@ from tools.file_tools import (
 class _FakeReadResult:
     """Minimal stand-in for FileOperations.read_file return value."""
     def __init__(self, content="line1\nline2\n", total_lines=2):
-        self._content = content
+        self.content = content
         self._total_lines = total_lines
 
     def to_dict(self):
-        return {"content": self._content, "total_lines": self._total_lines}
+        return {"content": self.content, "total_lines": self._total_lines}
 
 
 def _fake_read_file(path, offset=1, limit=500):
@@ -42,6 +42,9 @@ def _fake_read_file(path, offset=1, limit=500):
 
 class _FakeSearchResult:
     """Minimal stand-in for FileOperations.search return value."""
+    def __init__(self):
+        self.matches = []
+
     def to_dict(self):
         return {"matches": [{"file": "test.py", "line": 1, "text": "match"}]}
 

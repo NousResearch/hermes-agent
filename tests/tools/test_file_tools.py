@@ -38,6 +38,7 @@ class TestReadFileHandler:
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
+        result_obj.content = "line1\nline2"
         result_obj.to_dict.return_value = {"content": "line1\nline2", "total_lines": 2}
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
@@ -52,6 +53,7 @@ class TestReadFileHandler:
     def test_custom_offset_and_limit(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
+        result_obj.content = "line10"
         result_obj.to_dict.return_value = {"content": "line10", "total_lines": 50}
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops

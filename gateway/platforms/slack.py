@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import os
+import re
 from typing import Dict, List, Optional, Any
 
 try:
@@ -33,6 +34,8 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
+    cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -95,6 +98,13 @@ class SlackAdapter(BasePlatformAdapter):
             @self._app.event("message")
             async def handle_message_event(event, say):
                 await self._handle_slack_message(event)
+
+            # Acknowledge app_mention events to prevent Bolt 404 errors.
+            # The "message" handler above already processes @mentions in
+            # channels, so this is intentionally a no-op to avoid duplicates.
+            @self._app.event("app_mention")
+            async def handle_app_mention(event, say):
+                pass
 
             # Register slash command handler
             @self._app.command("/hermes")
@@ -266,6 +276,65 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a video file to Slack."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        if not os.path.exists(video_path):
+            return SendResult(success=False, error=f"Video file not found: {video_path}")
+
+        try:
+            result = await self._app.client.files_upload_v2(
+                channel=chat_id,
+                file=video_path,
+                filename=os.path.basename(video_path),
+                initial_comment=caption or "",
+                thread_ts=reply_to,
+            )
+            return SendResult(success=True, raw_response=result)
+
+        except Exception as e:
+            print(f"[{self.name}] Failed to send video: {e}")
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a document/file attachment to Slack."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        if not os.path.exists(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
+
+        display_name = file_name or os.path.basename(file_path)
+
+        try:
+            result = await self._app.client.files_upload_v2(
+                channel=chat_id,
+                file=file_path,
+                filename=display_name,
+                initial_comment=caption or "",
+                thread_ts=reply_to,
+            )
+            return SendResult(success=True, raw_response=result)
+
+        except Exception as e:
+            print(f"[{self.name}] Failed to send document: {e}")
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Slack channel."""
         if not self._app:
@@ -347,6 +416,58 @@ class SlackAdapter(BasePlatformAdapter):
                     msg_type = MessageType.VOICE
                 except Exception as e:
                     print(f"[Slack] Failed to cache audio: {e}", flush=True)
+            elif url:
+                # Try to handle as a document attachment
+                try:
+                    original_filename = f.get("name", "")
+                    ext = ""
+                    if original_filename:
+                        _, ext = os.path.splitext(original_filename)
+                        ext = ext.lower()
+
+                    # Fallback: reverse-lookup from MIME type
+                    if not ext and mimetype:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                        ext = mime_to_ext.get(mimetype, "")
+
+                    if ext not in SUPPORTED_DOCUMENT_TYPES:
+                        continue  # Skip unsupported file types silently
+
+                    # Check file size (Slack limit: 20 MB for bots)
+                    file_size = f.get("size", 0)
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if not file_size or file_size > MAX_DOC_BYTES:
+                        print(f"[Slack] Document too large or unknown size: {file_size}", flush=True)
+                        continue
+
+                    # Download and cache
+                    raw_bytes = await self._download_slack_file_bytes(url)
+                    cached_path = cache_document_from_bytes(
+                        raw_bytes, original_filename or f"document{ext}"
+                    )
+                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    media_urls.append(cached_path)
+                    media_types.append(doc_mime)
+                    msg_type = MessageType.DOCUMENT
+                    print(f"[Slack] Cached user document: {cached_path}", flush=True)
+
+                    # Inject text content for .txt/.md files (capped at 100 KB)
+                    MAX_TEXT_INJECT_BYTES = 100 * 1024
+                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                        try:
+                            text_content = raw_bytes.decode("utf-8")
+                            display_name = original_filename or f"document{ext}"
+                            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            if text:
+                                text = f"{injection}\n\n{text}"
+                            else:
+                                text = injection
+                        except UnicodeDecodeError:
+                            pass  # Binary content, skip injection
+
+                except Exception as e:
+                    print(f"[Slack] Failed to cache document: {e}", flush=True)
 
         # Build source
         source = self.build_source(
@@ -427,3 +548,16 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             from gateway.platforms.base import cache_image_from_bytes
             return cache_image_from_bytes(response.content, ext)
+
+    async def _download_slack_file_bytes(self, url: str) -> bytes:
+        """Download a Slack file and return raw bytes."""
+        import httpx
+
+        bot_token = self.config.token
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {bot_token}"},
+            )
+            response.raise_for_status()
+        return response.content

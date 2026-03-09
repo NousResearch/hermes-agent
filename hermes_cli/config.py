@@ -81,6 +81,7 @@ DEFAULT_CONFIG = {
     
     "browser": {
         "inactivity_timeout": 120,
+        "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
     
     "compression": {

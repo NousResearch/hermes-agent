@@ -69,7 +69,7 @@ hermes-agent/
 │   ├── file_tools.py          # File read/write/search/patch tools
 │   ├── file_operations.py     # File operations helpers
 │   ├── web_tools.py           # Firecrawl search/extract
-│   ├── browser_tool.py        # Browserbase browser automation
+│   ├── browser_tool.py        # Browserbase browser automation (browser_console, session recording)
 │   ├── vision_tools.py        # Image analysis via auxiliary LLM
 │   ├── image_generation_tool.py # FLUX image generation via fal.ai
 │   ├── tts_tool.py            # Text-to-speech
@@ -113,7 +113,7 @@ hermes-agent/
 ├── cron/                 # Scheduler implementation
 ├── environments/         # RL training environments (Atropos integration)
 ├── honcho_integration/   # Honcho client & session management
-├── skills/               # Bundled skill sources
+├── skills/               # Bundled skill sources (includes dogfood QA testing)
 ├── optional-skills/      # Official optional skills (not activated by default)
 ├── scripts/              # Install scripts, utilities
 ├── tests/                # Full pytest suite (~2300+ tests)

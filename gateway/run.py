@@ -1449,6 +1449,11 @@ class GatewayRunner:
             except Exception:
                 current_provider = "openrouter"
 
+        # Detect custom endpoint: provider resolved to openrouter but a custom
+        # base URL is configured — the user set up a custom endpoint.
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
+
         if not args:
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
             lines = [
@@ -1574,6 +1579,10 @@ class GatewayRunner:
                 current_provider = _resolve_provider(current_provider)
             except Exception:
                 current_provider = "openrouter"
+
+        # Detect custom endpoint
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
 
         current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
 

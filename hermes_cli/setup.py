@@ -659,6 +659,28 @@ def setup_model_provider(config: dict):
         if model_name:
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
+
+        # Save provider and base_url to config.yaml so the gateway and CLI
+        # both resolve the correct provider without relying on env-var heuristics.
+        if base_url:
+            import yaml
+            config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+            try:
+                disk_cfg = {}
+                if config_path.exists():
+                    disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+                model_section = disk_cfg.get("model", {})
+                if isinstance(model_section, str):
+                    model_section = {"default": model_section}
+                model_section["provider"] = "custom"
+                model_section["base_url"] = base_url.rstrip("/")
+                if model_name:
+                    model_section["default"] = model_name
+                disk_cfg["model"] = model_section
+                config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+            except Exception as e:
+                logger.debug("Could not save provider to config.yaml: %s", e)
+
         print_success("Custom endpoint configured")
 
     elif provider_idx == 4:  # Z.AI / GLM

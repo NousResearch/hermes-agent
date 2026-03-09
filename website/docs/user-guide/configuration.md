@@ -393,7 +393,39 @@ terminal:
   backend: local    # or: docker, ssh, singularity, modal, daytona
   cwd: "."          # Working directory ("." = current dir)
   timeout: 180      # Command timeout in seconds
+
+  # Docker-specific settings
+  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_volumes:                    # Share host directories with the container
+    - "/home/user/projects:/workspace/projects"
+    - "/home/user/data:/data:ro"     # :ro for read-only
+
+  # Container resource limits (docker, singularity, modal, daytona)
+  container_cpu: 1                   # CPU cores
+  container_memory: 5120             # MB (default 5GB)
+  container_disk: 51200              # MB (default 50GB)
+  container_persistent: true         # Persist filesystem across sessions
 ```
+
+### Docker Volume Mounts
+
+When using the Docker backend, `docker_volumes` lets you share host directories with the container. Each entry uses standard Docker `-v` syntax: `host_path:container_path[:options]`.
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/projects:/workspace/projects"   # Read-write (default)
+    - "/home/user/datasets:/data:ro"              # Read-only
+    - "/home/user/outputs:/outputs"               # Agent writes, you read
+```
+
+This is useful for:
+- **Providing files** to the agent (datasets, configs, reference code)
+- **Receiving files** from the agent (generated code, reports, exports)
+- **Shared workspaces** where both you and the agent access the same files
+
+Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 

@@ -158,6 +158,7 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "docker_volumes": [],  # host:container volume mounts for Docker backend
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min

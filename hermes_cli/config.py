@@ -77,6 +77,10 @@ DEFAULT_CONFIG = {
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Docker volume mounts — share host directories with the container.
+        # Each entry is "host_path:container_path" (standard Docker -v syntax).
+        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        "docker_volumes": [],
     },
     
     "browser": {

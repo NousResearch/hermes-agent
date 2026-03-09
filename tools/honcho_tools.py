@@ -164,6 +164,49 @@ def _handle_query_user_context(args: dict, **kw) -> str:
         return json.dumps({"error": f"Failed to query user context: {e}"})
 
 
+# ── honcho_conclude ──
+
+_CONCLUDE_SCHEMA = {
+    "name": "honcho_conclude",
+    "description": (
+        "Write a conclusion about the user back to Honcho's memory. "
+        "Conclusions are persistent facts that build the user's profile — "
+        "preferences, corrections, clarifications, project context, or anything "
+        "the user tells you that should be remembered across sessions. "
+        "Use this when the user explicitly states a preference, corrects you, "
+        "or shares something they want remembered. "
+        "Examples: 'User prefers dark mode', 'User's project uses Python 3.11', "
+        "'User corrected: their name is spelled Eri not Eric'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "conclusion": {
+                "type": "string",
+                "description": "A factual statement about the user to persist in memory.",
+            }
+        },
+        "required": ["conclusion"],
+    },
+}
+
+
+def _handle_honcho_conclude(args: dict, **kw) -> str:
+    conclusion = args.get("conclusion", "")
+    if not conclusion:
+        return json.dumps({"error": "Missing required parameter: conclusion"})
+    if not _session_manager or not _session_key:
+        return json.dumps({"error": "Honcho is not active for this session."})
+    try:
+        ok = _session_manager.create_conclusion(_session_key, conclusion)
+        if ok:
+            return json.dumps({"result": f"Conclusion saved: {conclusion}"})
+        return json.dumps({"error": "Failed to save conclusion."})
+    except Exception as e:
+        logger.error("Error creating Honcho conclusion: %s", e)
+        return json.dumps({"error": f"Failed to save conclusion: {e}"})
+
+
 # ── Registration ──
 
 from tools.registry import registry
@@ -189,5 +232,13 @@ registry.register(
     toolset="honcho",
     schema=_QUERY_SCHEMA,
     handler=_handle_query_user_context,
+    check_fn=_check_honcho_available,
+)
+
+registry.register(
+    name="honcho_conclude",
+    toolset="honcho",
+    schema=_CONCLUDE_SCHEMA,
+    handler=_handle_honcho_conclude,
     check_fn=_check_honcho_available,
 )

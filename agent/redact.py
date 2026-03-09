@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
-    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter
+    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"xox[baprs]-[A-Za-z0-9-]{10,}",    # Slack tokens
@@ -26,6 +26,18 @@ _PREFIX_PATTERNS = [
     r"fc-[A-Za-z0-9]{10,}",             # Firecrawl
     r"bb_live_[A-Za-z0-9_-]{10,}",      # BrowserBase
     r"gAAAA[A-Za-z0-9_=-]{20,}",        # Codex encrypted tokens
+    r"AKIA[A-Z0-9]{16}",                # AWS Access Key ID
+    r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
+    r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
+    r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key
+    r"SG\.[A-Za-z0-9_-]{10,}",          # SendGrid API key
+    r"hf_[A-Za-z0-9]{10,}",             # HuggingFace token
+    r"r8_[A-Za-z0-9]{10,}",             # Replicate API token
+    r"npm_[A-Za-z0-9]{10,}",            # npm access token
+    r"pypi-[A-Za-z0-9_-]{10,}",         # PyPI API token
+    r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
+    r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
+    r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
@@ -51,6 +63,18 @@ _AUTH_HEADER_RE = re.compile(
 # Telegram bot tokens: bot<digits>:<token> or <digits>:<alphanum>
 _TELEGRAM_RE = re.compile(
     r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})",
+)
+
+# Private key blocks: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
+)
+
+# Database connection strings: protocol://user:PASSWORD@host
+# Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
+_DB_CONNSTR_RE = re.compile(
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    re.IGNORECASE,
 )
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
@@ -108,6 +132,12 @@ def redact_sensitive_text(text: str) -> str:
         digits = m.group(2)
         return f"{prefix}{digits}:***"
     text = _TELEGRAM_RE.sub(_redact_telegram, text)
+
+    # Private key blocks
+    text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+
+    # Database connection string passwords
+    text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

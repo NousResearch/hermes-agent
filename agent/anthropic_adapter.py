@@ -17,6 +17,24 @@ from httpx import Timeout
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 
+# Models known to support Anthropic's adaptive thinking parameter.
+# Only these model prefixes get thinking={type: adaptive}; others
+# silently skip it to avoid 400 "not supported on this model" errors.
+_THINKING_CAPABLE_PREFIXES = (
+    "claude-opus-4",      # claude-opus-4-20250514, claude-opus-4-6, etc.
+    "claude-sonnet-4-",   # claude-sonnet-4-20250514 (NOT claude-sonnet-4-5)
+    "claude-3-7-sonnet",  # claude-3-7-sonnet-20250219
+    "claude-3-5-sonnet",  # claude-3-5-sonnet-20241022 (later builds)
+)
+
+def _model_supports_thinking(model: str) -> bool:
+    """Check if a normalized Anthropic model ID supports adaptive thinking."""
+    m = model.lower()
+    # claude-sonnet-4-5* is a distinct model that does NOT support thinking
+    if m.startswith("claude-sonnet-4-5"):
+        return False
+    return any(m.startswith(prefix) for prefix in _THINKING_CAPABLE_PREFIXES)
+
 
 def build_anthropic_client(api_key: str, base_url: str = None) -> anthropic.Anthropic:
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys."""
@@ -166,9 +184,9 @@ def build_anthropic_kwargs(
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
 
-    # Map reasoning_config to Anthropic's thinking parameter
+    # Map reasoning_config to Anthropic's thinking parameter (only for capable models)
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False:
+        if reasoning_config.get("enabled") is not False and _model_supports_thinking(model):
             effort = reasoning_config.get("effort", "medium")
             budget = THINKING_BUDGET.get(effort, 8000)
             kwargs["thinking"] = {"type": "adaptive"}

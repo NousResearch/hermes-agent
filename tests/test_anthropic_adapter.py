@@ -155,6 +155,30 @@ class TestBuildAnthropicKwargs:
         )
         assert "thinking" not in kwargs
 
+    def test_reasoning_skipped_for_unsupported_model(self):
+        """claude-sonnet-4-5 does not support adaptive thinking — param should be omitted."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "think hard"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking" not in kwargs
+        # max_tokens should stay at the provided value, not inflated for thinking
+        assert kwargs["max_tokens"] == 4096
+
+    def test_reasoning_skipped_for_haiku(self):
+        """claude-3-5-haiku does not support adaptive thinking."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-3-5-haiku-20241022",
+            messages=[{"role": "user", "content": "think"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert "thinking" not in kwargs
+
 
 class TestNormalizeResponse:
     def _make_response(self, content_blocks, stop_reason="end_turn"):

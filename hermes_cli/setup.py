@@ -1264,7 +1264,7 @@ def setup_agent_settings(config: dict):
     # ── Max Iterations ──
     print_header("Agent Settings")
 
-    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '60'
+    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '90'
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")

@@ -550,14 +550,13 @@ class TestConvertToPng:
         """BMP file should still be reported as success if no converter available."""
         dest = tmp_path / "img.png"
         dest.write_bytes(FAKE_BMP)  # it's a BMP but named .png
-        # Both Pillow and ImageMagick fail
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
-            # Pillow import fails
-            with pytest.raises(Exception):
-                from PIL import Image  # noqa — this may or may not work
-            # The function should still return True if file exists and has content
-            # (raw BMP is better than nothing)
-            assert dest.exists() and dest.stat().st_size > 0
+        # Both Pillow and ImageMagick unavailable
+        with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+                result = _convert_to_png(dest)
+                # Raw BMP is better than nothing — function should return True
+                assert result is True
+                assert dest.exists() and dest.stat().st_size > 0
 
 
 # ── has_clipboard_image dispatch ─────────────────────────────────────────

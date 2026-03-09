@@ -53,7 +53,7 @@ class ContextCompressor:
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
 
-        self.client, default_model = get_text_auxiliary_client()
+        self.client, default_model = get_text_auxiliary_client("compression")
         self.summary_model = summary_model_override or default_model
 
     def update_from_response(self, usage: Dict[str, Any]):
@@ -342,7 +342,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             compressed.append(msg)
 
         if summary:
-            compressed.append({"role": "user", "content": summary})
+            last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+            summary_role = "user" if last_head_role in ("assistant", "tool") else "assistant"
+            compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
                 print("   ⚠️  No summary model available — middle turns dropped without summary")

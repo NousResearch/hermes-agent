@@ -155,6 +155,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("status", "Show session info"),
                     BotCommand("stop", "Stop the running agent"),
                     BotCommand("sethome", "Set this chat as the home channel"),
+                    BotCommand("compress", "Compress conversation context"),
+                    BotCommand("title", "Set or show the session title"),
+                    BotCommand("resume", "Resume a previously-named session"),
+                    BotCommand("usage", "Show token usage for this session"),
+                    BotCommand("provider", "Show available providers"),
+                    BotCommand("insights", "Show usage insights and analytics"),
+                    BotCommand("update", "Update Hermes to the latest version"),
+                    BotCommand("reload_mcp", "Reload MCP servers from config"),
                     BotCommand("help", "Show available commands"),
                 ])
             except Exception as e:

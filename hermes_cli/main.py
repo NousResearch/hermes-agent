@@ -21,6 +21,7 @@ Usage:
     hermes version             # Show version
     hermes update              # Update to latest version
     hermes uninstall           # Uninstall Hermes Agent
+    hermes sessions browse     # Interactive session picker with search
 """
 
 import argparse
@@ -106,6 +107,279 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _session_browse_picker(sessions: list) -> Optional[str]:
+    """Interactive curses-based session browser with live search filtering.
+
+    Returns the selected session ID, or None if cancelled.
+    Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
+    bug in tmux/iTerm when arrow keys are used.
+    """
+    if not sessions:
+        print("No sessions found.")
+        return None
+
+    # Try curses-based picker first
+    try:
+        import curses
+        import time as _time
+        from datetime import datetime
+
+        result_holder = [None]
+
+        def _relative_time(ts):
+            if not ts:
+                return "?"
+            delta = _time.time() - ts
+            if delta < 60:
+                return "just now"
+            elif delta < 3600:
+                return f"{int(delta / 60)}m ago"
+            elif delta < 86400:
+                return f"{int(delta / 3600)}h ago"
+            elif delta < 172800:
+                return "yesterday"
+            elif delta < 604800:
+                return f"{int(delta / 86400)}d ago"
+            else:
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+        def _format_row(s, max_x):
+            """Format a session row for display."""
+            title = (s.get("title") or "").strip()
+            preview = (s.get("preview") or "").strip()
+            source = s.get("source", "")[:6]
+            last_active = _relative_time(s.get("last_active"))
+            sid = s["id"][:18]
+
+            # Adaptive column widths based on terminal width
+            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
+            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
+            name_width = max(20, max_x - fixed_cols)
+
+            if title:
+                name = title[:name_width]
+            elif preview:
+                name = preview[:name_width]
+            else:
+                name = sid
+
+            return f"{name:<{name_width}}  {last_active:<10}  {source:<5} {sid}"
+
+        def _match(s, query):
+            """Check if a session matches the search query (case-insensitive)."""
+            q = query.lower()
+            return (
+                q in (s.get("title") or "").lower()
+                or q in (s.get("preview") or "").lower()
+                or q in s.get("id", "").lower()
+                or q in (s.get("source") or "").lower()
+            )
+
+        def _curses_browse(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)   # selected
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
+                curses.init_pair(3, curses.COLOR_CYAN, -1)    # search
+                curses.init_pair(4, 8, -1)                    # dim
+
+            cursor = 0
+            scroll_offset = 0
+            search_text = ""
+            filtered = list(sessions)
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                if max_y < 5 or max_x < 40:
+                    # Terminal too small
+                    try:
+                        stdscr.addstr(0, 0, "Terminal too small")
+                    except curses.error:
+                        pass
+                    stdscr.refresh()
+                    stdscr.getch()
+                    return
+
+                # Header line
+                if search_text:
+                    header = f"  Browse sessions — filter: {search_text}█"
+                    header_attr = curses.A_BOLD
+                    if curses.has_colors():
+                        header_attr |= curses.color_pair(3)
+                else:
+                    header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+                    header_attr = curses.A_BOLD
+                    if curses.has_colors():
+                        header_attr |= curses.color_pair(2)
+                try:
+                    stdscr.addnstr(0, 0, header, max_x - 1, header_attr)
+                except curses.error:
+                    pass
+
+                # Column header line
+                fixed_cols = 3 + 12 + 6 + 18 + 6
+                name_width = max(20, max_x - fixed_cols)
+                col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
+                try:
+                    dim_attr = curses.color_pair(4) if curses.has_colors() else curses.A_DIM
+                    stdscr.addnstr(1, 0, col_header, max_x - 1, dim_attr)
+                except curses.error:
+                    pass
+
+                # Compute visible area
+                visible_rows = max_y - 4  # header + col header + blank + footer
+                if visible_rows < 1:
+                    visible_rows = 1
+
+                # Clamp cursor and scroll
+                if not filtered:
+                    try:
+                        msg = "  No sessions match the filter."
+                        stdscr.addnstr(3, 0, msg, max_x - 1, curses.A_DIM)
+                    except curses.error:
+                        pass
+                else:
+                    if cursor >= len(filtered):
+                        cursor = len(filtered) - 1
+                    if cursor < 0:
+                        cursor = 0
+                    if cursor < scroll_offset:
+                        scroll_offset = cursor
+                    elif cursor >= scroll_offset + visible_rows:
+                        scroll_offset = cursor - visible_rows + 1
+
+                    for draw_i, i in enumerate(range(
+                        scroll_offset,
+                        min(len(filtered), scroll_offset + visible_rows)
+                    )):
+                        y = draw_i + 3
+                        if y >= max_y - 1:
+                            break
+                        s = filtered[i]
+                        arrow = " → " if i == cursor else "   "
+                        row = arrow + _format_row(s, max_x - 3)
+                        attr = curses.A_NORMAL
+                        if i == cursor:
+                            attr = curses.A_BOLD
+                            if curses.has_colors():
+                                attr |= curses.color_pair(1)
+                        try:
+                            stdscr.addnstr(y, 0, row, max_x - 1, attr)
+                        except curses.error:
+                            pass
+
+                # Footer
+                footer_y = max_y - 1
+                if filtered:
+                    footer = f"  {cursor + 1}/{len(filtered)} sessions"
+                    if len(filtered) < len(sessions):
+                        footer += f" (filtered from {len(sessions)})"
+                else:
+                    footer = f"  0/{len(sessions)} sessions"
+                try:
+                    stdscr.addnstr(footer_y, 0, footer, max_x - 1,
+                                   curses.color_pair(4) if curses.has_colors() else curses.A_DIM)
+                except curses.error:
+                    pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP, ):
+                    if filtered:
+                        cursor = (cursor - 1) % len(filtered)
+                elif key in (curses.KEY_DOWN, ):
+                    if filtered:
+                        cursor = (cursor + 1) % len(filtered)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    if filtered:
+                        result_holder[0] = filtered[cursor]["id"]
+                    return
+                elif key == 27:  # Esc
+                    if search_text:
+                        # First Esc clears the search
+                        search_text = ""
+                        filtered = list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                    else:
+                        # Second Esc exits
+                        return
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    if search_text:
+                        search_text = search_text[:-1]
+                        if search_text:
+                            filtered = [s for s in sessions if _match(s, search_text)]
+                        else:
+                            filtered = list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                elif key == ord('q') and not search_text:
+                    return
+                elif 32 <= key <= 126:
+                    # Printable character → add to search filter
+                    search_text += chr(key)
+                    filtered = [s for s in sessions if _match(s, search_text)]
+                    cursor = 0
+                    scroll_offset = 0
+
+        curses.wrapper(_curses_browse)
+        return result_holder[0]
+
+    except Exception:
+        pass
+
+    # Fallback: numbered list (Windows without curses, etc.)
+    import time as _time
+    from datetime import datetime
+
+    def _relative_time_fb(ts):
+        if not ts:
+            return "?"
+        delta = _time.time() - ts
+        if delta < 60:
+            return "just now"
+        elif delta < 3600:
+            return f"{int(delta / 60)}m ago"
+        elif delta < 86400:
+            return f"{int(delta / 3600)}h ago"
+        elif delta < 172800:
+            return "yesterday"
+        elif delta < 604800:
+            return f"{int(delta / 86400)}d ago"
+        else:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+    print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
+    for i, s in enumerate(sessions):
+        title = (s.get("title") or "").strip()
+        preview = (s.get("preview") or "").strip()
+        label = title or preview or s["id"]
+        if len(label) > 50:
+            label = label[:47] + "..."
+        last_active = _relative_time_fb(s.get("last_active"))
+        src = s.get("source", "")[:6]
+        print(f"  {i + 1:>3}. {label:<50}  {last_active:<10}  {src}")
+
+    while True:
+        try:
+            val = input(f"\n  Select [1-{len(sessions)}]: ").strip()
+            if not val or val.lower() in ("q", "quit", "exit"):
+                return None
+            idx = int(val) - 1
+            if 0 <= idx < len(sessions):
+                return sessions[idx]["id"]
+            print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
+        except ValueError:
+            print(f"  Invalid input. Enter a number or q to cancel.")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+
+
 def _resolve_last_cli_session() -> Optional[str]:
     """Look up the most recent CLI session ID from SQLite. Returns None if unavailable."""
     try:
@@ -120,16 +394,63 @@ def _resolve_last_cli_session() -> Optional[str]:
     return None
 
 
+def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
+    """Resolve a session name (title) or ID to a session ID.
+
+    - If it looks like a session ID (contains underscore + hex), try direct lookup first.
+    - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
+    - Falls back to the other method if the first doesn't match.
+    """
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+
+        # Try as exact session ID first
+        session = db.get_session(name_or_id)
+        if session:
+            db.close()
+            return session["id"]
+
+        # Try as title (with auto-latest for lineage)
+        session_id = db.resolve_session_by_title(name_or_id)
+        db.close()
+        return session_id
+    except Exception:
+        pass
+    return None
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Resolve --continue into --resume with the latest CLI session
-    if getattr(args, "continue_last", False) and not getattr(args, "resume", None):
-        last_id = _resolve_last_cli_session()
-        if last_id:
-            args.resume = last_id
+    # Resolve --continue into --resume with the latest CLI session or by name
+    continue_val = getattr(args, "continue_last", None)
+    if continue_val and not getattr(args, "resume", None):
+        if isinstance(continue_val, str):
+            # -c "session name" — resolve by title or ID
+            resolved = _resolve_session_by_name_or_id(continue_val)
+            if resolved:
+                args.resume = resolved
+            else:
+                print(f"No session found matching '{continue_val}'.")
+                print("Use 'hermes sessions list' to see available sessions.")
+                sys.exit(1)
         else:
-            print("No previous CLI session found to continue.")
-            sys.exit(1)
+            # -c with no argument — continue the most recent session
+            last_id = _resolve_last_cli_session()
+            if last_id:
+                args.resume = last_id
+            else:
+                print("No previous CLI session found to continue.")
+                sys.exit(1)
+
+    # Resolve --resume by title if it's not a direct session ID
+    resume_val = getattr(args, "resume", None)
+    if resume_val:
+        resolved = _resolve_session_by_name_or_id(resume_val)
+        if resolved:
+            args.resume = resolved
+        # If resolution fails, keep the original value — _init_agent will
+        # report "Session not found" with the original input
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -729,7 +1050,7 @@ def _model_flow_custom(config):
         cfg = load_config()
         model = cfg.get("model")
         if isinstance(model, dict):
-            model["provider"] = "auto"
+            model["provider"] = "custom"
             model["base_url"] = effective_url
         save_config(cfg)
         deactivate_provider()
@@ -1209,8 +1530,9 @@ def main():
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
-    hermes --continue             Resume the most recent session
-    hermes --resume <session_id>  Resume a specific session
+    hermes -c                     Resume the most recent session
+    hermes -c "my project"        Resume a session by name (latest in lineage)
+    hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes model                  Select default model
@@ -1221,6 +1543,8 @@ Examples:
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
+    hermes sessions browse        Interactive session picker
+    hermes sessions rename ID T   Rename/title a session
     hermes update                 Update to latest version
 
 For more help on a command:
@@ -1235,16 +1559,18 @@ For more help on a command:
     )
     parser.add_argument(
         "--resume", "-r",
-        metavar="SESSION_ID",
+        metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID (shortcut for: hermes chat --resume ID)"
+        help="Resume a previous session by ID or title"
     )
     parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
-        action="store_true",
-        default=False,
-        help="Resume the most recent CLI session"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
     )
     parser.add_argument(
         "--worktree", "-w",
@@ -1294,9 +1620,11 @@ For more help on a command:
     chat_parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
-        action="store_true",
-        default=False,
-        help="Resume the most recent CLI session"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
     )
     chat_parser.add_argument(
         "--worktree", "-w",
@@ -1671,7 +1999,7 @@ For more help on a command:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete)",
         description="View and manage the SQLite session store"
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -1696,6 +2024,17 @@ For more help on a command:
 
     sessions_stats = sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
+    sessions_rename = sessions_subparsers.add_parser("rename", help="Set or change a session's title")
+    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+
+    sessions_browse = sessions_subparsers.add_parser(
+        "browse",
+        help="Interactive session picker — browse, search, and resume sessions",
+    )
+    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -1708,18 +2047,51 @@ For more help on a command:
         action = args.sessions_action
 
         if action == "list":
-            sessions = db.search_sessions(source=args.source, limit=args.limit)
+            sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
             if not sessions:
                 print("No sessions found.")
                 return
-            print(f"{'ID':<30} {'Source':<12} {'Model':<30} {'Messages':>8} {'Started'}")
-            print("─" * 100)
             from datetime import datetime
+            import time as _time
+
+            def _relative_time(ts):
+                """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+                if not ts:
+                    return "?"
+                delta = _time.time() - ts
+                if delta < 60:
+                    return "just now"
+                elif delta < 3600:
+                    mins = int(delta / 60)
+                    return f"{mins}m ago"
+                elif delta < 86400:
+                    hours = int(delta / 3600)
+                    return f"{hours}h ago"
+                elif delta < 172800:
+                    return "yesterday"
+                elif delta < 604800:
+                    days = int(delta / 86400)
+                    return f"{days}d ago"
+                else:
+                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+            has_titles = any(s.get("title") for s in sessions)
+            if has_titles:
+                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 100)
+            else:
+                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 90)
             for s in sessions:
-                started = datetime.fromtimestamp(s["started_at"]).strftime("%Y-%m-%d %H:%M") if s["started_at"] else "?"
-                model = (s.get("model") or "?")[:28]
-                ended = " (ended)" if s.get("ended_at") else ""
-                print(f"{s['id']:<30} {s['source']:<12} {model:<30} {s['message_count']:>8} {started}{ended}")
+                last_active = _relative_time(s.get("last_active"))
+                preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
+                if has_titles:
+                    title = (s.get("title") or "—")[:20]
+                    sid = s["id"][:20]
+                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                else:
+                    sid = s["id"][:20]
+                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
             if args.session_id:
@@ -1759,6 +2131,44 @@ For more help on a command:
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
 
+        elif action == "rename":
+            title = " ".join(args.title)
+            try:
+                if db.set_session_title(args.session_id, title):
+                    print(f"Session '{args.session_id}' renamed to: {title}")
+                else:
+                    print(f"Session '{args.session_id}' not found.")
+            except ValueError as e:
+                print(f"Error: {e}")
+
+        elif action == "browse":
+            limit = getattr(args, "limit", 50) or 50
+            source = getattr(args, "source", None)
+            sessions = db.list_sessions_rich(source=source, limit=limit)
+            db.close()
+            if not sessions:
+                print("No sessions found.")
+                return
+
+            selected_id = _session_browse_picker(sessions)
+            if not selected_id:
+                print("Cancelled.")
+                return
+
+            # Launch hermes --resume <id> by replacing the current process
+            print(f"Resuming session: {selected_id}")
+            import shutil
+            hermes_bin = shutil.which("hermes")
+            if hermes_bin:
+                os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
+            else:
+                # Fallback: re-invoke via python -m
+                os.execvp(
+                    sys.executable,
+                    [sys.executable, "-m", "hermes_cli.main", "--resume", selected_id],
+                )
+            return  # won't reach here after execvp
+
         elif action == "stats":
             total = db.session_count()
             msgs = db.message_count()
@@ -1768,7 +2178,6 @@ For more help on a command:
                 c = db.session_count(source=src)
                 if c > 0:
                     print(f"  {src}: {c} sessions")
-            import os
             db_path = db.db_path
             if db_path.exists():
                 size_mb = os.path.getsize(db_path) / (1024 * 1024)
@@ -1877,7 +2286,7 @@ For more help on a command:
         args.toolsets = None
         args.verbose = False
         args.resume = None
-        args.continue_last = False
+        args.continue_last = None
         if not hasattr(args, "worktree"):
             args.worktree = False
         cmd_chat(args)

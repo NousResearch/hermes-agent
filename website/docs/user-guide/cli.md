@@ -65,6 +65,10 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 
 The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
+### Session Resume Display
+
+When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Previous Conversation" panel appears between the banner and the input prompt, showing a compact recap of the conversation history. See [Sessions — Conversation Recap on Resume](sessions.md#conversation-recap-on-resume) for details and configuration.
+
 ## Keybindings
 
 | Key | Action |
@@ -229,13 +233,15 @@ Resume options:
 ```bash
 hermes --continue                          # Resume the most recent CLI session
 hermes -c                                  # Short form
+hermes -c "my project"                     # Resume a named session (latest in lineage)
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
+hermes --resume "refactoring auth"         # Resume by title
 hermes -r 20260225_143052_a1b2c3           # Short form
 ```
 
 Resuming restores the full conversation history from SQLite. The agent sees all previous messages, tool calls, and responses — just as if you never left.
 
-Use `hermes sessions list` to browse past sessions.
+Use `/title My Session Name` inside a chat to name the current session, or `hermes sessions rename <id> <title>` from the command line. Use `hermes sessions list` to browse past sessions.
 
 ### Session Logging
 

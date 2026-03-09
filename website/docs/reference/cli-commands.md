@@ -17,7 +17,8 @@ These are commands you run from your shell.
 | `hermes` | Start interactive chat (default) |
 | `hermes chat -q "Hello"` | Single query mode (non-interactive) |
 | `hermes chat --continue` / `-c` | Resume the most recent session |
-| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session |
+| `hermes chat -c "my project"` | Resume a session by name (latest in lineage) |
+| `hermes chat --resume <id>` / `-r <id>` | Resume a specific session by ID or title |
 | `hermes chat --model <name>` | Use a specific model |
 | `hermes chat --provider <name>` | Force a provider (`nous`, `openrouter`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`) |
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
@@ -103,7 +104,8 @@ These are commands you run from your shell.
 
 | Command | Description |
 |---------|-------------|
-| `hermes sessions list` | Browse past sessions |
+| `hermes sessions list` | Browse past sessions (shows title, preview, last active) |
+| `hermes sessions rename <id> <title>` | Set or change a session's title |
 | `hermes sessions export <id>` | Export a session |
 | `hermes sessions delete <id>` | Delete a specific session |
 | `hermes sessions prune` | Remove old sessions |
@@ -154,8 +156,25 @@ Type `/` in the interactive CLI to see an autocomplete dropdown.
 | `/undo` | Remove the last user/assistant exchange |
 | `/save` | Save the current conversation |
 | `/compress` | Manually compress conversation context |
+| `/title [name]` | Set or show the current session's title |
 | `/usage` | Show token usage for this session |
 | `/insights [--days N]` | Show usage insights and analytics (last 30 days) |
+
+#### /compress
+
+Manually triggers context compression on the current conversation. This summarizes middle turns of the conversation while preserving the first 3 and last 4 turns, significantly reducing token count. Useful when:
+
+- The conversation is getting long and you want to reduce costs
+- You're approaching the model's context limit
+- You want to continue the conversation without starting fresh
+
+Requirements: at least 4 messages in the conversation. The configured model (or `compression.summary_model` from config) is used to generate the summary. After compression, the session continues seamlessly with the compressed history.
+
+Reports the result as: `Compressed: X → Y messages, ~N → ~M tokens`.
+
+:::tip
+Compression also happens automatically when approaching context limits (configurable via `compression.threshold` in `config.yaml`). Use `/compress` when you want to trigger it early.
+:::
 
 ### Media & Input
 

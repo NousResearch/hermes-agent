@@ -946,6 +946,11 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
         client = OpenAI(
             base_url=OPENROUTER_BASE_URL,
             api_key=api_key,
+            default_headers={
+                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
+                "X-OpenRouter-Title": "Hermes Agent",
+                "X-OpenRouter-Categories": "productivity,cli-agent",
+            },
         )
         response = client.chat.completions.create(
             model=model,

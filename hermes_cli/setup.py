@@ -632,6 +632,29 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
 
+        # Update config.yaml and deactivate any OAuth provider so the
+        # resolver doesn't keep returning the old provider (e.g. Codex).
+        try:
+            from hermes_cli.auth import deactivate_provider
+            deactivate_provider()
+        except Exception:
+            pass
+        import yaml
+        config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        try:
+            disk_cfg = {}
+            if config_path.exists():
+                disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+            model_section = disk_cfg.get("model", {})
+            if isinstance(model_section, str):
+                model_section = {"default": model_section}
+            model_section["provider"] = "openrouter"
+            model_section.pop("base_url", None)  # OpenRouter uses default URL
+            disk_cfg["model"] = model_section
+            config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+        except Exception as e:
+            logger.debug("Could not save provider to config.yaml: %s", e)
+
     elif provider_idx == 3:  # Custom endpoint
         selected_provider = "custom"
         print()
@@ -659,6 +682,28 @@ def setup_model_provider(config: dict):
         if model_name:
             config['model'] = model_name
             save_env_value("LLM_MODEL", model_name)
+
+        # Save provider and base_url to config.yaml so the gateway and CLI
+        # both resolve the correct provider without relying on env-var heuristics.
+        if base_url:
+            import yaml
+            config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+            try:
+                disk_cfg = {}
+                if config_path.exists():
+                    disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+                model_section = disk_cfg.get("model", {})
+                if isinstance(model_section, str):
+                    model_section = {"default": model_section}
+                model_section["provider"] = "custom"
+                model_section["base_url"] = base_url.rstrip("/")
+                if model_name:
+                    model_section["default"] = model_name
+                disk_cfg["model"] = model_section
+                config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+            except Exception as e:
+                logger.debug("Could not save provider to config.yaml: %s", e)
+
         print_success("Custom endpoint configured")
 
     elif provider_idx == 4:  # Z.AI / GLM
@@ -870,8 +915,8 @@ def setup_model_provider(config: dict):
                 config['model'] = custom
                 save_env_value("LLM_MODEL", custom)
         elif selected_provider == "openai-codex":
-            from hermes_cli.codex_models import get_codex_models
-            codex_models = get_codex_models()
+            from hermes_cli.codex_models import get_codex_model_ids
+            codex_models = get_codex_model_ids()
             model_choices = codex_models + [f"Keep current ({current_model})"]
             default_codex = 0
             if current_model in codex_models:
@@ -1264,7 +1309,7 @@ def setup_agent_settings(config: dict):
     # ── Max Iterations ──
     print_header("Agent Settings")
 
-    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '60'
+    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '90'
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
@@ -1660,14 +1705,18 @@ def setup_gateway(config: dict):
 # Section 5: Tool Configuration (delegates to unified tools_config.py)
 # =============================================================================
 
-def setup_tools(config: dict):
+def setup_tools(config: dict, first_install: bool = False):
     """Configure tools — delegates to the unified tools_command() in tools_config.py.
     
     Both `hermes setup tools` and `hermes tools` use the same flow:
     platform selection → toolset toggles → provider/API key configuration.
+    
+    Args:
+        first_install: When True, uses the simplified first-install flow
+            (no platform menu, prompts for all unconfigured API keys).
     """
     from hermes_cli.tools_config import tools_command
-    tools_command()
+    tools_command(first_install=first_install, config=config)
 
 
 # =============================================================================
@@ -1820,7 +1869,7 @@ def run_setup_wizard(args):
     setup_gateway(config)
 
     # Section 5: Tools
-    setup_tools(config)
+    setup_tools(config, first_install=not is_existing)
 
     # Save and show summary
     save_config(config)

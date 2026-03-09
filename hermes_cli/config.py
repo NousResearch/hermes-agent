@@ -81,17 +81,34 @@ DEFAULT_CONFIG = {
     
     "browser": {
         "inactivity_timeout": 120,
+        "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
     
     "compression": {
         "enabled": True,
         "threshold": 0.85,
         "summary_model": "google/gemini-3-flash-preview",
+        "summary_provider": "auto",
+    },
+    
+    # Auxiliary model overrides (advanced).  By default Hermes auto-selects
+    # the provider and model for each side task.  Set these to override.
+    "auxiliary": {
+        "vision": {
+            "provider": "auto",    # auto | openrouter | nous | main
+            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+        },
+        "web_extract": {
+            "provider": "auto",
+            "model": "",
+        },
     },
     
     "display": {
         "compact": False,
         "personality": "kawaii",
+        "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
+        "bell_on_complete": False,  # Play terminal bell (\a) when agent finishes a response
     },
     
     # Text-to-speech configuration
@@ -422,7 +439,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 60)",
+        "description": "Maximum tool-calling iterations per conversation (default: 90)",
         "prompt": "Max iterations",
         "url": None,
         "password": False,
@@ -742,6 +759,36 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
+_COMMENTED_SECTIONS = """
+# ── Security ──────────────────────────────────────────────────────────
+# API keys, tokens, and passwords are redacted from tool output by default.
+# Set to false to see full values (useful for debugging auth issues).
+#
+# security:
+#   redact_secrets: false
+
+# ── Fallback Model ────────────────────────────────────────────────────
+# Automatic provider failover when primary is unavailable.
+# Uncomment and configure to enable. Triggers on rate limits (429),
+# overload (529), service errors (503), or connection failures.
+#
+# Supported providers:
+#   openrouter   (OPENROUTER_API_KEY)  — routes to any model
+#   openai-codex (OAuth — hermes login) — OpenAI Codex
+#   nous         (OAuth — hermes login) — Nous Portal
+#   zai          (ZAI_API_KEY)         — Z.AI / GLM
+#   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   minimax      (MINIMAX_API_KEY)     — MiniMax
+#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#
+# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+#
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+"""
+
+
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     ensure_hermes_home()
@@ -749,6 +796,18 @@ def save_config(config: Dict[str, Any]):
     
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        # Append commented-out sections for features that are off by default
+        # or only relevant when explicitly configured. Skip sections the
+        # user has already uncommented and configured.
+        sections = []
+        sec = config.get("security", {})
+        if not sec or sec.get("redact_secrets") is None:
+            sections.append("security")
+        fb = config.get("fallback_model", {})
+        if not fb or not (fb.get("provider") and fb.get("model")):
+            sections.append("fallback")
+        if sections:
+            f.write(_COMMENTED_SECTIONS)
 
 
 def load_env() -> Dict[str, str]:
@@ -912,6 +971,31 @@ def show_config():
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
         print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
+        comp_provider = compression.get('summary_provider', 'auto')
+        if comp_provider != 'auto':
+            print(f"  Provider:     {comp_provider}")
+    
+    # Auxiliary models
+    auxiliary = config.get('auxiliary', {})
+    aux_tasks = {
+        "Vision":      auxiliary.get('vision', {}),
+        "Web extract": auxiliary.get('web_extract', {}),
+    }
+    has_overrides = any(
+        t.get('provider', 'auto') != 'auto' or t.get('model', '')
+        for t in aux_tasks.values()
+    )
+    if has_overrides:
+        print()
+        print(color("◆ Auxiliary Models (overrides)", Colors.CYAN, Colors.BOLD))
+        for label, task_cfg in aux_tasks.items():
+            prov = task_cfg.get('provider', 'auto')
+            mdl = task_cfg.get('model', '')
+            if prov != 'auto' or mdl:
+                parts = [f"provider={prov}"]
+                if mdl:
+                    parts.append(f"model={mdl}")
+                print(f"  {label:12s}  {', '.join(parts)}")
     
     # Messaging
     print()
@@ -969,7 +1053,7 @@ def set_config_value(key: str, value: str):
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'NOUS_API_KEY', 'WANDB_API_KEY',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
         'TINKER_API_KEY',
     ]
     

@@ -620,6 +620,16 @@ code_execution:
   max_tool_calls: 50           # Max tool calls within code execution
 ```
 
+## Browser
+
+Configure browser automation behavior:
+
+```yaml
+browser:
+  inactivity_timeout: 120        # Seconds before auto-closing idle sessions
+  record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+```
+
 ## Delegation
 
 Configure subagent behavior for the delegate tool:

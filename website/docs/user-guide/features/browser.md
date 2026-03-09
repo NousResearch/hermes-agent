@@ -142,6 +142,16 @@ What does the chart on this page show?
 
 Screenshots are stored in `~/.hermes/browser_screenshots/` and automatically cleaned up after 24 hours.
 
+### `browser_console`
+
+Get browser console output (log/warn/error messages) and uncaught JavaScript exceptions from the current page. Essential for detecting silent JS errors that don't appear in the accessibility tree.
+
+```
+Check the browser console for any JavaScript errors
+```
+
+Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+
 ### `browser_close`
 
 Close the browser session and release resources. Call this when done to free up Browserbase session quota.
@@ -174,6 +184,17 @@ Agent workflow:
 3. Returns formatted results
 4. browser_close()
 ```
+
+## Session Recording
+
+Automatically record browser sessions as WebM video files:
+
+```yaml
+browser:
+  record_sessions: true  # default: false
+```
+
+When enabled, recording starts automatically on the first `browser_navigate` and saves to `~/.hermes/browser_recordings/` when the session closes. Works in both local and cloud (Browserbase) modes. Recordings older than 72 hours are automatically cleaned up.
 
 ## Stealth Features
 

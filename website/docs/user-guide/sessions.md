@@ -84,6 +84,35 @@ hermes chat --resume 20250305_091523_a1b2c3d4
 
 Session IDs are shown when you exit a CLI session, and can be found with `hermes sessions list`.
 
+### Conversation Recap on Resume
+
+When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
+
+```text
+╭─────────────────────────── Previous Conversation ────────────────────────────╮
+│   ● You: What is Python?                                                     │
+│   ◆ Hermes: Python is a high-level programming language.                     │
+│   ● You: How do I install it?                                                │
+│   ◆ Hermes: [3 tool calls: web_search, web_extract, terminal]                │
+│   ◆ Hermes: You can download Python from python.org...                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+The recap:
+- Shows **user messages** (gold `●`) and **assistant responses** (green `◆`)
+- **Truncates** long messages (300 chars for user, 200 chars / 3 lines for assistant)
+- **Collapses tool calls** to a count with tool names (e.g., `[3 tool calls: terminal, web_search]`)
+- **Hides** system messages, tool results, and internal reasoning
+- **Caps** at the last 10 exchanges with a "... N earlier messages ..." indicator
+- Uses **dim styling** to distinguish from the active conversation
+
+To disable the recap and keep the minimal one-liner behavior, set in `~/.hermes/config.yaml`:
+
+```yaml
+display:
+  resume_display: minimal   # default: full
+```
+
 :::tip
 Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091523_a1b2c3d4`. You can resume by ID or by title — both work with `-c` and `-r`.
 :::

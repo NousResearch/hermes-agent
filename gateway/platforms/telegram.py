@@ -346,6 +346,64 @@ class TelegramAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Failed to send local image: {e}")
             return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a document/file natively as a Telegram file attachment."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            if not os.path.exists(file_path):
+                return SendResult(success=False, error=f"File not found: {file_path}")
+
+            display_name = file_name or os.path.basename(file_path)
+
+            with open(file_path, "rb") as f:
+                msg = await self._bot.send_document(
+                    chat_id=int(chat_id),
+                    document=f,
+                    filename=display_name,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send document: {e}")
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a video natively as a Telegram video message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            if not os.path.exists(video_path):
+                return SendResult(success=False, error=f"Video file not found: {video_path}")
+
+            with open(video_path, "rb") as f:
+                msg = await self._bot.send_video(
+                    chat_id=int(chat_id),
+                    video=f,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send video: {e}")
+            return await super().send_video(chat_id, video_path, caption, reply_to)
+
     async def send_image(
         self,
         chat_id: str,

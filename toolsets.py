@@ -148,6 +148,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "notification": {
+        "description": "Desktop notifications and alert sounds (notify-send, osascript, PowerShell). Falls back to terminal bell over SSH.",
+        "tools": ["notify", "notify_sound"],
+        "includes": []
+    },
+
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, or OpenAI",
         "tools": ["text_to_speech"],

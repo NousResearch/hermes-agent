@@ -291,13 +291,20 @@ class AudioRecorder:
                             if cb:
                                 threading.Thread(target=cb, daemon=True).start()
 
-            self._stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=DTYPE,
-                callback=_callback,
-            )
-            self._stream.start()
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype=DTYPE,
+                    callback=_callback,
+                )
+                self._stream.start()
+            except Exception as e:
+                self._stream = None
+                raise RuntimeError(
+                    f"Failed to open audio input stream: {e}. "
+                    "Check that a microphone is connected and accessible."
+                ) from e
             self._recording = True
             logger.info("Voice recording started (rate=%d, channels=%d)", SAMPLE_RATE, CHANNELS)
 

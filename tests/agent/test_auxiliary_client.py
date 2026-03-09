@@ -220,14 +220,15 @@ class TestVisionClientFallback:
         assert client is None
         assert model is None
 
-    def test_vision_forced_openai(self, monkeypatch):
-        """When forced to 'openai', vision uses OpenAI direct API."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openai")
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+    def test_vision_forced_codex(self, monkeypatch, codex_auth_dir):
+        """When forced to 'codex', vision uses Codex OAuth."""
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "codex")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI"):
             client, model = get_vision_auxiliary_client()
-        assert client is not None
-        assert model == "gpt-4o-mini"
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
 
 
 class TestGetAuxiliaryProvider:
@@ -324,19 +325,17 @@ class TestResolveForcedProvider:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.3-codex"
 
-    def test_forced_openai_with_key(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = _resolve_forced_provider("openai")
-        assert model == "gpt-4o-mini"
-        assert client is not None
-        call_kwargs = mock_openai.call_args
-        assert call_kwargs.kwargs["base_url"] == "https://api.openai.com/v1"
-        assert call_kwargs.kwargs["api_key"] == "sk-test-key"
+    def test_forced_codex(self, codex_auth_dir, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI"):
+            client, model = _resolve_forced_provider("codex")
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
 
-    def test_forced_openai_no_key(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        client, model = _resolve_forced_provider("openai")
+    def test_forced_codex_no_token(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = _resolve_forced_provider("codex")
         assert client is None
         assert model is None
 

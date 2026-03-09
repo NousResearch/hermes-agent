@@ -725,12 +725,33 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
 # Compact banner for smaller terminals (fallback)
+# Note: built dynamically by _build_compact_banner() to fit terminal width
 COMPACT_BANNER = """
 [bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
 [bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
 [bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
 [bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
 """
+
+
+def _build_compact_banner() -> str:
+    """Build a compact banner that fits the current terminal width."""
+    w = min(shutil.get_terminal_size().columns - 2, 64)
+    if w < 30:
+        return "\n[#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- Nous Research[/]\n"
+    inner = w - 2  # inside the box border
+    bar = "═" * w
+    line1 = "⚕ NOUS HERMES - AI Agent Framework"
+    line2 = "Messenger of the Digital Gods  ·  Nous Research"
+    # Truncate and pad to fit
+    line1 = line1[:inner - 2].ljust(inner - 2)
+    line2 = line2[:inner - 2].ljust(inner - 2)
+    return (
+        f"\n[bold #FFD700]╔{bar}╗[/]\n"
+        f"[bold #FFD700]║[/] [#FFBF00]{line1}[/] [bold #FFD700]║[/]\n"
+        f"[bold #FFD700]║[/] [dim #B8860B]{line2}[/] [bold #FFD700]║[/]\n"
+        f"[bold #FFD700]╚{bar}╝[/]\n"
+    )
 
 
 def _get_available_skills() -> Dict[str, List[str]]:
@@ -930,10 +951,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         padding=(0, 2),
     )
     
-    # Print the big HERMES-AGENT logo first (no panel wrapper for full width)
+    # Print the big HERMES-AGENT logo — skip if terminal is too narrow
     console.print()
-    console.print(HERMES_AGENT_LOGO)
-    console.print()
+    term_width = shutil.get_terminal_size().columns
+    if term_width >= 95:
+        console.print(HERMES_AGENT_LOGO)
+        console.print()
     
     # Print the panel with caduceus and info
     console.print(outer_panel)
@@ -1383,8 +1406,13 @@ class HermesCLI:
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
         
-        if self.compact:
-            self.console.print(COMPACT_BANNER)
+        # Auto-compact for narrow terminals — the full banner with caduceus
+        # + tool list needs ~80 columns minimum to render without wrapping.
+        term_width = shutil.get_terminal_size().columns
+        use_compact = self.compact or term_width < 80
+        
+        if use_compact:
+            self.console.print(_build_compact_banner())
             self._show_status()
         else:
             # Get tools for display
@@ -2394,8 +2422,9 @@ class HermesCLI:
             # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
-                if self.compact:
-                    cc.print(COMPACT_BANNER)
+                term_w = shutil.get_terminal_size().columns
+                if self.compact or term_w < 80:
+                    cc.print(_build_compact_banner())
                 else:
                     tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
                     cwd = os.getenv("TERMINAL_CWD", os.getcwd())

@@ -4,7 +4,7 @@ Provides a single resolution chain so every consumer (context compression,
 session search, web extraction, vision analysis, browser vision) picks up
 the best available backend without duplicating fallback logic.
 
-Resolution order (same for text and vision tasks):
+Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
   2. Nous Portal (~/.hermes/auth.json active provider)
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
@@ -14,10 +14,19 @@ Resolution order (same for text and vision tasks):
      — checked via PROVIDER_REGISTRY entries with auth_type='api_key'
   6. None
 
+Resolution order for vision/multimodal tasks (auto mode):
+  1. OpenRouter
+  2. Nous Portal
+  3. None  (steps 3-5 are skipped — they may not support multimodal)
+
 Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
 CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task:
 "openrouter", "nous", or "main" (= steps 3-5).
-Default "auto" follows the full chain above.
+Default "auto" follows the chains above.
+
+Per-task model overrides (e.g. AUXILIARY_VISION_MODEL,
+AUXILIARY_WEB_EXTRACT_MODEL) let callers use a different model slug
+than the provider's default.
 """
 
 import json
@@ -485,11 +494,23 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     Checks AUXILIARY_VISION_PROVIDER for a forced provider, otherwise
     auto-detects.  Callers may override the returned model with
     AUXILIARY_VISION_MODEL.
+
+    In auto mode, only OpenRouter and Nous Portal are tried because they
+    are known to support multimodal (Gemini).  Custom endpoints, Codex,
+    and API-key providers are skipped — they may not handle vision input
+    and would produce confusing errors.  To use one of those providers
+    for vision, set AUXILIARY_VISION_PROVIDER explicitly.
     """
     forced = _get_auxiliary_provider("vision")
     if forced != "auto":
         return _resolve_forced_provider(forced)
-    return _resolve_auto()
+    # Auto: only multimodal-capable providers
+    for try_fn in (_try_openrouter, _try_nous):
+        client, model = try_fn()
+        if client is not None:
+            return client, model
+    logger.debug("Auxiliary vision client: none available (auto only tries OpenRouter/Nous)")
+    return None, None
 
 
 def get_auxiliary_extra_body() -> dict:

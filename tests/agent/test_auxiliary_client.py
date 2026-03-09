@@ -1,4 +1,4 @@
-"""Tests for agent.auxiliary_client resolution chain, especially the Codex fallback."""
+"""Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
 import os
@@ -12,6 +12,9 @@ from agent.auxiliary_client import (
     get_vision_auxiliary_client,
     auxiliary_max_tokens_param,
     _read_codex_access_token,
+    _get_auxiliary_provider,
+    _resolve_forced_provider,
+    _resolve_auto,
 )
 
 
@@ -21,6 +24,10 @@ def _clean_env(monkeypatch):
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
+        # Per-task provider/model overrides
+        "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
+        "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -152,13 +159,202 @@ class TestGetTextAuxiliaryClient:
 
 
 class TestVisionClientFallback:
-    """Vision client uses the same full fallback chain as text."""
+    """Vision client auto mode only tries OpenRouter + Nous (multimodal-capable)."""
 
     def test_vision_returns_none_without_any_credentials(self):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             client, model = get_vision_auxiliary_client()
         assert client is None
         assert model is None
+
+    def test_vision_auto_skips_codex(self, codex_auth_dir):
+        """Even with Codex available, vision auto mode returns None (Codex can't do multimodal)."""
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = get_vision_auxiliary_client()
+        assert client is None
+        assert model is None
+
+    def test_vision_auto_skips_custom_endpoint(self, monkeypatch):
+        """Custom endpoint is skipped in vision auto mode."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = get_vision_auxiliary_client()
+        assert client is None
+        assert model is None
+
+    def test_vision_uses_openrouter_when_available(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_vision_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+        assert client is not None
+
+    def test_vision_uses_nous_when_available(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI"):
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = get_vision_auxiliary_client()
+        assert model == "gemini-3-flash"
+        assert client is not None
+
+    def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
+        """When explicitly forced to 'main', vision CAN use custom endpoint."""
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_vision_auxiliary_client()
+        assert client is not None
+        assert model == "gpt-4o-mini"
+
+    def test_vision_forced_main_returns_none_without_creds(self, monkeypatch):
+        """Forced main with no credentials still returns None."""
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = get_vision_auxiliary_client()
+        assert client is None
+        assert model is None
+
+
+class TestGetAuxiliaryProvider:
+    """Tests for _get_auxiliary_provider env var resolution."""
+
+    def test_no_task_returns_auto(self):
+        assert _get_auxiliary_provider() == "auto"
+        assert _get_auxiliary_provider("") == "auto"
+
+    def test_auxiliary_prefix_takes_priority(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openrouter")
+        assert _get_auxiliary_provider("vision") == "openrouter"
+
+    def test_context_prefix_fallback(self, monkeypatch):
+        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
+        assert _get_auxiliary_provider("compression") == "nous"
+
+    def test_auxiliary_prefix_over_context_prefix(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_COMPRESSION_PROVIDER", "openrouter")
+        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
+        assert _get_auxiliary_provider("compression") == "openrouter"
+
+    def test_auto_value_treated_as_auto(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "auto")
+        assert _get_auxiliary_provider("vision") == "auto"
+
+    def test_whitespace_stripped(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "  openrouter  ")
+        assert _get_auxiliary_provider("vision") == "openrouter"
+
+    def test_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "OpenRouter")
+        assert _get_auxiliary_provider("vision") == "openrouter"
+
+    def test_main_provider(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "main")
+        assert _get_auxiliary_provider("web_extract") == "main"
+
+
+class TestResolveForcedProvider:
+    """Tests for _resolve_forced_provider with explicit provider selection."""
+
+    def test_forced_openrouter(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("openrouter")
+        assert model == "google/gemini-3-flash-preview"
+        assert client is not None
+
+    def test_forced_openrouter_no_key(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = _resolve_forced_provider("openrouter")
+        assert client is None
+        assert model is None
+
+    def test_forced_nous(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI"):
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = _resolve_forced_provider("nous")
+        assert model == "gemini-3-flash"
+        assert client is not None
+
+    def test_forced_nous_not_configured(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = _resolve_forced_provider("nous")
+        assert client is None
+        assert model is None
+
+    def test_forced_main_uses_custom(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        assert model == "gpt-4o-mini"
+
+    def test_forced_main_skips_openrouter_nous(self, monkeypatch):
+        """Even if OpenRouter key is set, 'main' skips it."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        # Should use custom endpoint, not OpenRouter
+        assert model == "gpt-4o-mini"
+
+    def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI"):
+            client, model = _resolve_forced_provider("main")
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
+
+    def test_forced_unknown_returns_none(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = _resolve_forced_provider("invalid-provider")
+        assert client is None
+        assert model is None
+
+
+class TestTaskSpecificOverrides:
+    """Integration tests for per-task provider routing via get_text_auxiliary_client(task=...)."""
+
+    def test_text_with_vision_provider_override(self, monkeypatch):
+        """AUXILIARY_VISION_PROVIDER should not affect text tasks."""
+        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "nous")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI"):
+            client, model = get_text_auxiliary_client()  # no task → auto
+        assert model == "google/gemini-3-flash-preview"  # OpenRouter, not Nous
+
+    def test_compression_task_reads_context_prefix(self, monkeypatch):
+        """Compression task should check CONTEXT_COMPRESSION_PROVIDER."""
+        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")  # would win in auto
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI"):
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = get_text_auxiliary_client("compression")
+        assert model == "gemini-3-flash"  # forced to Nous, not OpenRouter
+
+    def test_web_extract_task_override(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "openrouter")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI"):
+            client, model = get_text_auxiliary_client("web_extract")
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_task_without_override_uses_auto(self, monkeypatch):
+        """A task with no provider env var falls through to auto chain."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI"):
+            client, model = get_text_auxiliary_client("compression")
+        assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
 
 
 class TestAuxiliaryMaxTokensParam:

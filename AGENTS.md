@@ -16,6 +16,7 @@ source venv/bin/activate  # Before running any Python commands
 ```
 hermes-agent/
 ├── agent/                # Agent internals (extracted from run_agent.py)
+│   ├── auxiliary_client.py   # Shared auxiliary OpenAI client (vision, compression, web extract)
 │   ├── model_metadata.py     # Model context lengths, token estimation
 │   ├── context_compressor.py # Auto context compression
 │   ├── prompt_caching.py     # Anthropic prompt caching

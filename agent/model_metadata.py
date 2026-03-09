@@ -49,6 +49,17 @@ DEFAULT_CONTEXT_LENGTHS = {
     "meta-llama/llama-3.3-70b-instruct": 131072,
     "deepseek/deepseek-chat-v3": 65536,
     "qwen/qwen-2.5-72b-instruct": 32768,
+    "glm-4.7": 202752,
+    "glm-5": 202752,
+    "glm-4.5": 131072,
+    "glm-4.5-flash": 131072,
+    "kimi-k2.5": 262144,
+    "kimi-k2-thinking": 262144,
+    "kimi-k2-turbo-preview": 262144,
+    "kimi-k2-0905-preview": 131072,
+    "MiniMax-M2.5": 204800,
+    "MiniMax-M2.5-highspeed": 204800,
+    "MiniMax-M2.1": 204800,
 }
 
 

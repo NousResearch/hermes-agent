@@ -55,6 +55,20 @@ MODEL_PRICING = {
     # Meta (via providers)
     "llama-4-maverick": {"input": 0.50, "output": 0.70},
     "llama-4-scout": {"input": 0.20, "output": 0.30},
+    # Z.AI / GLM (direct provider — pricing not published externally, treat as local)
+    "glm-5": {"input": 0.0, "output": 0.0},
+    "glm-4.7": {"input": 0.0, "output": 0.0},
+    "glm-4.5": {"input": 0.0, "output": 0.0},
+    "glm-4.5-flash": {"input": 0.0, "output": 0.0},
+    # Kimi / Moonshot (direct provider — pricing not published externally, treat as local)
+    "kimi-k2.5": {"input": 0.0, "output": 0.0},
+    "kimi-k2-thinking": {"input": 0.0, "output": 0.0},
+    "kimi-k2-turbo-preview": {"input": 0.0, "output": 0.0},
+    "kimi-k2-0905-preview": {"input": 0.0, "output": 0.0},
+    # MiniMax (direct provider — pricing not published externally, treat as local)
+    "MiniMax-M2.5": {"input": 0.0, "output": 0.0},
+    "MiniMax-M2.5-highspeed": {"input": 0.0, "output": 0.0},
+    "MiniMax-M2.1": {"input": 0.0, "output": 0.0},
 }
 
 # Fallback: unknown/custom models get zero cost (we can't assume pricing

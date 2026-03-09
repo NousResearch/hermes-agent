@@ -285,8 +285,8 @@ def _convert_to_png(path: Path) -> bool:
         logger.debug("Pillow BMP→PNG conversion failed: %s", e)
 
     # Fall back to ImageMagick convert
+    tmp = path.with_suffix(".bmp")
     try:
-        tmp = path.with_suffix(".bmp")
         path.rename(tmp)
         r = subprocess.run(
             ["convert", str(tmp), "png:" + str(path)],
@@ -297,8 +297,12 @@ def _convert_to_png(path: Path) -> bool:
             return True
     except FileNotFoundError:
         logger.debug("ImageMagick not installed — cannot convert BMP to PNG")
+        if tmp.exists() and not path.exists():
+            tmp.rename(path)
     except Exception as e:
         logger.debug("ImageMagick BMP→PNG conversion failed: %s", e)
+        if tmp.exists() and not path.exists():
+            tmp.rename(path)
 
     # Can't convert — BMP is still usable as-is for most APIs
     return path.exists() and path.stat().st_size > 0

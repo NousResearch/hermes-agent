@@ -99,6 +99,46 @@ from agent.trajectory import (
 )
 
 
+class IterationBudget:
+    """Thread-safe shared iteration counter for parent and child agents.
+
+    Tracks total LLM-call iterations consumed across a parent agent and all
+    its subagents.  A single ``IterationBudget`` is created by the parent
+    and passed to every child so they share the same cap.
+
+    ``execute_code`` (programmatic tool calling) iterations are refunded via
+    :meth:`refund` so they don't eat into the budget.
+    """
+
+    def __init__(self, max_total: int):
+        self.max_total = max_total
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def consume(self) -> bool:
+        """Try to consume one iteration.  Returns True if allowed."""
+        with self._lock:
+            if self._used >= self.max_total:
+                return False
+            self._used += 1
+            return True
+
+    def refund(self) -> None:
+        """Give back one iteration (e.g. for execute_code turns)."""
+        with self._lock:
+            if self._used > 0:
+                self._used -= 1
+
+    @property
+    def used(self) -> int:
+        return self._used
+
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.max_total - self._used)
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -114,7 +154,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,
         model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
-        max_iterations: int = 60,  # Default tool-calling iterations
+        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -142,6 +182,7 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         honcho_session_key: str = None,
+        iteration_budget: "IterationBudget" = None,
     ):
         """
         Initialize the AI Agent.
@@ -152,7 +193,7 @@ class AIAgent:
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-            max_iterations (int): Maximum number of tool calling iterations (default: 60)
+            max_iterations (int): Maximum number of tool calling iterations (default: 90)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -172,7 +213,7 @@ class AIAgent:
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
-                If None, defaults to {"enabled": True, "effort": "xhigh"} for OpenRouter. Set to disable/customize reasoning.
+                If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -186,6 +227,9 @@ class AIAgent:
         """
         self.model = model
         self.max_iterations = max_iterations
+        # Shared iteration budget — parent creates, children inherit.
+        # Consumed by every LLM turn across parent + all subagents.
+        self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
@@ -209,13 +253,7 @@ class AIAgent:
             self.provider = "openai-codex"
         else:
             self.api_mode = "chat_completions"
-        if base_url and "api.anthropic.com" in base_url.strip().lower():
-            raise ValueError(
-                "Anthropic's native /v1/messages API is not supported yet (planned for a future release). "
-                "Hermes currently requires OpenAI-compatible /chat/completions endpoints. "
-                "To use Claude models now, route through OpenRouter (OPENROUTER_API_KEY) "
-                "or any OpenAI-compatible proxy that wraps the Anthropic API."
-            )
+
         self.tool_progress_callback = tool_progress_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
@@ -243,7 +281,7 @@ class AIAgent:
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
-        self.reasoning_config = reasoning_config  # None = use default (xhigh for OpenRouter)
+        self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -344,6 +382,12 @@ class AIAgent:
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
                 "X-OpenRouter-Title": "Hermes Agent",
                 "X-OpenRouter-Categories": "productivity,cli-agent",
+            }
+        elif "api.kimi.com" in effective_base.lower():
+            # Kimi Code API requires a recognized coding-agent User-Agent
+            # (see https://github.com/MoonshotAI/kimi-cli)
+            client_kwargs["default_headers"] = {
+                "User-Agent": "KimiCLI/1.0",
             }
         
         self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
@@ -1363,7 +1407,8 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        now = datetime.now()
+        from hermes_time import now as _hermes_now
+        now = _hermes_now()
         prompt_parts.append(
             f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
         )
@@ -2018,6 +2063,49 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
+        if self.api_mode != "chat_completions" or self.provider != "nous":
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_nous_runtime_credentials
+
+            creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                force_mint=force,
+            )
+        except Exception as exc:
+            logger.debug("Nous credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip().rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        # Nous requests should not inherit OpenRouter-only attribution headers.
+        self._client_kwargs.pop("default_headers", None)
+
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+        try:
+            self.client = OpenAI(**self._client_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to rebuild OpenAI client after Nous refresh: %s", exc)
+            return False
+
+        return True
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -2069,8 +2157,8 @@ class AIAgent:
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
 
-            # Resolve reasoning effort: config > default (xhigh)
-            reasoning_effort = "xhigh"
+            # Resolve reasoning effort: config > default (medium)
+            reasoning_effort = "medium"
             reasoning_enabled = True
             if self.reasoning_config and isinstance(self.reasoning_config, dict):
                 if self.reasoning_config.get("enabled") is False:
@@ -2136,7 +2224,7 @@ class AIAgent:
             else:
                 extra_body["reasoning"] = {
                     "enabled": True,
-                    "effort": "xhigh"
+                    "effort": "medium"
                 }
 
         # Nous Portal product attribution
@@ -2396,6 +2484,8 @@ class AIAgent:
 
         if self._session_db:
             try:
+                # Propagate title to the new session with auto-numbering
+                old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -2405,6 +2495,13 @@ class AIAgent:
                     model=self.model,
                     parent_session_id=old_session_id,
                 )
+                # Auto-number the title for the continuation session
+                if old_title:
+                    try:
+                        new_title = self._session_db.get_next_title_in_lineage(old_title)
+                        self._session_db.set_session_title(self.session_id, new_title)
+                    except (ValueError, Exception) as e:
+                        logger.debug("Could not propagate title on compression: %s", e)
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
@@ -2531,7 +2628,6 @@ class AIAgent:
                         context=function_args.get("context"),
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
-                        model=function_args.get("model"),
                         max_iterations=function_args.get("max_iterations"),
                         parent_agent=self,
                     )
@@ -2680,7 +2776,7 @@ class AIAgent:
                 else:
                     summary_extra_body["reasoning"] = {
                         "enabled": True,
-                        "effort": "xhigh"
+                        "effort": "medium"
                     }
             if _is_nous:
                 summary_extra_body["tags"] = ["product=hermes-agent"]
@@ -2792,13 +2888,15 @@ class AIAgent:
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         
-        # Reset retry counters at the start of each conversation to prevent state leakage
+        # Reset retry counters and iteration budget at the start of each turn
+        # so subagent usage from a previous turn doesn't eat into the next one.
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
         self._last_content_with_tools = None
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self.iteration_budget = IterationBudget(self.max_iterations)
         
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
@@ -2930,7 +3028,7 @@ class AIAgent:
         # Clear any stale interrupt state at start
         self.clear_interrupt()
         
-        while api_call_count < self.max_iterations:
+        while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True
@@ -2939,6 +3037,10 @@ class AIAgent:
                 break
             
             api_call_count += 1
+            if not self.iteration_budget.consume():
+                if not self.quiet_mode:
+                    print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
+                break
 
             # Fire step_callback for gateway hooks (agent:step event)
             if self.step_callback is not None:
@@ -3015,6 +3117,13 @@ class AIAgent:
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
             
+            # Safety net: strip orphaned tool results / add stubs for missing
+            # results before sending to the API.  The compressor handles this
+            # during compression, but orphans can also sneak in from session
+            # loading or manual message manipulation.
+            if hasattr(self, 'context_compressor') and self.context_compressor:
+                api_messages = self.context_compressor._sanitize_tool_pairs(api_messages)
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
@@ -3043,9 +3152,13 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 6  # Increased to allow longer backoff periods
+            compression_attempts = 0
+            max_compression_attempts = 3
             codex_auth_retry_attempted = False
+            nous_auth_retry_attempted = False
 
             finish_reason = "stop"
+            response = None  # Guard against UnboundLocalError if all retries fail
 
             while retry_count < max_retries:
                 try:
@@ -3293,6 +3406,16 @@ class AIAgent:
                         if self._try_refresh_codex_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
                             continue
+                    if (
+                        self.api_mode == "chat_completions"
+                        and self.provider == "nous"
+                        and status_code == 401
+                        and not nous_auth_retry_attempted
+                    ):
+                        nous_auth_retry_attempted = True
+                        if self._try_refresh_nous_client_credentials(force=True):
+                            print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                            continue
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -3331,7 +3454,19 @@ class AIAgent:
                     )
 
                     if is_payload_too_large:
-                        print(f"{self.log_prefix}⚠️  Request payload too large (413) - attempting compression...")
+                        compression_attempts += 1
+                        if compression_attempts > max_compression_attempts:
+                            print(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.")
+                            logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
+                                "partial": True
+                            }
+                        print(f"{self.log_prefix}⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -3340,6 +3475,7 @@ class AIAgent:
 
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            time.sleep(2)  # Brief pause between compression retries
                             continue  # Retry with compressed messages
                         else:
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
@@ -3385,6 +3521,20 @@ class AIAgent:
                         else:
                             print(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...")
 
+                        compression_attempts += 1
+                        if compression_attempts > max_compression_attempts:
+                            print(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.")
+                            logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                "partial": True
+                            }
+                        print(f"{self.log_prefix}   🗜️  Context compression attempt {compression_attempts}/{max_compression_attempts}...")
+
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens
@@ -3393,6 +3543,7 @@ class AIAgent:
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
                                 print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            time.sleep(2)  # Brief pause between compression retries
                             continue  # Retry with compressed messages or new tier
                         else:
                             # Can't compress further and already at minimum tier
@@ -3469,6 +3620,14 @@ class AIAgent:
             
             # If the API call was interrupted, skip response processing
             if interrupted:
+                break
+
+            # Guard: if all retries exhausted without a successful response
+            # (e.g. repeated context-length errors that exhausted retry_count),
+            # the `response` variable is still None. Break out cleanly.
+            if response is None:
+                print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
+                self._persist_session(messages, conversation_history)
                 break
 
             try:
@@ -3687,6 +3846,13 @@ class AIAgent:
                     self._log_msg_to_db(assistant_msg)
                     
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
+
+                    # Refund the iteration if the ONLY tool(s) called were
+                    # execute_code (programmatic tool calling).  These are
+                    # cheap RPC-style calls that shouldn't eat the budget.
+                    _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                    if _tc_names == {"execute_code"}:
+                        self.iteration_budget.refund()
                     
                     if self.compression_enabled and self.context_compressor.should_compress():
                         messages, active_system_prompt = self._compress_context(
@@ -3707,13 +3873,33 @@ class AIAgent:
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
-                        # Track retries for empty-after-think responses
+                        # If the previous turn already delivered real content alongside
+                        # tool calls (e.g. "You're welcome!" + memory save), the model
+                        # has nothing more to say. Use the earlier content immediately
+                        # instead of wasting API calls on retries that won't help.
+                        fallback = getattr(self, '_last_content_with_tools', None)
+                        if fallback:
+                            logger.debug("Empty follow-up after tool calls — using prior turn content as final response")
+                            self._last_content_with_tools = None
+                            self._empty_content_retries = 0
+                            for i in range(len(messages) - 1, -1, -1):
+                                msg = messages[i]
+                                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                                    tool_names = []
+                                    for tc in msg["tool_calls"]:
+                                        fn = tc.get("function", {})
+                                        tool_names.append(fn.get("name", "unknown"))
+                                    msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
+                                    break
+                            final_response = self._strip_think_blocks(fallback).strip()
+                            break
+
+                        # No fallback available — this is a genuine empty response.
+                        # Retry in case the model just had a bad generation.
                         if not hasattr(self, '_empty_content_retries'):
                             self._empty_content_retries = 0
                         self._empty_content_retries += 1
                         
-                        # Show the reasoning/thinking content so the user can see
-                        # what the model was thinking even though content is empty
                         reasoning_text = self._extract_reasoning(assistant_message)
                         print(f"{self.log_prefix}⚠️  Response only contains think block with no content after it")
                         if reasoning_text:
@@ -3869,7 +4055,12 @@ class AIAgent:
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                     break
         
-        if api_call_count >= self.max_iterations and final_response is None:
+        if final_response is None and (
+            api_call_count >= self.max_iterations
+            or self.iteration_budget.remaining <= 0
+        ):
+            if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
+                print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} used, including subagents)")
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully
@@ -3940,7 +4131,7 @@ def main(
 
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4-20250514.
+        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
         max_turns (int): Maximum number of API call iterations. Defaults to 10.

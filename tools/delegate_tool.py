@@ -174,7 +174,14 @@ def _run_single_child(
 
     child_start = time.monotonic()
 
-    child_toolsets = _strip_blocked_tools(toolsets or DEFAULT_TOOLSETS)
+    # When no explicit toolsets given, inherit from parent's enabled toolsets
+    # so disabled tools (e.g. web) don't leak to subagents.
+    if toolsets:
+        child_toolsets = _strip_blocked_tools(toolsets)
+    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
+        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
+    else:
+        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     child_prompt = _build_child_system_prompt(goal, context)
 
@@ -187,6 +194,10 @@ def _run_single_child(
         # Build progress callback to relay tool calls to parent display
         child_progress_cb = _build_child_progress_callback(task_index, parent_agent, task_count)
 
+        # Share the parent's iteration budget so subagent tool calls
+        # count toward the session-wide limit.
+        shared_budget = getattr(parent_agent, "iteration_budget", None)
+
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
@@ -194,6 +205,9 @@ def _run_single_child(
             provider=getattr(parent_agent, "provider", None),
             api_mode=getattr(parent_agent, "api_mode", None),
             max_iterations=max_iterations,
+            max_tokens=getattr(parent_agent, "max_tokens", None),
+            reasoning_config=getattr(parent_agent, "reasoning_config", None),
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
             enabled_toolsets=child_toolsets,
             quiet_mode=True,
             ephemeral_system_prompt=child_prompt,
@@ -208,6 +222,7 @@ def _run_single_child(
             providers_order=parent_agent.providers_order,
             provider_sort=parent_agent.provider_sort,
             tool_progress_callback=child_progress_cb,
+            iteration_budget=shared_budget,
         )
 
         # Set delegation depth so children can't spawn grandchildren
@@ -281,7 +296,6 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
-    model: Optional[str] = None,
     max_iterations: Optional[int] = None,
     parent_agent=None,
 ) -> str:
@@ -343,7 +357,7 @@ def delegate_task(
             goal=t["goal"],
             context=t.get("context"),
             toolsets=t.get("toolsets") or toolsets,
-            model=model,
+            model=None,
             max_iterations=effective_max_iter,
             parent_agent=parent_agent,
             task_count=1,
@@ -368,7 +382,7 @@ def delegate_task(
                     goal=t["goal"],
                     context=t.get("context"),
                     toolsets=t.get("toolsets") or toolsets,
-                    model=model,
+                    model=None,
                     max_iterations=effective_max_iter,
                     parent_agent=parent_agent,
                     task_count=n_tasks,
@@ -493,7 +507,7 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Toolsets to enable for this subagent. "
-                    "Default: ['terminal', 'file', 'web']. "
+                    "Default: inherits your enabled toolsets. "
                     "Common patterns: ['terminal', 'file'] for code work, "
                     "['web'] for research, ['terminal', 'file', 'web'] for "
                     "full-stack tasks."
@@ -521,13 +535,6 @@ DELEGATE_TASK_SCHEMA = {
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),
             },
-            "model": {
-                "type": "string",
-                "description": (
-                    "Model override for the subagent(s). Omit to use your "
-                    "same model. Use a cheaper/faster model for simple subtasks."
-                ),
-            },
             "max_iterations": {
                 "type": "integer",
                 "description": (
@@ -553,7 +560,6 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
-        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,

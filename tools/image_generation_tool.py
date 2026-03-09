@@ -31,7 +31,6 @@ Usage:
 import json
 import logging
 import os
-import asyncio
 import datetime
 from typing import Dict, Any, Optional, Union
 import fal_client
@@ -153,9 +152,12 @@ def _validate_parameters(
     return validated
 
 
-async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
+def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
     """
     Upscale an image using FAL.ai's Clarity Upscaler.
+    
+    Uses the synchronous fal_client API to avoid event loop lifecycle issues
+    when called from threaded contexts (e.g. gateway thread pool).
     
     Args:
         image_url (str): URL of the image to upscale
@@ -180,14 +182,17 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
             "enable_safety_checker": UPSCALER_SAFETY_CHECKER
         }
         
-        # Submit upscaler request
-        handler = await fal_client.submit_async(
+        # Use sync API — fal_client.submit() uses httpx.Client (no event loop).
+        # The async API (submit_async) caches a global httpx.AsyncClient via
+        # @cached_property, which breaks when asyncio.run() destroys the loop
+        # between calls (gateway thread-pool pattern).
+        handler = fal_client.submit(
             UPSCALER_MODEL,
             arguments=upscaler_arguments
         )
         
-        # Get the upscaled result
-        result = await handler.get()
+        # Get the upscaled result (sync — blocks until done)
+        result = handler.get()
         
         if result and "image" in result:
             upscaled_image = result["image"]
@@ -208,7 +213,7 @@ async def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]
         return None
 
 
-async def image_generate_tool(
+def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
@@ -220,10 +225,10 @@ async def image_generate_tool(
     """
     Generate images from text prompts using FAL.ai's FLUX 2 Pro model with automatic upscaling.
     
-    This tool uses FAL.ai's FLUX 2 Pro model for high-quality text-to-image generation 
-    with extensive customization options. Generated images are automatically upscaled 2x 
-    using FAL.ai's Clarity Upscaler for enhanced quality. The final upscaled images are 
-    returned as URLs that can be displayed using <img src="{URL}"></img> tags.
+    Uses the synchronous fal_client API to avoid event loop lifecycle issues.
+    The async API's global httpx.AsyncClient (cached via @cached_property) breaks
+    when asyncio.run() destroys and recreates event loops between calls, which
+    happens in the gateway's thread-pool pattern.
     
     Args:
         prompt (str): The text prompt describing the desired image
@@ -306,14 +311,14 @@ async def image_generate_tool(
         logger.info("  Steps: %s", validated_params['num_inference_steps'])
         logger.info("  Guidance: %s", validated_params['guidance_scale'])
         
-        # Submit request to FAL.ai
-        handler = await fal_client.submit_async(
+        # Submit request to FAL.ai using sync API (avoids cached event loop issues)
+        handler = fal_client.submit(
             DEFAULT_MODEL,
             arguments=arguments
         )
         
-        # Get the result
-        result = await handler.get()
+        # Get the result (sync — blocks until done)
+        result = handler.get()
         
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         
@@ -336,7 +341,7 @@ async def image_generate_tool(
                 }
                 
                 # Attempt to upscale the image
-                upscaled_image = await _upscale_image(img["url"], prompt.strip())
+                upscaled_image = _upscale_image(img["url"], prompt.strip())
                 
                 if upscaled_image:
                     # Use upscaled image if successful
@@ -552,5 +557,5 @@ registry.register(
     handler=_handle_image_generate,
     check_fn=check_image_generation_requirements,
     requires_env=["FAL_KEY"],
-    is_async=True,
+    is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
 )

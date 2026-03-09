@@ -1112,7 +1112,7 @@ def main(
     batch_size: int = None,
     run_name: str = None,
     distribution: str = "default",
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str = "anthropic/claude-sonnet-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
@@ -1155,7 +1155,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "xhigh")
+        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1216,7 +1216,7 @@ def main(
     providers_order_list = [p.strip() for p in providers_order.split(",")] if providers_order else None
     
     # Build reasoning_config from CLI flags
-    # --reasoning_disabled takes priority, then --reasoning_effort, then default (xhigh)
+    # --reasoning_disabled takes priority, then --reasoning_effort, then default (medium)
     reasoning_config = None
     if reasoning_disabled:
         # Completely disable reasoning/thinking tokens

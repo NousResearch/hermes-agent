@@ -79,8 +79,12 @@ def show_status(args):
         "OpenRouter": "OPENROUTER_API_KEY",
         "Anthropic": "ANTHROPIC_API_KEY", 
         "OpenAI": "OPENAI_API_KEY",
+        "Z.AI/GLM": "GLM_API_KEY",
+        "Kimi": "KIMI_API_KEY",
+        "MiniMax": "MINIMAX_API_KEY",
+        "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
-        "Browserbase": "BROWSERBASE_API_KEY",
+        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
@@ -136,6 +140,28 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    # =========================================================================
+    # API-Key Providers
+    # =========================================================================
+    print()
+    print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
+
+    apikey_providers = {
+        "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+        "Kimi / Moonshot":  ("KIMI_API_KEY",),
+        "MiniMax":          ("MINIMAX_API_KEY",),
+        "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+    }
+    for pname, env_vars in apikey_providers.items():
+        key_val = ""
+        for ev in env_vars:
+            key_val = get_env_value(ev) or ""
+            if key_val:
+                break
+        configured = bool(key_val)
+        label = "configured" if configured else "not configured (run: hermes model)"
+        print(f"  {pname:<16} {check_mark(configured)} {label}")
 
     # =========================================================================
     # Terminal Configuration

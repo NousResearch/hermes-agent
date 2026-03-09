@@ -147,7 +147,7 @@ Default configuration:
 - Tests 3 models at different scales for robustness:
   - `qwen/qwen3-8b` (small)
   - `z-ai/glm-4.7-flash` (medium)
-  - `minimax/minimax-m2.1` (large)
+  - `minimax/minimax-m2.5` (large)
 - Total: ~144 rollouts
 
 This validates:

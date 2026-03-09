@@ -141,9 +141,13 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
+    # Empty string means use server-local time.
+    "timezone": "",
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
-    
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 5,
 }
@@ -151,6 +155,15 @@ DEFAULT_CONFIG = {
 # =============================================================================
 # Config Migration System
 # =============================================================================
+
+# Track which env vars were introduced in each config version.
+# Migration only mentions vars new since the user's previous version.
+ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
+    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
+    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
+    5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
+        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
+}
 
 # Required environment variables with metadata for migration prompts.
 # LLM provider is required but handled in the setup wizard's provider
@@ -167,6 +180,86 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GLM_API_KEY": {
+        "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
+        "prompt": "Z.AI / GLM API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ZAI_API_KEY": {
+        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "prompt": "Z.AI API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "Z_AI_API_KEY": {
+        "description": "Z.AI API key (alias for GLM_API_KEY)",
+        "prompt": "Z.AI API key",
+        "url": "https://z.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GLM_BASE_URL": {
+        "description": "Z.AI / GLM base URL override",
+        "prompt": "Z.AI / GLM base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_API_KEY": {
+        "description": "Kimi / Moonshot API key",
+        "prompt": "Kimi API key",
+        "url": "https://platform.moonshot.cn/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_BASE_URL": {
+        "description": "Kimi / Moonshot base URL override",
+        "prompt": "Kimi base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_API_KEY": {
+        "description": "MiniMax API key (international)",
+        "prompt": "MiniMax API key",
+        "url": "https://www.minimax.io/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_BASE_URL": {
+        "description": "MiniMax base URL override",
+        "prompt": "MiniMax base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_CN_API_KEY": {
+        "description": "MiniMax API key (China endpoint)",
+        "prompt": "MiniMax (China) API key",
+        "url": "https://www.minimaxi.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "MINIMAX_CN_BASE_URL": {
+        "description": "MiniMax (China) base URL override",
+        "prompt": "MiniMax (China) base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -189,7 +282,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for browser automation",
+        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
@@ -197,7 +290,7 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID",
+        "description": "Browserbase project ID (optional — only needed for cloud browser)",
         "prompt": "Browserbase project ID",
         "url": "https://browserbase.com/",
         "tools": ["browser_navigate", "browser_click"],
@@ -485,6 +578,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
+    # ── Version 4 → 5: add timezone field ──
+    if current_ver < 5:
+        config = load_config()
+        if "timezone" not in config:
+            old_tz = os.getenv("HERMES_TIMEZONE", "")
+            if old_tz and old_tz.strip():
+                config["timezone"] = old_tz.strip()
+                results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")
+            else:
+                config["timezone"] = ""
+                results["config_added"].append("timezone= (empty, uses server-local)")
+            save_config(config)
+            if not quiet:
+                tz_display = config["timezone"] or "(server-local)"
+                print(f"  ✓ Added timezone to config.yaml: {tz_display}")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -525,34 +634,47 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if v["name"] not in required_names and not v.get("advanced")
     ]
     
-    if interactive and missing_optional:
-        print("  Would you like to configure any optional keys now?")
-        try:
-            answer = input("  Configure optional keys? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-        
-        if answer in ("y", "yes"):
+    # Only offer to configure env vars that are NEW since the user's previous version
+    new_var_names = set()
+    for ver in range(current_ver + 1, latest_ver + 1):
+        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
+
+    if new_var_names and interactive and not quiet:
+        new_and_unset = [
+            (name, OPTIONAL_ENV_VARS[name])
+            for name in sorted(new_var_names)
+            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
+        ]
+        if new_and_unset:
+            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
+            for name, info in new_and_unset:
+                print(f"    • {name} — {info.get('description', '')}")
             print()
-            for var in missing_optional:
-                desc = var.get("description", "")
-                if var.get("url"):
-                    print(f"  {desc}")
-                    print(f"  Get your key at: {var['url']}")
-                else:
-                    print(f"  {desc}")
-                
-                if var.get("password"):
-                    import getpass
-                    value = getpass.getpass(f"  {var['prompt']} (Enter to skip): ")
-                else:
-                    value = input(f"  {var['prompt']} (Enter to skip): ").strip()
-                
-                if value:
-                    save_env_value(var["name"], value)
-                    results["env_added"].append(var["name"])
-                    print(f"  ✓ Saved {var['name']}")
+            try:
+                answer = input("  Configure new keys? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+
+            if answer in ("y", "yes"):
                 print()
+                for name, info in new_and_unset:
+                    if info.get("url"):
+                        print(f"  {info.get('description', name)}")
+                        print(f"  Get your key at: {info['url']}")
+                    else:
+                        print(f"  {info.get('description', name)}")
+                    if info.get("password"):
+                        import getpass
+                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                    else:
+                        value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
+                    if value:
+                        save_env_value(name, value)
+                        results["env_added"].append(name)
+                        print(f"  ✓ Saved {name}")
+                    print()
+            else:
+                print("  Set later with: hermes config set KEY VALUE")
     
     # Check for missing config fields
     missing_config = get_missing_config_fields()
@@ -772,6 +894,15 @@ def show_config():
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
     
+    # Timezone
+    print()
+    print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
+    tz = config.get('timezone', '')
+    if tz:
+        print(f"  Timezone:     {tz}")
+    else:
+        print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
+
     # Compression
     print()
     print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
@@ -895,6 +1026,7 @@ def set_config_value(key: str, value: str):
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
+        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

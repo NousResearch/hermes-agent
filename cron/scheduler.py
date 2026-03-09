@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from hermes_time import now as _hermes_now
+
 logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
@@ -174,6 +176,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
 
+        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        _cfg = {}
         try:
             import yaml
             _cfg_path = str(_hermes_home / "config.yaml")
@@ -187,6 +191,41 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     model = _model_cfg.get("default", model)
         except Exception:
             pass
+
+        # Reasoning config from env or config.yaml
+        reasoning_config = None
+        effort = os.getenv("HERMES_REASONING_EFFORT", "")
+        if not effort:
+            effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        if effort and effort.lower() != "none":
+            valid = ("xhigh", "high", "medium", "low", "minimal")
+            if effort.lower() in valid:
+                reasoning_config = {"enabled": True, "effort": effort.lower()}
+        elif effort.lower() == "none":
+            reasoning_config = {"enabled": False}
+
+        # Prefill messages from env or config.yaml
+        prefill_messages = None
+        prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
+        if prefill_file:
+            import json as _json
+            pfpath = Path(prefill_file).expanduser()
+            if not pfpath.is_absolute():
+                pfpath = _hermes_home / pfpath
+            if pfpath.exists():
+                try:
+                    with open(pfpath, "r", encoding="utf-8") as _pf:
+                        prefill_messages = _json.load(_pf)
+                    if not isinstance(prefill_messages, list):
+                        prefill_messages = None
+                except Exception:
+                    prefill_messages = None
+
+        # Max iterations
+        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+
+        # Provider routing
+        pr = _cfg.get("provider_routing", {})
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -206,8 +245,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             api_mode=runtime.get("api_mode"),
+            max_iterations=max_iterations,
+            reasoning_config=reasoning_config,
+            prefill_messages=prefill_messages,
+            providers_allowed=pr.get("only"),
+            providers_ignored=pr.get("ignore"),
+            providers_order=pr.get("order"),
+            provider_sort=pr.get("sort"),
             quiet_mode=True,
-            session_id=f"cron_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
         )
         
         result = agent.run_conversation(prompt)
@@ -219,7 +265,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
-**Run Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
 ## Prompt
@@ -241,7 +287,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
-**Run Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
 ## Prompt
@@ -297,11 +343,11 @@ def tick(verbose: bool = True) -> int:
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
-            logger.info("%s - No jobs due", datetime.now().strftime('%H:%M:%S'))
+            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
             return 0
 
         if verbose:
-            logger.info("%s - %s job(s) due", datetime.now().strftime('%H:%M:%S'), len(due_jobs))
+            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
         executed = 0
         for job in due_jobs:

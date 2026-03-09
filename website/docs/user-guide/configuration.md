@@ -64,6 +64,10 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
+| **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
+| **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
+| **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **Custom Endpoint** | `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::info Codex Note
@@ -73,6 +77,37 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::warning
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use OpenRouter independently. An `OPENROUTER_API_KEY` enables these tools.
 :::
+
+### First-Class Chinese AI Providers
+
+These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
+
+```bash
+# z.ai / ZhipuAI GLM
+hermes chat --provider zai --model glm-4-plus
+# Requires: GLM_API_KEY in ~/.hermes/.env
+
+# Kimi / Moonshot AI
+hermes chat --provider kimi-coding --model moonshot-v1-auto
+# Requires: KIMI_API_KEY in ~/.hermes/.env
+
+# MiniMax (global endpoint)
+hermes chat --provider minimax --model MiniMax-Text-01
+# Requires: MINIMAX_API_KEY in ~/.hermes/.env
+
+# MiniMax (China endpoint)
+hermes chat --provider minimax-cn --model MiniMax-Text-01
+# Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
+```
+
+Or set the provider permanently in `config.yaml`:
+```yaml
+model:
+  provider: "zai"       # or: kimi-coding, minimax, minimax-cn
+  default: "glm-4-plus"
+```
+
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, or `MINIMAX_CN_BASE_URL` environment variables.
 
 ## Custom & Self-Hosted LLM Providers
 
@@ -290,6 +325,7 @@ LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
 | **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
 | **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
 | **Enterprise / Azure** | Azure OpenAI with custom endpoint |
+| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot, or MiniMax (first-class providers) |
 
 :::tip
 You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
@@ -371,6 +407,26 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+## Git Worktree Isolation
+
+Enable isolated git worktrees for running multiple agents in parallel on the same repo:
+
+```yaml
+worktree: true    # Always create a worktree (same as hermes -w)
+# worktree: false # Default — only when -w flag is passed
+```
+
+When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+
+You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
+
+```
+# .worktreeinclude
+.env
+.venv/
+node_modules/
+```
+
 ## Context Compression
 
 ```yaml
@@ -385,10 +441,10 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = use model default. Options: xhigh (max), high, medium, low, minimal, none
+  reasoning_effort: ""   # empty = medium (default). Options: xhigh (max), high, medium, low, minimal, none
 ```
 
-When unset (default), the model's own default reasoning level is used. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
 ## TTS Configuration
 

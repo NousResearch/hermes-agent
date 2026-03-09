@@ -64,6 +64,7 @@ const sidebars: SidebarsConfig = {
       label: 'Developer Guide',
       items: [
         'developer-guide/architecture',
+        'developer-guide/environments',
         'developer-guide/adding-tools',
         'developer-guide/creating-skills',
         'developer-guide/contributing',

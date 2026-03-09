@@ -33,6 +33,26 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
 
+
+_PROVIDER_ENV_HINTS = (
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_BASE_URL",
+    "GLM_API_KEY",
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+    "KIMI_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
+)
+
+
+def _has_provider_env_config(content: str) -> bool:
+    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
+    return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -132,8 +152,8 @@ def run_doctor(args):
         
         # Check for common issues
         content = env_path.read_text()
-        if "OPENROUTER_API_KEY" in content or "ANTHROPIC_API_KEY" in content:
-            check_ok("API key configured")
+        if _has_provider_env_config(content):
+            check_ok("API key or custom endpoint configured")
         else:
             check_warn("No API key found in ~/.hermes/.env")
             issues.append("Run 'hermes setup' to configure API keys")
@@ -468,7 +488,48 @@ def run_doctor(args):
                 print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(msg, Colors.DIM)}                 ")
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
-    
+
+    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    _apikey_providers = [
+        ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL"),
+        ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL"),
+        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL"),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL"),
+    ]
+    for _pname, _env_vars, _default_url, _base_env in _apikey_providers:
+        _key = ""
+        for _ev in _env_vars:
+            _key = os.getenv(_ev, "")
+            if _key:
+                break
+        if _key:
+            _label = _pname.ljust(20)
+            print(f"  Checking {_pname} API...", end="", flush=True)
+            try:
+                import httpx
+                _base = os.getenv(_base_env, "")
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                if not _base and _key.startswith("sk-kimi-"):
+                    _base = "https://api.kimi.com/coding/v1"
+                _url = (_base.rstrip("/") + "/models") if _base else _default_url
+                _headers = {"Authorization": f"Bearer {_key}"}
+                if "api.kimi.com" in _url.lower():
+                    _headers["User-Agent"] = "KimiCLI/1.0"
+                _resp = httpx.get(
+                    _url,
+                    headers=_headers,
+                    timeout=10,
+                )
+                if _resp.status_code == 200:
+                    print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
+                elif _resp.status_code == 401:
+                    print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
+                    issues.append(f"Check {_env_vars[0]} in .env")
+                else:
+                    print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
+            except Exception as _e:
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
     # =========================================================================
     # Check: Submodules
     # =========================================================================

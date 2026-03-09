@@ -64,7 +64,13 @@ def _has_any_provider_configured() -> bool:
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
     # often don't require an API key.
-    provider_env_vars = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL")
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    # Collect all provider env vars
+    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "api_key":
+            provider_env_vars.update(pconfig.api_key_env_vars)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
@@ -114,16 +120,63 @@ def _resolve_last_cli_session() -> Optional[str]:
     return None
 
 
+def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
+    """Resolve a session name (title) or ID to a session ID.
+
+    - If it looks like a session ID (contains underscore + hex), try direct lookup first.
+    - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
+    - Falls back to the other method if the first doesn't match.
+    """
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+
+        # Try as exact session ID first
+        session = db.get_session(name_or_id)
+        if session:
+            db.close()
+            return session["id"]
+
+        # Try as title (with auto-latest for lineage)
+        session_id = db.resolve_session_by_title(name_or_id)
+        db.close()
+        return session_id
+    except Exception:
+        pass
+    return None
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Resolve --continue into --resume with the latest CLI session
-    if getattr(args, "continue_last", False) and not getattr(args, "resume", None):
-        last_id = _resolve_last_cli_session()
-        if last_id:
-            args.resume = last_id
+    # Resolve --continue into --resume with the latest CLI session or by name
+    continue_val = getattr(args, "continue_last", None)
+    if continue_val and not getattr(args, "resume", None):
+        if isinstance(continue_val, str):
+            # -c "session name" — resolve by title or ID
+            resolved = _resolve_session_by_name_or_id(continue_val)
+            if resolved:
+                args.resume = resolved
+            else:
+                print(f"No session found matching '{continue_val}'.")
+                print("Use 'hermes sessions list' to see available sessions.")
+                sys.exit(1)
         else:
-            print("No previous CLI session found to continue.")
-            sys.exit(1)
+            # -c with no argument — continue the most recent session
+            last_id = _resolve_last_cli_session()
+            if last_id:
+                args.resume = last_id
+            else:
+                print("No previous CLI session found to continue.")
+                sys.exit(1)
+
+    # Resolve --resume by title if it's not a direct session ID
+    resume_val = getattr(args, "resume", None)
+    if resume_val:
+        resolved = _resolve_session_by_name_or_id(resume_val)
+        if resolved:
+            args.resume = resolved
+        # If resolution fails, keep the original value — _init_agent will
+        # report "Session not found" with the original input
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -161,6 +214,7 @@ def cmd_chat(args):
         "verbose": args.verbose,
         "query": args.query,
         "resume": getattr(args, "resume", None),
+        "worktree": getattr(args, "worktree", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -411,6 +465,10 @@ def cmd_model(args):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "zai": "Z.AI / GLM",
+        "kimi-coding": "Kimi / Moonshot",
+        "minimax": "MiniMax",
+        "minimax-cn": "MiniMax (China)",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -425,11 +483,16 @@ def cmd_model(args):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
+        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
+        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
+        ("minimax", "MiniMax (global direct API)"),
+        ("minimax-cn", "MiniMax China (domestic direct API)"),
         ("custom", "Custom endpoint (self-hosted / VLLM / etc.)"),
     ]
 
     # Reorder so the active provider is at the top
-    active_key = active if active in ("openrouter", "nous", "openai-codex") else "custom"
+    known_keys = {k for k, _ in providers}
+    active_key = active if active in known_keys else "custom"
     ordered = []
     for key, label in providers:
         if key == active_key:
@@ -454,6 +517,8 @@ def cmd_model(args):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
+    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+        _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
 def _prompt_provider_choice(choices):
@@ -721,6 +786,117 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+
+# Curated model lists for direct API-key providers
+_PROVIDER_MODELS = {
+    "zai": [
+        "glm-5",
+        "glm-4.7",
+        "glm-4.5",
+        "glm-4.5-flash",
+    ],
+    "kimi-coding": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
+    "minimax": [
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ],
+    "minimax-cn": [
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ],
+}
+
+
+def _model_flow_api_key_provider(config, provider_id, current_model=""):
+    """Generic flow for API-key providers (z.ai, Kimi, MiniMax)."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    # Check / prompt for API key
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                new_key = input(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    # Optional base URL override
+    current_base = ""
+    if base_url_env:
+        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    effective_base = current_base or pconfig.inference_base_url
+
+    try:
+        override = input(f"Base URL [{effective_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+    if override and base_url_env:
+        save_env_value(base_url_env, override)
+        effective_base = override
+
+    # Model selection
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        # Clear custom endpoint if set (avoid confusion)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+
+        _save_model_choice(selected)
+
+        # Update config with provider and base URL
+        cfg = load_config()
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model["provider"] = provider_id
+            model["base_url"] = effective_base
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
 
 
 def cmd_login(args):
@@ -1080,8 +1256,9 @@ def main():
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
-    hermes --continue             Resume the most recent session
-    hermes --resume <session_id>  Resume a specific session
+    hermes -c                     Resume the most recent session
+    hermes -c "my project"        Resume a session by name (latest in lineage)
+    hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes model                  Select default model
@@ -1089,8 +1266,10 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes -w                     Start in isolated git worktree
     hermes gateway install        Install as system service
     hermes sessions list          List past sessions
+    hermes sessions rename ID T   Rename/title a session
     hermes update                 Update to latest version
 
 For more help on a command:
@@ -1105,16 +1284,24 @@ For more help on a command:
     )
     parser.add_argument(
         "--resume", "-r",
-        metavar="SESSION_ID",
+        metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID (shortcut for: hermes chat --resume ID)"
+        help="Resume a previous session by ID or title"
     )
     parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
+    )
+    parser.add_argument(
+        "--worktree", "-w",
         action="store_true",
         default=False,
-        help="Resume the most recent CLI session"
+        help="Run in an isolated git worktree (for parallel agents)"
     )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -1141,7 +1328,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -1158,9 +1345,17 @@ For more help on a command:
     chat_parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION_NAME",
+        help="Resume a session by name, or the most recent if no name given"
+    )
+    chat_parser.add_argument(
+        "--worktree", "-w",
         action="store_true",
         default=False,
-        help="Resume the most recent CLI session"
+        help="Run in an isolated git worktree (for parallel agents on the same repo)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -1187,6 +1382,8 @@ For more help on a command:
     # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="store_true")
+    gateway_run.add_argument("--replace", action="store_true",
+                             help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
@@ -1219,7 +1416,15 @@ For more help on a command:
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard"
+        description="Configure Hermes Agent with an interactive wizard. "
+                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+    )
+    setup_parser.add_argument(
+        "section",
+        nargs="?",
+        choices=["model", "terminal", "gateway", "tools", "agent"],
+        default=None,
+        help="Run a specific setup section instead of the full wizard"
     )
     setup_parser.add_argument(
         "--non-interactive",
@@ -1519,7 +1724,7 @@ For more help on a command:
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete)",
         description="View and manage the SQLite session store"
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -1544,6 +1749,10 @@ For more help on a command:
 
     sessions_stats = sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
+    sessions_rename = sessions_subparsers.add_parser("rename", help="Set or change a session's title")
+    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -1556,18 +1765,51 @@ For more help on a command:
         action = args.sessions_action
 
         if action == "list":
-            sessions = db.search_sessions(source=args.source, limit=args.limit)
+            sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
             if not sessions:
                 print("No sessions found.")
                 return
-            print(f"{'ID':<30} {'Source':<12} {'Model':<30} {'Messages':>8} {'Started'}")
-            print("─" * 100)
             from datetime import datetime
+            import time as _time
+
+            def _relative_time(ts):
+                """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+                if not ts:
+                    return "?"
+                delta = _time.time() - ts
+                if delta < 60:
+                    return "just now"
+                elif delta < 3600:
+                    mins = int(delta / 60)
+                    return f"{mins}m ago"
+                elif delta < 86400:
+                    hours = int(delta / 3600)
+                    return f"{hours}h ago"
+                elif delta < 172800:
+                    return "yesterday"
+                elif delta < 604800:
+                    days = int(delta / 86400)
+                    return f"{days}d ago"
+                else:
+                    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+            has_titles = any(s.get("title") for s in sessions)
+            if has_titles:
+                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 100)
+            else:
+                print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
+                print("─" * 90)
             for s in sessions:
-                started = datetime.fromtimestamp(s["started_at"]).strftime("%Y-%m-%d %H:%M") if s["started_at"] else "?"
-                model = (s.get("model") or "?")[:28]
-                ended = " (ended)" if s.get("ended_at") else ""
-                print(f"{s['id']:<30} {s['source']:<12} {model:<30} {s['message_count']:>8} {started}{ended}")
+                last_active = _relative_time(s.get("last_active"))
+                preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
+                if has_titles:
+                    title = (s.get("title") or "—")[:20]
+                    sid = s["id"][:20]
+                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                else:
+                    sid = s["id"][:20]
+                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
             if args.session_id:
@@ -1606,6 +1848,16 @@ For more help on a command:
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)
             print(f"Pruned {count} session(s).")
+
+        elif action == "rename":
+            title = " ".join(args.title)
+            try:
+                if db.set_session_title(args.session_id, title):
+                    print(f"Session '{args.session_id}' renamed to: {title}")
+                else:
+                    print(f"Session '{args.session_id}' not found.")
+            except ValueError as e:
+                print(f"Error: {e}")
 
         elif action == "stats":
             total = db.session_count()
@@ -1712,6 +1964,8 @@ For more help on a command:
         args.provider = None
         args.toolsets = None
         args.verbose = False
+        if not hasattr(args, "worktree"):
+            args.worktree = False
         cmd_chat(args)
         return
     
@@ -1723,7 +1977,9 @@ For more help on a command:
         args.toolsets = None
         args.verbose = False
         args.resume = None
-        args.continue_last = False
+        args.continue_last = None
+        if not hasattr(args, "worktree"):
+            args.worktree = False
         cmd_chat(args)
         return
     

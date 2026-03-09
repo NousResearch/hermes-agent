@@ -118,7 +118,7 @@ hermes-agent/
 ├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search
+├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
@@ -218,7 +218,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search. JSON logs go to `~/.hermes/sessions/`.
+- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. JSON logs go to `~/.hermes/sessions/`.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -325,6 +325,9 @@ description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
 license: MIT
+platforms: [macos, linux]          # Optional — restrict to specific OS platforms
+                                   #   Valid: macos, linux, windows
+                                   #   Omit to load on all platforms (default)
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
@@ -350,6 +353,18 @@ Known failure modes and how to handle them.
 ## Verification
 How the agent confirms it worked.
 ```
+
+### Platform-specific skills
+
+Skills can declare which OS platforms they support via the `platforms` frontmatter field. Skills with this field are automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms.
+
+```yaml
+platforms: [macos]            # macOS only (e.g., iMessage, Apple Reminders)
+platforms: [macos, linux]     # macOS and Linux
+platforms: [windows]          # Windows only
+```
+
+If the field is omitted or empty, the skill loads on all platforms (backward compatible). See `skills/apple/` for examples of macOS-only skills.
 
 ### Skill guidelines
 

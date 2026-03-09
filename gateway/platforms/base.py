@@ -701,6 +701,8 @@ class BasePlatformAdapter(ABC):
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
+                if images:
+                    logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
                 
                 # Send the text portion first (if any remains after extractions)
                 if text_content:
@@ -727,10 +729,13 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
                 
                 # Send extracted images as native attachments
+                if images:
+                    logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                 for image_url, alt_text in images:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(
@@ -745,9 +750,9 @@ class BasePlatformAdapter(ABC):
                                 caption=alt_text if alt_text else None,
                             )
                         if not img_result.success:
-                            print(f"[{self.name}] Failed to send image: {img_result.error}")
+                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
-                        print(f"[{self.name}] Error sending image: {img_err}")
+                        logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
                 
                 # Send extracted media files — route by file type
                 _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}

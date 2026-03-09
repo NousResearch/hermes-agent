@@ -10,7 +10,9 @@ Resolution order for text tasks:
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
-  5. None
+  5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+     — checked via PROVIDER_REGISTRY entries with auth_type='api_key'
+  6. None
 
 Resolution order for vision/multimodal tasks:
   1. OpenRouter
@@ -30,6 +32,14 @@ from openai import OpenAI
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+# Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
+_API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
+    "zai": "glm-4.5-flash",
+    "kimi-coding": "kimi-k2-turbo-preview",
+    "minimax": "MiniMax-M2.5-highspeed",
+    "minimax-cn": "MiniMax-M2.5-highspeed",
+}
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
@@ -282,12 +292,58 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
+def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try each API-key provider in PROVIDER_REGISTRY order.
+
+    Returns (client, model) for the first provider whose env var is set,
+    or (None, None) if none are configured.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except ImportError:
+        logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
+        return None, None
+
+    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        # Check if any of the provider's env vars are set
+        api_key = ""
+        for env_var in pconfig.api_key_env_vars:
+            val = os.getenv(env_var, "").strip()
+            if val:
+                api_key = val
+                break
+        if not api_key:
+            continue
+        # Resolve base URL (with optional env-var override)
+        # Kimi Code keys (sk-kimi-) need api.kimi.com/coding/v1
+        env_url = ""
+        if pconfig.base_url_env_var:
+            env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        if env_url:
+            base_url = env_url.rstrip("/")
+        elif provider_id == "kimi-coding" and api_key.startswith("sk-kimi-"):
+            base_url = "https://api.kimi.com/coding/v1"
+        else:
+            base_url = pconfig.inference_base_url
+        model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
+        logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
+        extra = {}
+        if "api.kimi.com" in base_url.lower():
+            extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+        return OpenAI(api_key=api_key, base_url=base_url, **extra), model
+
+    return None, None
+
+
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, model_slug) for text-only auxiliary tasks.
 
-    Falls through OpenRouter -> Nous Portal -> custom endpoint -> Codex OAuth -> (None, None).
+    Falls through OpenRouter -> Nous Portal -> custom endpoint -> Codex OAuth
+    -> direct API-key providers -> (None, None).
     """
     # 1. OpenRouter
     or_key = os.getenv("OPENROUTER_API_KEY")
@@ -323,7 +379,12 @@ def get_text_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
         real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
         return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
-    # 5. Nothing available
+    # 5. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, etc.)
+    api_client, api_model = _resolve_api_key_provider()
+    if api_client is not None:
+        return api_client, api_model
+
+    # 6. Nothing available
     logger.debug("Auxiliary text client: none available")
     return None, None
 
@@ -350,6 +411,8 @@ def get_async_text_auxiliary_client():
     }
     if "openrouter" in str(sync_client.base_url).lower():
         async_kwargs["default_headers"] = dict(_OR_HEADERS)
+    elif "api.kimi.com" in str(sync_client.base_url).lower():
+        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 

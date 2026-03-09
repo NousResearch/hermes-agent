@@ -8,9 +8,12 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import logging
 import os
 import re
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     from telegram import Update, Bot, Message
@@ -71,6 +74,19 @@ _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
+
+
+def _strip_mdv2(text: str) -> str:
+    """Strip MarkdownV2 escape backslashes to produce clean plain text.
+
+    Also removes MarkdownV2 bold markers (*text* -> text) so the fallback
+    doesn't show stray asterisks from header/bold conversion.
+    """
+    # Remove escape backslashes before special characters
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove MarkdownV2 bold markers that format_message converted from **bold**
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    return cleaned
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -139,6 +155,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand("status", "Show session info"),
                     BotCommand("stop", "Stop the running agent"),
                     BotCommand("sethome", "Set this chat as the home channel"),
+                    BotCommand("compress", "Compress conversation context"),
+                    BotCommand("title", "Set or show the session title"),
+                    BotCommand("resume", "Resume a previously-named session"),
+                    BotCommand("usage", "Show token usage for this session"),
+                    BotCommand("provider", "Show available providers"),
+                    BotCommand("insights", "Show usage insights and analytics"),
+                    BotCommand("update", "Update Hermes to the latest version"),
+                    BotCommand("reload_mcp", "Reload MCP servers from config"),
                     BotCommand("help", "Show available commands"),
                 ])
             except Exception as e:
@@ -199,9 +223,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as md_error:
                     # Markdown parsing failed, try plain text
                     if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                        logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                        # Strip MDV2 escape backslashes so the user doesn't
+                        # see raw backslashes littered through the message.
+                        plain_chunk = _strip_mdv2(chunk)
                         msg = await self._bot.send_message(
                             chat_id=int(chat_id),
-                            text=chunk,
+                            text=plain_chunk,
                             parse_mode=None,  # Plain text
                             reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                             message_thread_id=int(thread_id) if thread_id else None,
@@ -286,6 +314,34 @@ class TelegramAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Failed to send voice/audio: {e}")
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
     
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a local image file natively as a Telegram photo."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        
+        try:
+            import os
+            if not os.path.exists(image_path):
+                return SendResult(success=False, error=f"Image file not found: {image_path}")
+            
+            with open(image_path, "rb") as image_file:
+                msg = await self._bot.send_photo(
+                    chat_id=int(chat_id),
+                    photo=image_file,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            print(f"[{self.name}] Failed to send local image: {e}")
+            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+
     async def send_image(
         self,
         chat_id: str,
@@ -293,12 +349,16 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send an image natively as a Telegram photo."""
+        """Send an image natively as a Telegram photo.
+        
+        Tries URL-based send first (fast, works for <5MB images).
+        Falls back to downloading and uploading as file (supports up to 10MB).
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
         try:
-            # Telegram can send photos directly from URLs
+            # Telegram can send photos directly from URLs (up to ~5MB)
             msg = await self._bot.send_photo(
                 chat_id=int(chat_id),
                 photo=image_url,
@@ -307,9 +367,26 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send photo, falling back to URL: {e}")
-            # Fallback: send as text link
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            logger.warning("[%s] URL-based send_photo failed (%s), trying file upload", self.name, e)
+            # Fallback: download and upload as file (supports up to 10MB)
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(image_url)
+                    resp.raise_for_status()
+                    image_data = resp.content
+                
+                msg = await self._bot.send_photo(
+                    chat_id=int(chat_id),
+                    photo=image_data,
+                    caption=caption[:1024] if caption else None,
+                    reply_to_message_id=int(reply_to) if reply_to else None,
+                )
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as e2:
+                logger.error("[%s] File upload send_photo also failed: %s", self.name, e2)
+                # Final fallback: send URL as text
+                return await super().send_image(chat_id, image_url, caption, reply_to)
     
     async def send_animation(
         self,

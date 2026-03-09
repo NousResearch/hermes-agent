@@ -280,22 +280,21 @@ class TestMaskApiKey:
 
 
 class TestInit:
-    def test_anthropic_base_url_fails_fast(self):
-        """Anthropic native endpoints should error before building an OpenAI client."""
+    def test_anthropic_base_url_accepted(self):
+        """Anthropic base URLs should be accepted (OpenAI-compatible endpoint)."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI") as mock_openai,
         ):
-            with pytest.raises(ValueError, match="not supported yet"):
-                AIAgent(
-                    api_key="test-key-1234567890",
-                    base_url="https://api.anthropic.com/v1/messages",
-                    quiet_mode=True,
-                    skip_context_files=True,
-                    skip_memory=True,
-                )
-            mock_openai.assert_not_called()
+            AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.anthropic.com/v1/",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            mock_openai.assert_called_once()
 
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
@@ -498,12 +497,12 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
 
     def test_reasoning_config_default_openrouter(self, agent):
-        """Default reasoning config for OpenRouter should be xhigh."""
+        """Default reasoning config for OpenRouter should be medium."""
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         reasoning = kwargs["extra_body"]["reasoning"]
         assert reasoning["enabled"] is True
-        assert reasoning["effort"] == "xhigh"
+        assert reasoning["effort"] == "medium"
 
     def test_reasoning_config_custom(self, agent):
         agent.reasoning_config = {"enabled": False}
@@ -765,6 +764,43 @@ class TestRunConversation:
         assert result["completed"] is False
         assert result.get("partial") is True
 
+    def test_nous_401_refreshes_after_remint_and_retries(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "nous"
+        agent.api_mode = "chat_completions"
+
+        calls = {"api": 0, "refresh": 0}
+
+        class _UnauthorizedError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 401 - unauthorized")
+                self.status_code = 401
+
+        def _fake_api_call(api_kwargs):
+            calls["api"] += 1
+            if calls["api"] == 1:
+                raise _UnauthorizedError()
+            return _mock_response(content="Recovered after remint", finish_reason="stop")
+
+        def _fake_refresh(*, force=True):
+            calls["refresh"] += 1
+            assert force is True
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_try_refresh_nous_client_credentials", side_effect=_fake_refresh),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert calls["api"] == 2
+        assert calls["refresh"] == 1
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after remint"
+
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -937,6 +973,50 @@ class TestConversationHistoryNotMutated:
 # ---------------------------------------------------------------------------
 # _max_tokens_param consistency
 # ---------------------------------------------------------------------------
+
+class TestNousCredentialRefresh:
+    """Verify Nous credential refresh rebuilds the runtime client."""
+
+    def test_try_refresh_nous_client_credentials_rebuilds_client(self, agent, monkeypatch):
+        agent.provider = "nous"
+        agent.api_mode = "chat_completions"
+
+        closed = {"value": False}
+        rebuilt = {"kwargs": None}
+        captured = {}
+
+        class _ExistingClient:
+            def close(self):
+                closed["value"] = True
+
+        class _RebuiltClient:
+            pass
+
+        def _fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return {
+                "api_key": "new-nous-key",
+                "base_url": "https://inference-api.nousresearch.com/v1",
+            }
+
+        def _fake_openai(**kwargs):
+            rebuilt["kwargs"] = kwargs
+            return _RebuiltClient()
+
+        monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve)
+
+        agent.client = _ExistingClient()
+        with patch("run_agent.OpenAI", side_effect=_fake_openai):
+            ok = agent._try_refresh_nous_client_credentials(force=True)
+
+        assert ok is True
+        assert closed["value"] is True
+        assert captured["force_mint"] is True
+        assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
+        assert rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
+        assert "default_headers" not in rebuilt["kwargs"]
+        assert isinstance(agent.client, _RebuiltClient)
+
 
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""

@@ -13,6 +13,10 @@ model:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
   #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
   #   "nous"       - Always use Nous Portal (requires: hermes login)
+  #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
+  #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
+  #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
+  #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   
@@ -45,6 +49,16 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+
+# =============================================================================
+# Git Worktree Isolation
+# =============================================================================
+# When enabled, each CLI session creates an isolated git worktree so multiple
+# agents can work on the same repo concurrently without file collisions.
+# Equivalent to always passing --worktree / -w on the command line.
+#
+# worktree: true    # Always create a worktree when in a git repo
+# worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -281,7 +295,7 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
-  reasoning_effort: "xhigh"
+  reasoning_effort: "medium"
   
   # Predefined personalities (use with /personality command)
   personalities:

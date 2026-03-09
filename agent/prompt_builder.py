@@ -66,7 +66,8 @@ DEFAULT_AGENT_IDENTITY = (
     "range of tasks including answering questions, writing and editing code, "
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below."
+    "being genuinely useful over being verbose unless otherwise directed below. "
+    "Be targeted and efficient in your exploration and investigations."
 )
 
 MEMORY_GUIDANCE = (
@@ -102,12 +103,24 @@ PLATFORM_HINTS = {
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render. "
         "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Audio "
-        "(.ogg) sends as voice bubbles. You can also include image URLs "
-        "in markdown format ![alt](url) and they will be sent as native photos."
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
+        "bubbles, and videos (.mp4) play inline. You can also include image "
+        "URLs in markdown format ![alt](url) and they will be sent as native photos."
     ),
     "discord": (
-        "You are in a Discord server or group chat communicating with your user."
+        "You are in a Discord server or group chat communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are sent as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be sent as attachments."
+    ),
+    "slack": (
+        "You are in a Slack workspace communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
+        "attachments, audio as file attachments. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
@@ -142,12 +155,28 @@ def _read_skill_description(skill_file: Path, max_chars: int = 60) -> str:
     return ""
 
 
+def _skill_is_platform_compatible(skill_file: Path) -> bool:
+    """Quick check if a SKILL.md is compatible with the current OS platform.
+
+    Reads just enough to parse the ``platforms`` frontmatter field.
+    Skills without the field (the vast majority) are always compatible.
+    """
+    try:
+        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
+        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        frontmatter, _ = _parse_frontmatter(raw)
+        return skill_matches_platform(frontmatter)
+    except Exception:
+        return True  # Err on the side of showing the skill
+
+
 def build_skills_system_prompt() -> str:
     """Build a compact skill index for the system prompt.
 
     Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
     Includes per-skill descriptions from frontmatter so the model can
     match skills by meaning, not just name.
+    Filters out skills incompatible with the current OS platform.
     """
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     skills_dir = hermes_home / "skills"
@@ -159,6 +188,9 @@ def build_skills_system_prompt() -> str:
     # Each entry: (skill_name, description)
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for skill_file in skills_dir.rglob("SKILL.md"):
+        # Skip skills incompatible with the current OS platform
+        if not _skill_is_platform_compatible(skill_file):
+            continue
         rel_path = skill_file.relative_to(skills_dir)
         parts = rel_path.parts
         if len(parts) >= 2:

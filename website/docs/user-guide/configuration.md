@@ -581,6 +581,7 @@ display:
   personality: "kawaii"  # Default personality for the CLI
   compact: false         # Compact output mode (less whitespace)
   resume_display: full   # full (show previous messages on resume) | minimal (one-liner only)
+  bell_on_complete: false  # Play terminal bell when agent finishes (great for long tasks)
 ```
 
 | Mode | What you see |

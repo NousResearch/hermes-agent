@@ -4,6 +4,8 @@ import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import yaml
+
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
 
@@ -360,3 +362,20 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
     assert "Warning:" in output
     assert "falling back to auto provider detection" in output.lower()
     assert "No change." in output
+
+def test_save_config_value_preserves_scalar_model_default(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    config_dir = home / ".hermes"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yaml"
+    config_path.write_text("model: anthropic/claude-opus-4.6\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    cli = _import_cli()
+
+    assert cli.save_config_value("model.max_tokens", 32768) is True
+
+    config = yaml.safe_load(config_path.read_text())
+    assert config["model"]["default"] == "anthropic/claude-opus-4.6"
+    assert config["model"]["max_tokens"] == 32768
+

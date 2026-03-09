@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, call
 
 import pytest
+import yaml
 
 from hermes_cli.config import set_config_value
 
@@ -115,3 +116,11 @@ class TestConfigYamlRouting:
         set_config_value("terminal.docker_image", "python:3.12")
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
+
+    def test_model_nested_key_preserves_scalar_default(self, _isolated_hermes_home):
+        set_config_value("model", "anthropic/claude-opus-4.6")
+        set_config_value("model.max_tokens", "32768")
+
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["model"]["default"] == "anthropic/claude-opus-4.6"
+        assert config["model"]["max_tokens"] == 32768

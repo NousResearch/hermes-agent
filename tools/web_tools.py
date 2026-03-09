@@ -95,6 +95,28 @@ DEFAULT_SUMMARIZER_MODEL = (
 
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
+# Cache of the most recent web_extract/web_crawl results for this process.
+# This is intentionally simple and in-memory: it gives the agent a cheap way
+# to ask "what pages did we just fetch?" without re-hitting Firecrawl.
+_last_web_results: List[Dict[str, Any]] = []
+
+
+def _set_last_web_results(results: List[Dict[str, Any]]) -> None:
+    """Update the in-memory cache of recent web results with lightweight metadata."""
+    global _last_web_results
+    condensed: List[Dict[str, Any]] = []
+    for r in results:
+        condensed.append(
+            {
+                "url": r.get("url", ""),
+                "title": r.get("title", ""),
+                # Keep a short content preview to help the LLM disambiguate pages
+                "preview": (r.get("content") or "")[:280],
+                "error": r.get("error"),
+            }
+        )
+    _last_web_results = condensed
+
 
 async def process_content_with_llm(
     content: str, 
@@ -802,6 +824,9 @@ async def web_extract_tool(
         ]
         trimmed_response = {"results": trimmed_results}
 
+        # Update in-memory cache so other tools can quickly see which pages were fetched.
+        _set_last_web_results(trimmed_results)
+
         if trimmed_response.get("results") == []:
             result_json = json.dumps({"error": "Content was inaccessible or not found"}, ensure_ascii=False)
 
@@ -1093,9 +1118,10 @@ async def web_crawl_tool(
         # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
+                "url": r.get("url", ""),
                 "title": r.get("title", ""),
                 "content": r.get("content", ""),
-                "error": r.get("error")
+                "error": r.get("error"),
             }
             for r in response.get("results", [])
         ]
@@ -1111,7 +1137,10 @@ async def web_crawl_tool(
         # Log debug information
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
-        
+
+        # Update in-memory cache so other tools can quickly see which pages were crawled.
+        _set_last_web_results(trimmed_results)
+
         return cleaned_result
         
     except Exception as e:
@@ -1144,6 +1173,27 @@ def check_auxiliary_model() -> bool:
 def get_debug_session_info() -> Dict[str, Any]:
     """Get information about the current debug session."""
     return _debug.get_session_info()
+
+
+def get_last_web_results(max_results: int = 20) -> str:
+    """
+    Return metadata about the most recent pages fetched by web_extract_tool or web_crawl_tool.
+
+    This is a lightweight, in-memory view intended for quick inspection and follow-up
+    questions. It lists URLs, titles, a short content preview, and any per-page errors.
+    """
+    if not _last_web_results:
+        return json.dumps(
+            {
+                "results": [],
+                "error": "No recent web_extract or web_crawl results are cached for this process.",
+            },
+            ensure_ascii=False,
+        )
+
+    # Return the most recent entries, preserving order.
+    results = _last_web_results[-max_results:]
+    return json.dumps({"results": results}, ensure_ascii=False)
 
 
 if __name__ == "__main__":
@@ -1266,6 +1316,20 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+WEB_RECENT_SCHEMA = {
+    "name": "web_recent",
+    "description": (
+        "Return metadata for the most recent pages fetched by web_extract or web_crawl "
+        "in this Hermes process. Useful for quickly seeing which URLs were just scraped "
+        "and their titles, without re-calling Firecrawl."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
 registry.register(
     name="web_search",
     toolset="web",
@@ -1273,6 +1337,13 @@ registry.register(
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_firecrawl_api_key,
     requires_env=["FIRECRAWL_API_KEY"],
+)
+registry.register(
+    name="web_recent",
+    toolset="web",
+    schema=WEB_RECENT_SCHEMA,
+    handler=lambda args, **kw: get_last_web_results(),
+    check_fn=check_firecrawl_api_key,
 )
 registry.register(
     name="web_extract",

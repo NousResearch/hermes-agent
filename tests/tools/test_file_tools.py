@@ -200,3 +200,91 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Tool result hint tests (#722)
+# ---------------------------------------------------------------------------
+
+class TestPatchHints:
+    """Patch tool should hint when old_string is not found."""
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_no_match_includes_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "error": "Could not find match for old_string in foo.py"
+        }
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
+        assert "[Hint:" in raw
+        assert "read_file" in raw
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_success_no_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"success": True, "diff": "--- a\n+++ b"}
+        mock_ops.patch_replace.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
+        assert "[Hint:" not in raw
+
+
+class TestSearchHints:
+    """Search tool should hint when results are truncated."""
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_truncated_results_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 100,
+            "matches": [{"path": "a.py", "line": 1, "content": "x"}] * 50,
+            "truncated": True,
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        raw = search_tool(pattern="foo", offset=0, limit=50)
+        assert "[Hint:" in raw
+        assert "offset=50" in raw
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_non_truncated_no_hint(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 3,
+            "matches": [{"path": "a.py", "line": 1, "content": "x"}] * 3,
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        raw = search_tool(pattern="foo")
+        assert "[Hint:" not in raw
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_truncated_hint_with_nonzero_offset(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 150,
+            "matches": [{"path": "a.py", "line": 1, "content": "x"}] * 50,
+            "truncated": True,
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        raw = search_tool(pattern="foo", offset=50, limit=50)
+        assert "[Hint:" in raw
+        assert "offset=100" in raw

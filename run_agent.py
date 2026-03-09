@@ -3328,10 +3328,9 @@ class AIAgent:
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 if self.thinking_callback:
-                    # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
                     self.thinking_callback(f"{face} {verb}...")
                 else:
-                    spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                    spinner_type = 'dots'  # stable, no emoji flash
                     thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                     thinking_spinner.start()
             
@@ -3368,7 +3367,7 @@ class AIAgent:
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
                     if thinking_spinner:
-                        thinking_spinner.stop("")
+                        if thinking_spinner: thinking_spinner.stop("")
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
@@ -3410,7 +3409,7 @@ class AIAgent:
                     if response_invalid:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
-                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            if thinking_spinner: thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
                             thinking_spinner = None
                         if self.thinking_callback:
                             self.thinking_callback("")
@@ -3581,11 +3580,12 @@ class AIAgent:
 
                 except InterruptedError:
                     if thinking_spinner:
-                        thinking_spinner.stop("")
+                        if thinking_spinner: thinking_spinner.stop("")
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
                     api_elapsed = time.time() - api_start_time
+                    if self.thinking_callback: self.thinking_callback("")
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
                     interrupted = True
@@ -3595,7 +3595,7 @@ class AIAgent:
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
-                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        if thinking_spinner: thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")

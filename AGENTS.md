@@ -689,6 +689,69 @@ Key files:
 
 ---
 
+## Auxiliary Model Configuration
+
+Hermes uses lightweight "auxiliary" models for side tasks that run alongside the main conversation model:
+
+| Task | Tool(s) | Default Model |
+|------|---------|---------------|
+| **Vision analysis** | `vision_analyze`, `browser_vision` | `google/gemini-3-flash-preview` (via OpenRouter) |
+| **Web extraction** | `web_extract`, browser snapshot summarization | `google/gemini-3-flash-preview` (via OpenRouter) |
+| **Context compression** | Auto-compression when approaching context limit | `google/gemini-3-flash-preview` (via OpenRouter) |
+
+By default, these auto-detect the best available provider: OpenRouter → Nous Portal → (text tasks only) custom endpoint → Codex → API-key providers.
+
+### Changing the Vision Model
+
+To use a different model for image analysis (e.g., GPT-4o instead of Gemini Flash), add to `~/.hermes/config.yaml`:
+
+```yaml
+auxiliary:
+  vision:
+    provider: "openrouter"        # or "nous", "main", "auto"
+    model: "openai/gpt-4o"        # any model slug your provider supports
+```
+
+Or set environment variables (in `~/.hermes/.env` or shell):
+
+```bash
+AUXILIARY_VISION_MODEL=openai/gpt-4o
+# Optionally force a specific provider:
+AUXILIARY_VISION_PROVIDER=openrouter
+```
+
+### Changing the Web Extraction Model
+
+```yaml
+auxiliary:
+  web_extract:
+    provider: "auto"
+    model: "google/gemini-2.5-flash"
+```
+
+### Changing the Compression Model
+
+```yaml
+compression:
+  summary_model: "google/gemini-2.5-flash"
+  summary_provider: "auto"          # "auto", "openrouter", "nous", "main"
+```
+
+### Provider Options
+
+| Provider | Description |
+|----------|-------------|
+| `"auto"` | Best available (default). For vision, only tries OpenRouter + Nous. |
+| `"openrouter"` | Force OpenRouter (requires `OPENROUTER_API_KEY`) |
+| `"nous"` | Force Nous Portal (requires `hermes login`) |
+| `"main"` | Use the same provider as your main chat model. Skips OpenRouter/Nous. Useful for local models. |
+
+**Important:** Vision tasks require a multimodal-capable model. In `auto` mode, only OpenRouter and Nous Portal are tried (they route to Gemini, which supports images). Setting `provider: "main"` for vision will work only if your main endpoint supports multimodal input.
+
+**Key files:** `agent/auxiliary_client.py` (resolution chain), `tools/vision_tools.py`, `tools/browser_tool.py`, `tools/web_tools.py`
+
+---
+
 ## Known Pitfalls
 
 ### DO NOT use `simple_term_menu` for interactive menus

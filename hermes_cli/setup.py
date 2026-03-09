@@ -1572,10 +1572,22 @@ def setup_gateway(config: dict):
     
     if not existing_slack and prompt_yes_no("Set up Slack bot?", False):
         print_info("Steps to create a Slack app:")
-        print_info("   1. Go to https://api.slack.com/apps → Create New App")
-        print_info("   2. Enable Socket Mode: App Settings → Socket Mode → Enable")
-        print_info("   3. Bot Token: OAuth & Permissions → Install to Workspace")
-        print_info("   4. App Token: Basic Information → App-Level Tokens → Generate")
+        print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
+        print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
+        print_info("      • Create an App-Level Token with 'connections:write' scope")
+        print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
+        print_info("      Required scopes: chat:write, app_mentions:read,")
+        print_info("      channels:history, channels:read, groups:history,")
+        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
+        print_info("      Required events: message.im, message.channels,")
+        print_info("      message.groups, app_mention")
+        print_warning("   ⚠ Without message.channels/message.groups events,")
+        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. After installing, invite the bot to channels: /invite @YourBot")
+        print()
+        print_info("   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack")
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
         if bot_token:
@@ -1587,7 +1599,7 @@ def setup_gateway(config: dict):
             
             print()
             print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   Find Slack user IDs in your profile or via the Slack API")
+            print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
             print()
             allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
             if allowed_users:

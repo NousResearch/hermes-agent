@@ -80,6 +80,18 @@ DEFAULT_CONFIG = {
         "summary_model": "google/gemini-3-flash-preview",
     },
     
+    # Subagent configuration — model/provider for tasks spawned via delegate_task
+    # By default subagents inherit the parent agent's model. Set these to use
+    # a different (potentially cheaper/faster) model for delegated tasks.
+    "subagent": {
+        # Provider for subagent model (optional — defaults to parent's provider)
+        # "provider": "openrouter",
+        
+        # Model to use for subagents (optional — defaults to parent's model)
+        # A fast/cheap model is recommended since subtasks are narrowly scoped
+        # "model": "google/gemini-3-flash-preview",
+    },
+    
     "display": {
         "compact": False,
         "personality": "kawaii",

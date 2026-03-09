@@ -77,6 +77,15 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _get_subagent_config() -> Dict[str, Any]:
+    """Load subagent config from CLI_CONFIG if available."""
+    try:
+        from cli import CLI_CONFIG
+        return CLI_CONFIG.get("subagent", {})
+    except Exception:
+        return {}
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -104,10 +113,21 @@ def _run_single_child(
         if hasattr(parent_agent, '_client_kwargs'):
             parent_api_key = parent_agent._client_kwargs.get("api_key")
 
+        # Load subagent config for model/provider overrides
+        # Precedence: explicit model arg > config.subagent.model > parent model
+        subagent_cfg = _get_subagent_config()
+        configured_model = subagent_cfg.get("model")
+        configured_provider = subagent_cfg.get("provider")
+        
+        # Determine effective model and provider
+        effective_model = model or configured_model or parent_agent.model
+        effective_provider = configured_provider or getattr(parent_agent, "provider", None)
+
         child = AIAgent(
             base_url=parent_agent.base_url,
             api_key=parent_api_key,
-            model=model or parent_agent.model,
+            model=effective_model,
+            provider=effective_provider,
             max_iterations=max_iterations,
             enabled_toolsets=child_toolsets,
             quiet_mode=True,

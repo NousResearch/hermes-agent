@@ -10,6 +10,15 @@ metadata:
 
 # AgentMail — Agent-Owned Email Inboxes
 
+## Requirements
+
+- **AgentMail API key** (required) — sign up at https://console.agentmail.to (free tier: 3 inboxes, 3,000 emails/month; paid plans from $20/mo)
+- Add your key to `~/.hermes/.env`:
+  ```
+  AGENTMAIL_API_KEY=am_your_key_here
+  ```
+- Node.js 18+ (for the MCP server)
+
 ## When to Use
 Use this skill when you need to:
 - Give the agent its own dedicated email address
@@ -26,15 +35,10 @@ AgentMail gives the agent its own identity and inbox.
 
 ### 1. Get an API Key
 - Go to https://console.agentmail.to
-- Create an account (free tier: 3 inboxes, 3,000 emails/month)
-- Generate an API key (starts with `am_`)
+- Create an account and generate an API key (starts with `am_`)
+- Add it to `~/.hermes/.env` (see Requirements above)
 
-### 2. Configure Hermes
-Add to `~/.hermes/.env`:
-```
-AGENTMAIL_API_KEY=am_your_key_here
-```
-
+### 2. Configure MCP Server
 Add to `~/.hermes/config.yaml`:
 ```yaml
 mcp_servers:
@@ -42,15 +46,10 @@ mcp_servers:
     command: "npx"
     args: ["-y", "agentmail-mcp"]
     env:
-      AGENTMAIL_API_KEY: "am_your_key_here"
+      AGENTMAIL_API_KEY: "${AGENTMAIL_API_KEY}"
 ```
 
-### 3. Verify Node.js is installed
-```bash
-node --version  # Should be 18+
-```
-
-### 4. Restart Hermes
+### 3. Restart Hermes
 ```bash
 hermes
 ```

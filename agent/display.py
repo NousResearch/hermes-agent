@@ -5,6 +5,7 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -13,6 +14,8 @@ import time
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================
@@ -362,7 +365,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
         except (json.JSONDecodeError, TypeError, AttributeError):
-            pass
+            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
@@ -372,7 +375,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
         except (json.JSONDecodeError, TypeError, AttributeError):
-            pass
+            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()

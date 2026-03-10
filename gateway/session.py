@@ -272,8 +272,8 @@ class SessionEntry:
         if data.get("platform"):
             try:
                 platform = Platform(data["platform"])
-            except ValueError:
-                pass
+            except ValueError as e:
+                logger.debug("Unknown platform value %r: %s", data["platform"], e)
         
         return cls(
             session_key=data["session_key"],
@@ -370,8 +370,8 @@ class SessionStore:
         except BaseException:
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
     def _generate_session_key(self, source: SessionSource) -> str:

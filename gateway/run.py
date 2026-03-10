@@ -2175,16 +2175,19 @@ class GatewayRunner:
 
             adapter = self.adapters.get(event.source.platform)
             if adapter and hasattr(adapter, "send_voice"):
-                _thread_md = (
-                    {"thread_id": event.source.thread_id}
-                    if event.source.thread_id else None
-                )
-                await adapter.send_voice(
-                    event.source.chat_id,
-                    audio_path=ogg_path,
-                    reply_to=event.message_id,
-                    metadata=_thread_md,
-                )
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": event.source.chat_id,
+                    "audio_path": ogg_path,
+                    "reply_to": event.message_id,
+                }
+                if event.source.thread_id:
+                    send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
+                # Only pass metadata if the adapter accepts it
+                import inspect
+                sig = inspect.signature(adapter.send_voice)
+                if "metadata" not in sig.parameters:
+                    send_kwargs.pop("metadata", None)
+                await adapter.send_voice(**send_kwargs)
             try:
                 os.unlink(ogg_path)
             except OSError:

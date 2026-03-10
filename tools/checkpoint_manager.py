@@ -93,23 +93,59 @@ def _run_git(
     working_dir: str,
     timeout: int = _GIT_TIMEOUT,
 ) -> tuple:
-    """Run a git command against the shadow repo.  Returns (ok, stdout, stderr)."""
+    """Run a git command against the shadow repo.
+
+    Returns (ok, stdout, stderr) and logs detailed errors on failure.
+    """
     env = _git_env(shadow_repo, working_dir)
+    cmd = ["git"] + list(args)
+    cmd_str = " ".join(cmd)
+
     try:
         result = subprocess.run(
-            ["git"] + args,
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(Path(working_dir).resolve()),
         )
-        return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return False, "", f"git timed out after {timeout}s: git {' '.join(args)}"
-    except FileNotFoundError:
-        return False, "", "git not found"
-    except Exception as exc:
+        ok = result.returncode == 0
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        if not ok:
+            # Non-zero exit — log enough detail to debug issues with the shadow repo.
+            logger.error(
+                "Git command failed",
+                extra={
+                    "cmd": cmd_str,
+                    "returncode": result.returncode,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                },
+            )
+        return ok, stdout, stderr
+
+    except subprocess.TimeoutExpired as exc:
+        # Timeout — include exc_info so callers/tests can assert traceback presence.
+        message = f"git timed out after {timeout}s: {cmd_str}"
+        logger.error(message, exc_info=True)
+        return False, "", message
+
+    except FileNotFoundError as exc:
+        # git binary is not available on PATH.
+        message = "git not found"
+        logger.error(
+            "Git executable not found when running %s", cmd_str, exc_info=True
+        )
+        return False, "", message
+
+    except Exception as exc:  # pragma: no cover - defensive catch-all
+        # Unexpected failure — log full traceback for debugging.
+        logger.error(
+            "Unexpected git error while running %s: %s", cmd_str, exc, exc_info=True
+        )
         return False, "", str(exc)
 
 
@@ -280,14 +316,23 @@ class CheckpointManager:
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
-            return {"success": False, "error": "No checkpoints exist for this directory"}
+            return {
+                "success": False,
+                "error": "No checkpoints exist for this directory",
+            }
 
         # Verify the commit exists
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
-            return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
+            # Invalid hash or shadow repo corruption — surface a clear, user-friendly
+            # message and leave detailed git error in a debug field.
+            return {
+                "success": False,
+                "error": f"Checkpoint '{commit_hash}' not found",
+                "debug": err or None,
+            }
 
         # Take a checkpoint of current state before restoring (so you can undo the undo)
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
@@ -299,7 +344,11 @@ class CheckpointManager:
         )
 
         if not ok:
-            return {"success": False, "error": f"Restore failed: {err}"}
+            return {
+                "success": False,
+                "error": "Restore failed",
+                "debug": err or None,
+            }
 
         # Get info about what was restored
         ok2, reason_out, _ = _run_git(

@@ -383,3 +383,43 @@ class TestErrorResilience:
         # Should not raise
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
+
+
+class TestGitErrorLogging:
+    def test_timeout_logs_exc_info(self, tmp_path, caplog, monkeypatch):
+        """Timeouts in _run_git should log with exc_info for easier debugging."""
+        shadow = tmp_path / "shadow"
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def raise_timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["git", "status"], timeout=5)
+
+        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", raise_timeout)
+
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(["status"], shadow, str(work), timeout=5)
+
+        assert ok is False
+        assert "timed out" in stderr
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(r.exc_info is not None for r in error_records)
+
+    def test_git_not_found_logs_exc_info(self, tmp_path, caplog, monkeypatch):
+        """Missing git binary should produce a clear error and exc_info logging."""
+        shadow = tmp_path / "shadow"
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def raise_not_found(*args, **kwargs):
+            raise FileNotFoundError("git not found")
+
+        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", raise_not_found)
+
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(["status"], shadow, str(work))
+
+        assert ok is False
+        assert "git not found" in stderr
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(r.exc_info is not None for r in error_records)

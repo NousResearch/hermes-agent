@@ -37,6 +37,8 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("opencode-go", "OpenCode Go", "api_key"),
+        ("opencode-zen", "OpenCode Zen", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -65,11 +67,19 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_opencode_env_vars(self):
+        assert PROVIDER_REGISTRY["opencode-go"].api_key_env_vars == ("OPENCODE_API_KEY",)
+        assert PROVIDER_REGISTRY["opencode-zen"].api_key_env_vars == ("OPENCODE_API_KEY",)
+        assert PROVIDER_REGISTRY["opencode-go"].auto_detect is False
+        assert PROVIDER_REGISTRY["opencode-zen"].auto_detect is False
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["opencode-go"].inference_base_url == "https://opencode.ai/zen/go/v1"
+        assert PROVIDER_REGISTRY["opencode-zen"].inference_base_url == "https://opencode.ai/zen/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -85,6 +95,7 @@ class TestProviderRegistry:
 
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "OPENCODE_API_KEY",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "OPENAI_BASE_URL",
@@ -111,6 +122,12 @@ class TestResolveProvider:
 
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
+
+    def test_explicit_opencode_go(self):
+        assert resolve_provider("opencode-go") == "opencode-go"
+
+    def test_explicit_opencode_zen(self):
+        assert resolve_provider("opencode-zen") == "opencode-zen"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
@@ -167,6 +184,10 @@ class TestResolveProvider:
         """OpenRouter API key should win over GLM in auto-detection."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        assert resolve_provider("auto") == "openrouter"
+
+    def test_opencode_key_does_not_trigger_ambiguous_auto_detection(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "opencode-key")
         assert resolve_provider("auto") == "openrouter"
 
 
@@ -248,6 +269,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "mmcn-secret-key"
         assert creds["base_url"] == "https://api.minimaxi.com/v1"
 
+    def test_resolve_opencode_go_with_shared_key(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "opencode-secret-key")
+        creds = resolve_api_key_provider_credentials("opencode-go")
+        assert creds["provider"] == "opencode-go"
+        assert creds["api_key"] == "opencode-secret-key"
+        assert creds["base_url"] == "https://opencode.ai/zen/go/v1"
+
+    def test_resolve_opencode_zen_with_shared_key(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "opencode-secret-key")
+        creds = resolve_api_key_provider_credentials("opencode-zen")
+        assert creds["provider"] == "opencode-zen"
+        assert creds["api_key"] == "opencode-secret-key"
+        assert creds["base_url"] == "https://opencode.ai/zen/v1"
+
     def test_resolve_with_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")
         monkeypatch.setenv("GLM_BASE_URL", "https://custom.glm.example/v4")
@@ -316,6 +351,35 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
 
+    def test_runtime_opencode_go_uses_model_transport(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "go-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="opencode-go", model="minimax-m2.5")
+
+        assert result["provider"] == "opencode-go"
+        assert result["transport"] == "anthropic_messages"
+        assert result["api_mode"] == "chat_completions"
+        assert result["base_url"] == "https://opencode.ai/zen/go/v1"
+
+    def test_runtime_opencode_zen_uses_model_transport(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "zen-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="opencode-zen", model="gpt-5.4")
+
+        assert result["provider"] == "opencode-zen"
+        assert result["transport"] == "openai_responses"
+        assert result["api_mode"] == "codex_responses"
+        assert result["base_url"] == "https://opencode.ai/zen/v1"
+
+    def test_runtime_opencode_rejects_unmapped_model(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_API_KEY", "zen-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        with pytest.raises(AuthError):
+            resolve_runtime_provider(requested="opencode-zen", model="totally-unknown-model")
+
 
 # =============================================================================
 # _has_any_provider_configured tests
@@ -341,6 +405,32 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_opencode_key_alone_does_not_count_without_explicit_provider(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+
+        monkeypatch.setenv("OPENCODE_API_KEY", "test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(config_module, "load_config", lambda: {})
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured() is False
+
+    def test_opencode_key_counts_with_explicit_provider(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+
+        monkeypatch.setenv("OPENCODE_API_KEY", "test-key")
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(config_module, "load_config", lambda: {"model": {"provider": "opencode-go"}})
+        from hermes_cli.main import _has_any_provider_configured
+
         assert _has_any_provider_configured() is True
 
 

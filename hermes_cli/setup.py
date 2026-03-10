@@ -480,8 +480,9 @@ def setup_model_provider(config: dict):
         format_auth_error, AuthError, fetch_nous_models,
         resolve_nous_runtime_credentials, _update_config_for_provider,
         _login_openai_codex, get_codex_auth_status, DEFAULT_CODEX_BASE_URL,
-        detect_external_credentials,
+        detect_external_credentials, _prompt_model_selection,
     )
+    from hermes_cli.models import curated_model_specs, provider_requires_explicit_model_mapping
 
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
@@ -525,6 +526,8 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "OpenCode Go (shared OpenCode API key)",
+        "OpenCode Zen (shared OpenCode API key)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -887,12 +890,78 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 9:  # OpenCode Go
+        selected_provider = "opencode-go"
+        print()
+        print_header("OpenCode Go API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-go"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("OpenCode Go and OpenCode Zen share the same API key.")
+        print_info("Get your API key from the OpenCode console, then select Go or Zen here.")
+        print()
+
+        existing_key = get_env_value("OPENCODE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update OpenCode API key?", False):
+                api_key = prompt("  OpenCode API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_API_KEY", api_key)
+                    print_success("OpenCode API key updated")
+        else:
+            api_key = prompt("  OpenCode API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_API_KEY", api_key)
+                print_success("OpenCode API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("opencode-go", pconfig.inference_base_url)
+
+    elif provider_idx == 10:  # OpenCode Zen
+        selected_provider = "opencode-zen"
+        print()
+        print_header("OpenCode Zen API Key")
+        pconfig = PROVIDER_REGISTRY["opencode-zen"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("OpenCode Go and OpenCode Zen share the same API key.")
+        print_info("Use Zen when you want the curated multi-provider model gateway.")
+        print()
+
+        existing_key = get_env_value("OPENCODE_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update OpenCode API key?", False):
+                api_key = prompt("  OpenCode API key", password=True)
+                if api_key:
+                    save_env_value("OPENCODE_API_KEY", api_key)
+                    print_success("OpenCode API key updated")
+        else:
+            api_key = prompt("  OpenCode API key", password=True)
+            if api_key:
+                save_env_value("OPENCODE_API_KEY", api_key)
+                print_success("OpenCode API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("opencode-zen", pconfig.inference_base_url)
+
+    # else: keep current — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "nous-api", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in (
+        "nous", "nous-api", "openai-codex", "custom",
+        "zai", "kimi-coding", "minimax", "minimax-cn",
+        "opencode-go", "opencode-zen",
+    ) and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -1032,6 +1101,16 @@ def setup_model_provider(config: dict):
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)
             # else: keep current
+        elif selected_provider in ("opencode-go", "opencode-zen"):
+            opencode_models = [entry.id for entry in curated_model_specs(selected_provider)]
+            selected = _prompt_model_selection(
+                opencode_models,
+                current_model=current_model,
+                allow_custom=not provider_requires_explicit_model_mapping(selected_provider),
+            )
+            if selected:
+                config['model'] = selected
+                save_env_value("LLM_MODEL", selected)
         else:
             # Static list for OpenRouter / fallback (from canonical list)
             from hermes_cli.models import model_ids, menu_labels

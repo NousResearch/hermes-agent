@@ -165,16 +165,33 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 logger = logging.getLogger(__name__)
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(model: Optional[str] = None) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
 
+    resolved_model = (model or "").strip()
+    if not resolved_model:
+        try:
+            import yaml as _yaml
+
+            if _config_path.exists():
+                with open(_config_path, encoding="utf-8") as _f:
+                    _cfg = _yaml.safe_load(_f) or {}
+                _model_cfg = _cfg.get("model", {})
+                if isinstance(_model_cfg, str):
+                    resolved_model = _model_cfg.strip()
+                elif isinstance(_model_cfg, dict):
+                    resolved_model = str(_model_cfg.get("default", "") or "").strip()
+        except Exception:
+            resolved_model = ""
+
     try:
         runtime = resolve_runtime_provider(
             requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+            model=resolved_model or None,
         )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
@@ -2797,7 +2814,7 @@ class GatewayRunner:
                 pass
 
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                runtime_kwargs = _resolve_runtime_agent_kwargs(model=model)
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",

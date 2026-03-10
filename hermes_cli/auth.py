@@ -90,6 +90,8 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Whether resolve_provider("auto") may infer this provider from env vars alone.
+    auto_detect: bool = True
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -147,6 +149,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimaxi.com/v1",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
+    ),
+    "opencode-go": ProviderConfig(
+        id="opencode-go",
+        name="OpenCode Go",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/go/v1",
+        api_key_env_vars=("OPENCODE_API_KEY",),
+        auto_detect=False,
+    ),
+    "opencode-zen": ProviderConfig(
+        id="opencode-zen",
+        name="OpenCode Zen",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        api_key_env_vars=("OPENCODE_API_KEY",),
+        auto_detect=False,
     ),
 }
 
@@ -525,6 +543,7 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "opencode_go": "opencode-go", "opencode_zen": "opencode-zen",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -559,6 +578,8 @@ def resolve_provider(
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
+            continue
+        if not pconfig.auto_detect:
             continue
         for env_var in pconfig.api_key_env_vars:
             if os.getenv(env_var, "").strip():
@@ -1589,8 +1610,13 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None."""
+def _prompt_model_selection(
+    model_ids: List[str],
+    current_model: str = "",
+    *,
+    allow_custom: bool = True,
+) -> Optional[str]:
+    """Interactive model selection. Puts current_model first with a marker."""
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:
@@ -1612,7 +1638,8 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
     try:
         from simple_term_menu import TerminalMenu
         choices = [f"  {_label(mid)}" for mid in ordered]
-        choices.append("  Enter custom model name")
+        if allow_custom:
+            choices.append("  Enter custom model name")
         choices.append("  Skip (keep current)")
         menu = TerminalMenu(
             choices,
@@ -1630,7 +1657,7 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
         print()
         if idx < len(ordered):
             return ordered[idx]
-        elif idx == len(ordered):
+        elif allow_custom and idx == len(ordered):
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
@@ -1642,24 +1669,29 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
     for i, mid in enumerate(ordered, 1):
         print(f"  {i}. {_label(mid)}")
     n = len(ordered)
-    print(f"  {n + 1}. Enter custom model name")
-    print(f"  {n + 2}. Skip (keep current)")
+    if allow_custom:
+        print(f"  {n + 1}. Enter custom model name")
+        print(f"  {n + 2}. Skip (keep current)")
+        max_choice = n + 2
+    else:
+        print(f"  {n + 1}. Skip (keep current)")
+        max_choice = n + 1
     print()
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
+            choice = input(f"Choice [1-{max_choice}] (default: skip): ").strip()
             if not choice:
                 return None
             idx = int(choice)
             if 1 <= idx <= n:
                 return ordered[idx - 1]
-            elif idx == n + 1:
+            elif allow_custom and idx == n + 1:
                 custom = input("Enter model name: ").strip()
                 return custom if custom else None
-            elif idx == n + 2:
+            elif idx == max_choice:
                 return None
-            print(f"Please enter 1-{n + 2}")
+            print(f"Please enter 1-{max_choice}")
         except ValueError:
             print("Please enter a number")
         except (KeyboardInterrupt, EOFError):

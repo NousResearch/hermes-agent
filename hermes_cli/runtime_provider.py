@@ -15,6 +15,10 @@ from hermes_cli.auth import (
     resolve_api_key_provider_credentials,
 )
 from hermes_cli.config import load_config
+from hermes_cli.models import (
+    provider_requires_explicit_model_mapping,
+    provider_transport_for_model,
+)
 from hermes_cli.transport_profiles import build_transport_profile
 from hermes_constants import OPENROUTER_BASE_URL
 
@@ -160,7 +164,19 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        profile = build_transport_profile(provider, base_url=creds.get("base_url", ""), model=model)
+        transport = provider_transport_for_model(provider, model)
+        if model and provider_requires_explicit_model_mapping(provider) and not transport:
+            raise AuthError(
+                f"Model '{model}' is not mapped for provider '{provider}'.",
+                provider=provider,
+                code="invalid_model_for_provider",
+            )
+        profile = build_transport_profile(
+            provider,
+            base_url=creds.get("base_url", ""),
+            model=model,
+            transport=transport,
+        )
         return {
             "provider": provider,
             "api_mode": profile.api_mode,

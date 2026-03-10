@@ -33,6 +33,8 @@ _PROVIDER_DEFAULT_TRANSPORTS = {
     "kimi-coding": OPENAI_CHAT_COMPLETIONS,
     "minimax": OPENAI_CHAT_COMPLETIONS,
     "minimax-cn": OPENAI_CHAT_COMPLETIONS,
+    "opencode-go": OPENAI_CHAT_COMPLETIONS,
+    "opencode-zen": OPENAI_CHAT_COMPLETIONS,
 }
 
 

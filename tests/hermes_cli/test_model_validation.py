@@ -94,6 +94,11 @@ class TestCuratedModelsForProvider:
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
+    def test_opencode_zen_returns_curated_models(self):
+        models = curated_models_for_provider("opencode-zen")
+        assert ("gpt-5.4", "") in models
+        assert ("gemini-3-pro", "") in models
+
 
 # -- normalize_provider ------------------------------------------------------
 
@@ -124,6 +129,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_opencode_go_returns_curated_models(self):
+        assert provider_model_ids("opencode-go") == ["glm-5", "kimi-k2.5", "minimax-m2.5"]
 
 
 # -- fetch_api_models --------------------------------------------------------
@@ -217,4 +225,24 @@ class TestValidateApiFallback:
     def test_unknown_provider_session_only_when_api_down(self):
         result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
+        assert result["persist"] is False
+
+    def test_opencode_go_known_model_persists_without_live_api(self):
+        result = _validate("glm-5", provider="opencode-go", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+
+    def test_opencode_go_unknown_model_rejected_without_live_api(self):
+        result = _validate("glm-4.7", provider="opencode-go", api_models=None)
+        assert result["accepted"] is False
+        assert result["persist"] is False
+
+    def test_opencode_zen_unknown_model_rejected_even_if_api_down(self):
+        result = _validate("unknown-zen-model", provider="opencode-zen", api_models=None)
+        assert result["accepted"] is False
+        assert result["persist"] is False
+
+    def test_opencode_zen_mapped_model_rejected_when_live_catalog_disagrees(self):
+        result = _validate("gpt-5.4", provider="opencode-zen", api_models=["claude-sonnet-4-6"])
+        assert result["accepted"] is False
         assert result["persist"] is False

@@ -235,6 +235,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         try:
             runtime = resolve_runtime_provider(
                 requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+                model=model,
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)

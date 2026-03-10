@@ -69,8 +69,22 @@ def _has_any_provider_configured() -> bool:
 
     # Collect all provider env vars
     provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_BASE_URL"}
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
+    explicit_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model", {})
+        if not explicit_provider and isinstance(model_cfg, dict):
+            explicit_provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    except Exception:
+        pass
+
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        if not pconfig.auto_detect and pid != explicit_provider:
+            continue
+        if pconfig.api_key_env_vars:
             provider_env_vars.update(pconfig.api_key_env_vars)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
@@ -738,6 +752,8 @@ def cmd_model(args):
 
     provider_labels = {
         "openrouter": "OpenRouter",
+        "opencode-go": "OpenCode Go",
+        "opencode-zen": "OpenCode Zen",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
         "zai": "Z.AI / GLM",
@@ -756,6 +772,8 @@ def cmd_model(args):
     # Step 1: Provider selection — put active provider first with marker
     providers = [
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
+        ("opencode-go", "OpenCode Go (shared OpenCode API key, curated open models)"),
+        ("opencode-zen", "OpenCode Zen (shared OpenCode API key, curated multi-provider gateway)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
@@ -826,7 +844,7 @@ def cmd_model(args):
         _model_flow_named_custom(config, _custom_provider_map[selected_provider])
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
-    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn"):
+    elif selected_provider in ("zai", "kimi-coding", "minimax", "minimax-cn", "opencode-go", "opencode-zen"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1320,40 +1338,17 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Curated model lists for direct API-key providers
-_PROVIDER_MODELS = {
-    "zai": [
-        "glm-5",
-        "glm-4.7",
-        "glm-4.5",
-        "glm-4.5-flash",
-    ],
-    "kimi-coding": [
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
-    "minimax": [
-        "MiniMax-M2.5",
-        "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
-    ],
-    "minimax-cn": [
-        "MiniMax-M2.5",
-        "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
-    ],
-}
-
-
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
-    """Generic flow for API-key providers (z.ai, Kimi, MiniMax)."""
+    """Generic flow for direct API-key providers."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
-        _update_config_for_provider, deactivate_provider,
+        deactivate_provider,
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import (
+        curated_model_specs,
+        provider_requires_explicit_model_mapping,
+    )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
@@ -1390,19 +1385,24 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+    if base_url_env:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
-    # Model selection
-    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    model_specs = curated_model_specs(provider_id)
+    model_list = [entry.id for entry in model_specs]
     if model_list:
-        selected = _prompt_model_selection(model_list, current_model=current_model)
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            allow_custom=not provider_requires_explicit_model_mapping(provider_id),
+        )
     else:
         try:
             selected = input("Model name: ").strip()

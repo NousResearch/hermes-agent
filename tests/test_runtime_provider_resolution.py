@@ -184,6 +184,46 @@ def test_resolve_runtime_provider_nous_api(monkeypatch):
     assert resolved["requested_provider"] == "nous-api"
 
 
+def test_resolve_runtime_provider_opencode_go_transport(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda pid: {
+            "provider": "opencode-go",
+            "api_key": "go-key",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "source": "OPENCODE_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go", model="minimax-m2.5")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["transport"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_resolve_runtime_provider_opencode_zen_transport(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda pid: {
+            "provider": "opencode-zen",
+            "api_key": "zen-key",
+            "base_url": "https://opencode.ai/zen/v1",
+            "source": "OPENCODE_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen", model="gemini-3-pro")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["transport"] == "google_generate_content"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

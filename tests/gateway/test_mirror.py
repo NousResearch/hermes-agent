@@ -160,3 +160,27 @@ class TestMirrorToSession:
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False
+
+
+class TestAppendToSqlite:
+    def test_connection_is_closed_after_use(self, tmp_path):
+        """Verify _append_to_sqlite closes the SessionDB connection."""
+        from gateway.mirror import _append_to_sqlite
+        mock_db = MagicMock()
+
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+
+        mock_db.append_message.assert_called_once()
+        mock_db.close.assert_called_once()
+
+    def test_connection_closed_even_on_error(self, tmp_path):
+        """Verify connection is closed even when append_message raises."""
+        from gateway.mirror import _append_to_sqlite
+        mock_db = MagicMock()
+        mock_db.append_message.side_effect = Exception("db error")
+
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+
+        mock_db.close.assert_called_once()

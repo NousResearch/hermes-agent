@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -557,6 +558,32 @@ class SessionDB:
     # Search
     # =========================================================================
 
+    @staticmethod
+    def _sanitize_fts5_query(query: str) -> str:
+        """Sanitize user input for safe use in FTS5 MATCH queries.
+
+        FTS5 has its own query syntax where characters like ``"``, ``(``, ``)``,
+        ``+``, ``*``, ``{``, ``}`` and bare boolean operators (``AND``, ``OR``,
+        ``NOT``) have special meaning.  Passing raw user input directly to
+        MATCH can cause ``sqlite3.OperationalError``.
+
+        Strategy: strip characters that are only meaningful as FTS5 operators
+        and would otherwise cause syntax errors.  This preserves normal keyword
+        search while preventing crashes on inputs like ``C++``, ``"unterminated``,
+        or ``hello AND``.
+        """
+        # Remove FTS5-special characters that are not useful in keyword search
+        sanitized = re.sub(r'[+{}()"^]', " ", query)
+        # Collapse repeated * (e.g. "***") into a single one, and remove
+        # leading * (prefix-only matching requires at least one char before *)
+        sanitized = re.sub(r"\*+", "*", sanitized)
+        sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
+        # Remove dangling boolean operators at start/end that would cause
+        # syntax errors (e.g. "hello AND" or "OR world")
+        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
+        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        return sanitized.strip()
+
     def search_messages(
         self,
         query: str,
@@ -578,6 +605,10 @@ class SessionDB:
         and surrounding context (1 message before and after the match).
         """
         if not query or not query.strip():
+            return []
+
+        query = self._sanitize_fts5_query(query)
+        if not query:
             return []
 
         if source_filter is None:
@@ -619,7 +650,11 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
 
-        cursor = self._conn.execute(sql, params)
+        try:
+            cursor = self._conn.execute(sql, params)
+        except sqlite3.OperationalError:
+            # FTS5 query syntax error despite sanitization — return empty
+            return []
         matches = [dict(row) for row in cursor.fetchall()]
 
         # Add surrounding context (1 message before + after each match)

@@ -715,7 +715,7 @@ class BasePlatformAdapter(ABC):
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
-                    
+
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
                         print(f"[{self.name}] Failed to send response: {result.error}")

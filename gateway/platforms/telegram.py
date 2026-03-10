@@ -111,7 +111,6 @@ class TelegramAdapter(BasePlatformAdapter):
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
-        self._delivery_progress: Dict[str, bool] = {}
     
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
@@ -200,15 +199,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot = None
         print(f"[{self.name}] Disconnected")
     
-    def _should_thread_reply(self, chat_id: str, reply_to: Optional[str], chunk_index: int) -> bool:
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
         """
         Determine if this message chunk should thread to the original message.
-        
+
         Args:
-            chat_id: The chat ID
             reply_to: The original message ID to reply to
             chunk_index: Index of this chunk (0 = first chunk)
-        
+
         Returns:
             True if this chunk should be threaded to the original message
         """
@@ -242,7 +240,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             
             for i, chunk in enumerate(chunks):
-                should_thread = self._should_thread_reply(chat_id, reply_to, i)
+                should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 
                 try:

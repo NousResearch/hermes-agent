@@ -1,13 +1,19 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    SendResult,
 )
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +374,58 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+class TestProcessMessageBackground:
+    @pytest.mark.asyncio
+    async def test_forwards_thread_metadata_to_typing_and_send(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *args, **kwargs):
+                return SendResult(success=True, message_id="reply-1")
+
+            async def get_chat_info(self, *args):
+                return {}
+
+        adapter = StubAdapter(
+            config=PlatformConfig(enabled=True, token="test"),
+            platform=Platform.SLACK,
+        )
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="reply-1"))
+        adapter.send_typing = AsyncMock()
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "hello"
+
+        adapter.set_message_handler(handler)
+
+        event = MessageEvent(
+            text="hello",
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id="1234567890.123456",
+            ),
+            message_id="m1",
+        )
+
+        await adapter._process_message_background(event, "C123")
+
+        expected_metadata = {
+            "thread_id": "1234567890.123456",
+            "thread_ts": "1234567890.123456",
+        }
+        assert adapter.send_typing.await_args.args == ("C123",)
+        assert adapter.send_typing.await_args.kwargs == {"metadata": expected_metadata}
+        assert adapter.send.await_args.kwargs == {
+            "chat_id": "C123",
+            "content": "hello",
+            "reply_to": "m1",
+            "metadata": expected_metadata,
+        }

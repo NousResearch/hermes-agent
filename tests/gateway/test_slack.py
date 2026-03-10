@@ -219,6 +219,22 @@ class TestSendDocument:
         # Base class send() is also mocked, so check it was attempted
         adapter._app.client.chat_postMessage.assert_called_once()
 
+
+class TestSend:
+    @pytest.mark.asyncio
+    async def test_send_uses_thread_ts_metadata(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="hello",
+            metadata={"thread_ts": "1234567890.123456"},
+        )
+
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args[1]
+        assert call_kwargs["thread_ts"] == "1234567890.123456"
+
     @pytest.mark.asyncio
     async def test_send_document_with_thread(self, adapter, tmp_path):
         test_file = tmp_path / "notes.txt"

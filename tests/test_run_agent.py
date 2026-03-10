@@ -1208,3 +1208,63 @@ class TestSystemPromptStability:
         conversation_history = []
         should_prefetch = not conversation_history
         assert should_prefetch is True
+
+
+class TestFlushMessagesDeduplication:
+    """Verify _flush_messages_to_session_db does not write duplicate messages."""
+
+    def test_flush_tracks_last_flushed_idx(self, agent):
+        """Second flush call should only write new messages, not re-write already flushed ones."""
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+        agent.session_id = "test-session"
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "how are you"},
+            {"role": "assistant", "content": "fine"},
+        ]
+        conversation_history = []
+
+        # First flush — should write all 4 messages
+        agent._flush_messages_to_session_db(messages[:2], conversation_history)
+        assert mock_db.append_message.call_count == 2
+        assert agent._last_flushed_db_idx == 2
+
+        # Second flush — should only write the 2 new messages
+        mock_db.reset_mock()
+        agent._flush_messages_to_session_db(messages, conversation_history)
+        assert mock_db.append_message.call_count == 2
+        assert agent._last_flushed_db_idx == 4
+
+    def test_flush_no_duplicates_on_repeated_calls(self, agent):
+        """Calling flush multiple times with same messages should not write duplicates."""
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+        agent.session_id = "test-session"
+
+        messages = [{"role": "user", "content": "hello"}]
+        conversation_history = []
+
+        agent._flush_messages_to_session_db(messages, conversation_history)
+        assert mock_db.append_message.call_count == 1
+
+        mock_db.reset_mock()
+        agent._flush_messages_to_session_db(messages, conversation_history)
+        assert mock_db.append_message.call_count == 0
+
+    def test_flush_without_prior_state_uses_conversation_history_length(self, agent):
+        """Without _last_flushed_db_idx, start_idx falls back to len(conversation_history)."""
+        mock_db = MagicMock()
+        agent._session_db = mock_db
+        agent.session_id = "test-session"
+
+        if hasattr(agent, '_last_flushed_db_idx'):
+            del agent._last_flushed_db_idx
+
+        conversation_history = [{"role": "user", "content": "old msg"}]
+        messages = conversation_history + [{"role": "assistant", "content": "new reply"}]
+
+        agent._flush_messages_to_session_db(messages, conversation_history)
+        assert mock_db.append_message.call_count == 1

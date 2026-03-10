@@ -839,7 +839,7 @@ class AIAgent:
         if not self._session_db:
             return
         try:
-            start_idx = len(conversation_history) if conversation_history else 0
+            start_idx = getattr(self, '_last_flushed_db_idx', len(conversation_history) if conversation_history else 0)
             for msg in messages[start_idx:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -860,6 +860,7 @@ class AIAgent:
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                 )
+            self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.debug("Session DB append_message failed: %s", e)
 

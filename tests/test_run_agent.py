@@ -643,6 +643,21 @@ class TestExecuteToolCalls:
         assert len(messages[0]["content"]) < 150_000
         assert "Truncated" in messages[0]["content"]
 
+    def test_execute_code_injects_enabled_tools_context(self, agent):
+        tc = _mock_tool_call(name="execute_code", arguments='{"code":"print(1)"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent.valid_tool_names = {"execute_code", "read_file", "terminal"}
+
+        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        called_name, called_args, called_task_id = mock_hfc.call_args.args
+        assert called_name == "execute_code"
+        assert called_task_id == "task-1"
+        assert called_args["code"] == "print(1)"
+        assert called_args["__hermes_enabled_tools"] == sorted(agent.valid_tool_names)
+
 
 class TestHandleMaxIterations:
     def test_returns_summary(self, agent):

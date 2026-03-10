@@ -2,6 +2,7 @@
 
 import json
 import pytest
+import model_tools
 
 from model_tools import (
     handle_function_call,
@@ -37,6 +38,48 @@ class TestHandleFunctionCall:
         assert "error" in parsed
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+
+    def test_execute_code_uses_explicit_enabled_tools_when_provided(self, monkeypatch):
+        captured = {}
+
+        def _fake_dispatch(name, args, **kwargs):
+            captured["name"] = name
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools.registry, "dispatch", _fake_dispatch)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", ["web_search"])
+
+        result = handle_function_call(
+            "execute_code",
+            {
+                "code": "print('hi')",
+                "__hermes_enabled_tools": ["terminal", "read_file"],
+            },
+            task_id="task-1",
+        )
+
+        assert json.loads(result)["ok"] is True
+        assert captured["name"] == "execute_code"
+        assert captured["args"] == {"code": "print('hi')"}
+        assert captured["kwargs"]["enabled_tools"] == ["terminal", "read_file"]
+        assert captured["kwargs"]["task_id"] == "task-1"
+
+    def test_execute_code_falls_back_to_last_resolved_tools(self, monkeypatch):
+        captured = {}
+
+        def _fake_dispatch(name, args, **kwargs):
+            captured["kwargs"] = kwargs
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools.registry, "dispatch", _fake_dispatch)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", ["search_files", "read_file"])
+
+        result = handle_function_call("execute_code", {"code": "print(1)"}, task_id="task-2")
+
+        assert json.loads(result)["ok"] is True
+        assert captured["kwargs"]["enabled_tools"] == ["search_files", "read_file"]
 
 
 # =========================================================================

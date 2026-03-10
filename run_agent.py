@@ -2814,7 +2814,11 @@ class AIAgent:
                 spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(function_name, function_args, effective_task_id)
+                    dispatch_args = function_args
+                    if function_name == "execute_code":
+                        dispatch_args = dict(function_args)
+                        dispatch_args["__hermes_enabled_tools"] = sorted(self.valid_tool_names)
+                    function_result = handle_function_call(function_name, dispatch_args, effective_task_id)
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -2825,7 +2829,11 @@ class AIAgent:
                     spinner.stop(cute_msg)
             else:
                 try:
-                    function_result = handle_function_call(function_name, function_args, effective_task_id)
+                    dispatch_args = function_args
+                    if function_name == "execute_code":
+                        dispatch_args = dict(function_args)
+                        dispatch_args["__hermes_enabled_tools"] = sorted(self.valid_tool_names)
+                    function_result = handle_function_call(function_name, dispatch_args, effective_task_id)
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)

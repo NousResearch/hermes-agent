@@ -123,8 +123,13 @@ TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
+# Used as a fallback for execute_code when per-call tool context is unavailable.
 _last_resolved_tool_names: List[str] = []
+
+# Internal argument key injected by the agent loop when dispatching execute_code.
+# This avoids process-global cross-talk when multiple agents/subagents run in
+# the same process and resolve different toolsets.
+_INTERNAL_ENABLED_TOOLS_ARG = "__hermes_enabled_tools"
 
 
 # =============================================================================
@@ -284,10 +289,17 @@ def handle_function_call(
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
         if function_name == "execute_code":
+            call_args = dict(function_args or {})
+            explicit_enabled_tools = call_args.pop(_INTERNAL_ENABLED_TOOLS_ARG, None)
+            enabled_tools = (
+                explicit_enabled_tools
+                if isinstance(explicit_enabled_tools, list)
+                else _last_resolved_tool_names
+            )
             return registry.dispatch(
-                function_name, function_args,
+                function_name, call_args,
                 task_id=task_id,
-                enabled_tools=_last_resolved_tool_names,
+                enabled_tools=enabled_tools,
             )
 
         return registry.dispatch(

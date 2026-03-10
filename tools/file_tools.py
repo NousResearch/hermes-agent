@@ -15,7 +15,10 @@ _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
 # Track files read per task to detect re-read loops after context compression.
-# Key: task_id, Value: dict mapping (path, offset, limit) -> read count
+# Per task_id we store:
+#   "last_key":     the key of the most recent read/search call (or None)
+#   "consecutive":  how many times that exact call has been repeated in a row
+#   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
@@ -139,28 +142,37 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             result.content = redact_sensitive_text(result.content)
         result_dict = result.to_dict()
 
-        # Track reads to detect re-read loops (e.g. after context compression)
-        read_key = (path, offset, limit)
+        # Track reads to detect *consecutive* re-read loops.
+        # The counter resets whenever any other tool is called in between,
+        # so only truly back-to-back identical reads trigger warnings/blocks.
+        read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            task_reads = _read_tracker.setdefault(task_id, {})
-            task_reads[read_key] = task_reads.get(read_key, 0) + 1
-            count = task_reads[read_key]
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0, "read_history": set(),
+            })
+            task_data["read_history"].add((path, offset, limit))
+            if task_data["last_key"] == read_key:
+                task_data["consecutive"] += 1
+            else:
+                task_data["last_key"] = read_key
+                task_data["consecutive"] = 1
+            count = task_data["consecutive"]
 
-        if count >= 3:
+        if count >= 4:
             # Hard block: stop returning content to break the loop
             return json.dumps({
                 "error": (
-                    f"BLOCKED: You have read this exact file region {count} times. "
+                    f"BLOCKED: You have read this exact file region {count} times in a row. "
                     "The content has NOT changed. You already have this information. "
                     "STOP re-reading and proceed with your task."
                 ),
                 "path": path,
                 "already_read": count,
             }, ensure_ascii=False)
-        elif count > 1:
+        elif count >= 3:
             result_dict["_warning"] = (
-                f"You have already read this exact file region {count} times in this session. "
-                "The content has not changed. Use the information you already have instead of re-reading. "
+                f"You have read this exact file region {count} times consecutively. "
+                "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
@@ -176,9 +188,10 @@ def get_read_files_summary(task_id: str = "default") -> list:
     compression boundaries.
     """
     with _read_tracker_lock:
-        task_reads = _read_tracker.get(task_id, {})
-        seen_paths = {}
-        for (path, offset, limit), count in task_reads.items():
+        task_data = _read_tracker.get(task_id, {})
+        read_history = task_data.get("read_history", set())
+        seen_paths: dict = {}
+        for (path, offset, limit) in read_history:
             if path not in seen_paths:
                 seen_paths[path] = []
             seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
@@ -189,12 +202,33 @@ def get_read_files_summary(task_id: str = "default") -> list:
 
 
 def clear_read_tracker(task_id: str = None):
-    """Clear the read tracker. Called when starting a new conversation."""
+    """Clear the read tracker.
+
+    Call with a task_id to clear just that task, or without to clear all.
+    Should be called when a session is destroyed to prevent memory leaks
+    in long-running gateway processes.
+    """
     with _read_tracker_lock:
         if task_id:
             _read_tracker.pop(task_id, None)
         else:
             _read_tracker.clear()
+
+
+def notify_other_tool_call(task_id: str = "default"):
+    """Reset consecutive read/search counter for a task.
+
+    Called by the tool dispatcher (model_tools.py) whenever a tool OTHER
+    than read_file / search_files is executed.  This ensures we only warn
+    or block on *truly consecutive* repeated reads — if the agent does
+    anything else in between (write, patch, terminal, etc.) the counter
+    resets and the next read is treated as fresh.
+    """
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data:
+            task_data["last_key"] = None
+            task_data["consecutive"] = 0
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
@@ -245,17 +279,23 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
-        # Track searches to detect repeated search loops
-        search_key = ("search", pattern, target, path, file_glob or "")
+        # Track searches to detect *consecutive* repeated search loops.
+        search_key = ("search", pattern, target, str(path), file_glob or "")
         with _read_tracker_lock:
-            task_reads = _read_tracker.setdefault(task_id, {})
-            task_reads[search_key] = task_reads.get(search_key, 0) + 1
-            count = task_reads[search_key]
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0, "read_history": set(),
+            })
+            if task_data["last_key"] == search_key:
+                task_data["consecutive"] += 1
+            else:
+                task_data["last_key"] = search_key
+                task_data["consecutive"] = 1
+            count = task_data["consecutive"]
 
-        if count >= 3:
+        if count >= 4:
             return json.dumps({
                 "error": (
-                    f"BLOCKED: You have run this exact search {count} times. "
+                    f"BLOCKED: You have run this exact search {count} times in a row. "
                     "The results have NOT changed. You already have this information. "
                     "STOP re-searching and proceed with your task."
                 ),
@@ -274,9 +314,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                     m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
 
-        if count > 1:
+        if count >= 3:
             result_dict["_warning"] = (
-                f"You have run this exact search {count} times in this session. "
+                f"You have run this exact search {count} times consecutively. "
                 "The results have not changed. Use the information you already have."
             )
 

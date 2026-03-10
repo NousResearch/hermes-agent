@@ -84,8 +84,8 @@ def _check_disk_usage_warning():
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug("Could not stat file %s: %s", f, e)
         
         total_gb = total_bytes / (1024 ** 3)
         
@@ -231,13 +231,13 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 try:
                     import termios as _termios
                     _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to restore terminal attributes: %s", e)
             if tty_fd is not None:
                 try:
                     os.close(tty_fd)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to close tty fd: %s", e)
             result["done"] = True
     
     try:
@@ -690,8 +690,8 @@ def get_active_environments_info() -> Dict[str, Any]:
             try:
                 size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
                 total_size += size
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("Could not stat path %s: %s", path, e)
     
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
@@ -718,8 +718,8 @@ def cleanup_all_environments():
         try:
             shutil.rmtree(path, ignore_errors=True)
             logger.info("Removed orphaned: %s", path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Failed to remove orphaned path %s: %s", path, e)
     
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)

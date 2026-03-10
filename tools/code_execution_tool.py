@@ -335,8 +335,8 @@ def _rpc_server_loop(
         if conn:
             try:
                 conn.close()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("RPC conn close error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -550,8 +550,8 @@ def execute_code(
         # Cleanup temp dir and socket
         try:
             server_sock.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Server socket close error: %s", e)
         try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)

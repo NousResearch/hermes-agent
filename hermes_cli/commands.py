@@ -39,6 +39,8 @@ COMMANDS = {
     "/insights": "Show usage insights and analytics (last 30 days)",
     "/paste": "Check clipboard for an image and attach it",
     "/reload-mcp": "Reload MCP servers from config.yaml",
+    "/rollback": "List or restore filesystem checkpoints (usage: /rollback [number])",
+    "/skin": "Show or change the display skin/theme",
     "/quit": "Exit the CLI (also: /exit, /q)",
 }
 

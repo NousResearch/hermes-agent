@@ -202,6 +202,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "skin": "default",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -382,6 +383,13 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
+
+# Initialize the skin engine from config
+try:
+    from hermes_cli.skin_engine import init_skin_from_config
+    init_skin_from_config(CLI_CONFIG)
+except Exception:
+    pass  # Skin engine is optional — default skin used if unavailable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -1051,6 +1059,7 @@ class HermesCLI:
         verbose: bool = False,
         compact: bool = False,
         resume: str = None,
+        checkpoints: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1131,6 +1140,13 @@ class HermesCLI:
             invalid = [t for t in toolsets if not validate_toolset(t)]
             if invalid:
                 self.console.print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
+        
+        # Filesystem checkpoints: CLI flag > config
+        cp_cfg = CLI_CONFIG.get("checkpoints", {})
+        if isinstance(cp_cfg, bool):
+            cp_cfg = {"enabled": cp_cfg}
+        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1401,6 +1417,8 @@ class HermesCLI:
                 honcho_session_key=self.session_id,
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
+                checkpoints_enabled=self.checkpoints_enabled,
+                checkpoint_max_snapshots=self.checkpoint_max_snapshots,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -1669,6 +1687,55 @@ class HermesCLI:
             return True
         self._image_counter -= 1
         return False
+
+    def _handle_rollback_command(self, command: str):
+        """Handle /rollback — list or restore filesystem checkpoints."""
+        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+
+        if not hasattr(self, 'agent') or not self.agent:
+            print("  No active agent session.")
+            return
+
+        mgr = self.agent._checkpoint_mgr
+        if not mgr.enabled:
+            print("  Checkpoints are not enabled.")
+            print("  Enable with: hermes --checkpoints")
+            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            return
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        parts = command.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not arg:
+            # List checkpoints
+            checkpoints = mgr.list_checkpoints(cwd)
+            print(format_checkpoint_list(checkpoints, cwd))
+        else:
+            # Restore by number or hash
+            checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                print(f"  No checkpoints found for {cwd}")
+                return
+
+            target_hash = None
+            try:
+                idx = int(arg) - 1  # 1-indexed for user
+                if 0 <= idx < len(checkpoints):
+                    target_hash = checkpoints[idx]["hash"]
+                else:
+                    print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+                    return
+            except ValueError:
+                # Try as a git hash
+                target_hash = arg
+
+            result = mgr.restore(cwd, target_hash)
+            if result["success"]:
+                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+                print(f"  A pre-rollback snapshot was saved automatically.")
+            else:
+                print(f"  ❌ {result['error']}")
 
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
@@ -2679,6 +2746,10 @@ class HermesCLI:
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
+        elif cmd_lower.startswith("/rollback"):
+            self._handle_rollback_command(cmd_original)
+        elif cmd_lower.startswith("/skin"):
+            self._handle_skin_command(cmd_original)
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -2698,6 +2769,43 @@ class HermesCLI:
         
         return True
     
+    def _handle_skin_command(self, cmd: str):
+        """Handle /skin [name] — show or change the display skin."""
+        try:
+            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+        except ImportError:
+            print("Skin engine not available.")
+            return
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            # Show current skin and list available
+            current = get_active_skin_name()
+            skins = list_skins()
+            print(f"\n  Current skin: {current}")
+            print(f"  Available skins:")
+            for s in skins:
+                marker = " ●" if s["name"] == current else "  "
+                source = f" ({s['source']})" if s["source"] == "user" else ""
+                print(f"   {marker} {s['name']}{source} — {s['description']}")
+            print(f"\n  Usage: /skin <name>")
+            print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
+            return
+
+        new_skin = parts[1].strip().lower()
+        available = {s["name"] for s in list_skins()}
+        if new_skin not in available:
+            print(f"  Unknown skin: {new_skin}")
+            print(f"  Available: {', '.join(sorted(available))}")
+            return
+
+        set_active_skin(new_skin)
+        if save_config_value("display.skin", new_skin):
+            print(f"  Skin set to: {new_skin} (saved)")
+        else:
+            print(f"  Skin set to: {new_skin}")
+        print("  Note: banner colors will update on next session start.")
+
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]
@@ -3169,10 +3277,22 @@ class HermesCLI:
             
             if response:
                 w = shutil.get_terminal_size().columns
-                label = " ⚕ Hermes "
+                # Use skin branding for response box label
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", " ⚕ Hermes ")
+                    _resp_color = _skin.get_color("response_border", "")
+                    if _resp_color:
+                        _resp_start = f"\033[38;2;{int(_resp_color[1:3], 16)};{int(_resp_color[3:5], 16)};{int(_resp_color[5:7], 16)}m"
+                    else:
+                        _resp_start = _GOLD
+                except Exception:
+                    label = " ⚕ Hermes "
+                    _resp_start = _GOLD
                 fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                top = f"{_resp_start}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
+                bot = f"{_resp_start}╰{'─' * (w - 2)}╯{_RST}"
 
                 # Render box + response as a single _cprint call so
                 # nothing can interleave between the box borders.
@@ -3241,7 +3361,15 @@ class HermesCLI:
             if self._preload_resumed_session():
                 self._display_resumed_history()
 
-        self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _welcome_skin = get_active_skin()
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
+        except Exception:
+            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_color = "#FFF8DC"
+        self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
         
         # State for async operation
@@ -4110,6 +4238,7 @@ def main(
     resume: str = None,
     worktree: bool = False,
     w: bool = False,
+    checkpoints: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4214,6 +4343,7 @@ def main(
         verbose=verbose,
         compact=compact,
         resume=resume,
+        checkpoints=checkpoints,
     )
 
     # Inject worktree context into agent's system prompt

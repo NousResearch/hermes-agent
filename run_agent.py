@@ -183,6 +183,8 @@ class AIAgent:
         skip_memory: bool = False,
         session_db=None,
         honcho_session_key: str = None,
+        honcho_manager=None,
+        honcho_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         checkpoints_enabled: bool = False,
@@ -228,6 +230,8 @@ class AIAgent:
                 polluting trajectories with user-specific persona or project instructions.
             honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
+            honcho_manager: Optional shared HonchoSessionManager owned by the caller.
+            honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
         """
         self.model = model
         self.max_iterations = max_iterations
@@ -548,134 +552,42 @@ class AIAgent:
         self._honcho_config = None  # HonchoClientConfig | None
         if not skip_memory:
             try:
-                from honcho_integration.client import HonchoClientConfig, get_honcho_client
-                hcfg = HonchoClientConfig.from_global_config()
-                self._honcho_config = hcfg
-                if hcfg.enabled and hcfg.api_key:
-                    from honcho_integration.session import HonchoSessionManager
-                    client = get_honcho_client(hcfg)
-                    self._honcho = HonchoSessionManager(
-                        honcho=client,
-                        config=hcfg,
-                        context_tokens=hcfg.context_tokens,
-                    )
-                    # Resolve session key: explicit arg > sessions map > title > per-session id > directory
-                    if not self._honcho_session_key:
-                        # Pull title from SessionDB if available
-                        session_title = None
-                        if session_db is not None:
-                            try:
-                                session_title = session_db.get_session_title(session_id or "")
-                            except Exception:
-                                pass
-                        self._honcho_session_key = (
-                            hcfg.resolve_session_name(
-                                session_title=session_title,
-                                session_id=self.session_id,
-                            )
-                            or "hermes-default"
-                        )
-                    # Ensure session exists in Honcho; migrate local data on first activation
-                    honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
-                    if not honcho_sess.messages:
-                        # New Honcho session — migrate any existing local data
-                        _conv = getattr(self, 'conversation_history', None) or []
-                        if _conv:
-                            try:
-                                self._honcho.migrate_local_history(
-                                    self._honcho_session_key, _conv
-                                )
-                                logger.info("Migrated %d local messages to Honcho", len(_conv))
-                            except Exception as _e:
-                                logger.debug("Local history migration failed (non-fatal): %s", _e)
-                        try:
-                            from hermes_cli.config import get_hermes_home
-                            _mem_dir = str(get_hermes_home() / "memories")
-                            self._honcho.migrate_memory_files(
-                                self._honcho_session_key, _mem_dir
-                            )
-                        except Exception as _e:
-                            logger.debug("Memory files migration failed (non-fatal): %s", _e)
-                    # Inject session context into the honcho tool module
-                    from tools.honcho_tools import set_session_context
-                    set_session_context(self._honcho, self._honcho_session_key)
-
-                    # In "context" mode, skip honcho tool registration entirely —
-                    # all memory retrieval comes from the pre-warmed system prompt.
-                    if hcfg.recall_mode != "context":
-                        # Rebuild tool definitions now that Honcho check_fn will pass.
-                        # (Tools were built before Honcho init, so honcho_context
-                        # was filtered out by _check_honcho_available() returning False.)
-                        self.tools = get_tool_definitions(
+                if honcho_manager is not None:
+                    hcfg = honcho_config or getattr(honcho_manager, "_config", None)
+                    self._honcho_config = hcfg
+                    if hcfg and self._honcho_should_activate(hcfg):
+                        self._honcho = honcho_manager
+                        self._activate_honcho(
+                            hcfg,
                             enabled_toolsets=enabled_toolsets,
                             disabled_toolsets=disabled_toolsets,
-                            quiet_mode=True,  # already printed tool list above
+                            session_db=session_db,
                         )
-                        self.valid_tool_names = {
-                            tool["function"]["name"] for tool in self.tools
-                        } if self.tools else set()
-                        if not self.quiet_mode:
-                            print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
-                    else:
-                        if not self.quiet_mode:
-                            print("  Honcho active — recall_mode: context (tools suppressed)")
-
-                    logger.info(
-                        "Honcho active (session: %s, user: %s, workspace: %s, "
-                        "write_frequency: %s, memory_mode: %s)",
-                        self._honcho_session_key, hcfg.peer_name, hcfg.workspace_id,
-                        hcfg.write_frequency, hcfg.memory_mode,
-                    )
-
-                    # Warm caches when recall_mode allows pre-loaded context.
-                    # "tools" mode skips warm entirely (tool calls handle recall).
-                    _recall_mode = hcfg.recall_mode
-                    if _recall_mode != "tools":
-                        try:
-                            _ctx = self._honcho.get_prefetch_context(self._honcho_session_key)
-                            if _ctx:
-                                self._honcho._context_cache[self._honcho_session_key] = _ctx
-                                logger.debug("Honcho context pre-warmed for first turn")
-                        except Exception as _e:
-                            logger.debug("Honcho context prefetch failed (non-fatal): %s", _e)
-
-                        try:
-                            _cwd = os.path.basename(os.getcwd())
-                            _dialectic = self._honcho.dialectic_query(
-                                self._honcho_session_key,
-                                f"What has the user been working on recently in {_cwd}? "
-                                "Summarize the current project context and where we left off.",
-                            )
-                            if _dialectic:
-                                self._honcho._dialectic_cache[self._honcho_session_key] = _dialectic
-                                logger.debug("Honcho dialectic pre-warmed for first turn")
-                        except Exception as _e:
-                            logger.debug("Honcho dialectic prefetch failed (non-fatal): %s", _e)
-
-                    # Register SIGTERM/SIGINT handlers to flush pending async writes
-                    # before the process exits. signal.signal() only works on the main
-                    # thread; AIAgent may be initialised from a worker thread in cli.py.
-                    import signal as _signal
-                    import threading as _threading
-                    _honcho_ref = self._honcho
-
-                    if _threading.current_thread() is _threading.main_thread():
-                        def _honcho_flush_handler(signum, frame):
-                            try:
-                                _honcho_ref.flush_all()
-                            except Exception:
-                                pass
-                            if signum == _signal.SIGINT:
-                                raise KeyboardInterrupt
-                            raise SystemExit(0)
-
-                        _signal.signal(_signal.SIGTERM, _honcho_flush_handler)
-                        _signal.signal(_signal.SIGINT, _honcho_flush_handler)
                 else:
-                    if not hcfg.enabled:
-                        logger.debug("Honcho disabled in global config")
-                    elif not hcfg.api_key:
-                        logger.debug("Honcho enabled but no API key configured")
+                    from honcho_integration.client import HonchoClientConfig, get_honcho_client
+                    hcfg = HonchoClientConfig.from_global_config()
+                    self._honcho_config = hcfg
+                    if self._honcho_should_activate(hcfg):
+                        from honcho_integration.session import HonchoSessionManager
+                        client = get_honcho_client(hcfg)
+                        self._honcho = HonchoSessionManager(
+                            honcho=client,
+                            config=hcfg,
+                            context_tokens=hcfg.context_tokens,
+                        )
+                        self._activate_honcho(
+                            hcfg,
+                            enabled_toolsets=enabled_toolsets,
+                            disabled_toolsets=disabled_toolsets,
+                            session_db=session_db,
+                        )
+                    else:
+                        if not hcfg.enabled:
+                            logger.debug("Honcho disabled in global config")
+                        elif not hcfg.api_key:
+                            logger.debug("Honcho enabled but no API key configured")
+                        else:
+                            logger.debug("Honcho local-only mode active; remote Honcho init skipped")
             except Exception as e:
                 logger.warning("Honcho init failed — memory disabled: %s", e)
                 print(f"  Honcho init failed: {e}")
@@ -1433,16 +1345,113 @@ class AIAgent:
 
     # ── Honcho integration helpers ──
 
+    def _honcho_should_activate(self, hcfg) -> bool:
+        """Return True when remote Honcho should be active."""
+        if not hcfg or not hcfg.enabled or not hcfg.api_key:
+            return False
+        return not all(
+            hcfg.peer_memory_mode(peer) == "local"
+            for peer in (hcfg.ai_peer, hcfg.peer_name or "user")
+        )
+
+    def _activate_honcho(
+        self,
+        hcfg,
+        *,
+        enabled_toolsets: Optional[List[str]],
+        disabled_toolsets: Optional[List[str]],
+        session_db,
+    ) -> None:
+        """Finish Honcho setup once a session manager is available."""
+        if not self._honcho:
+            return
+
+        if not self._honcho_session_key:
+            session_title = None
+            if session_db is not None:
+                try:
+                    session_title = session_db.get_session_title(self.session_id or "")
+                except Exception:
+                    pass
+            self._honcho_session_key = (
+                hcfg.resolve_session_name(
+                    session_title=session_title,
+                    session_id=self.session_id,
+                )
+                or "hermes-default"
+            )
+
+        honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
+        if not honcho_sess.messages:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                mem_dir = str(get_hermes_home() / "memories")
+                self._honcho.migrate_memory_files(
+                    self._honcho_session_key,
+                    mem_dir,
+                )
+            except Exception as exc:
+                logger.debug("Memory files migration failed (non-fatal): %s", exc)
+
+        from tools.honcho_tools import set_session_context
+
+        set_session_context(self._honcho, self._honcho_session_key)
+
+        if hcfg.recall_mode != "context":
+            self.tools = get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+            )
+            self.valid_tool_names = {
+                tool["function"]["name"] for tool in self.tools
+            } if self.tools else set()
+            if not self.quiet_mode:
+                print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
+        elif not self.quiet_mode:
+            print("  Honcho active — recall_mode: context (tools suppressed)")
+
+        logger.info(
+            "Honcho active (session: %s, user: %s, workspace: %s, "
+            "write_frequency: %s, memory_mode: %s)",
+            self._honcho_session_key,
+            hcfg.peer_name,
+            hcfg.workspace_id,
+            hcfg.write_frequency,
+            hcfg.memory_mode,
+        )
+
+        recall_mode = hcfg.recall_mode
+        if recall_mode != "tools":
+            try:
+                ctx = self._honcho.get_prefetch_context(self._honcho_session_key)
+                if ctx:
+                    self._honcho._context_cache[self._honcho_session_key] = ctx
+                    logger.debug("Honcho context pre-warmed for first turn")
+            except Exception as exc:
+                logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
+
+        import signal as _signal
+        import threading as _threading
+
+        honcho_ref = self._honcho
+
+        if _threading.current_thread() is _threading.main_thread():
+            def _honcho_flush_handler(signum, frame):
+                try:
+                    honcho_ref.flush_all()
+                except Exception:
+                    pass
+                if signum == _signal.SIGINT:
+                    raise KeyboardInterrupt
+                raise SystemExit(0)
+
+            _signal.signal(_signal.SIGTERM, _honcho_flush_handler)
+            _signal.signal(_signal.SIGINT, _honcho_flush_handler)
+
     def _honcho_prefetch(self, user_message: str) -> str:
-        """Assemble Honcho context from cached background fetches.
-
-        Both session.context() and peer.chat() (dialectic) are fired as
-        background threads at the end of each turn via _honcho_fire_prefetch().
-        This method just reads the cached results — no blocking HTTP calls.
-
-        First turn uses synchronously pre-warmed caches from init.
-        Subsequent turns use async prefetch results from the previous turn end.
-        """
+        """Assemble the first-turn Honcho context from the pre-warmed cache."""
         if not self._honcho or not self._honcho_session_key:
             return ""
         try:
@@ -1463,10 +1472,6 @@ class AIAgent:
                 if ai_card:
                     parts.append(ai_card)
 
-            dialectic = self._honcho.pop_dialectic_result(self._honcho_session_key)
-            if dialectic:
-                parts.append(f"[Honcho dialectic]\n{dialectic}")
-
             if not parts:
                 return ""
             header = (
@@ -1479,13 +1484,6 @@ class AIAgent:
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""
-
-    def _honcho_fire_prefetch(self, user_message: str) -> None:
-        """Fire both Honcho background fetches for the next turn (non-blocking)."""
-        if not self._honcho or not self._honcho_session_key:
-            return
-        self._honcho.prefetch_context(self._honcho_session_key, user_message)
-        self._honcho.prefetch_dialectic(self._honcho_session_key, user_message)
 
     def _honcho_save_user_observation(self, content: str) -> str:
         """Route a memory tool target=user add to Honcho.
@@ -3381,8 +3379,10 @@ class AIAgent:
             )
             self._iters_since_skill = 0
 
-        # Honcho: read cached context from last turn's background fetch (non-blocking),
-        # then fire both fetches for next turn.  Skip in "tools" mode (no context injection).
+        # Honcho: on the first turn only, read the pre-warmed context snapshot and
+        # bake it into the system prompt. We intentionally avoid per-turn refreshes
+        # here because changing the system prompt would destroy provider prompt-cache
+        # reuse for the rest of the session.
         self._honcho_context = ""
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and not conversation_history and _recall_mode != "tools":
@@ -3390,7 +3390,6 @@ class AIAgent:
                 self._honcho_context = self._honcho_prefetch(user_message)
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
-            self._honcho_fire_prefetch(user_message)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}

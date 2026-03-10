@@ -201,8 +201,16 @@ class HonchoClientConfig:
                 or raw.get("recallMode")
                 or "hybrid"
             ),
-            session_strategy=raw.get("sessionStrategy", "per-session"),
-            session_peer_prefix=raw.get("sessionPeerPrefix", False),
+            session_strategy=(
+                host_block.get("sessionStrategy")
+                or raw.get("sessionStrategy")
+                or "per-session"
+            ),
+            session_peer_prefix=(
+                host_block.get("sessionPeerPrefix")
+                if "sessionPeerPrefix" in host_block
+                else raw.get("sessionPeerPrefix", False)
+            ),
             sessions=raw.get("sessions", {}),
             raw=raw,
         )

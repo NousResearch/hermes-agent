@@ -15,8 +15,10 @@ This module provides:
 import os
 import platform
 import re
+import stat
 import sys
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -64,7 +66,9 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "toolsets": ["hermes-cli"],
-    "max_turns": 100,
+    "agent": {
+        "max_turns": 90,
+    },
     
     "terminal": {
         "backend": "local",
@@ -79,11 +83,23 @@ DEFAULT_CONFIG = {
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Docker volume mounts — share host directories with the container.
+        # Each entry is "host_path:container_path" (standard Docker -v syntax).
+        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        "docker_volumes": [],
     },
     
     "browser": {
         "inactivity_timeout": 120,
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+    },
+    
+    # Filesystem checkpoints — automatic snapshots before destructive file ops.
+    # When enabled, the agent takes a snapshot of the working directory once per
+    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    "checkpoints": {
+        "enabled": False,
+        "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
     
     "compression": {
@@ -109,8 +125,9 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "kawaii",
-        "resume_display": "full",  # "full" (show previous messages) | "minimal" (one-liner only)
-        "bell_on_complete": False,  # Play terminal bell (\a) when agent finishes a response
+        "resume_display": "full",
+        "bell_on_complete": False,
+        "skin": "default",
     },
     
     # Text-to-speech configuration
@@ -168,7 +185,7 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 5,
+    "_config_version": 6,
 }
 
 # =============================================================================
@@ -193,6 +210,22 @@ REQUIRED_ENV_VARS = {}
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
+    "NOUS_API_KEY": {
+        "description": "Nous Portal API key (direct API key access to Nous inference)",
+        "prompt": "Nous Portal API key",
+        "url": "https://portal.nousresearch.com",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NOUS_BASE_URL": {
+        "description": "Nous Portal base URL override",
+        "prompt": "Nous Portal base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENROUTER_API_KEY": {
         "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "prompt": "OpenRouter API key",
@@ -403,14 +436,18 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "SLACK_BOT_TOKEN": {
-        "description": "Slack bot integration",
+        "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
+                       "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
+                       "im:history, im:read, im:write, users:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
         "category": "messaging",
     },
     "SLACK_APP_TOKEN": {
-        "description": "Slack Socket Mode connection",
+        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
+                       "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
+                       "message.channels, message.groups, app_mention",
         "prompt": "Slack App Token (xapp-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
@@ -742,6 +779,23 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy root-level max_turns into agent.max_turns."""
+    config = dict(config)
+    agent_config = dict(config.get("agent") or {})
+
+    if "max_turns" in config and "max_turns" not in agent_config:
+        agent_config["max_turns"] = config["max_turns"]
+
+    if "max_turns" not in agent_config:
+        agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+
+    config["agent"] = agent_config
+    config.pop("max_turns", None)
+    return config
+
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -751,14 +805,21 @@ def load_config() -> Dict[str, Any]:
     
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
-            
+
+            if "max_turns" in user_config:
+                agent_user_config = dict(user_config.get("agent") or {})
+                if agent_user_config.get("max_turns") is None:
+                    agent_user_config["max_turns"] = user_config["max_turns"]
+                user_config["agent"] = agent_user_config
+                user_config.pop("max_turns", None)
+
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return config
+    return _normalize_max_turns_config(config)
 
 
 _COMMENTED_SECTIONS = """
@@ -793,23 +854,27 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    from utils import atomic_yaml_write
+
     ensure_hermes_home()
     config_path = get_config_path()
-    
-    with open(config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        # Append commented-out sections for features that are off by default
-        # or only relevant when explicitly configured. Skip sections the
-        # user has already uncommented and configured.
-        sections = []
-        sec = config.get("security", {})
-        if not sec or sec.get("redact_secrets") is None:
-            sections.append("security")
-        fb = config.get("fallback_model", {})
-        if not fb or not (fb.get("provider") and fb.get("model")):
-            sections.append("fallback")
-        if sections:
-            f.write(_COMMENTED_SECTIONS)
+    normalized = _normalize_max_turns_config(config)
+
+    # Build optional commented-out sections for features that are off by
+    # default or only relevant when explicitly configured.
+    sections = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        sections.append("security")
+    fb = normalized.get("fallback_model", {})
+    if not fb or not (fb.get("provider") and fb.get("model")):
+        sections.append("fallback")
+
+    atomic_yaml_write(
+        config_path,
+        normalized,
+        extra_content=_COMMENTED_SECTIONS if sections else None,
+    )
 
 
 def load_env() -> Dict[str, str]:
@@ -868,9 +933,10 @@ def save_env_value(key: str, value: str):
 
     os.environ[key] = value
 
-    if os.name != "nt":
+    # Restrict .env permissions to owner-only (contains API keys)
+    if not _IS_WINDOWS:
         try:
-            os.chmod(env_path, 0o600)
+            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
 
@@ -882,6 +948,7 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
         "stored_as": key,
         "validated": False,
     }
+
 
 
 def get_env_value(key: str) -> Optional[str]:
@@ -945,7 +1012,7 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('max_turns', 100)}")
+    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Terminal
@@ -1090,7 +1157,7 @@ def set_config_value(key: str, value: str):
     user_config = {}
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
@@ -1118,7 +1185,7 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w') as f:
+    with open(config_path, 'w', encoding="utf-8") as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.

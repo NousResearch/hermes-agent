@@ -91,6 +91,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "docker_volumes": config.get("docker_volumes", []),
                 }
             terminal_env = _create_environment(
                 env_type=env_type,

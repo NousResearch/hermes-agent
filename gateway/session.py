@@ -272,8 +272,8 @@ class SessionEntry:
         if data.get("platform"):
             try:
                 platform = Platform(data["platform"])
-            except ValueError:
-                pass
+            except ValueError as e:
+                logger.debug("Unknown platform value %r: %s", data["platform"], e)
         
         return cls(
             session_key=data["session_key"],
@@ -353,12 +353,26 @@ class SessionStore:
     
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
+        import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
-        
+
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        with open(sessions_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, sessions_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError as e:
+                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
+            raise
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""

@@ -34,7 +34,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2  # noqa: E402
+from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +360,35 @@ class TestFormatMessageComplex:
         assert "Header" in result
         assert "block" in result
         assert "url.com" in result
+
+
+# =========================================================================
+# _strip_mdv2 — plaintext fallback
+# =========================================================================
+
+
+class TestStripMdv2:
+    def test_removes_escape_backslashes(self):
+        assert _strip_mdv2(r"hello\.world\!") == "hello.world!"
+
+    def test_removes_bold_markers(self):
+        assert _strip_mdv2("*bold text*") == "bold text"
+
+    def test_removes_italic_markers(self):
+        assert _strip_mdv2("_italic text_") == "italic text"
+
+    def test_removes_both_bold_and_italic(self):
+        result = _strip_mdv2("*bold* and _italic_")
+        assert result == "bold and italic"
+
+    def test_preserves_snake_case(self):
+        assert _strip_mdv2("my_variable_name") == "my_variable_name"
+
+    def test_preserves_multi_underscore_identifier(self):
+        assert _strip_mdv2("some_func_call here") == "some_func_call here"
+
+    def test_plain_text_unchanged(self):
+        assert _strip_mdv2("plain text") == "plain text"
+
+    def test_empty_string(self):
+        assert _strip_mdv2("") == ""

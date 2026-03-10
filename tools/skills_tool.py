@@ -86,6 +86,8 @@ from tools.terminal_tool import get_or_create_environment
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
@@ -749,10 +751,11 @@ def _find_all_skills() -> List[Dict[str, Any]]:
                 "category": category,
             })
 
-        except Exception:
-            logger.debug(
-                f"Skipping skill at {skill_md}: failed to parse", exc_info=True
-            )
+        except (UnicodeDecodeError, PermissionError) as e:
+            logger.debug("Failed to read skill file %s: %s", skill_md, e)
+            continue
+        except Exception as e:
+            logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
             continue
     
     return skills
@@ -791,7 +794,11 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
         
         return description if description else None
-    except Exception:
+    except (UnicodeDecodeError, PermissionError) as e:
+        logger.debug("Failed to read category description %s: %s", desc_file, e)
+        return None
+    except Exception as e:
+        logger.warning("Error parsing category description %s: %s", desc_file, e, exc_info=True)
         return None
 
 

@@ -1615,10 +1615,10 @@ def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
-            except Exception:
-                pass
-    except Exception:
-        pass  # Non-critical — don't fail the screenshot operation
+            except Exception as e:
+                logger.debug("Failed to clean old screenshot %s: %s", f, e)
+    except Exception as e:
+        logger.debug("Screenshot cleanup error (non-critical): %s", e)
 
 
 def _cleanup_old_recordings(max_age_hours=72):
@@ -1634,10 +1634,10 @@ def _cleanup_old_recordings(max_age_hours=72):
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                logger.debug("Failed to clean old recording %s: %s", f, e)
+    except Exception as e:
+        logger.debug("Recording cleanup error (non-critical): %s", e)
 
 
 # ============================================================================
@@ -1749,7 +1749,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                         os.kill(daemon_pid, signal.SIGTERM)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
-                        pass
+                        logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
                 shutil.rmtree(socket_dir, ignore_errors=True)
         
         logger.debug("Removed task %s from active sessions", task_id)

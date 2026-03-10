@@ -176,14 +176,18 @@ class TestVisionClientFallback:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.3-codex"
 
-    def test_vision_auto_skips_custom_endpoint(self, monkeypatch):
-        """Custom endpoint is skipped in vision auto mode."""
+    def test_vision_auto_falls_back_to_custom_endpoint(self, monkeypatch):
+        """Custom endpoint is used as fallback in vision auto mode.
+
+        Many local models (Qwen-VL, LLaVA, etc.) support vision.
+        When no OpenRouter/Nous/Codex is available, try the custom endpoint.
+        """
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
+        assert client is not None  # Custom endpoint picked up as fallback
 
     def test_vision_uses_openrouter_when_available(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

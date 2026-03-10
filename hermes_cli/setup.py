@@ -516,7 +516,8 @@ def setup_model_provider(config: dict):
         keep_label = None  # No provider configured — don't show "Keep current"
 
     provider_choices = [
-        "Login with Nous Portal (Nous Research subscription)",
+        "Nous Portal API key (direct API key access)",
+        "Login with Nous Portal (Nous Research subscription — OAuth)",
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
@@ -529,7 +530,7 @@ def setup_model_provider(config: dict):
         provider_choices.append(keep_label)
     
     # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
-    default_provider = len(provider_choices) - 1 if has_any_provider else 2
+    default_provider = len(provider_choices) - 1 if has_any_provider else 3
     
     if not has_any_provider:
         print_warning("An inference provider is required for Hermes to work.")
@@ -541,7 +542,37 @@ def setup_model_provider(config: dict):
     selected_provider = None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
     nous_models = []  # populated if Nous login succeeds
 
-    if provider_idx == 0:  # Nous Portal
+    if provider_idx == 0:  # Nous Portal API Key (direct)
+        selected_provider = "nous-api"
+        print()
+        print_header("Nous Portal API Key")
+        print_info("Use a Nous Portal API key for direct access to Nous inference.")
+        print_info("Get your API key at: https://portal.nousresearch.com")
+        print()
+
+        existing_key = get_env_value("NOUS_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update Nous API key?", False):
+                api_key = prompt("  Nous API key", password=True)
+                if api_key:
+                    save_env_value("NOUS_API_KEY", api_key)
+                    print_success("Nous API key updated")
+        else:
+            api_key = prompt("  Nous API key", password=True)
+            if api_key:
+                save_env_value("NOUS_API_KEY", api_key)
+                print_success("Nous API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        # Clear custom endpoint vars if switching
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _update_config_for_provider("nous-api", "https://inference-api.nousresearch.com/v1")
+
+    elif provider_idx == 1:  # Nous Portal
         selected_provider = "nous"
         print()
         print_header("Nous Portal Login")
@@ -581,7 +612,7 @@ def setup_model_provider(config: dict):
             print_info("You can try again later with: hermes model")
             selected_provider = None
 
-    elif provider_idx == 1:  # OpenAI Codex
+    elif provider_idx == 2:  # OpenAI Codex
         selected_provider = "openai-codex"
         print()
         print_header("OpenAI Codex Login")
@@ -605,7 +636,7 @@ def setup_model_provider(config: dict):
             print_info("You can try again later with: hermes model")
             selected_provider = None
 
-    elif provider_idx == 2:  # OpenRouter
+    elif provider_idx == 3:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -655,7 +686,7 @@ def setup_model_provider(config: dict):
         except Exception as e:
             logger.debug("Could not save provider to config.yaml: %s", e)
 
-    elif provider_idx == 3:  # Custom endpoint
+    elif provider_idx == 4:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -706,7 +737,7 @@ def setup_model_provider(config: dict):
 
         print_success("Custom endpoint configured")
 
-    elif provider_idx == 4:  # Z.AI / GLM
+    elif provider_idx == 5:  # Z.AI / GLM
         selected_provider = "zai"
         print()
         print_header("Z.AI / GLM API Key")
@@ -760,7 +791,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("zai", zai_base_url)
 
-    elif provider_idx == 5:  # Kimi / Moonshot
+    elif provider_idx == 6:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
         print()
         print_header("Kimi / Moonshot API Key")
@@ -792,7 +823,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("kimi-coding", pconfig.inference_base_url)
 
-    elif provider_idx == 6:  # MiniMax
+    elif provider_idx == 7:  # MiniMax
         selected_provider = "minimax"
         print()
         print_header("MiniMax API Key")
@@ -824,7 +855,7 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax", pconfig.inference_base_url)
 
-    elif provider_idx == 7:  # MiniMax China
+    elif provider_idx == 8:  # MiniMax China
         selected_provider = "minimax-cn"
         print()
         print_header("MiniMax China API Key")
@@ -856,12 +887,12 @@ def setup_model_provider(config: dict):
             save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("minimax-cn", pconfig.inference_base_url)
 
-    # else: provider_idx == 8 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 9 (Keep current) — only shown when a provider already exists
 
     # ── OpenRouter API Key for tools (if not already set) ──
     # Tools (vision, web, MoA) use OpenRouter independently of the main provider.
     # Prompt for OpenRouter key if not set and a non-OpenRouter provider was chosen.
-    if selected_provider in ("nous", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
+    if selected_provider in ("nous", "nous-api", "openai-codex", "custom", "zai", "kimi-coding", "minimax", "minimax-cn") and not get_env_value("OPENROUTER_API_KEY"):
         print()
         print_header("OpenRouter API Key (for tools)")
         print_info("Tools like vision analysis, web search, and MoA use OpenRouter")
@@ -910,6 +941,14 @@ def setup_model_provider(config: dict):
             # instead of falling through to the OpenRouter static list.
             print_warning("Could not fetch available models from Nous Portal.")
             print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
+            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
+            if custom:
+                config['model'] = custom
+                save_env_value("LLM_MODEL", custom)
+        elif selected_provider == "nous-api":
+            # Nous API key provider — prompt for model manually
+            print_info("Enter a model name available on Nous inference API.")
+            print_info("Examples: anthropic/claude-opus-4.6, deepseek/deepseek-r1")
             custom = prompt(f"  Model name (Enter to keep '{current_model}')")
             if custom:
                 config['model'] = custom
@@ -1309,7 +1348,7 @@ def setup_agent_settings(config: dict):
     # ── Max Iterations ──
     print_header("Agent Settings")
 
-    current_max = get_env_value('HERMES_MAX_ITERATIONS') or '90'
+    current_max = get_env_value('HERMES_MAX_ITERATIONS') or str(config.get('agent', {}).get('max_turns', 90))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
@@ -1319,7 +1358,8 @@ def setup_agent_settings(config: dict):
         max_iter = int(max_iter_str)
         if max_iter > 0:
             save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
-            config['max_turns'] = max_iter
+            config.setdefault('agent', {})['max_turns'] = max_iter
+            config.pop('max_turns', None)
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")
@@ -1572,10 +1612,22 @@ def setup_gateway(config: dict):
     
     if not existing_slack and prompt_yes_no("Set up Slack bot?", False):
         print_info("Steps to create a Slack app:")
-        print_info("   1. Go to https://api.slack.com/apps → Create New App")
-        print_info("   2. Enable Socket Mode: App Settings → Socket Mode → Enable")
-        print_info("   3. Bot Token: OAuth & Permissions → Install to Workspace")
-        print_info("   4. App Token: Basic Information → App-Level Tokens → Generate")
+        print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
+        print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
+        print_info("      • Create an App-Level Token with 'connections:write' scope")
+        print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
+        print_info("      Required scopes: chat:write, app_mentions:read,")
+        print_info("      channels:history, channels:read, groups:history,")
+        print_info("      im:history, im:read, im:write, users:read, files:write")
+        print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
+        print_info("      Required events: message.im, message.channels,")
+        print_info("      message.groups, app_mention")
+        print_warning("   ⚠ Without message.channels/message.groups events,")
+        print_warning("     the bot will ONLY work in DMs, not channels!")
+        print_info("   5. Install to Workspace: Settings → Install App")
+        print_info("   6. After installing, invite the bot to channels: /invite @YourBot")
+        print()
+        print_info("   Full guide: https://hermes-agent.ai/docs/user-guide/messaging/slack")
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
         if bot_token:
@@ -1587,7 +1639,7 @@ def setup_gateway(config: dict):
             
             print()
             print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   Find Slack user IDs in your profile or via the Slack API")
+            print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
             print()
             allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
             if allowed_users:

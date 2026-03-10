@@ -172,6 +172,7 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        thinking_callback: callable = None,
         clarify_callback: callable = None,
         step_callback: callable = None,
         max_tokens: int = None,
@@ -184,6 +185,8 @@ class AIAgent:
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        checkpoints_enabled: bool = False,
+        checkpoint_max_snapshots: int = 50,
     ):
         """
         Initialize the AI Agent.
@@ -256,6 +259,7 @@ class AIAgent:
             self.api_mode = "chat_completions"
 
         self.tool_progress_callback = tool_progress_callback
+        self.thinking_callback = thinking_callback
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self._last_reported_tool = None  # Track for "new tool" mode
@@ -483,6 +487,13 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+        
+        # Filesystem checkpoint manager (transparent — not a tool)
+        from tools.checkpoint_manager import CheckpointManager
+        self._checkpoint_mgr = CheckpointManager(
+            enabled=checkpoints_enabled,
+            max_snapshots=checkpoint_max_snapshots,
+        )
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
@@ -1437,6 +1448,34 @@ class AIAgent:
 
         return "\n\n".join(prompt_parts)
     
+    def _repair_tool_call(self, tool_name: str) -> str | None:
+        """Attempt to repair a mismatched tool name before aborting.
+
+        1. Try lowercase
+        2. Try normalized (lowercase + hyphens/spaces -> underscores)
+        3. Try fuzzy match (difflib, cutoff=0.7)
+
+        Returns the repaired name if found in valid_tool_names, else None.
+        """
+        from difflib import get_close_matches
+
+        # 1. Lowercase
+        lowered = tool_name.lower()
+        if lowered in self.valid_tool_names:
+            return lowered
+
+        # 2. Normalize
+        normalized = lowered.replace("-", "_").replace(" ", "_")
+        if normalized in self.valid_tool_names:
+            return normalized
+
+        # 3. Fuzzy match
+        matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
+        if matches:
+            return matches[0]
+
+        return None
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -2695,6 +2734,8 @@ class AIAgent:
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}
+            if not isinstance(function_args, dict):
+                function_args = {}
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -2707,6 +2748,18 @@ class AIAgent:
                     self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+
+            # Checkpoint: snapshot working dir before file-mutating tools
+            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+                try:
+                    file_path = function_args.get("path", "")
+                    if file_path:
+                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            work_dir, f"before {function_name}"
+                        )
+                except Exception:
+                    pass  # never block tool execution
 
             tool_start_time = time.time()
 
@@ -2820,7 +2873,10 @@ class AIAgent:
                 spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(function_name, function_args, effective_task_id)
+                    function_result = handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    )
                     _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -2831,7 +2887,10 @@ class AIAgent:
                     spinner.stop(cute_msg)
             else:
                 try:
-                    function_result = handle_function_call(function_name, function_args, effective_task_id)
+                    function_result = handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -3048,6 +3107,8 @@ class AIAgent:
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
+        self._incomplete_scratchpad_retries = 0
+        self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
         self._turns_since_memory = 0
         self._iters_since_skill = 0
@@ -3212,11 +3273,16 @@ class AIAgent:
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
+        length_continue_retries = 0
+        truncated_response_prefix = ""
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
         
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
+            # Reset per-turn checkpoint dedup so each iteration can take one snapshot
+            self._checkpoint_mgr.new_turn()
+
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True
@@ -3260,7 +3326,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                
+
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
                 if msg.get("role") == "assistant":
@@ -3268,7 +3334,7 @@ class AIAgent:
                     if reasoning_text:
                         # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
-                
+
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
                 if "reasoning" in api_msg:
@@ -3279,7 +3345,7 @@ class AIAgent:
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
-            
+
             # Build the final system message: cached prompt + ephemeral system prompt.
             # The ephemeral part is appended here (not baked into the cached prompt)
             # so it stays out of the session DB and logs.
@@ -3292,21 +3358,21 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            
+
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
-            
+
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
             # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
             # inject cache_control breakpoints (system + last 3 messages) to reduce
             # input token costs by ~75% on multi-turn conversations.
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl)
-            
+
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  The compressor handles this
             # during compression, but orphans can also sneak in from session
@@ -3329,9 +3395,13 @@ class AIAgent:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
-                spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
-                thinking_spinner.start()
+                if self.thinking_callback:
+                    # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
+                    self.thinking_callback(f"{face} {verb}...")
+                else:
+                    spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                    thinking_spinner.start()
             
             # Log request details if verbose
             if self.verbose_logging:
@@ -3346,6 +3416,8 @@ class AIAgent:
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            restart_with_compressed_messages = False
+            restart_with_length_continuation = False
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -3368,6 +3440,8 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
+                    if self.thinking_callback:
+                        self.thinking_callback("")
                     
                     if not self.quiet_mode:
                         print(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
@@ -3408,6 +3482,8 @@ class AIAgent:
                         if thinking_spinner:
                             thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
                             thinking_spinner = None
+                        if self.thinking_callback:
+                            self.thinking_callback("")
                         
                         # This is often rate limiting or provider returning malformed response
                         retry_count += 1
@@ -3492,19 +3568,60 @@ class AIAgent:
                             finish_reason = "stop"
                     else:
                         finish_reason = response.choices[0].finish_reason
-                    
-                    # Handle "length" finish_reason - response was truncated
+
                     if finish_reason == "length":
                         print(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens")
-                        
+
+                        if self.api_mode == "chat_completions":
+                            assistant_message = response.choices[0].message
+                            if not assistant_message.tool_calls:
+                                length_continue_retries += 1
+                                interim_msg = self._build_assistant_message(assistant_message, finish_reason)
+                                messages.append(interim_msg)
+                                self._log_msg_to_db(interim_msg)
+                                if assistant_message.content:
+                                    truncated_response_prefix += assistant_message.content
+
+                                if length_continue_retries < 3:
+                                    print(
+                                        f"{self.log_prefix}↻ Requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                    continue_msg = {
+                                        "role": "user",
+                                        "content": (
+                                            "[System: Your previous response was truncated by the output "
+                                            "length limit. Continue exactly where you left off. Do not "
+                                            "restart or repeat prior text. Finish the answer directly.]"
+                                        ),
+                                    }
+                                    messages.append(continue_msg)
+                                    self._log_msg_to_db(continue_msg)
+                                    self._session_messages = messages
+                                    self._save_session_log(messages)
+                                    restart_with_length_continuation = True
+                                    break
+
+                                partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                                self._cleanup_task_resources(effective_task_id)
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": partial_response or None,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "partial": True,
+                                    "error": "Response remained truncated after 3 continuation attempts",
+                                }
+
                         # If we have prior messages, roll back to last complete state
                         if len(messages) > 1:
                             print(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
-                            
+
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
-                            
+
                             return {
                                 "final_response": None,
                                 "messages": rolled_back_messages,
@@ -3577,6 +3694,8 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
+                    if self.thinking_callback:
+                        self.thinking_callback("")
                     api_elapsed = time.time() - api_start_time
                     print(f"{self.log_prefix}⚡ Interrupted during API call.")
                     self._persist_session(messages, conversation_history)
@@ -3589,6 +3708,8 @@ class AIAgent:
                     if thinking_spinner:
                         thinking_spinner.stop(f"(╥_╥) error, retrying...")
                         thinking_spinner = None
+                    if self.thinking_callback:
+                        self.thinking_callback("")
 
                     status_code = getattr(api_error, "status_code", None)
                     if (
@@ -3671,7 +3792,8 @@ class AIAgent:
                         if len(messages) < original_len:
                             print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
-                            continue  # Retry with compressed messages
+                            restart_with_compressed_messages = True
+                            break
                         else:
                             print(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
@@ -3739,7 +3861,8 @@ class AIAgent:
                             if len(messages) < original_len:
                                 print(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
-                            continue  # Retry with compressed messages or new tier
+                            restart_with_compressed_messages = True
+                            break
                         else:
                             # Can't compress further and already at minimum tier
                             print(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.")
@@ -3825,6 +3948,14 @@ class AIAgent:
             # If the API call was interrupted, skip response processing
             if interrupted:
                 break
+
+            if restart_with_compressed_messages:
+                api_call_count -= 1
+                self.iteration_budget.refund()
+                continue
+
+            if restart_with_length_continuation:
+                continue
 
             # Guard: if all retries exhausted without a successful response
             # (e.g. repeated context-length errors that exhausted retry_count),
@@ -3970,39 +4101,37 @@ class AIAgent:
                             logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
                     
                     # Validate tool call names - detect model hallucinations
+                    # Repair mismatched tool names before validating
+                    for tc in assistant_message.tool_calls:
+                        if tc.function.name not in self.valid_tool_names:
+                            repaired = self._repair_tool_call(tc.function.name)
+                            if repaired:
+                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                                tc.function.name = repaired
                     invalid_tool_calls = [
-                        tc.function.name for tc in assistant_message.tool_calls 
+                        tc.function.name for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names
                     ]
-                    
                     if invalid_tool_calls:
-                        # Track retries for invalid tool calls
-                        if not hasattr(self, '_invalid_tool_retries'):
-                            self._invalid_tool_retries = 0
-                        self._invalid_tool_retries += 1
-                        
-                        invalid_preview = invalid_tool_calls[0][:80] + "..." if len(invalid_tool_calls[0]) > 80 else invalid_tool_calls[0]
-                        print(f"{self.log_prefix}⚠️  Invalid tool call detected: '{invalid_preview}'")
-                        print(f"{self.log_prefix}   Valid tools: {sorted(self.valid_tool_names)}")
-                        
-                        if self._invalid_tool_retries < 3:
-                            print(f"{self.log_prefix}🔄 Retrying API call ({self._invalid_tool_retries}/3)...")
-                            # Don't add anything to messages, just retry the API call
-                            continue
-                        else:
-                            print(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.")
-                            # Return partial result - don't include the bad tool call in messages
-                            self._invalid_tool_retries = 0
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "final_response": None,
-                                "messages": messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "partial": True,
-                                "error": f"Model generated invalid tool call: {invalid_preview}"
-                            }
-                    
+                        # Return helpful error to model — model can self-correct next turn
+                        available = ", ".join(sorted(self.valid_tool_names))
+                        invalid_name = invalid_tool_calls[0]
+                        invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
+                        print(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction")
+                        assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                        messages.append(assistant_msg)
+                        self._log_msg_to_db(assistant_msg)
+                        for tc in assistant_message.tool_calls:
+                            if tc.function.name not in self.valid_tool_names:
+                                content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
+                            else:
+                                content = f"Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": content,
+                            })
+                        continue
                     # Reset retry counter on successful tool call validation
                     if hasattr(self, '_invalid_tool_retries'):
                         self._invalid_tool_retries = 0
@@ -4216,6 +4345,9 @@ class AIAgent:
                         continue
 
                     codex_ack_continuations = 0
+
+                    if truncated_response_prefix:
+                        final_response = truncated_response_prefix + final_response
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()

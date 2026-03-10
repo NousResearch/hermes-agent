@@ -560,12 +560,16 @@ def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
     forced = _get_auxiliary_provider("vision")
     if forced != "auto":
         return _resolve_forced_provider(forced)
-    # Auto: only multimodal-capable providers
-    for try_fn in (_try_openrouter, _try_nous, _try_codex):
+    # Auto: try providers known to support multimodal first, then fall
+    # back to the user's custom endpoint.  Many local models (Qwen-VL,
+    # LLaVA, Pixtral, etc.) support vision — skipping them entirely
+    # caused silent failures for local-only users.
+    for try_fn in (_try_openrouter, _try_nous, _try_codex,
+                   _try_custom_endpoint):
         client, model = try_fn()
         if client is not None:
             return client, model
-    logger.debug("Auxiliary vision client: none available (auto only tries OpenRouter/Nous/Codex)")
+    logger.debug("Auxiliary vision client: none available")
     return None, None
 
 

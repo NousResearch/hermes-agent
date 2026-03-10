@@ -311,6 +311,7 @@ def _rpc_server_loop(
                         sys.stderr.close()
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                 except Exception as exc:
+                    logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = json.dumps({"error": str(exc)})
 
                 tool_call_counter[0] += 1
@@ -327,15 +328,15 @@ def _rpc_server_loop(
                 conn.sendall((result + "\n").encode())
 
     except socket.timeout:
-        pass
-    except OSError:
-        pass
+        logger.debug("RPC listener socket timeout")
+    except OSError as e:
+        logger.debug("RPC listener socket error: %s", e, exc_info=True)
     finally:
         if conn:
             try:
                 conn.close()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug("RPC conn close error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -397,9 +398,9 @@ def execute_code(
 
     try:
         # Write the auto-generated hermes_tools module
-        tools_src = generate_hermes_tools_module(
-            list(sandbox_tools) if enabled_tools else list(SANDBOX_ALLOWED_TOOLS)
-        )
+        # sandbox_tools is already the correct set (intersection with session
+        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
+        tools_src = generate_hermes_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
             f.write(tools_src)
 
@@ -472,8 +473,8 @@ def execute_code(
                         keep = max_bytes - total
                         chunks.append(data[:keep])
                     total += len(data)
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as e:
+                logger.debug("Error reading process output: %s", e, exc_info=True)
 
         stdout_reader = threading.Thread(
             target=_drain, args=(proc.stdout, stdout_chunks, MAX_STDOUT_BYTES), daemon=True
@@ -511,7 +512,7 @@ def execute_code(
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
-        server_sock.close()
+        server_sock.close()  # break accept() so thread exits promptly
         rpc_thread.join(timeout=3)
 
         # Build response
@@ -548,14 +549,18 @@ def execute_code(
     finally:
         # Cleanup temp dir and socket
         try:
+            server_sock.close()
+        except Exception as e:
+            logger.debug("Server socket close error: %s", e)
+        try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception as e:
-            logger.debug("Could not clean temp dir: %s", e)
+            logger.debug("Could not clean temp dir: %s", e, exc_info=True)
         try:
             os.unlink(sock_path)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Could not remove socket file: %s", e, exc_info=True)
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -565,11 +570,12 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.terminate()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError) as e:
+        logger.debug("Could not kill process group: %s", e, exc_info=True)
         try:
             proc.kill()
-        except Exception as e:
-            logger.debug("Could not kill process: %s", e)
+        except Exception as e2:
+            logger.debug("Could not kill process: %s", e2, exc_info=True)
 
     if escalate:
         # Give the process 5s to exit after SIGTERM, then SIGKILL
@@ -581,11 +587,12 @@ def _kill_process_group(proc, escalate: bool = False):
                     proc.kill()
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError) as e:
+                logger.debug("Could not kill process group with SIGKILL: %s", e, exc_info=True)
                 try:
                     proc.kill()
-                except Exception as e:
-                    logger.debug("Could not kill process: %s", e)
+                except Exception as e2:
+                    logger.debug("Could not kill process: %s", e2, exc_info=True)
 
 
 def _load_config() -> dict:
@@ -647,7 +654,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
-    import_str = ", ".join(import_examples) + ", ..."
+    if import_examples:
+        import_str = ", ".join(import_examples) + ", ..."
+    else:
+        import_str = "..."
 
     description = (
         "Run a Python script that can call Hermes tools programmatically. "

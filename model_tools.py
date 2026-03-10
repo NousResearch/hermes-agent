@@ -266,6 +266,7 @@ def handle_function_call(
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
     user_task: Optional[str] = None,
+    enabled_tools: Optional[List[str]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -275,6 +276,10 @@ def handle_function_call(
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
         user_task: The user's original task (for browser_snapshot context).
+        enabled_tools: Tool names enabled for this session.  When provided,
+                       execute_code uses this list to determine which sandbox
+                       tools to generate.  Falls back to the process-global
+                       ``_last_resolved_tool_names`` for backward compat.
 
     Returns:
         Function result as a JSON string.
@@ -284,10 +289,13 @@ def handle_function_call(
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
         if function_name == "execute_code":
+            # Prefer the caller-provided list so subagents can't overwrite
+            # the parent's tool set via the process-global.
+            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
             return registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
-                enabled_tools=_last_resolved_tool_names,
+                enabled_tools=sandbox_enabled,
             )
 
         return registry.dispatch(

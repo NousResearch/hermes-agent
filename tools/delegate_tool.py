@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import time
@@ -107,8 +108,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 short = (preview[:55] + "...") if preview and len(preview) > 55 else (preview or "")
                 try:
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
             # Don't relay thinking to gateway (too noisy for chat)
             return
 
@@ -129,8 +130,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 line += f"  \"{short}\""
             try:
                 spinner.print_above(line)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
             _batch.append(tool_name)
@@ -138,8 +139,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 summary = ", ".join(_batch)
                 try:
                     parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Parent callback failed: %s", e)
                 _batch.clear()
 
     def _flush():
@@ -148,8 +149,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             summary = ", ".join(_batch)
             try:
                 parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Parent callback flush failed: %s", e)
             _batch.clear()
 
     _callback._flush = _flush
@@ -241,8 +242,8 @@ def _run_single_child(
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
             try:
                 child_progress_cb._flush()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Progress callback flush failed: %s", e)
 
         duration = round(time.monotonic() - child_start, 2)
 
@@ -287,8 +288,8 @@ def _run_single_child(
         if hasattr(parent_agent, '_active_children'):
             try:
                 parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError):
-                pass
+            except (ValueError, UnboundLocalError) as e:
+                logger.debug("Could not remove child from active_children: %s", e)
 
 
 def delegate_task(
@@ -425,8 +426,8 @@ def delegate_task(
                 if spinner_ref and remaining > 0:
                     try:
                         spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Spinner update_text failed: %s", e)
 
         # Restore stdout/stderr in case redirect_stdout race left them as devnull
         sys.stdout = _saved_stdout

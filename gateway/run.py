@@ -48,7 +48,7 @@ _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
         import yaml as _yaml
-        with open(_config_path) as _f:
+        with open(_config_path, encoding="utf-8") as _f:
             _cfg = _yaml.safe_load(_f) or {}
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
@@ -75,11 +75,16 @@ if _config_path.exists():
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
-                    os.environ[_env_var] = str(_terminal_cfg[_cfg_key])
+                    _val = _terminal_cfg[_cfg_key]
+                    if isinstance(_val, list):
+                        os.environ[_env_var] = json.dumps(_val)
+                    else:
+                        os.environ[_env_var] = str(_val)
         _compression_cfg = _cfg.get("compression", {})
         if _compression_cfg and isinstance(_compression_cfg, dict):
             _compression_env_map = {
@@ -311,7 +316,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     file_path = cfg.get("prefill_messages_file", "")
             except Exception:
@@ -349,7 +354,7 @@ class GatewayRunner:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
         except Exception:
@@ -370,7 +375,7 @@ class GatewayRunner:
                 import yaml as _y
                 cfg_path = _hermes_home / "config.yaml"
                 if cfg_path.exists():
-                    with open(cfg_path) as _f:
+                    with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
                     effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
             except Exception:
@@ -387,13 +392,48 @@ class GatewayRunner:
         return None
 
     @staticmethod
+    def _load_background_notifications_mode() -> str:
+        """Load background process notification mode from config or env var.
+
+        Modes:
+          - ``all``    — push running-output updates *and* the final message (default)
+          - ``result`` — only the final completion message (regardless of exit code)
+          - ``error``  — only the final message when exit code is non-zero
+          - ``off``    — no watcher messages at all
+        """
+        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        if not mode:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw = cfg.get("display", {}).get("background_process_notifications")
+                    if raw is False:
+                        mode = "off"
+                    elif raw not in (None, ""):
+                        mode = str(raw)
+            except Exception:
+                pass
+        mode = (mode or "all").strip().lower()
+        valid = {"all", "result", "error", "off"}
+        if mode not in valid:
+            logger.warning(
+                "Unknown background_process_notifications '%s', defaulting to 'all'",
+                mode,
+            )
+            return "all"
+        return mode
+
+    @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("provider_routing", {}) or {}
         except Exception:
@@ -411,7 +451,7 @@ class GatewayRunner:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
-                with open(cfg_path) as _f:
+                with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 fb = cfg.get("fallback_model", {}) or {}
                 if fb.get("provider") and fb.get("model"):
@@ -766,7 +806,7 @@ class GatewayRunner:
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider"}
+                          "update", "title", "resume", "provider", "rollback"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -825,6 +865,9 @@ class GatewayRunner:
 
         if command == "resume":
             return await self._handle_resume_command(event)
+
+        if command == "rollback":
+            return await self._handle_rollback_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -928,7 +971,7 @@ class GatewayRunner:
                 _hyg_cfg_path = _hermes_home / "config.yaml"
                 if _hyg_cfg_path.exists():
                     import yaml as _hyg_yaml
-                    with open(_hyg_cfg_path) as _hyg_f:
+                    with open(_hyg_cfg_path, encoding="utf-8") as _hyg_f:
                         _hyg_data = _hyg_yaml.safe_load(_hyg_f) or {}
 
                     # Resolve model name (same logic as run_sync)
@@ -1397,6 +1440,7 @@ class GatewayRunner:
             "`/resume [name]` — Resume a previously-named session",
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
+            "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -1431,7 +1475,7 @@ class GatewayRunner:
         current_provider = "openrouter"
         try:
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, str):
@@ -1522,14 +1566,14 @@ class GatewayRunner:
             try:
                 user_config = {}
                 if config_path.exists():
-                    with open(config_path) as f:
+                    with open(config_path, encoding="utf-8") as f:
                         user_config = yaml.safe_load(f) or {}
                 if "model" not in user_config or not isinstance(user_config["model"], dict):
                     user_config["model"] = {}
                 user_config["model"]["default"] = new_model
                 if provider_changed:
                     user_config["model"]["provider"] = target_provider
-                with open(config_path, 'w') as f:
+                with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save model change: {e}"
@@ -1566,7 +1610,7 @@ class GatewayRunner:
         config_path = _hermes_home / 'config.yaml'
         try:
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
@@ -1615,7 +1659,7 @@ class GatewayRunner:
 
         try:
             if config_path.exists():
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding="utf-8") as f:
                     config = yaml.safe_load(f) or {}
                 personalities = config.get("agent", {}).get("personalities", {})
             else:
@@ -1644,7 +1688,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w') as f:
+                with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
@@ -1728,10 +1772,10 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             user_config = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w') as f:
+            with open(config_path, 'w', encoding="utf-8") as f:
                 yaml.dump(user_config, f, default_flow_style=False)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
@@ -1743,6 +1787,65 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    async def _handle_rollback_command(self, event: MessageEvent) -> str:
+        """Handle /rollback command — list or restore filesystem checkpoints."""
+        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+
+        # Read checkpoint config from config.yaml
+        cp_cfg = {}
+        try:
+            import yaml as _y
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    _data = _y.safe_load(_f) or {}
+                cp_cfg = _data.get("checkpoints", {})
+                if isinstance(cp_cfg, bool):
+                    cp_cfg = {"enabled": cp_cfg}
+        except Exception:
+            pass
+
+        if not cp_cfg.get("enabled", False):
+            return (
+                "Checkpoints are not enabled.\n"
+                "Enable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+            )
+
+        mgr = CheckpointManager(
+            enabled=True,
+            max_snapshots=cp_cfg.get("max_snapshots", 50),
+        )
+
+        cwd = os.getenv("MESSAGING_CWD", str(Path.home()))
+        arg = event.get_command_args().strip()
+
+        if not arg:
+            checkpoints = mgr.list_checkpoints(cwd)
+            return format_checkpoint_list(checkpoints, cwd)
+
+        # Restore by number or hash
+        checkpoints = mgr.list_checkpoints(cwd)
+        if not checkpoints:
+            return f"No checkpoints found for {cwd}"
+
+        target_hash = None
+        try:
+            idx = int(arg) - 1
+            if 0 <= idx < len(checkpoints):
+                target_hash = checkpoints[idx]["hash"]
+            else:
+                return f"Invalid checkpoint number. Use 1-{len(checkpoints)}."
+        except ValueError:
+            target_hash = arg
+
+        result = mgr.restore(cwd, target_hash)
+        if result["success"]:
+            return (
+                f"✅ Restored to checkpoint {result['restored_to']}: {result['reason']}\n"
+                f"A pre-rollback snapshot was saved automatically."
+            )
+        return f"❌ {result['error']}"
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
         source = event.source
@@ -2304,6 +2407,12 @@ class GatewayRunner:
 
         Runs as an asyncio task. Stays silent when nothing changed.
         Auto-removes when the process exits or is killed.
+
+        Notification mode (from ``display.background_process_notifications``):
+          - ``all``    — running-output updates + final message
+          - ``result`` — final completion message only
+          - ``error``  — final message only when exit code != 0
+          - ``off``    — no messages at all
         """
         from tools.process_registry import process_registry
 
@@ -2312,8 +2421,21 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        notify_mode = self._load_background_notifications_mode()
 
-        logger.debug("Process watcher started: %s (every %ss)", session_id, interval)
+        logger.debug("Process watcher started: %s (every %ss, notify=%s)",
+                      session_id, interval, notify_mode)
+
+        if notify_mode == "off":
+            # Still wait for the process to exit so we can log it, but don't
+            # push any messages to the user.
+            while True:
+                await asyncio.sleep(interval)
+                session = process_registry.get(session_id)
+                if session is None or session.exited:
+                    break
+            logger.debug("Process watcher ended (silent): %s", session_id)
+            return
 
         last_output_len = 0
         while True:
@@ -2328,27 +2450,31 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
-                # Process finished -- deliver final update
-                new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                message_text = (
-                    f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                    f"Here's the final output:\n{new_output}]"
+                # Decide whether to notify based on mode
+                should_notify = (
+                    notify_mode in ("all", "result")
+                    or (notify_mode == "error" and session.exit_code not in (0, None))
                 )
-                # Try to deliver to the originating platform
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
-                if adapter and chat_id:
-                    try:
-                        await adapter.send(chat_id, message_text)
-                    except Exception as e:
-                        logger.error("Watcher delivery error: %s", e)
+                if should_notify:
+                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    message_text = (
+                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                        f"Here's the final output:\n{new_output}]"
+                    )
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
+                            await adapter.send(chat_id, message_text)
+                        except Exception as e:
+                            logger.error("Watcher delivery error: %s", e)
                 break
 
-            elif has_new_output:
-                # New output available -- deliver status update
+            elif has_new_output and notify_mode == "all":
+                # New output available -- deliver status update (only in "all" mode)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 message_text = (
                     f"[Background process {session_id} is still running~ "
@@ -2399,6 +2525,8 @@ class GatewayRunner:
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
+            Platform.SIGNAL: "hermes-signal",
+            Platform.HOMEASSISTANT: "hermes-homeassistant",
         }
         
         # Try to load platform_toolsets from config
@@ -2407,7 +2535,7 @@ class GatewayRunner:
             config_path = _hermes_home / 'config.yaml'
             if config_path.exists():
                 import yaml
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
                 platform_toolsets_config = user_config.get("platform_toolsets", {})
         except Exception as e:
@@ -2420,6 +2548,8 @@ class GatewayRunner:
             Platform.DISCORD: "discord",
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
+            Platform.SIGNAL: "signal",
+            Platform.HOMEASSISTANT: "homeassistant",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default
@@ -2437,7 +2567,7 @@ class GatewayRunner:
             _tp_cfg_path = _hermes_home / "config.yaml"
             if _tp_cfg_path.exists():
                 import yaml as _tp_yaml
-                with open(_tp_cfg_path) as _tp_f:
+                with open(_tp_cfg_path, encoding="utf-8") as _tp_f:
                     _tp_data = _tp_yaml.safe_load(_tp_f) or {}
                 _progress_cfg = _tp_data.get("display", {})
         except Exception:
@@ -2528,6 +2658,8 @@ class GatewayRunner:
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited
+        _progress_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -2557,15 +2689,15 @@ class GatewayRunner:
                             # Platform doesn't support editing — stop trying,
                             # send just this new line as a separate message
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg)
+                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text)
+                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg)
+                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -2655,7 +2787,7 @@ class GatewayRunner:
                 import yaml as _y
                 _cfg_path = _hermes_home / "config.yaml"
                 if _cfg_path.exists():
-                    with open(_cfg_path) as _f:
+                    with open(_cfg_path, encoding="utf-8") as _f:
                         _cfg = _y.safe_load(_f) or {}
                     _model_cfg = _cfg.get("model", {})
                     if isinstance(_model_cfg, str):
@@ -3137,7 +3269,7 @@ def main():
     config = None
     if args.config:
         import json
-        with open(args.config) as f:
+        with open(args.config, encoding="utf-8") as f:
             data = json.load(f)
             config = GatewayConfig.from_dict(data)
     

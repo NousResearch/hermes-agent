@@ -19,6 +19,7 @@ import sys
 import json
 import atexit
 import uuid
+import textwrap
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -45,6 +46,11 @@ from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+try:
+    from prompt_toolkit.cursor_shapes import CursorShape
+    _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
+except (ImportError, AttributeError):
+    _STEADY_CURSOR = None
 import threading
 import queue
 
@@ -158,6 +164,7 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "docker_volumes": [],  # host:container volume mounts for Docker backend
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
@@ -195,6 +202,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "skin": "default",
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -249,8 +257,13 @@ def load_cli_config() -> Dict[str, Any]:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
             
-            # Handle root-level max_turns (backwards compat) - copy to agent.max_turns
-            if "max_turns" in file_config and "agent" not in file_config:
+            # Handle legacy root-level max_turns (backwards compat) - copy to
+            # agent.max_turns whenever the nested key is missing.
+            agent_file_config = file_config.get("agent")
+            if "max_turns" in file_config and not (
+                isinstance(agent_file_config, dict)
+                and agent_file_config.get("max_turns") is not None
+            ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
@@ -375,6 +388,13 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
+
+# Initialize the skin engine from config
+try:
+    from hermes_cli.skin_engine import init_skin_from_config
+    init_skin_from_config(CLI_CONFIG)
+except Exception:
+    pass  # Skin engine is optional — default skin used if unavailable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -696,6 +716,8 @@ class ChatConsole:
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
         self._buffer.truncate()
+        # Read terminal width at render time so panels adapt to current size
+        self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
         for line in output.rstrip("\n").split("\n"):
@@ -829,25 +851,43 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     layout_table.add_column("right", justify="left")
     
     # Build left content: caduceus + model info
-    left_lines = ["", HERMES_CADUCEUS, ""]
+    # Resolve skin colors for the banner
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _bskin = get_active_skin()
+        _accent = _bskin.get_color("banner_accent", "#FFBF00")
+        _dim = _bskin.get_color("banner_dim", "#B8860B")
+        _text = _bskin.get_color("banner_text", "#FFF8DC")
+        _session_c = _bskin.get_color("session_border", "#8B8682")
+        _title_c = _bskin.get_color("banner_title", "#FFD700")
+        _border_c = _bskin.get_color("banner_border", "#CD7F32")
+        _agent_name = _bskin.get_branding("agent_name", "Hermes Agent")
+    except Exception:
+        _bskin = None
+        _accent, _dim, _text = "#FFBF00", "#B8860B", "#FFF8DC"
+        _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
+        _agent_name = "Hermes Agent"
+
+    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+    left_lines = ["", _hero, ""]
     
     # Shorten model name for display
     model_short = model.split("/")[-1] if "/" in model else model
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     
-    ctx_str = f" [dim #B8860B]·[/] [dim #B8860B]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[#FFBF00]{model_short}[/]{ctx_str} [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
-    left_lines.append(f"[dim #B8860B]{cwd}[/]")
+    ctx_str = f" [dim {_dim}]·[/] [dim {_dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    left_lines.append(f"[{_accent}]{model_short}[/]{ctx_str} [dim {_dim}]·[/] [dim {_dim}]Nous Research[/]")
+    left_lines.append(f"[dim {_dim}]{cwd}[/]")
     
     # Add session ID if provided
     if session_id:
-        left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")
+        left_lines.append(f"[dim {_session_c}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
     
     # Build right content: tools list grouped by toolset
     right_lines = []
-    right_lines.append("[bold #FFBF00]Available Tools[/]")
+    right_lines.append(f"[bold {_accent}]Available Tools[/]")
     
     # Group tools by toolset (include all possible tools, both enabled and disabled)
     toolsets_dict = {}
@@ -884,7 +924,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
             else:
-                colored_names.append(f"[#FFF8DC]{name}[/]")
+                colored_names.append(f"[{_text}]{name}[/]")
         
         tools_str = ", ".join(colored_names)
         # Truncate if too long (accounting for markup)
@@ -906,18 +946,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
                 else:
-                    colored_names.append(f"[#FFF8DC]{name}[/]")
+                    colored_names.append(f"[{_text}]{name}[/]")
             tools_str = ", ".join(colored_names)
         
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[dim {_dim}]{toolset}:[/] {tools_str}")
     
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {_dim}](and {remaining_toolsets} more toolsets...)[/]")
     
     right_lines.append("")
     
     # Add skills section
-    right_lines.append("[bold #FFBF00]Available Skills[/]")
+    right_lines.append(f"[bold {_accent}]Available Skills[/]")
     skills_by_category = _get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
     
@@ -933,12 +973,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             # Truncate if still too long
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim #B8860B]{category}:[/] [#FFF8DC]{skills_str}[/]")
+            right_lines.append(f"[dim {_dim}]{category}:[/] [{_text}]{skills_str}[/]")
     else:
-        right_lines.append("[dim #B8860B]No skills installed[/]")
+        right_lines.append(f"[dim {_dim}]No skills installed[/]")
     
     right_lines.append("")
-    right_lines.append(f"[dim #B8860B]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
+    right_lines.append(f"[dim {_dim}]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
     
     right_content = "\n".join(right_lines)
     
@@ -948,16 +988,17 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Wrap in a panel with the title
     outer_panel = Panel(
         layout_table,
-        title=f"[bold #FFD700]Hermes Agent {VERSION}[/]",
-        border_style="#CD7F32",
+        title=f"[bold {_title_c}]{_agent_name} {VERSION}[/]",
+        border_style=_border_c,
         padding=(0, 2),
     )
     
-    # Print the big HERMES-AGENT logo — skip if terminal is too narrow
+    # Print the big logo — use skin's custom logo if available
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        console.print(HERMES_AGENT_LOGO)
+        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        console.print(_logo)
         console.print()
     
     # Print the panel with caduceus and info
@@ -1046,6 +1087,7 @@ class HermesCLI:
         verbose: bool = False,
         compact: bool = False,
         resume: str = None,
+        checkpoints: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1127,6 +1169,13 @@ class HermesCLI:
             if invalid:
                 self.console.print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
+        # Filesystem checkpoints: CLI flag > config
+        cp_cfg = CLI_CONFIG.get("checkpoints", {})
+        if isinstance(cp_cfg, bool):
+            cp_cfg = {"enabled": cp_cfg}
+        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
+        
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
@@ -1191,6 +1240,7 @@ class HermesCLI:
         self._app = None
         self._secret_state = None
         self._secret_deadline = 0
+        self._spinner_text: str = ""  # thinking spinner text for TUI
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1253,6 +1303,11 @@ class HermesCLI:
                 changed = True
 
         return changed
+
+    def _on_thinking(self, text: str) -> None:
+        """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        self._spinner_text = text or ""
+        self._invalidate()
 
     def _ensure_runtime_credentials(self) -> bool:
         """
@@ -1392,6 +1447,9 @@ class HermesCLI:
                 clarify_callback=self._clarify_callback,
                 honcho_session_key=self.session_id,
                 fallback_model=self._fallback_model,
+                thinking_callback=self._on_thinking,
+                checkpoints_enabled=self.checkpoints_enabled,
+                checkpoint_max_snapshots=self.checkpoint_max_snapshots,
             )
             # Apply any pending title now that the session exists in the DB
             if self._pending_title and self._session_db:
@@ -1660,6 +1718,55 @@ class HermesCLI:
             return True
         self._image_counter -= 1
         return False
+
+    def _handle_rollback_command(self, command: str):
+        """Handle /rollback — list or restore filesystem checkpoints."""
+        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+
+        if not hasattr(self, 'agent') or not self.agent:
+            print("  No active agent session.")
+            return
+
+        mgr = self.agent._checkpoint_mgr
+        if not mgr.enabled:
+            print("  Checkpoints are not enabled.")
+            print("  Enable with: hermes --checkpoints")
+            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            return
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        parts = command.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not arg:
+            # List checkpoints
+            checkpoints = mgr.list_checkpoints(cwd)
+            print(format_checkpoint_list(checkpoints, cwd))
+        else:
+            # Restore by number or hash
+            checkpoints = mgr.list_checkpoints(cwd)
+            if not checkpoints:
+                print(f"  No checkpoints found for {cwd}")
+                return
+
+            target_hash = None
+            try:
+                idx = int(arg) - 1  # 1-indexed for user
+                if 0 <= idx < len(checkpoints):
+                    target_hash = checkpoints[idx]["hash"]
+                else:
+                    print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+                    return
+            except ValueError:
+                # Try as a git hash
+                target_hash = arg
+
+            result = mgr.restore(cwd, target_hash)
+            if result["success"]:
+                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+                print(f"  A pre-rollback snapshot was saved automatically.")
+            else:
+                print(f"  ❌ {result['error']}")
 
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
@@ -2670,6 +2777,10 @@ class HermesCLI:
             self._handle_paste_command()
         elif cmd_lower == "/reload-mcp":
             self._reload_mcp()
+        elif cmd_lower.startswith("/rollback"):
+            self._handle_rollback_command(cmd_original)
+        elif cmd_lower.startswith("/skin"):
+            self._handle_skin_command(cmd_original)
         else:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             base_cmd = cmd_lower.split()[0]
@@ -2691,6 +2802,43 @@ class HermesCLI:
         
         return True
     
+    def _handle_skin_command(self, cmd: str):
+        """Handle /skin [name] — show or change the display skin."""
+        try:
+            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+        except ImportError:
+            print("Skin engine not available.")
+            return
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            # Show current skin and list available
+            current = get_active_skin_name()
+            skins = list_skins()
+            print(f"\n  Current skin: {current}")
+            print(f"  Available skins:")
+            for s in skins:
+                marker = " ●" if s["name"] == current else "  "
+                source = f" ({s['source']})" if s["source"] == "user" else ""
+                print(f"   {marker} {s['name']}{source} — {s['description']}")
+            print(f"\n  Usage: /skin <name>")
+            print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
+            return
+
+        new_skin = parts[1].strip().lower()
+        available = {s["name"] for s in list_skins()}
+        if new_skin not in available:
+            print(f"  Unknown skin: {new_skin}")
+            print(f"  Available: {', '.join(sorted(available))}")
+            return
+
+        set_active_skin(new_skin)
+        if save_config_value("display.skin", new_skin):
+            print(f"  Skin set to: {new_skin} (saved)")
+        else:
+            print(f"  Skin set to: {new_skin}")
+        print("  Note: banner colors will update on next session start.")
+
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]
@@ -2939,8 +3087,16 @@ class HermesCLI:
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
-        # Poll in 1-second ticks so the countdown refreshes in the UI.
-        # Each tick triggers an invalidate() to repaint the hint line.
+        # Poll for the user's response.  The countdown in the hint line
+        # updates on each invalidate — but frequent repaints cause visible
+        # flicker in some terminals (Kitty, ghostty).  We only refresh the
+        # countdown every 5 s; selection changes (↑/↓) trigger instant
+        # Poll for the user's response.  The countdown in the hint line
+        # updates on each invalidate — but frequent repaints cause visible
+        # flicker in some terminals (Kitty, ghostty).  We only refresh the
+        # countdown every 5 s; selection changes (↑/↓) trigger instant
+        # repaints via the key bindings.
+        _last_countdown_refresh = _time.monotonic()
         while True:
             try:
                 result = response_queue.get(timeout=1)
@@ -2950,8 +3106,14 @@ class HermesCLI:
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                # Repaint so the countdown updates
-                self._invalidate()
+                # Only repaint every 5 s for the countdown — avoids flicker
+                now = _time.monotonic()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
 
         # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
@@ -3031,6 +3193,9 @@ class HermesCLI:
 
         self._invalidate()
 
+        # Same throttled countdown as _clarify_callback — repaint only
+        # every 5 s to avoid flicker in Kitty / ghostty / etc.
+        _last_countdown_refresh = _time.monotonic()
         while True:
             try:
                 result = response_queue.get(timeout=1)
@@ -3042,7 +3207,10 @@ class HermesCLI:
                 remaining = self._approval_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                self._invalidate()
+                now = _time.monotonic()
+                if now - _last_countdown_refresh >= 5.0:
+                    _last_countdown_refresh = now
+                    self._invalidate()
 
         self._approval_state = None
         self._approval_deadline = 0
@@ -3077,6 +3245,7 @@ class HermesCLI:
                 self._app.current_buffer.text = ""
             except Exception:
                 pass
+
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -3120,8 +3289,7 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
         
-        w = shutil.get_terminal_size().columns
-        _cprint(f"{_GOLD}{'─' * w}{_RST}")
+        _cprint(f"{_GOLD}{'─' * 40}{_RST}")
         print(flush=True)
         
         try:
@@ -3196,15 +3364,25 @@ class HermesCLI:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             
             if response:
-                w = shutil.get_terminal_size().columns
-                label = " ⚕ Hermes "
-                fill = w - 2 - len(label)  # 2 for ╭ and ╮
-                top = f"{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}"
-                bot = f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}"
+                # Use a Rich Panel for the response box — adapts to terminal
+                # width at render time instead of hard-coding border length.
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
+                except Exception:
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
 
-                # Render box + response as a single _cprint call so
-                # nothing can interleave between the box borders.
-                _cprint(f"\n{top}\n{response}\n\n{bot}")
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    response,
+                    title=f"[bold]{label}[/bold]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    padding=(1, 2),
+                ))
             
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
@@ -3269,7 +3447,15 @@ class HermesCLI:
             if self._preload_resumed_session():
                 self._display_resumed_history()
 
-        self.console.print("[#FFF8DC]Welcome to Hermes Agent! Type your message or /help for commands.[/]")
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _welcome_skin = get_active_skin()
+            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
+            _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
+        except Exception:
+            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+            _welcome_color = "#FFF8DC"
+        self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
         self.console.print()
         
         # State for async operation
@@ -3683,6 +3869,8 @@ class HermesCLI:
                 return "type secret (hidden), Enter to skip"
             if cli_ref._approval_state:
                 return ""
+            if cli_ref._clarify_freetext:
+                return "type your answer here and press Enter"
             if cli_ref._clarify_state:
                 return ""
             if cli_ref._agent_running:
@@ -3740,12 +3928,52 @@ class HermesCLI:
             # right up against the top rule of the input area
             return 1 if cli_ref._agent_running else 0
 
+        def get_spinner_text():
+            txt = cli_ref._spinner_text
+            if not txt:
+                return []
+            return [('class:hint', f'  {txt}')]
+
+        def get_spinner_height():
+            return 1 if cli_ref._spinner_text else 0
+
+        spinner_widget = Window(
+            content=FormattedTextControl(get_spinner_text),
+            height=get_spinner_height,
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
         )
 
         # --- Clarify tool: dynamic display widget for questions + choices ---
+
+        def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
+            """Choose a stable panel width wide enough for the title and content."""
+            term_cols = shutil.get_terminal_size((100, 20)).columns
+            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
+            return inner + 2  # account for the single leading/trailing spaces inside borders
+
+        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
+            wrapped = textwrap.wrap(
+                text,
+                width=max(8, width),
+                break_long_words=False,
+                break_on_hyphens=False,
+                subsequent_indent=subsequent_indent,
+            )
+            return wrapped or [""]
+
+        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
+            inner_width = max(0, box_width - 2)
+            lines.append((border_style, "│ "))
+            lines.append((content_style, text.ljust(inner_width)))
+            lines.append((border_style, " │\n"))
+
+        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
+            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
         def _get_clarify_display():
             """Build styled text for the clarify question/choices panel."""
@@ -3756,43 +3984,62 @@ class HermesCLI:
             question = state["question"]
             choices = state.get("choices") or []
             selected = state.get("selected", 0)
+            preview_lines = _wrap_panel_text(question, 60)
+            for i, choice in enumerate(choices):
+                prefix = "❯ " if i == selected and not cli_ref._clarify_freetext else "  "
+                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="  "))
+            other_label = (
+                "❯ Other (type below)" if cli_ref._clarify_freetext
+                else "❯ Other (type your answer)" if selected == len(choices)
+                else "  Other (type your answer)"
+            )
+            preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="  "))
+            box_width = _panel_box_width("Hermes needs your input", preview_lines)
+            inner_text_width = max(8, box_width - 2)
 
             lines = []
             # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ─────────────────────────────╮\n'))
-            lines.append(('class:clarify-border', '│\n'))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             # Question text
-            lines.append(('class:clarify-border', '│  '))
-            lines.append(('class:clarify-question', question))
-            lines.append(('', '\n'))
-            lines.append(('class:clarify-border', '│\n'))
+            for wrapped in _wrap_panel_text(question, inner_text_width):
+                _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+            if cli_ref._clarify_freetext and not choices:
+                guidance = "Type your answer in the prompt below, then press Enter."
+                for wrapped in _wrap_panel_text(guidance, inner_text_width):
+                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
+                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
                 # Multiple-choice mode: show selectable options
                 for i, choice in enumerate(choices):
-                    lines.append(('class:clarify-border', '│  '))
-                    if i == selected and not cli_ref._clarify_freetext:
-                        lines.append(('class:clarify-selected', f'❯ {choice}'))
-                    else:
-                        lines.append(('class:clarify-choice', f'  {choice}'))
-                    lines.append(('', '\n'))
+                    style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
+                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
+                    wrapped_lines = _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  ")
+                    for wrapped in wrapped_lines:
+                        _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
 
                 # "Other" option (5th line, only shown when choices exist)
                 other_idx = len(choices)
-                lines.append(('class:clarify-border', '│  '))
                 if selected == other_idx and not cli_ref._clarify_freetext:
-                    lines.append(('class:clarify-selected', '❯ Other (type your answer)'))
+                    other_style = 'class:clarify-selected'
+                    other_label = '❯ Other (type your answer)'
                 elif cli_ref._clarify_freetext:
-                    lines.append(('class:clarify-active-other', '❯ Other (type below)'))
+                    other_style = 'class:clarify-active-other'
+                    other_label = '❯ Other (type below)'
                 else:
-                    lines.append(('class:clarify-choice', '  Other (type your answer)'))
-                lines.append(('', '\n'))
+                    other_style = 'class:clarify-choice'
+                    other_label = '  Other (type your answer)'
+                for wrapped in _wrap_panel_text(other_label, inner_text_width, subsequent_indent="  "):
+                    _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
 
-            lines.append(('class:clarify-border', '│\n'))
-            lines.append(('class:clarify-border', '╰──────────────────────────────────────────────────╯\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         clarify_widget = ConditionalContainer(
@@ -3809,16 +4056,18 @@ class HermesCLI:
             state = cli_ref._sudo_state
             if not state:
                 return []
+            title = '🔐 Sudo Password Required'
+            body = 'Enter password below (hidden), or press Enter to skip'
+            box_width = _panel_box_width(title, [body])
+            inner = max(0, box_width - 2)
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
-            lines.append(('class:sudo-title', '🔐 Sudo Password Required'))
-            lines.append(('class:sudo-border', ' ──────────────────────────╮\n'))
-            lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '│  '))
-            lines.append(('class:sudo-text', 'Enter password below (hidden), or press Enter to skip'))
-            lines.append(('', '\n'))
-            lines.append(('class:sudo-border', '│\n'))
-            lines.append(('class:sudo-border', '╰──────────────────────────────────────────────────╯\n'))
+            lines.append(('class:sudo-title', title))
+            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
+            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         sudo_widget = ConditionalContainer(
@@ -3883,29 +4132,32 @@ class HermesCLI:
                 "always": "Add to permanent allowlist",
                 "deny": "Deny",
             }
+            preview_lines = _wrap_panel_text(description, 60)
+            preview_lines.extend(_wrap_panel_text(cmd_display, 60))
+            for i, choice in enumerate(choices):
+                prefix = '❯ ' if i == selected else '  '
+                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice_labels.get(choice, choice)}", 60, subsequent_indent="  "))
+            box_width = _panel_box_width("⚠️  Dangerous Command", preview_lines)
+            inner_text_width = max(8, box_width - 2)
 
             lines = []
             lines.append(('class:approval-border', '╭─ '))
             lines.append(('class:approval-title', '⚠️  Dangerous Command'))
-            lines.append(('class:approval-border', ' ───────────────────────────────╮\n'))
-            lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '│  '))
-            lines.append(('class:approval-desc', description))
-            lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│  '))
-            lines.append(('class:approval-cmd', cmd_display))
-            lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│\n'))
+            lines.append(('class:approval-border', ' ' + ('─' * max(0, box_width - len("⚠️  Dangerous Command") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            for wrapped in _wrap_panel_text(description, inner_text_width):
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+            for wrapped in _wrap_panel_text(cmd_display, inner_text_width):
+                _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
             for i, choice in enumerate(choices):
-                lines.append(('class:approval-border', '│  '))
                 label = choice_labels.get(choice, choice)
-                if i == selected:
-                    lines.append(('class:approval-selected', f'❯ {label}'))
-                else:
-                    lines.append(('class:approval-choice', f'  {label}'))
-                lines.append(('', '\n'))
-            lines.append(('class:approval-border', '│\n'))
-            lines.append(('class:approval-border', '╰──────────────────────────────────────────────────────╯\n'))
+                style = 'class:approval-selected' if i == selected else 'class:approval-choice'
+                prefix = '❯ ' if i == selected else '  '
+                for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+                    _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 
         approval_widget = ConditionalContainer(
@@ -3959,6 +4211,7 @@ class HermesCLI:
                 secret_widget,
                 approval_widget,
                 clarify_widget,
+                spinner_widget,
                 spacer,
                 input_rule_top,
                 image_bar,
@@ -4013,6 +4266,7 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
         
@@ -4081,6 +4335,7 @@ class HermesCLI:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        self._spinner_text = ""
                         app.invalidate()  # Refresh status line
                     
                 except Exception as e:
@@ -4142,6 +4397,7 @@ def main(
     resume: str = None,
     worktree: bool = False,
     w: bool = False,
+    checkpoints: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4246,6 +4502,7 @@ def main(
         verbose=verbose,
         compact=compact,
         resume=resume,
+        checkpoints=checkpoints,
     )
 
     # Inject worktree context into agent's system prompt

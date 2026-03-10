@@ -295,12 +295,17 @@ def build_session_key(source: SessionSource) -> str:
 
     This is the single source of truth for session key construction.
     WhatsApp DMs include chat_id (multi-user), other DMs do not (single owner).
+    Forum topics (Telegram) and Discord threads include thread_id so each
+    topic/thread gets its own isolated session.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
         if platform == "whatsapp" and source.chat_id:
             return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+    # Isolate sessions per forum topic / thread when thread_id is present
+    if source.thread_id:
+        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
     return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
 
 

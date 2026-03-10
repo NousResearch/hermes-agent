@@ -368,6 +368,49 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:discord:group:guild-123"
 
+    def test_forum_topic_includes_thread_id(self):
+        """Forum topics should include thread_id for session isolation."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001234567890",
+            chat_type="forum",
+            thread_id="42",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:forum:-1001234567890:42"
+
+    def test_forum_without_thread_id_omits_it(self):
+        """Forum chat without thread_id (e.g. General topic) omits suffix."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001234567890",
+            chat_type="forum",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:forum:-1001234567890"
+
+    def test_discord_thread_includes_thread_id(self):
+        """Discord threads should also get isolated sessions."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            thread_id="thread-99",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:discord:group:guild-123:thread-99"
+
+    def test_dm_with_thread_id_ignores_it(self):
+        """DM sessions should not be affected by thread_id."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="should-be-ignored",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm"
+
 
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""

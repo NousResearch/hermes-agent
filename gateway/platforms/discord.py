@@ -627,6 +627,23 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
+        @tree.command(name="voice", description="Toggle voice reply mode")
+        @discord.app_commands.describe(mode="Voice mode: on, off, tts, or status")
+        @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
+            discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
+            discord.app_commands.Choice(name="off — text only", value="off"),
+            discord.app_commands.Choice(name="status — show current mode", value="status"),
+        ])
+        async def slash_voice(interaction: discord.Interaction, mode: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/voice {mode}".strip())
+            await self.handle_message(event)
+            try:
+                await interaction.followup.send("Done~", ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
+
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")

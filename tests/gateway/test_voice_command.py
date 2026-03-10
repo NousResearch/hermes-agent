@@ -229,7 +229,7 @@ class TestSendVoiceReply:
 
         mock_adapter.send_voice.assert_called_once()
         call_args = mock_adapter.send_voice.call_args
-        assert call_args[0][0] == "123"  # chat_id
+        assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):

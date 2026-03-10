@@ -205,6 +205,7 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        self._last_flush_time = 0.0  # Rate-limit flushes for patch_stdout compat
         # Capture stdout NOW, before any redirect_stdout(devnull) from
         # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
@@ -235,7 +236,18 @@ class KawaiiSpinner:
             else:
                 line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
-            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
+            # Rate-limit flush() calls to avoid spinner spam under
+            # prompt_toolkit's patch_stdout.  Each flush() pushes a queue
+            # item that may trigger a separate run_in_terminal() call; if
+            # items are processed one-at-a-time the \r overwrite is lost
+            # and every frame appears on its own line.  By flushing at
+            # most every 0.4s we guarantee multiple \r-frames are batched
+            # into a single write, so the terminal collapses them correctly.
+            now = time.time()
+            should_flush = (now - self._last_flush_time) >= 0.4
+            self._write(f"\r{line}{' ' * pad}", end='', flush=should_flush)
+            if should_flush:
+                self._last_flush_time = now
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)

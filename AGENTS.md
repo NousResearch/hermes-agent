@@ -300,6 +300,17 @@ Cache-breaking forces dramatically higher costs. The ONLY time we alter context 
 - **CLI**: Uses current directory (`.` → `os.getcwd()`)
 - **Messaging**: Uses `MESSAGING_CWD` env var (default: home directory)
 
+### Background Process Notifications (Gateway)
+
+When `terminal(background=true, check_interval=...)` is used, the gateway runs a watcher that
+pushes status updates to the user's chat. Control verbosity with `display.background_process_notifications`
+in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
+
+- `all` — running-output updates + final message (default)
+- `result` — only the final completion message
+- `error` — only the final message when exit code != 0
+- `off` — no watcher messages at all
+
 ---
 
 ## Known Pitfalls

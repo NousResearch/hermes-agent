@@ -1,0 +1,130 @@
+import json
+
+from hermes_cli.auth import _update_config_for_provider, get_active_provider
+from hermes_cli.config import load_config, save_config
+from hermes_cli.setup import setup_model_provider
+
+
+def _clear_provider_env(monkeypatch):
+    for key in (
+        "NOUS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "LLM_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_nous_api_setup_preserves_model_provider_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 0)
+
+    prompt_values = iter(
+        [
+            "nous-api-key",
+            "",
+            "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        ]
+    )
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt",
+        lambda *args, **kwargs: next(prompt_values),
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "nous-api"
+    assert reloaded["model"]["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert (
+        reloaded["model"]["default"]
+        == "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    )
+
+
+def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    prompt_choices = iter([1, 2])
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt_choice",
+        lambda *args, **kwargs: next(prompt_choices),
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+
+    def _fake_login_nous(*args, **kwargs):
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps({"active_provider": "nous", "providers": {}}))
+        _update_config_for_provider("nous", "https://inference.example.com/v1")
+
+    monkeypatch.setattr("hermes_cli.auth._login_nous", _fake_login_nous)
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference.example.com/v1",
+            "api_key": "nous-key",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.fetch_nous_models",
+        lambda *args, **kwargs: ["gemini-3-flash"],
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "nous"
+    assert reloaded["model"]["base_url"] == "https://inference.example.com/v1"
+    assert reloaded["model"]["default"] == "anthropic/claude-opus-4.6"
+
+
+def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(json.dumps({"active_provider": "nous", "providers": {}}))
+
+    config = load_config()
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+
+    prompt_values = iter(
+        [
+            "https://custom.example/v1",
+            "custom-api-key",
+            "custom/model",
+            "",
+        ]
+    )
+    monkeypatch.setattr(
+        "hermes_cli.setup.prompt",
+        lambda *args, **kwargs: next(prompt_values),
+    )
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+
+    assert get_active_provider() is None
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "custom"
+    assert reloaded["model"]["base_url"] == "https://custom.example/v1"
+    assert reloaded["model"]["default"] == "custom/model"

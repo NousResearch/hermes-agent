@@ -557,16 +557,16 @@ class SignalAdapter(BasePlatformAdapter):
     async def send(
         self,
         chat_id: str,
-        text: str,
-        reply_to_message_id: Optional[str] = None,
-        **kwargs,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message."""
         await self._stop_typing_indicator(chat_id)
 
         params: Dict[str, Any] = {
             "account": self.account,
-            "message": text,
+            "message": content,
         }
 
         if chat_id.startswith("group:"):

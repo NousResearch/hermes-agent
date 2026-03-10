@@ -24,6 +24,7 @@ These are commands you run from your shell.
 | `hermes chat --toolsets "web,terminal"` / `-t` | Use specific toolsets |
 | `hermes chat --verbose` | Enable verbose/debug output |
 | `hermes --worktree` / `-w` | Start in an isolated git worktree (for parallel agents) |
+| `hermes --checkpoints` | Enable filesystem checkpoints before destructive file operations |
 
 ### Provider & Model Management
 
@@ -202,6 +203,8 @@ These work in messaging platforms (Telegram, Discord, Slack, WhatsApp) but not t
 | `/sethome` | Set this chat as the home channel |
 | `/status` | Show session info |
 | `/reload-mcp` | Reload MCP servers from config |
+| `/rollback` | List filesystem checkpoints for the current directory |
+| `/rollback <N>` | Restore files to checkpoint #N |
 | `/update` | Update Hermes Agent to the latest version |
 
 ---

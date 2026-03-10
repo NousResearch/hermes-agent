@@ -185,6 +185,8 @@ class AIAgent:
         honcho_session_key: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        checkpoints_enabled: bool = False,
+        checkpoint_max_snapshots: int = 50,
     ):
         """
         Initialize the AI Agent.
@@ -485,6 +487,13 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+        
+        # Filesystem checkpoint manager (transparent — not a tool)
+        from tools.checkpoint_manager import CheckpointManager
+        self._checkpoint_mgr = CheckpointManager(
+            enabled=checkpoints_enabled,
+            max_snapshots=checkpoint_max_snapshots,
+        )
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
@@ -2706,6 +2715,18 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
+            # Checkpoint: snapshot working dir before file-mutating tools
+            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+                try:
+                    file_path = function_args.get("path", "")
+                    if file_path:
+                        work_dir = self._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        self._checkpoint_mgr.ensure_checkpoint(
+                            work_dir, f"before {function_name}"
+                        )
+                except Exception:
+                    pass  # never block tool execution
+
             tool_start_time = time.time()
 
             if function_name == "todo":
@@ -3215,6 +3236,9 @@ class AIAgent:
         self.clear_interrupt()
         
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
+            # Reset per-turn checkpoint dedup so each iteration can take one snapshot
+            self._checkpoint_mgr.new_turn()
+
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True

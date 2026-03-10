@@ -185,6 +185,7 @@ class AudioRecorder:
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
+        self._max_wait: float = 15.0  # Max seconds to wait for speech before auto-stop
         # Peak RMS seen during recording (for speech presence check in stop())
         self._peak_rms: int = 0
         # Live audio level (read by UI for visual feedback)
@@ -284,6 +285,10 @@ class AudioRecorder:
                         # else: brief dip, keep tolerating
                     # else: no speech attempt, just silence -- nothing to do
 
+                    # Fire silence callback when:
+                    # 1. User spoke then went silent for silence_duration, OR
+                    # 2. No speech detected at all for max_wait seconds
+                    should_fire = False
                     if self._has_spoken and rms <= self._silence_threshold:
                         # User was speaking and now is silent
                         if self._silence_start == 0.0:
@@ -291,15 +296,24 @@ class AudioRecorder:
                         elif now - self._silence_start >= self._silence_duration:
                             logger.info("Silence detected (%.1fs), auto-stopping",
                                         self._silence_duration)
-                            cb = self._on_silence_stop
-                            self._on_silence_stop = None  # fire only once
-                            if cb:
-                                def _safe_cb():
-                                    try:
-                                        cb()
-                                    except Exception as e:
-                                        logger.error("Silence callback failed: %s", e, exc_info=True)
-                                threading.Thread(target=_safe_cb, daemon=True).start()
+                            should_fire = True
+                    elif not self._has_spoken and now - self._start_time >= self._max_wait:
+                        # No speech detected within max_wait — stop to avoid
+                        # infinite recording in quiet environments.
+                        logger.info("No speech within %.0fs, auto-stopping",
+                                    self._max_wait)
+                        should_fire = True
+
+                    if should_fire:
+                        cb = self._on_silence_stop
+                        self._on_silence_stop = None  # fire only once
+                        if cb:
+                            def _safe_cb():
+                                try:
+                                    cb()
+                                except Exception as e:
+                                    logger.error("Silence callback failed: %s", e, exc_info=True)
+                            threading.Thread(target=_safe_cb, daemon=True).start()
 
             try:
                 self._stream = sd.InputStream(

@@ -209,41 +209,10 @@ memory:
 
 ## Honcho Integration (Cross-Session User Modeling)
 
-For deeper, AI-generated user understanding that works across tools, you can optionally enable [Honcho](https://honcho.dev/) by Plastic Labs. Honcho runs alongside existing memory — USER.md stays as-is, and Honcho adds an additional layer of context.
-
-When enabled:
-- **Prefetch**: Each turn, Honcho's user representation is injected into the system prompt
-- **Sync**: After each conversation, messages are synced to Honcho
-- **Query tool**: The agent can actively query its understanding of you via `query_user_context`
-
-**Setup:**
+For deeper, AI-generated user understanding that works across sessions and platforms, you can enable [Honcho Memory](./honcho.md). Honcho runs alongside built-in memory in `hybrid` mode (the default) — `MEMORY.md` and `USER.md` stay as-is, and Honcho adds a persistent user modeling layer on top.
 
 ```bash
-# 1. Install the optional dependency
-uv pip install honcho-ai
-
-# 2. Get an API key from https://app.honcho.dev
-
-# 3. Create ~/.honcho/config.json
-cat > ~/.honcho/config.json << 'EOF'
-{
-  "enabled": true,
-  "apiKey": "your-honcho-api-key",
-  "peerName": "your-name",
-  "hosts": {
-    "hermes": {
-      "workspace": "hermes"
-    }
-  }
-}
-EOF
+hermes honcho setup
 ```
 
-Or via environment variable:
-```bash
-hermes config set HONCHO_API_KEY your-key
-```
-
-:::tip
-Honcho is fully opt-in — zero behavior change when disabled or unconfigured. All Honcho calls are non-fatal; if the service is unreachable, the agent continues normally.
-:::
+See the [Honcho Memory](./honcho.md) docs for full configuration, tools, and CLI reference.

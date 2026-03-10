@@ -117,6 +117,29 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+prompt_yes_no() {
+    local question="$1"
+    local default_yes="${2:-false}"
+    local default_prompt="[y/N]"
+    local reply normalized
+
+    if [ "$default_yes" = true ]; then
+        default_prompt="[Y/n]"
+    fi
+
+    IFS= read -r -p "$question $default_prompt " reply || reply=""
+    normalized="${reply,,}"
+    normalized="${normalized#"${normalized%%[![:space:]]*}"}"
+    normalized="${normalized%"${normalized##*[![:space:]]}"}"
+
+    if [ -z "$normalized" ]; then
+        [ "$default_yes" = true ]
+        return
+    fi
+
+    [[ "$normalized" == "y" || "$normalized" == "yes" ]]
+}
+
 # ============================================================================
 # System detection
 # ============================================================================
@@ -909,9 +932,7 @@ run_setup_wizard() {
         echo ""
         log_info "Detected OpenClaw installation at ~/.openclaw/"
         log_info "Hermes can import your API keys, platform configs, command allowlists, memories, and skills."
-        read -p "Import from OpenClaw during setup? [Y/n] " -n 1 -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        if prompt_yes_no "Import from OpenClaw during setup?" true < /dev/tty; then
             SETUP_ARGS+=(--migrate-from openclaw)
         else
             SETUP_ARGS+=(--skip-migration-prompt)

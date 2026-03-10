@@ -3661,7 +3661,10 @@ class AIAgent:
                         if self.context_compressor._context_probed:
                             ctx = self.context_compressor.context_length
                             save_context_length(self.model, self.base_url, ctx)
-                            print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
+                            try:
+                                print(f"{self.log_prefix}💾 Cached context length: {ctx:,} tokens for {self.model}")
+                            except OSError:
+                                pass
                             self.context_compressor._context_probed = False
 
                         self.session_prompt_tokens += prompt_tokens
@@ -3691,7 +3694,10 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
                     api_elapsed = time.time() - api_start_time
-                    print(f"{self.log_prefix}⚡ Interrupted during API call.")
+                    try:
+                        print(f"{self.log_prefix}⚡ Interrupted during API call.")
+                    except OSError:
+                        pass
                     self._persist_session(messages, conversation_history)
                     interrupted = True
                     final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
@@ -3734,7 +3740,10 @@ class AIAgent:
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
                     
-                    print(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}")
+                    try:
+                        print(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}")
+                    except OSError:
+                        logger.warning("%s⚠️  API call failed (attempt %s/%s): %s", self.log_prefix, retry_count, max_retries, error_type)
                     print(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
                     print(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}")
                     print(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
@@ -3919,7 +3928,10 @@ class AIAgent:
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
                     logging.warning(f"API retry {retry_count}/{max_retries} after error: {api_error}")
                     if retry_count >= max_retries:
-                        print(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
+                        try:
+                            print(f"{self.log_prefix}⚠️  API call failed after {retry_count} attempts: {str(api_error)[:100]}")
+                        except OSError:
+                            logger.warning("%s⚠️  API call failed after %s attempts: %s", self.log_prefix, retry_count, str(api_error)[:100])
                         print(f"{self.log_prefix}⏳ Final retry in {wait_time}s...")
                     
                     # Sleep in small increments so we can respond to interrupts quickly
@@ -3955,7 +3967,10 @@ class AIAgent:
             # (e.g. repeated context-length errors that exhausted retry_count),
             # the `response` variable is still None. Break out cleanly.
             if response is None:
-                print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
+                try:
+                    print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
+                except OSError:
+                    logger.error("%s❌ All API retries exhausted with no successful response.", self.log_prefix)
                 self._persist_session(messages, conversation_history)
                 break
 
@@ -4188,7 +4203,10 @@ class AIAgent:
                         if self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
-                                print(f"  ┊ 💬 {clean}")
+                                try:
+                                    print(f"  ┊ 💬 {clean}")
+                                except OSError:
+                                    pass
                     
                     messages.append(assistant_msg)
                     self._log_msg_to_db(assistant_msg)
@@ -4357,7 +4375,10 @@ class AIAgent:
                 
             except Exception as e:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
-                print(f"❌ {error_msg}")
+                try:
+                    print(f"❌ {error_msg}")
+                except OSError:
+                    logger.error(error_msg)
                 
                 if self.verbose_logging:
                     logging.exception("Detailed error information:")

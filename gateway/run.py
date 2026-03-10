@@ -771,7 +771,7 @@ class GatewayRunner:
         _known_commands = {"new", "reset", "help", "status", "stop", "model",
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
-                          "update", "title", "resume", "provider"}
+                          "update", "title", "resume", "provider", "rollback"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -830,6 +830,9 @@ class GatewayRunner:
 
         if command == "resume":
             return await self._handle_resume_command(event)
+
+        if command == "rollback":
+            return await self._handle_rollback_command(event)
         
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1400,6 +1403,7 @@ class GatewayRunner:
             "`/resume [name]` — Resume a previously-named session",
             "`/usage` — Show token usage for this session",
             "`/insights [days]` — Show usage insights and analytics",
+            "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -1746,6 +1750,65 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    async def _handle_rollback_command(self, event: MessageEvent) -> str:
+        """Handle /rollback command — list or restore filesystem checkpoints."""
+        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+
+        # Read checkpoint config from config.yaml
+        cp_cfg = {}
+        try:
+            import yaml as _y
+            _cfg_path = _hermes_home / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    _data = _y.safe_load(_f) or {}
+                cp_cfg = _data.get("checkpoints", {})
+                if isinstance(cp_cfg, bool):
+                    cp_cfg = {"enabled": cp_cfg}
+        except Exception:
+            pass
+
+        if not cp_cfg.get("enabled", False):
+            return (
+                "Checkpoints are not enabled.\n"
+                "Enable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+            )
+
+        mgr = CheckpointManager(
+            enabled=True,
+            max_snapshots=cp_cfg.get("max_snapshots", 50),
+        )
+
+        cwd = os.getenv("MESSAGING_CWD", str(Path.home()))
+        arg = event.get_command_args().strip()
+
+        if not arg:
+            checkpoints = mgr.list_checkpoints(cwd)
+            return format_checkpoint_list(checkpoints, cwd)
+
+        # Restore by number or hash
+        checkpoints = mgr.list_checkpoints(cwd)
+        if not checkpoints:
+            return f"No checkpoints found for {cwd}"
+
+        target_hash = None
+        try:
+            idx = int(arg) - 1
+            if 0 <= idx < len(checkpoints):
+                target_hash = checkpoints[idx]["hash"]
+            else:
+                return f"Invalid checkpoint number. Use 1-{len(checkpoints)}."
+        except ValueError:
+            target_hash = arg
+
+        result = mgr.restore(cwd, target_hash)
+        if result["success"]:
+            return (
+                f"✅ Restored to checkpoint {result['restored_to']}: {result['reason']}\n"
+                f"A pre-rollback snapshot was saved automatically."
+            )
+        return f"❌ {result['error']}"
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
         source = event.source

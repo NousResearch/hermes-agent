@@ -489,6 +489,7 @@ def cmd_chat(args):
         "query": args.query,
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
+        "checkpoints": getattr(args, "checkpoints", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1926,6 +1927,12 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Run in an isolated git worktree (for parallel agents on the same repo)"
+    )
+    chat_parser.add_argument(
+        "--checkpoints",
+        action="store_true",
+        default=False,
+        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

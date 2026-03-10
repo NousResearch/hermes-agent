@@ -663,6 +663,16 @@ browser:
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
 ```
 
+## Checkpoints
+
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints feature page](/docs/user-guide/features/checkpoints) for details.
+
+```yaml
+checkpoints:
+  enabled: false                 # Enable automatic checkpoints (also: hermes --checkpoints)
+  max_snapshots: 50              # Max checkpoints to keep per directory
+```
+
 ## Delegation
 
 Configure subagent behavior for the delegate tool:

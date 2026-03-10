@@ -469,3 +469,208 @@ class TestVprintForceParameter:
             "Expected at least one _vprint with force=True for error messages"
         assert unforced_error_count == 0, \
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
+
+
+# ============================================================================
+# Bug fix regression tests
+# ============================================================================
+
+class TestEdgeTTSLazyImport:
+    """Bug #3: _generate_edge_tts must use lazy import, not bare module name."""
+
+    def test_generate_edge_tts_calls_lazy_import(self):
+        """AST check: _generate_edge_tts must call _import_edge_tts(), not
+        reference bare 'edge_tts' module name."""
+        import ast as _ast
+
+        with open("tools/tts_tool.py") as f:
+            tree = _ast.parse(f.read())
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.AsyncFunctionDef) and node.name == "_generate_edge_tts":
+                # Collect all Name references (bare identifiers)
+                bare_refs = [
+                    n.id for n in _ast.walk(node)
+                    if isinstance(n, _ast.Name) and n.id == "edge_tts"
+                ]
+                assert bare_refs == [], (
+                    f"_generate_edge_tts uses bare 'edge_tts' name — "
+                    f"should use _import_edge_tts() lazy helper"
+                )
+
+                # Must have a call to _import_edge_tts
+                lazy_calls = [
+                    n for n in _ast.walk(node)
+                    if isinstance(n, _ast.Call)
+                    and isinstance(n.func, _ast.Name)
+                    and n.func.id == "_import_edge_tts"
+                ]
+                assert len(lazy_calls) >= 1, (
+                    "_generate_edge_tts must call _import_edge_tts()"
+                )
+                break
+        else:
+            pytest.fail("_generate_edge_tts not found in tts_tool.py")
+
+
+class TestStreamingTTSOutputStreamCleanup:
+    """Bug #7: output_stream must be closed in finally block."""
+
+    def test_output_stream_closed_in_finally(self):
+        """AST check: stream_tts_to_speaker's finally block must close
+        output_stream even on exception."""
+        import ast as _ast
+
+        with open("tools/tts_tool.py") as f:
+            tree = _ast.parse(f.read())
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
+                # Find the outermost try that has a finally with tts_done_event.set()
+                for child in _ast.walk(node):
+                    if isinstance(child, _ast.Try) and child.finalbody:
+                        finally_text = "\n".join(
+                            _ast.dump(n) for n in child.finalbody
+                        )
+                        if "tts_done_event" in finally_text:
+                            assert "output_stream" in finally_text, (
+                                "finally block must close output_stream"
+                            )
+                            return
+                pytest.fail("No finally block with tts_done_event found")
+
+
+class TestCtrlCResetsContinuousMode:
+    """Bug #4: Ctrl+C cancel must reset _voice_continuous."""
+
+    def test_ctrl_c_handler_resets_voice_continuous(self):
+        """Source check: Ctrl+C voice cancel block must set
+        _voice_continuous = False."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        # Find the Ctrl+C handler's voice cancel block
+        lines = source.split("\n")
+        in_cancel_block = False
+        found_continuous_reset = False
+        for i, line in enumerate(lines):
+            if "Cancel active voice recording" in line:
+                in_cancel_block = True
+            if in_cancel_block:
+                if "_voice_continuous = False" in line:
+                    found_continuous_reset = True
+                    break
+                # Block ends at next comment section or return
+                if "return" in line and in_cancel_block:
+                    break
+
+        assert found_continuous_reset, (
+            "Ctrl+C voice cancel block must set _voice_continuous = False"
+        )
+
+
+class TestDisableVoiceModeStopsTTS:
+    """Bug #5: _disable_voice_mode must stop active TTS playback."""
+
+    def test_disable_voice_mode_calls_stop_playback(self):
+        """Source check: _disable_voice_mode must call stop_playback()."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        # Extract _disable_voice_mode method body
+        lines = source.split("\n")
+        in_method = False
+        method_lines = []
+        for line in lines:
+            if "def _disable_voice_mode" in line:
+                in_method = True
+            elif in_method:
+                if line.strip() and not line.startswith(" ") and not line.startswith("\t"):
+                    break
+                if line.strip().startswith("def "):
+                    break
+                method_lines.append(line)
+
+        method_body = "\n".join(method_lines)
+        assert "stop_playback" in method_body, (
+            "_disable_voice_mode must call stop_playback()"
+        )
+        assert "_voice_tts_done.set()" in method_body, (
+            "_disable_voice_mode must set _voice_tts_done"
+        )
+
+
+class TestVoiceStatusUsesConfigKey:
+    """Bug #8: _show_voice_status must read record key from config."""
+
+    def test_show_voice_status_not_hardcoded(self):
+        """Source check: _show_voice_status must not hardcode Ctrl+B."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        lines = source.split("\n")
+        in_method = False
+        for line in lines:
+            if "def _show_voice_status" in line:
+                in_method = True
+            elif in_method and line.strip().startswith("def "):
+                break
+            elif in_method:
+                assert 'Record key: Ctrl+B"' not in line, (
+                    "_show_voice_status hardcodes 'Ctrl+B' — "
+                    "should read from config"
+                )
+
+    def test_show_voice_status_reads_config(self):
+        """Source check: _show_voice_status must use load_config()."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        lines = source.split("\n")
+        in_method = False
+        method_lines = []
+        for line in lines:
+            if "def _show_voice_status" in line:
+                in_method = True
+            elif in_method and line.strip().startswith("def "):
+                break
+            elif in_method:
+                method_lines.append(line)
+
+        method_body = "\n".join(method_lines)
+        assert "load_config" in method_body or "record_key" in method_body, (
+            "_show_voice_status should read record_key from config"
+        )
+
+
+class TestChatTTSCleanupOnException:
+    """Bug #2: chat() must clean up streaming TTS resources on exception."""
+
+    def test_chat_has_finally_for_tts_cleanup(self):
+        """AST check: chat() method must have a finally block that cleans up
+        text_queue, stop_event, and tts_thread."""
+        import ast as _ast
+
+        with open("cli.py") as f:
+            tree = _ast.parse(f.read())
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == "chat":
+                # Find Try nodes with finally blocks
+                for child in _ast.walk(node):
+                    if isinstance(child, _ast.Try) and child.finalbody:
+                        finally_text = "\n".join(
+                            _ast.dump(n) for n in child.finalbody
+                        )
+                        if "text_queue" in finally_text:
+                            assert "stop_event" in finally_text, (
+                                "finally must also handle stop_event"
+                            )
+                            assert "tts_thread" in finally_text, (
+                                "finally must also handle tts_thread"
+                            )
+                            return
+                pytest.fail(
+                    "chat() must have a finally block cleaning up "
+                    "text_queue/stop_event/tts_thread"
+                )

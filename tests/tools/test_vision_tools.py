@@ -241,9 +241,12 @@ class TestErrorLoggingExcInfo:
     @pytest.mark.asyncio
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
+        fake_client = MagicMock()
         with patch("tools.vision_tools._validate_image_url", return_value=True), \
              patch("tools.vision_tools._download_image", new_callable=AsyncMock,
                    side_effect=Exception("download boom")), \
+             patch("tools.vision_tools._aux_async_client", fake_client), \
+             patch("tools.vision_tools.DEFAULT_VISION_MODEL", "test/model"), \
              caplog.at_level(logging.ERROR, logger="tools.vision_tools"):
 
             result = await vision_analyze_tool(

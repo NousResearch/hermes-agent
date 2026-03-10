@@ -259,12 +259,54 @@ def _run_single_child(
         else:
             status = "failed"
 
+        # Build tool trace from conversation messages (already in memory)
+        tool_trace = []
+        messages = result.get("messages") or []
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") == "assistant":
+                    for tc in (msg.get("tool_calls") or []):
+                        fn = tc.get("function", {})
+                        tool_trace.append({
+                            "tool": fn.get("name", "unknown"),
+                            "args_bytes": len(fn.get("arguments", "")),
+                        })
+                elif msg.get("role") == "tool" and tool_trace:
+                    content = msg.get("content", "")
+                    tool_trace[-1]["result_bytes"] = len(content)
+                    tool_trace[-1]["status"] = (
+                        "error" if content and "error" in content[:80].lower() else "ok"
+                    )
+
+        # Determine exit reason
+        if interrupted:
+            exit_reason = "interrupted"
+        elif completed:
+            exit_reason = "completed"
+        else:
+            exit_reason = "max_iterations"
+
+        # Extract token counts (safe for mock objects)
+        _input_tokens = getattr(child, "session_prompt_tokens", 0)
+        _output_tokens = getattr(child, "session_completion_tokens", 0)
+        _model = getattr(child, "model", None)
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            "iterations": api_calls,
+            "model": _model if isinstance(_model, str) else None,
+            "exit_reason": exit_reason,
+            "tokens": {
+                "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
+                "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
+            },
+            "tool_trace": tool_trace,
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")

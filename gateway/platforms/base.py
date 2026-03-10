@@ -687,7 +687,8 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id))
+        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
             # Call the handler (this can take a while with tool calls)
@@ -711,7 +712,8 @@ class BasePlatformAdapter(ABC):
                     result = await self.send(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id
+                        reply_to=event.message_id,
+                        metadata=_thread_metadata,
                     )
                     
                     # Log send failures (don't raise - user already saw tool progress)
@@ -721,7 +723,8 @@ class BasePlatformAdapter(ABC):
                         fallback_result = await self.send(
                             chat_id=event.source.chat_id,
                             content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
-                            reply_to=event.message_id
+                            reply_to=event.message_id,
+                            metadata=_thread_metadata,
                         )
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
@@ -743,12 +746,14 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 animation_url=image_url,
                                 caption=alt_text if alt_text else None,
+                                metadata=_thread_metadata,
                             )
                         else:
                             img_result = await self.send_image(
                                 chat_id=event.source.chat_id,
                                 image_url=image_url,
                                 caption=alt_text if alt_text else None,
+                                metadata=_thread_metadata,
                             )
                         if not img_result.success:
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
@@ -769,21 +774,25 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
+                                metadata=_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
+                                metadata=_thread_metadata,
                             )
                         elif ext in _IMAGE_EXTS:
                             media_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=media_path,
+                                metadata=_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
+                                metadata=_thread_metadata,
                             )
 
                         if not media_result.success:

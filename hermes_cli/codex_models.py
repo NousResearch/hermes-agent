@@ -47,7 +47,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         if item.get("supported_in_api") is False:
             continue
         visibility = item.get("visibility", "")
-        if isinstance(visibility, str) and visibility.strip().lower() == "hide":
+        if isinstance(visibility, str) and visibility.strip().lower() == "hidden":
             continue
         priority = item.get("priority")
         rank = int(priority) if isinstance(priority, (int, float)) else 10_000

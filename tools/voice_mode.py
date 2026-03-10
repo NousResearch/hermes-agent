@@ -140,7 +140,12 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
         audio = np.concatenate(parts)
         sd.play(audio, samplerate=SAMPLE_RATE)
-        sd.wait()
+        # sd.wait() calls Event.wait() without timeout — hangs forever if the
+        # audio device stalls.  Poll with a 2s ceiling and force-stop.
+        deadline = time.monotonic() + 2.0
+        while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        sd.stop()
     except Exception as e:
         logger.debug("Beep playback failed: %s", e)
 
@@ -289,7 +294,12 @@ class AudioRecorder:
                             cb = self._on_silence_stop
                             self._on_silence_stop = None  # fire only once
                             if cb:
-                                threading.Thread(target=cb, daemon=True).start()
+                                def _safe_cb():
+                                    try:
+                                        cb()
+                                    except Exception as e:
+                                        logger.error("Silence callback failed: %s", e, exc_info=True)
+                                threading.Thread(target=_safe_cb, daemon=True).start()
 
             try:
                 self._stream = sd.InputStream(

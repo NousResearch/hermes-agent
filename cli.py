@@ -3617,11 +3617,14 @@ class HermesCLI:
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
-        # Atomic guard: only one thread can enter stop-and-transcribe
+        # Atomic guard: only one thread can enter stop-and-transcribe.
+        # Set _voice_processing immediately so concurrent Ctrl+B presses
+        # don't race into the START path while recorder.stop() holds its lock.
         with self._voice_lock:
             if not self._voice_recording:
                 return
             self._voice_recording = False
+            self._voice_processing = True
 
         submitted = False
         wav_path = None
@@ -3642,8 +3645,7 @@ class HermesCLI:
                 _cprint(f"{_DIM}No speech detected.{_RST}")
                 return
 
-            with self._voice_lock:
-                self._voice_processing = True
+            # _voice_processing is already True (set atomically above)
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
             _cprint(f"{_DIM}Transcribing...{_RST}")
@@ -4864,7 +4866,12 @@ class HermesCLI:
 
         @kb.add(_voice_key)
         def handle_voice_record(event):
-            """Toggle voice recording when voice mode is active."""
+            """Toggle voice recording when voice mode is active.
+
+            IMPORTANT: This handler runs in prompt_toolkit's event-loop thread.
+            Any blocking call here (locks, sd.wait, disk I/O) freezes the
+            entire UI.  All heavy work is dispatched to daemon threads.
+            """
             if not cli_ref._voice_mode:
                 return
             # Always allow STOPPING a recording (even when agent is running)
@@ -4884,21 +4891,38 @@ class HermesCLI:
                     return
                 if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
                     return
-                try:
-                    # Interrupt TTS if playing, so user can start talking
-                    if not cli_ref._voice_tts_done.is_set():
-                        try:
-                            from tools.voice_mode import stop_playback
-                            stop_playback()
-                            cli_ref._voice_tts_done.set()
-                        except Exception:
-                            pass
-                    with cli_ref._voice_lock:
-                        cli_ref._voice_continuous = True
-                    cli_ref._voice_start_recording()
-                    event.app.invalidate()
-                except Exception as e:
-                    _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+                # Guard: don't start while a previous stop/transcribe cycle is
+                # still running — recorder.stop() holds AudioRecorder._lock and
+                # start() would block the event-loop thread waiting for it.
+                if cli_ref._voice_processing:
+                    return
+
+                # Interrupt TTS if playing, so user can start talking.
+                # stop_playback() is fast (just terminates a subprocess).
+                if not cli_ref._voice_tts_done.is_set():
+                    try:
+                        from tools.voice_mode import stop_playback
+                        stop_playback()
+                        cli_ref._voice_tts_done.set()
+                    except Exception:
+                        pass
+
+                with cli_ref._voice_lock:
+                    cli_ref._voice_continuous = True
+
+                # Dispatch to a daemon thread so play_beep(sd.wait),
+                # AudioRecorder.start(lock acquire), and config I/O
+                # never block the prompt_toolkit event loop.
+                def _start_recording():
+                    try:
+                        cli_ref._voice_start_recording()
+                        if hasattr(cli_ref, '_app') and cli_ref._app:
+                            cli_ref._app.invalidate()
+                    except Exception as e:
+                        _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
+                threading.Thread(target=_start_recording, daemon=True).start()
+                event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)

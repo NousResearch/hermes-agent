@@ -732,6 +732,96 @@ class TestBrowserToolSignalHandlerRemoved:
             )
 
 
+class TestKeyHandlerNeverBlocks:
+    """The Ctrl+B key handler runs in prompt_toolkit's event-loop thread.
+    Any blocking call freezes the entire UI.  Verify that:
+    1. _voice_start_recording is NOT called directly (must be in daemon thread)
+    2. _voice_processing guard prevents starting while stop/transcribe runs
+    3. _voice_processing is set atomically with _voice_recording in stop_and_transcribe
+    """
+
+    def test_start_recording_not_called_directly_in_handler(self):
+        """AST check: handle_voice_record must NOT call _voice_start_recording()
+        directly — it must wrap it in a Thread to avoid blocking the UI."""
+        import ast as _ast
+
+        with open("cli.py") as f:
+            tree = _ast.parse(f.read())
+
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == "handle_voice_record":
+                # Collect all direct calls to _voice_start_recording in this function.
+                # They should ONLY appear inside a nested def (the _start_recording wrapper).
+                for child in _ast.iter_child_nodes(node):
+                    # Direct statements in the handler body (not nested defs)
+                    if isinstance(child, _ast.Expr) and isinstance(child.value, _ast.Call):
+                        call_src = _ast.dump(child.value)
+                        assert "_voice_start_recording" not in call_src, (
+                            "handle_voice_record calls _voice_start_recording directly "
+                            "— must dispatch to a daemon thread"
+                        )
+                break
+
+    def test_processing_guard_in_start_path(self):
+        """Source check: key handler must check _voice_processing before
+        starting a new recording."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        lines = source.split("\n")
+        in_handler = False
+        in_else = False
+        found_guard = False
+        for line in lines:
+            if "def handle_voice_record" in line:
+                in_handler = True
+            elif in_handler and line.strip().startswith("def ") and "_start_recording" not in line:
+                break
+            elif in_handler and "else:" in line:
+                in_else = True
+            elif in_else and "_voice_processing" in line:
+                found_guard = True
+                break
+
+        assert found_guard, (
+            "Key handler START path must guard against _voice_processing "
+            "to prevent blocking on AudioRecorder._lock"
+        )
+
+    def test_processing_set_atomically_with_recording_false(self):
+        """Source check: _voice_stop_and_transcribe must set _voice_processing = True
+        in the same lock block where it sets _voice_recording = False."""
+        with open("cli.py") as f:
+            source = f.read()
+
+        lines = source.split("\n")
+        in_method = False
+        in_first_lock = False
+        found_recording_false = False
+        found_processing_true = False
+        for line in lines:
+            if "def _voice_stop_and_transcribe" in line:
+                in_method = True
+            elif in_method and "with self._voice_lock:" in line and not in_first_lock:
+                in_first_lock = True
+            elif in_first_lock:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "_voice_recording = False" in stripped:
+                    found_recording_false = True
+                if "_voice_processing = True" in stripped:
+                    found_processing_true = True
+                # End of with block (dedent)
+                if stripped and not line.startswith("            ") and not line.startswith("\t\t\t"):
+                    break
+
+        assert found_recording_false and found_processing_true, (
+            "_voice_stop_and_transcribe must set _voice_processing = True "
+            "atomically (same lock block) with _voice_recording = False"
+        )
+
+
 # ============================================================================
 # Real behavior tests — CLI voice methods via _make_voice_cli()
 # ============================================================================

@@ -816,9 +816,13 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
     
-    def _vprint(self, *args, **kwargs):
-        """Verbose print — suppressed when streaming TTS is active."""
-        if getattr(self, "_stream_callback", None) is not None:
+    def _vprint(self, *args, force: bool = False, **kwargs):
+        """Verbose print — suppressed when streaming TTS is active.
+
+        Pass ``force=True`` for error/warning messages that should always be
+        shown even during streaming TTS playback.
+        """
+        if not force and getattr(self, "_stream_callback", None) is not None:
             return
         print(*args, **kwargs)
 
@@ -4641,7 +4645,7 @@ class AIAgent:
                             }
                         else:
                             # First message was truncated - mark as failed
-                            self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover")
+                            self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
                             self._persist_session(messages, conversation_history)
                             return {
                                 "final_response": None,
@@ -4783,9 +4787,9 @@ class AIAgent:
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
                     
-                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}")
+                    self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}", force=True)
                     self._vprint(f"{self.log_prefix}   ⏱️  Time elapsed before failure: {elapsed_time:.2f}s")
-                    self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}")
+                    self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True)
                     self._vprint(f"{self.log_prefix}   📊 Request context: {len(api_messages)} messages, ~{approx_tokens:,} tokens, {len(self.tools) if self.tools else 0} tools")
                     
                     # Check for interrupt before deciding to retry
@@ -4839,7 +4843,7 @@ class AIAgent:
                             restart_with_compressed_messages = True
                             break
                         else:
-                            self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.")
+                            self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -4948,8 +4952,8 @@ class AIAgent:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
-                        self._vprint(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.")
-                        self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.")
+                        self._vprint(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.", force=True)
+                        self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
                         self._persist_session(messages, conversation_history)
                         return {
@@ -5081,7 +5085,7 @@ class AIAgent:
                         continue
                     else:
                         # Max retries - discard this turn and save as partial
-                        self._vprint(f"{self.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.")
+                        self._vprint(f"{self.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
                         self._incomplete_scratchpad_retries = 0
                         
                         rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
@@ -5176,7 +5180,7 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
 
                         if self._invalid_tool_retries >= 3:
-                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.")
+                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for invalid tool calls exceeded. Stopping as partial.", force=True)
                             self._invalid_tool_retries = 0
                             self._persist_session(messages, conversation_history)
                             return {
@@ -5350,7 +5354,7 @@ class AIAgent:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
                             continue
                         else:
-                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for empty content exceeded.")
+                            self._vprint(f"{self.log_prefix}❌ Max retries (3) for empty content exceeded.", force=True)
                             self._empty_content_retries = 0
                             
                             # If a prior tool_calls turn had real content, salvage it:

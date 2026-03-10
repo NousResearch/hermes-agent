@@ -3812,15 +3812,9 @@ class HermesCLI:
         except Exception:
             pass
 
-        # Append voice-mode system prompt for concise, conversational responses
-        self._voice_original_prompt = self.system_prompt
-        voice_instruction = (
-            "\n\n[Voice mode active] The user is speaking via voice input. "
-            "Keep responses concise and conversational — 2-3 sentences max unless "
-            "the user asks for detail. Avoid code blocks, markdown formatting, "
-            "and long lists. Respond naturally as in a spoken conversation."
-        )
-        self.system_prompt = (self.system_prompt or "") + voice_instruction
+        # Voice mode instruction is injected as a user message prefix (not a
+        # system prompt change) to avoid invalidating the prompt cache.  See
+        # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
@@ -3845,9 +3839,6 @@ class HermesCLI:
             self._voice_tts = False
             self._voice_continuous = False
 
-        # Restore original system prompt
-        if hasattr(self, '_voice_original_prompt'):
-            self.system_prompt = self._voice_original_prompt
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
 
     def _toggle_voice_tts(self):
@@ -4140,13 +4131,18 @@ class HermesCLI:
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
                         _get_provider as _get_prov,
-                        _HAS_ELEVENLABS as _el_ok,
-                        _HAS_AUDIO as _audio_ok,
+                        _import_elevenlabs,
+                        _import_sounddevice,
                         stream_tts_to_speaker,
                     )
                     _tts_cfg = _load_tts_cfg()
-                    if (_get_prov(_tts_cfg) == "elevenlabs" and _el_ok and _audio_ok):
+                    if _get_prov(_tts_cfg) == "elevenlabs":
+                        # Verify both ElevenLabs SDK and audio output are available
+                        _import_elevenlabs()
+                        _import_sounddevice()
                         use_streaming_tts = True
+                except (ImportError, OSError):
+                    pass
                 except Exception:
                     pass
 
@@ -4177,10 +4173,22 @@ class HermesCLI:
                     if text_queue is not None:
                         text_queue.put(delta)
 
+            # When voice mode is active, prepend a brief instruction to the
+            # user message so the model responds concisely.  This avoids
+            # modifying the system prompt (which would invalidate the prompt
+            # cache).  The original message in conversation_history stays clean.
+            agent_message = message
+            if self._voice_mode and isinstance(message, str):
+                agent_message = (
+                    "[Voice input — respond concisely and conversationally, "
+                    "2-3 sentences max. No code blocks or markdown.] "
+                    + message
+                )
+
             def run_agent():
                 nonlocal result
                 result = self.agent.run_conversation(
-                    user_message=message,
+                    user_message=agent_message,
                     conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                     stream_callback=stream_callback,
                     task_id=self.session_id,

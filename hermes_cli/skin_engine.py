@@ -2,19 +2,91 @@
 
 A data-driven skin system that lets users customize the CLI's visual appearance.
 Skins are defined as YAML files in ~/.hermes/skins/ or as built-in presets.
+No code changes are needed to add a new skin.
 
-Each skin defines:
-- colors: banner and UI color palette (hex values for Rich markup)
-- spinner: kawaii faces, thinking verbs, optional wings
-- branding: agent name, welcome/goodbye messages, prompt symbol
-- tool_prefix: character used for tool output lines (default: ┊)
+SKIN YAML SCHEMA
+================
 
-Usage:
+All fields are optional. Missing values inherit from the ``default`` skin.
+
+.. code-block:: yaml
+
+    # Required: skin identity
+    name: mytheme                         # Unique skin name (lowercase, hyphens ok)
+    description: Short description        # Shown in /skin listing
+
+    # Colors: hex values for Rich markup (banner, UI, response box)
+    colors:
+      banner_border: "#CD7F32"            # Panel border color
+      banner_title: "#FFD700"             # Panel title text color
+      banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
+      banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
+      banner_text: "#FFF8DC"              # Body text (tool names, skill names)
+      ui_accent: "#FFBF00"               # General UI accent
+      ui_label: "#4dd0e1"                # UI labels
+      ui_ok: "#4caf50"                   # Success indicators
+      ui_error: "#ef5350"                # Error indicators
+      ui_warn: "#ffa726"                 # Warning indicators
+      prompt: "#FFF8DC"                  # Prompt text color
+      input_rule: "#CD7F32"              # Input area horizontal rule
+      response_border: "#FFD700"         # Response box border (ANSI)
+      session_label: "#DAA520"           # Session label color
+      session_border: "#8B8682"          # Session ID dim color
+
+    # Spinner: customize the animated spinner during API calls
+    spinner:
+      waiting_faces:                      # Faces shown while waiting for API
+        - "(⚔)"
+        - "(⛨)"
+      thinking_faces:                     # Faces shown during reasoning
+        - "(⌁)"
+        - "(<>)"
+      thinking_verbs:                     # Verbs for spinner messages
+        - "forging"
+        - "plotting"
+      wings:                              # Optional left/right spinner decorations
+        - ["⟪⚔", "⚔⟫"]                  # Each entry is [left, right] pair
+        - ["⟪▲", "▲⟫"]
+
+    # Branding: text strings used throughout the CLI
+    branding:
+      agent_name: "Hermes Agent"          # Banner title, status display
+      welcome: "Welcome message"          # Shown at CLI startup
+      goodbye: "Goodbye! ⚕"              # Shown on exit
+      response_label: " ⚕ Hermes "       # Response box header label
+      prompt_symbol: "❯ "                # Input prompt symbol
+      help_header: "(^_^)? Commands"      # /help header text
+
+    # Tool prefix: character for tool output lines (default: ┊)
+    tool_prefix: "┊"
+
+USAGE
+=====
+
+.. code-block:: python
+
     from hermes_cli.skin_engine import get_active_skin, list_skins, set_active_skin
 
     skin = get_active_skin()
-    print(skin.colors["banner_title"])  # "#FFD700"
-    print(skin.spinner["thinking_verbs"])  # ["pondering", ...]
+    print(skin.colors["banner_title"])    # "#FFD700"
+    print(skin.get_branding("agent_name"))  # "Hermes Agent"
+
+    set_active_skin("ares")               # Switch to built-in ares skin
+    set_active_skin("mytheme")            # Switch to user skin from ~/.hermes/skins/
+
+BUILT-IN SKINS
+==============
+
+- ``default`` — Classic Hermes gold/kawaii (the current look)
+- ``ares``    — Crimson/bronze war-god theme with custom spinner wings
+- ``mono``    — Clean grayscale monochrome
+- ``slate``   — Cool blue developer-focused theme
+
+USER SKINS
+==========
+
+Drop a YAML file in ``~/.hermes/skins/<name>.yaml`` following the schema above.
+Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.yaml.
 """
 
 import logging

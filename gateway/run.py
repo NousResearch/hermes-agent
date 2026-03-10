@@ -1322,6 +1322,11 @@ class GatewayRunner:
                         {"role": "assistant", "content": response, "timestamp": ts}
                     )
             else:
+                # The agent already persisted these messages to SQLite via
+                # _flush_messages_to_session_db(), so skip the DB write here
+                # to prevent the duplicate-write bug (#860).  We still write
+                # to JSONL for backward compatibility and as a backup.
+                agent_persisted = self._session_db is not None
                 for msg in new_messages:
                     # Skip system messages (they're rebuilt each run)
                     if msg.get("role") == "system":
@@ -1329,7 +1334,8 @@ class GatewayRunner:
                     # Add timestamp to each message for debugging
                     entry = {**msg, "timestamp": ts}
                     self.session_store.append_to_transcript(
-                        session_entry.session_id, entry
+                        session_entry.session_id, entry,
+                        skip_db=agent_persisted,
                     )
             
             # Update session

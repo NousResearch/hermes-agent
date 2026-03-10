@@ -497,6 +497,7 @@ class AIAgent:
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
+        self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
             try:
                 self._session_db.create_session(
@@ -802,45 +803,19 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
-    def _log_msg_to_db(self, msg: Dict):
-        """Log a single message to SQLite immediately. Called after each messages.append()."""
-        if not self._session_db:
-            return
-        try:
-            role = msg.get("role", "unknown")
-            content = msg.get("content")
-            tool_calls_data = None
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                tool_calls_data = [
-                    {"name": tc.function.name, "arguments": tc.function.arguments}
-                    for tc in msg.tool_calls
-                ]
-            elif isinstance(msg.get("tool_calls"), list):
-                tool_calls_data = msg["tool_calls"]
-            self._session_db.append_message(
-                session_id=self.session_id,
-                role=role,
-                content=content,
-                tool_name=msg.get("tool_name"),
-                tool_calls=tool_calls_data,
-                tool_call_id=msg.get("tool_call_id"),
-                finish_reason=msg.get("finish_reason"),
-            )
-        except Exception as e:
-            logger.debug("Session DB log_msg failed: %s", e)
-
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Persist any un-logged messages to the SQLite session store.
+        """Persist any un-flushed messages to the SQLite session store.
 
-        Called both at the normal end of run_conversation and from every early-
-        return path so that tool calls, tool responses, and assistant messages
-        are never lost even when the conversation errors out.
+        Uses _last_flushed_db_idx to track which messages have already been
+        written, so repeated calls (from multiple exit paths) only write
+        truly new messages — preventing the duplicate-write bug (#860).
         """
         if not self._session_db:
             return
         try:
             start_idx = len(conversation_history) if conversation_history else 0
-            for msg in messages[start_idx:]:
+            flush_from = max(start_idx, self._last_flushed_db_idx)
+            for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 tool_calls_data = None
@@ -860,6 +835,7 @@ class AIAgent:
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                 )
+            self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.debug("Session DB append_message failed: %s", e)
 
@@ -2689,6 +2665,8 @@ class AIAgent:
                     except (ValueError, Exception) as e:
                         logger.debug("Could not propagate title on compression: %s", e)
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+                # Reset flush cursor — new session starts with no messages written
+                self._last_flushed_db_idx = 0
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
 
@@ -2712,7 +2690,6 @@ class AIAgent:
                         "tool_call_id": skipped_tc.id,
                     }
                     messages.append(skip_msg)
-                    self._log_msg_to_db(skip_msg)
                 break
 
             function_name = tool_call.function.name
@@ -2921,7 +2898,6 @@ class AIAgent:
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
-            self._log_msg_to_db(tool_msg)
 
             if not self.quiet_mode:
                 response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
@@ -2938,7 +2914,6 @@ class AIAgent:
                         "tool_call_id": skipped_tc.id
                     }
                     messages.append(skip_msg)
-                    self._log_msg_to_db(skip_msg)
                 break
 
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
@@ -3169,7 +3144,6 @@ class AIAgent:
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
-        self._log_msg_to_db(user_msg)
         
         if not self.quiet_mode:
             print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
@@ -3572,7 +3546,6 @@ class AIAgent:
                                 length_continue_retries += 1
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                                 messages.append(interim_msg)
-                                self._log_msg_to_db(interim_msg)
                                 if assistant_message.content:
                                     truncated_response_prefix += assistant_message.content
 
@@ -3590,7 +3563,6 @@ class AIAgent:
                                         ),
                                     }
                                     messages.append(continue_msg)
-                                    self._log_msg_to_db(continue_msg)
                                     self._session_messages = messages
                                     self._save_session_log(messages)
                                     restart_with_length_continuation = True
@@ -4063,7 +4035,6 @@ class AIAgent:
                         )
                         if not duplicate_interim:
                             messages.append(interim_msg)
-                            self._log_msg_to_db(interim_msg)
 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
@@ -4114,7 +4085,6 @@ class AIAgent:
                         print(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction")
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
-                        self._log_msg_to_db(assistant_msg)
                         for tc in assistant_message.tool_calls:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
@@ -4169,7 +4139,6 @@ class AIAgent:
                             )
                             recovery_dict = {"role": "user", "content": recovery_msg}
                             messages.append(recovery_dict)
-                            self._log_msg_to_db(recovery_dict)
                             continue
                     
                     # Reset retry counter on successful JSON validation
@@ -4191,7 +4160,6 @@ class AIAgent:
                                 print(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
-                    self._log_msg_to_db(assistant_msg)
                     
                     self._execute_tool_calls(assistant_message, messages, effective_task_id)
 
@@ -4292,7 +4260,6 @@ class AIAgent:
                                 "finish_reason": finish_reason,
                             }
                             messages.append(empty_msg)
-                            self._log_msg_to_db(empty_msg)
                             
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
@@ -4323,7 +4290,6 @@ class AIAgent:
                         codex_ack_continuations += 1
                         interim_msg = self._build_assistant_message(assistant_message, "incomplete")
                         messages.append(interim_msg)
-                        self._log_msg_to_db(interim_msg)
 
                         continue_msg = {
                             "role": "user",
@@ -4333,7 +4299,6 @@ class AIAgent:
                             ),
                         }
                         messages.append(continue_msg)
-                        self._log_msg_to_db(continue_msg)
                         self._session_messages = messages
                         self._save_session_log(messages)
                         continue
@@ -4349,7 +4314,6 @@ class AIAgent:
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
                     messages.append(final_msg)
-                    self._log_msg_to_db(final_msg)
                     
                     if not self.quiet_mode:
                         print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
@@ -4386,7 +4350,6 @@ class AIAgent:
                                     "content": f"Error executing tool: {error_msg}",
                                 }
                                 messages.append(err_msg)
-                                self._log_msg_to_db(err_msg)
                         pending_handled = True
                     break
                 
@@ -4399,7 +4362,6 @@ class AIAgent:
                         "content": f"[System error during processing: {error_msg}]",
                     }
                     messages.append(sys_err_msg)
-                    self._log_msg_to_db(sys_err_msg)
                 
                 # If we're near the limit, break to avoid infinite loops
                 if api_call_count >= self.max_iterations - 1:

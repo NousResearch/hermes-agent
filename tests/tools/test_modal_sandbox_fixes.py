@@ -36,8 +36,17 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
+    def _has_minisweagent(self):
+        try:
+            import minisweagent  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
+        if not self._has_minisweagent():
+            pytest.skip("minisweagent not installed (git submodule update --init)")
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],
@@ -49,6 +58,8 @@ class TestToolResolution:
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
+        if not self._has_minisweagent():
+            pytest.skip("minisweagent not installed (git submodule update --init)")
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],

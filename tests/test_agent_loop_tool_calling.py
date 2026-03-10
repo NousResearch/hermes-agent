@@ -35,6 +35,7 @@ if str(_repo_root) not in sys.path:
 
 try:
     from environments.agent_loop import AgentResult, HermesAgentLoop
+    from atroposlib.envs.server_handling.openai_server import OpenAIServer  # noqa: F401
 except ImportError:
     pytest.skip("atroposlib not installed", allow_module_level=True)
 

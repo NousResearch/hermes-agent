@@ -5678,12 +5678,13 @@ class HermesCLI:
                     self.agent.flush_memories(self.conversation_history)
                 except Exception:
                     pass
-            # Cancel active voice recording
-            if hasattr(self, '_voice_recorder') and self._voice_recorder and self._voice_recording:
+            # Shut down voice recorder (release persistent audio stream)
+            if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
-                    self._voice_recorder.cancel()
+                    self._voice_recorder.shutdown()
                 except Exception:
                     pass
+                self._voice_recorder = None
             # Clean up old temp voice recordings
             try:
                 from tools.voice_mode import cleanup_temp_recordings

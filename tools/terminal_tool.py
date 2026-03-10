@@ -758,6 +758,7 @@ def terminal_tool(
     workdir: Optional[str] = None,
     check_interval: Optional[int] = None,
     pty: bool = False,
+    security_risk: Optional[str] = None,
 ) -> str:
     """
     Execute a command using mini-swe-agent's execution environments.
@@ -898,6 +899,43 @@ def terminal_tool(
         # Check for dangerous commands (only for local/ssh in interactive modes)
         # Skip check if force=True (user has confirmed they want to run it)
         if not force:
+            # LLM self-annotation: treat HIGH risk same as pattern-matched dangerous command
+            if security_risk == "HIGH":
+                import json as _json
+                _fake_approval = _check_dangerous_command(command, env_type)
+                if _fake_approval["approved"]:
+                    # Pattern matcher didn't catch it but LLM flagged HIGH — run approval flow
+                    from tools.approval import prompt_dangerous_approval, is_approved, submit_pending
+                    import os as _os
+                    session_key = _os.getenv("HERMES_SESSION_KEY", "default")
+                    description = "LLM-assessed HIGH risk command"
+                    pattern_key = "llm_high_risk"
+                    if not is_approved(session_key, pattern_key):
+                        is_cli = _os.getenv("HERMES_INTERACTIVE")
+                        is_gateway = _os.getenv("HERMES_GATEWAY_SESSION")
+                        if is_cli or is_gateway:
+                            if is_gateway or _os.getenv("HERMES_EXEC_ASK"):
+                                submit_pending(session_key, {
+                                    "command": command,
+                                    "pattern_key": pattern_key,
+                                    "description": description,
+                                })
+                                return _json.dumps({
+                                    "output": "", "exit_code": -1,
+                                    "error": f"⚠️ LLM flagged this command as HIGH risk. Asking user for approval...",
+                                    "status": "approval_required",
+                                    "command": command,
+                                    "description": description,
+                                    "pattern_key": pattern_key,
+                                }, ensure_ascii=False)
+                            choice = prompt_dangerous_approval(command, description,
+                                                               approval_callback=_approval_callback)
+                            if choice == "deny":
+                                return _json.dumps({
+                                    "output": "", "exit_code": -1,
+                                    "error": "BLOCKED: User denied this HIGH risk command. Do NOT retry.",
+                                    "status": "blocked",
+                                }, ensure_ascii=False)
             approval = _check_dangerous_command(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
@@ -1192,6 +1230,17 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
                 "default": False
+            },
+            "security_risk": {
+                "type": "string",
+                "enum": ["LOW", "MEDIUM", "HIGH"],
+                "description": (
+                    "Self-assessed risk level of this command. You MUST set this on every call. "
+                    "LOW: read-only operations (ls, cat, grep, git log, file reads). "
+                    "MEDIUM: project-scoped changes (file edits, installs, git commit). "
+                    "HIGH: system-level changes, destructive operations, data leaving the environment "
+                    "(rm -rf, sudo, curl | bash, network requests with secrets, DROP TABLE)."
+                )
             }
         },
         "required": ["command"]
@@ -1208,6 +1257,7 @@ def _handle_terminal(args, **kw):
         workdir=args.get("workdir"),
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
+        security_risk=args.get("security_risk"),
     )
 
 

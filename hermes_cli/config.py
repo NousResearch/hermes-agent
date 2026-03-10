@@ -81,6 +81,7 @@ DEFAULT_CONFIG = {
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
         "docker_volumes": [],
+        "confirmation_policy": "risky",  # "risky" (block HIGH+UNKNOWN) | "never" (allow all) | "always" (confirm every action)
     },
     
     "browser": {

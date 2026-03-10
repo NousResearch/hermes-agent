@@ -250,9 +250,22 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if not is_dangerous:
+    # Check confirmation_policy from config
+    try:
+        from hermes_cli.config import load_config
+        policy = load_config().get("terminal", {}).get("confirmation_policy", "risky")
+    except Exception:
+        policy = "risky"
+
+    if policy == "never":
         return {"approved": True, "message": None}
+
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous and policy != "always":
+        return {"approved": True, "message": None}
+    if not is_dangerous and policy == "always":
+        pattern_key = "always_policy"
+        description = "confirmation_policy=always: confirming every command"
 
     session_key = os.getenv("HERMES_SESSION_KEY", "default")
     if is_approved(session_key, pattern_key):

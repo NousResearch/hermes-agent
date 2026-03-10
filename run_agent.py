@@ -3067,6 +3067,8 @@ class AIAgent:
         self._invalid_tool_retries = 0
         self._invalid_json_retries = 0
         self._empty_content_retries = 0
+        self._incomplete_scratchpad_retries = 0
+        self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
         self._turns_since_memory = 0
         self._iters_since_skill = 0

@@ -468,17 +468,37 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             messages.append({"role": "user", "content": self.format_prompt(eval_item)})
 
             # --- 4. Run agent loop ---
-            agent = HermesAgentLoop(
-                server=self.server,
-                tool_schemas=tools,
-                valid_tool_names=valid_names,
-                max_turns=self.config.max_agent_turns,
-                task_id=task_id,
-                temperature=self.config.agent_temperature,
-                max_tokens=self.c...gth,
-                extra_body=self.config.extra_body,
-            )
-            result = await agent.run(messages)
+            # Use ManagedServer (Phase 2) for vLLM/SGLang backends to get
+            # token-level tracking via /generate. Falls back to direct
+            # ServerManager (Phase 1) for OpenAI endpoints.
+            if self._use_managed_server():
+                async with self.server.managed_server(
+                    tokenizer=self.tokenizer,
+                    preserve_think_blocks=bool(self.config.thinking_mode),
+                ) as managed:
+                    agent = HermesAgentLoop(
+                        server=managed,
+                        tool_schemas=tools,
+                        valid_tool_names=valid_names,
+                        max_turns=self.config.max_agent_turns,
+                        task_id=task_id,
+                        temperature=self.config.agent_temperature,
+                        max_tokens=self.config.max_token_length,
+                        extra_body=self.config.extra_body,
+                    )
+                    result = await agent.run(messages)
+            else:
+                agent = HermesAgentLoop(
+                    server=self.server,
+                    tool_schemas=tools,
+                    valid_tool_names=valid_names,
+                    max_turns=self.config.max_agent_turns,
+                    task_id=task_id,
+                    temperature=self.config.agent_temperature,
+                    max_tokens=self.config.max_token_length,
+                    extra_body=self.config.extra_body,
+                )
+                result = await agent.run(messages)
 
             # --- 5. Verify -- run test suite in the agent's sandbox ---
             # Skip verification if the agent produced no meaningful output

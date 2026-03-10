@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Hermes Agent',
   tagline: 'The self-improving AI agent',
-  favicon: 'img/favicon.svg',
+  favicon: 'img/favicon.ico',
 
   url: 'https://hermes-agent.nousresearch.com',
   baseUrl: '/docs/',
@@ -53,7 +53,7 @@ const config: Config = {
       title: 'Hermes Agent',
       logo: {
         alt: 'Hermes Agent',
-        src: 'img/favicon.svg',
+        src: 'img/logo.png',
       },
       items: [
         {

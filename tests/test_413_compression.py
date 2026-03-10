@@ -234,6 +234,45 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_400_anthropic_prompt_too_long_triggers_compression(self, agent):
+        """A 400 with Anthropic's 'prompt is too long' should trigger compression.
+
+        Anthropic's native API returns errors in the format:
+        "prompt is too long: 233153 tokens > 200000 maximum"
+        This must trigger compression, not abort as a generic 4xx error.
+        See: https://github.com/NousResearch/hermes-agent/issues/813
+        """
+        err_400 = Exception(
+            "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+            "'message': 'prompt is too long: 233153 tokens > 200000 maximum'}}"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        # Must NOT have "failed": True (which would mean the generic 4xx handler caught it)
+        assert result.get("failed") is not True
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after compression"
+
     def test_413_cannot_compress_further(self, agent):
         """When compression can't reduce messages, return partial result."""
         err_413 = _make_413_error()

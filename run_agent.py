@@ -3703,6 +3703,7 @@ class AIAgent:
                         'token limit', 'too many tokens', 'reduce the length',
                         'exceeds the limit', 'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
+                        'prompt is too long',  # Anthropic native format: "prompt is too long: N tokens > M maximum"
                     ])
                     
                     if is_context_length_error:

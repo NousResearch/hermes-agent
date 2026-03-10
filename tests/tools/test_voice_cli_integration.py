@@ -2,12 +2,41 @@
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
 import ast
+import os
+import queue
 import re
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _make_voice_cli(**overrides):
+    """Create a minimal HermesCLI with only voice-related attrs initialized.
+
+    Uses ``__new__()`` to bypass ``__init__`` so no config/env/API setup is
+    needed.  Only the voice state attributes (from __init__ lines 3749-3758)
+    are populated.
+    """
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._voice_lock = threading.Lock()
+    cli._voice_mode = False
+    cli._voice_tts = False
+    cli._voice_recorder = None
+    cli._voice_recording = False
+    cli._voice_processing = False
+    cli._voice_continuous = False
+    cli._voice_tts_done = threading.Event()
+    cli._voice_tts_done.set()
+    cli._pending_input = queue.Queue()
+    cli._app = None
+    cli.console = SimpleNamespace(width=80)
+    for k, v in overrides.items():
+        setattr(cli, k, v)
+    return cli
 
 
 # ============================================================================
@@ -701,3 +730,405 @@ class TestBrowserToolSignalHandlerRemoved:
                 f"browser_tool.py:{i} registers SIGTERM handler — "
                 f"use atexit instead to avoid prompt_toolkit conflicts"
             )
+
+
+# ============================================================================
+# Real behavior tests — CLI voice methods via _make_voice_cli()
+# ============================================================================
+
+class TestHandleVoiceCommandReal:
+    """Tests _handle_voice_command routing with real CLI instance."""
+
+    def _cli(self):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode = MagicMock()
+        cli._disable_voice_mode = MagicMock()
+        cli._toggle_voice_tts = MagicMock()
+        cli._show_voice_status = MagicMock()
+        return cli
+
+    @patch("cli._cprint")
+    def test_on_calls_enable(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice on")
+        cli._enable_voice_mode.assert_called_once()
+
+    @patch("cli._cprint")
+    def test_off_calls_disable(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice off")
+        cli._disable_voice_mode.assert_called_once()
+
+    @patch("cli._cprint")
+    def test_tts_calls_toggle(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice tts")
+        cli._toggle_voice_tts.assert_called_once()
+
+    @patch("cli._cprint")
+    def test_status_calls_show(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice status")
+        cli._show_voice_status.assert_called_once()
+
+    @patch("cli._cprint")
+    def test_toggle_off_when_enabled(self, _cp):
+        cli = self._cli()
+        cli._voice_mode = True
+        cli._handle_voice_command("/voice")
+        cli._disable_voice_mode.assert_called_once()
+
+    @patch("cli._cprint")
+    def test_toggle_on_when_disabled(self, _cp):
+        cli = self._cli()
+        cli._voice_mode = False
+        cli._handle_voice_command("/voice")
+        cli._enable_voice_mode.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("cli._cprint")
+    def test_unknown_subcommand(self, _cp, mock_print):
+        cli = self._cli()
+        cli._handle_voice_command("/voice foobar")
+        cli._enable_voice_mode.assert_not_called()
+        cli._disable_voice_mode.assert_not_called()
+        # Should print usage via print() (not _cprint)
+        assert any("Unknown" in str(c) or "unknown" in str(c)
+                    for c in mock_print.call_args_list)
+
+
+class TestEnableVoiceModeReal:
+    """Tests _enable_voice_mode with real CLI instance."""
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={"voice": {}})
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_success_sets_voice_mode(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_mode is True
+
+    @patch("cli._cprint")
+    def test_already_enabled_noop(self, _cp):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._enable_voice_mode()
+        assert cli._voice_mode is True
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": False, "warnings": ["SSH session"]})
+    def test_env_check_fails(self, _env, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_mode is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": False, "details": "Missing",
+                         "missing_packages": ["sounddevice"]})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_requirements_fail(self, _env, _req, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_mode is False
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}})
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_auto_tts_from_config(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_tts is True
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={"voice": {}})
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_no_auto_tts_default(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_tts is False
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", side_effect=Exception("broken config"))
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_config_exception_still_enables(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_mode is True
+
+
+class TestDisableVoiceModeReal:
+    """Tests _disable_voice_mode with real CLI instance."""
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_all_flags_reset(self, _sp, _cp):
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True,
+                              _voice_continuous=True)
+        cli._disable_voice_mode()
+        assert cli._voice_mode is False
+        assert cli._voice_tts is False
+        assert cli._voice_continuous is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_active_recording_cancelled(self, _sp, _cp):
+        recorder = MagicMock()
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._disable_voice_mode()
+        recorder.cancel.assert_called_once()
+        assert cli._voice_recording is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_stop_playback_called(self, mock_sp, _cp):
+        cli = _make_voice_cli()
+        cli._disable_voice_mode()
+        mock_sp.assert_called_once()
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_tts_done_event_set(self, _sp, _cp):
+        cli = _make_voice_cli()
+        cli._voice_tts_done.clear()
+        cli._disable_voice_mode()
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_no_recorder_no_crash(self, _sp, _cp):
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=None)
+        cli._disable_voice_mode()
+        assert cli._voice_mode is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback", side_effect=RuntimeError("boom"))
+    def test_stop_playback_exception_swallowed(self, _sp, _cp):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._disable_voice_mode()
+        assert cli._voice_mode is False
+
+
+class TestVoiceSpeakResponseReal:
+    """Tests _voice_speak_response with real CLI instance."""
+
+    @patch("cli._cprint")
+    def test_early_return_when_tts_off(self, _cp):
+        cli = _make_voice_cli(_voice_tts=False)
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            cli._voice_speak_response("Hello")
+            mock_tts.assert_not_called()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_markdown_stripped(self, mock_tts, _play, _mkd, _isf, _gsz, _unl, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("## Title\n**bold** and `code`")
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert "##" not in call_text
+        assert "**" not in call_text
+        assert "`" not in call_text
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_code_blocks_removed(self, mock_tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("```python\nprint('hi')\n```\nSome text")
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert "print" not in call_text
+        assert "```" not in call_text
+        assert "Some text" in call_text
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    def test_empty_after_strip_returns_early(self, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            cli._voice_speak_response("```python\nprint('hi')\n```")
+            mock_tts.assert_not_called()
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_long_text_truncated(self, mock_tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("A" * 5000)
+        call_text = mock_tts.call_args.kwargs["text"]
+        assert len(call_text) <= 4000
+
+    @patch("cli._cprint")
+    @patch("cli.os.makedirs")
+    @patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("tts fail"))
+    def test_exception_sets_done_event(self, _tts, _mkd, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_tts_done.clear()
+        cli._voice_speak_response("Hello")
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
+    def test_play_audio_called(self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+        mock_play.assert_called_once()
+
+
+class TestVoiceStopAndTranscribeReal:
+    """Tests _voice_stop_and_transcribe with real CLI instance."""
+
+    @patch("cli._cprint")
+    def test_guard_not_recording(self, _cp):
+        cli = _make_voice_cli(_voice_recording=False)
+        with patch("tools.voice_mode.transcribe_recording") as mock_tr:
+            cli._voice_stop_and_transcribe()
+            mock_tr.assert_not_called()
+
+    @patch("cli._cprint")
+    def test_no_recorder_returns_early(self, _cp):
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=None)
+        with patch("tools.voice_mode.transcribe_recording") as mock_tr:
+            cli._voice_stop_and_transcribe()
+            mock_tr.assert_not_called()
+        assert cli._voice_recording is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.play_beep")
+    def test_no_speech_detected(self, _beep, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = None
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        assert cli._pending_input.empty()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": "hello world"})
+    @patch("tools.voice_mode.play_beep")
+    def test_successful_transcription_queues_input(
+        self, _beep, _tr, _cfg, _isf, _unl, _cp
+    ):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        assert cli._pending_input.get_nowait() == "hello world"
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": ""})
+    @patch("tools.voice_mode.play_beep")
+    def test_empty_transcript_not_queued(self, _beep, _tr, _cfg, _isf, _unl, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        assert cli._pending_input.empty()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": False, "error": "API timeout"})
+    @patch("tools.voice_mode.play_beep")
+    def test_transcription_failure(self, _beep, _tr, _cfg, _isf, _unl, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        assert cli._pending_input.empty()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           side_effect=ConnectionError("network"))
+    @patch("tools.voice_mode.play_beep")
+    def test_exception_caught(self, _beep, _tr, _cfg, _isf, _unl, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()  # Should not raise
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.play_beep")
+    def test_processing_flag_cleared(self, _beep, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = None
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        assert cli._voice_processing is False
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.play_beep")
+    def test_continuous_restarts_on_no_speech(self, _beep, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = None
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder,
+                              _voice_continuous=True)
+        cli._voice_start_recording = MagicMock()
+        cli._voice_stop_and_transcribe()
+        cli._voice_start_recording.assert_called_once()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": "hello"})
+    @patch("tools.voice_mode.play_beep")
+    def test_continuous_no_restart_on_success(
+        self, _beep, _tr, _cfg, _isf, _unl, _cp
+    ):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder,
+                              _voice_continuous=True)
+        cli._voice_start_recording = MagicMock()
+        cli._voice_stop_and_transcribe()
+        cli._voice_start_recording.assert_not_called()
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {"model": "whisper-large-v3"}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": "hi"})
+    @patch("tools.voice_mode.play_beep")
+    def test_stt_model_from_config(self, _beep, mock_tr, _cfg, _isf, _unl, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        mock_tr.assert_called_once_with("/tmp/test.wav", model="whisper-large-v3")

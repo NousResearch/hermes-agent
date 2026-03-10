@@ -402,11 +402,13 @@ agent:
 #     discord: [web, vision, skills, todo]
 #
 # If not set, defaults are:
-#   cli:      hermes-cli      (everything + cronjob management)
-#   telegram: hermes-telegram  (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
-#   discord:  hermes-discord   (same as telegram)
-#   whatsapp: hermes-whatsapp  (same as telegram)
-#   slack:    hermes-slack     (same as telegram)
+#   cli:           hermes-cli            (everything + cronjob management)
+#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   discord:       hermes-discord        (same as telegram)
+#   whatsapp:      hermes-whatsapp       (same as telegram)
+#   slack:         hermes-slack          (same as telegram)
+#   signal:        hermes-signal         (same as telegram)
+#   homeassistant: hermes-homeassistant  (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -414,6 +416,8 @@ platform_toolsets:
   discord: [hermes-discord]
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
+  signal: [hermes-signal]
+  homeassistant: [hermes-homeassistant]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

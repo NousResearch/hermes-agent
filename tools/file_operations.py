@@ -400,10 +400,16 @@ class ShellFileOperations(FileOperations):
                     return home
                 elif path.startswith('~/'):
                     return home + path[1:]  # Replace ~ with home
-                # ~username format - let shell expand it
-                expand_result = self._exec(f"echo {path}")
-                if expand_result.exit_code == 0:
-                    return expand_result.stdout.strip()
+                # ~username format - extract and validate username before
+                # letting shell expand it (prevent shell injection via
+                # paths like "~; rm -rf /").
+                rest = path[1:]  # strip leading ~
+                slash_idx = rest.find('/')
+                username = rest[:slash_idx] if slash_idx >= 0 else rest
+                if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
+                    expand_result = self._exec(f"echo {path}")
+                    if expand_result.exit_code == 0 and expand_result.stdout.strip():
+                        return expand_result.stdout.strip()
         
         return path
     

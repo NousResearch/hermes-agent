@@ -51,7 +51,6 @@ pty = [
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 honcho = ["honcho-ai>=2.0.1"]
-embeddings = ["fastembed>=0.3.0"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
@@ -66,7 +65,6 @@ all = [
   "hermes-agent[slack]",
   "hermes-agent[pty]",
   "hermes-agent[honcho]",
-  "hermes-agent[embeddings]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
 ]

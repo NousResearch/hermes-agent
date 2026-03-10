@@ -506,6 +506,17 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
+    # If this HERMES_HOME has no auth store yet, but Codex CLI credentials exist
+    # in the shared external location, prefer Codex so runtime resolution can
+    # import them into Hermes's own auth store. This fixes isolated HERMES_HOME
+    # profiles (like the Paperclip gateway runtime) defaulting to OpenRouter with
+    # an empty API key even though valid Codex credentials are available.
+    try:
+        if _import_codex_cli_tokens():
+            return "openai-codex"
+    except Exception as e:
+        logger.debug("Could not detect external Codex credentials: %s", e)
+
     if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
 

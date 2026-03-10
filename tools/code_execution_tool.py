@@ -78,7 +78,7 @@ _TOOL_STUBS = {
     "web_extract": (
         "web_extract",
         "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
+        '"""Extract content from URLs. Returns dict with results list of {url, content, error}."""',
         '{"urls": urls}',
     ),
     "read_file": (
@@ -616,7 +616,7 @@ _TOOL_DOC_LINES = [
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
      "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+     "    Returns {\"results\": [{\"url\", \"content\", \"error\"}, ...]} where content is markdown"),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),

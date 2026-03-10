@@ -569,7 +569,11 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send failed")
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Send a typing indicator."""
         params: Dict[str, Any] = {
             "account": self.account,
@@ -587,6 +591,7 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id: str,
         image_url: str,
         caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an image. Supports http(s):// and file:// URLs."""
@@ -633,6 +638,7 @@ class SignalAdapter(BasePlatformAdapter):
         file_path: str,
         caption: Optional[str] = None,
         filename: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document/file attachment."""

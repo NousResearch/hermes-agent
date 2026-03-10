@@ -1,8 +1,14 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
+import ast
 import os
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -368,3 +374,117 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+# ---------------------------------------------------------------------------
+# metadata forwarding contract
+# ---------------------------------------------------------------------------
+
+
+class _RecordingAdapter(BasePlatformAdapter):
+    def __init__(self):
+        config = PlatformConfig(enabled=True, token="test")
+        super().__init__(config=config, platform=Platform.TELEGRAM)
+        self.typing_calls = []
+        self.send_calls = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.send_calls.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+
+    async def send_typing(self, chat_id, metadata=None):
+        self.typing_calls.append({"chat_id": chat_id, "metadata": metadata})
+        raise asyncio.CancelledError
+
+    async def get_chat_info(self, *args):
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_keep_typing_accepts_metadata_and_forwards_it():
+    adapter = _RecordingAdapter()
+    metadata = {"thread_id": "42"}
+
+    await adapter._keep_typing("chat-123", metadata=metadata, interval=0)
+
+    assert adapter.typing_calls == [{"chat_id": "chat-123", "metadata": metadata}]
+
+
+@pytest.mark.asyncio
+async def test_base_fallback_media_helpers_accept_metadata():
+    adapter = _RecordingAdapter()
+    metadata = {"thread_id": "42"}
+
+    await adapter.send_image("chat-123", "https://example.com/cat.png", metadata=metadata)
+    await adapter.send_animation("chat-123", "https://example.com/cat.gif", metadata=metadata)
+    await adapter.send_voice("chat-123", "/tmp/voice.ogg", metadata=metadata)
+    await adapter.send_video("chat-123", "/tmp/video.mp4", metadata=metadata)
+    await adapter.send_document("chat-123", "/tmp/file.txt", metadata=metadata)
+    await adapter.send_image_file("chat-123", "/tmp/image.png", metadata=metadata)
+
+    assert [call["metadata"] for call in adapter.send_calls] == [metadata] * 6
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "class_name", "method_name"),
+    [
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "_keep_typing"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_typing"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_image"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_animation"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_voice"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_video"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_document"),
+        ("gateway/platforms/base.py", "BasePlatformAdapter", "send_image_file"),
+        ("gateway/platforms/discord.py", "DiscordAdapter", "send_typing"),
+        ("gateway/platforms/discord.py", "DiscordAdapter", "send_voice"),
+        ("gateway/platforms/discord.py", "DiscordAdapter", "send_image"),
+        ("gateway/platforms/discord.py", "DiscordAdapter", "send_image_file"),
+        ("gateway/platforms/signal.py", "SignalAdapter", "send_typing"),
+        ("gateway/platforms/signal.py", "SignalAdapter", "send_image"),
+        ("gateway/platforms/signal.py", "SignalAdapter", "send_document"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_typing"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_image"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_image_file"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_voice"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_video"),
+        ("gateway/platforms/slack.py", "SlackAdapter", "send_document"),
+        ("gateway/platforms/telegram.py", "TelegramAdapter", "send_typing"),
+        ("gateway/platforms/telegram.py", "TelegramAdapter", "send_image"),
+        ("gateway/platforms/telegram.py", "TelegramAdapter", "send_animation"),
+        ("gateway/platforms/telegram.py", "TelegramAdapter", "send_voice"),
+        ("gateway/platforms/telegram.py", "TelegramAdapter", "send_image_file"),
+        ("gateway/platforms/whatsapp.py", "WhatsAppAdapter", "send_typing"),
+        ("gateway/platforms/whatsapp.py", "WhatsAppAdapter", "send_image"),
+        ("gateway/platforms/whatsapp.py", "WhatsAppAdapter", "send_image_file"),
+        ("gateway/platforms/whatsapp.py", "WhatsAppAdapter", "send_video"),
+        ("gateway/platforms/whatsapp.py", "WhatsAppAdapter", "send_document"),
+    ],
+)
+def test_gateway_metadata_forwarding_signatures_accept_metadata(
+    relative_path, class_name, method_name
+):
+    source = Path(relative_path).read_text()
+    tree = ast.parse(source, filename=relative_path)
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, ast.AsyncFunctionDef) and item.name == method_name:
+                    params = [arg.arg for arg in item.args.args]
+                    assert "metadata" in params
+                    return
+
+    pytest.fail(f"{class_name}.{method_name} not found in {relative_path}")

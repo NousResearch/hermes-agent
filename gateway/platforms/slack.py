@@ -195,6 +195,7 @@ class SlackAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file to Slack by uploading it."""
         if not self._app:
@@ -216,7 +217,13 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:
             print(f"[{self.name}] Failed to send local image: {e}")
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            return await super().send_image_file(
+                chat_id,
+                image_path,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def send_image(
         self,
@@ -224,6 +231,7 @@ class SlackAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
@@ -250,7 +258,12 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             # Fall back to sending the URL as text
             text = f"{caption}\n{image_url}" if caption else image_url
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+            return await self.send(
+                chat_id=chat_id,
+                content=text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
 
     async def send_voice(
         self,
@@ -258,6 +271,7 @@ class SlackAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an audio file to Slack."""
         if not self._app:
@@ -282,6 +296,7 @@ class SlackAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a video file to Slack."""
         if not self._app:
@@ -302,7 +317,13 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")
-            return await super().send_video(chat_id, video_path, caption, reply_to)
+            return await super().send_video(
+                chat_id,
+                video_path,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def send_document(
         self,
@@ -311,6 +332,7 @@ class SlackAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a document/file attachment to Slack."""
         if not self._app:
@@ -333,7 +355,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+            return await super().send_document(
+                chat_id,
+                file_path,
+                caption,
+                file_name,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Slack channel."""

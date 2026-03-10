@@ -332,6 +332,7 @@ class TelegramAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
@@ -343,16 +344,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"Image file not found: {image_path}")
             
             with open(image_path, "rb") as image_file:
+                _photo_thread = metadata.get("thread_id") if metadata else None
                 msg = await self._bot.send_photo(
                     chat_id=int(chat_id),
                     photo=image_file,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_photo_thread) if _photo_thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send local image: {e}")
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            return await super().send_image_file(
+                chat_id,
+                image_path,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def send_image(
         self,
@@ -396,12 +405,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     photo=image_data,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_photo_thread) if _photo_thread else None,
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
                 logger.error("[%s] File upload send_photo also failed: %s", self.name, e2)
                 # Final fallback: send URL as text
-                return await super().send_image(chat_id, image_url, caption, reply_to)
+                return await super().send_image(
+                    chat_id,
+                    image_url,
+                    caption,
+                    reply_to,
+                    metadata=metadata,
+                )
     
     async def send_animation(
         self,
@@ -428,7 +444,13 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Failed to send animation, falling back to photo: {e}")
             # Fallback: try as a regular photo
-            return await self.send_image(chat_id, animation_url, caption, reply_to)
+            return await self.send_image(
+                chat_id,
+                animation_url,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""

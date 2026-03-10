@@ -451,13 +451,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download image URL to cache, send natively via bridge."""
         try:
             local_path = await cache_image_from_url(image_url)
             return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
         except Exception:
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(
+                chat_id,
+                image_url,
+                caption,
+                reply_to,
+                metadata=metadata,
+            )
 
     async def send_image_file(
         self,
@@ -465,6 +472,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively via bridge."""
         return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
@@ -475,6 +483,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a video natively via bridge — plays inline in WhatsApp."""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
@@ -486,6 +495,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a document/file as a downloadable attachment via bridge."""
         return await self._send_media_to_bridge(
@@ -635,4 +645,3 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
-

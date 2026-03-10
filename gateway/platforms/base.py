@@ -413,7 +413,11 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Send a typing indicator.
         
@@ -427,6 +431,7 @@ class BasePlatformAdapter(ABC):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an image natively via the platform API.
@@ -437,7 +442,12 @@ class BasePlatformAdapter(ABC):
         """
         # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
     
     async def send_animation(
         self,
@@ -445,6 +455,7 @@ class BasePlatformAdapter(ABC):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
@@ -453,7 +464,13 @@ class BasePlatformAdapter(ABC):
         (e.g., Telegram send_animation) so they auto-play inline.
         Default falls back to send_image.
         """
-        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to)
+        return await self.send_image(
+            chat_id=chat_id,
+            image_url=animation_url,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
     
     @staticmethod
     def _is_animation_url(url: str) -> bool:
@@ -515,6 +532,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
@@ -526,7 +544,12 @@ class BasePlatformAdapter(ABC):
         text = f"🔊 Audio: {audio_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_video(
         self,
@@ -534,6 +557,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a video natively via the platform API.
@@ -544,7 +568,12 @@ class BasePlatformAdapter(ABC):
         text = f"🎬 Video: {video_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_document(
         self,
@@ -553,6 +582,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a document/file natively via the platform API.
@@ -563,7 +593,12 @@ class BasePlatformAdapter(ABC):
         text = f"📎 File: {file_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def send_image_file(
         self,
@@ -571,6 +606,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a local image file natively via the platform API.
@@ -582,7 +618,12 @@ class BasePlatformAdapter(ABC):
         text = f"🖼️ Image: {image_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
@@ -620,7 +661,12 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
     
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -629,7 +675,7 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
-                await self.send_typing(chat_id)
+                await self.send_typing(chat_id, metadata=metadata)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes

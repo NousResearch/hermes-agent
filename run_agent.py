@@ -2689,6 +2689,8 @@ class AIAgent:
             except json.JSONDecodeError as e:
                 logging.warning(f"Unexpected JSON error after validation: {e}")
                 function_args = {}
+            if not isinstance(function_args, dict):
+                function_args = {}
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)

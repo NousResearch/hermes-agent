@@ -851,24 +851,27 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    from utils import atomic_yaml_write
+
     ensure_hermes_home()
     config_path = get_config_path()
     normalized = _normalize_max_turns_config(config)
-    
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(normalized, f, default_flow_style=False, sort_keys=False)
-        # Append commented-out sections for features that are off by default
-        # or only relevant when explicitly configured. Skip sections the
-        # user has already uncommented and configured.
-        sections = []
-        sec = normalized.get("security", {})
-        if not sec or sec.get("redact_secrets") is None:
-            sections.append("security")
-        fb = normalized.get("fallback_model", {})
-        if not fb or not (fb.get("provider") and fb.get("model")):
-            sections.append("fallback")
-        if sections:
-            f.write(_COMMENTED_SECTIONS)
+
+    # Build optional commented-out sections for features that are off by
+    # default or only relevant when explicitly configured.
+    sections = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        sections.append("security")
+    fb = normalized.get("fallback_model", {})
+    if not fb or not (fb.get("provider") and fb.get("model")):
+        sections.append("fallback")
+
+    atomic_yaml_write(
+        config_path,
+        normalized,
+        extra_content=_COMMENTED_SECTIONS if sections else None,
+    )
 
 
 def load_env() -> Dict[str, str]:

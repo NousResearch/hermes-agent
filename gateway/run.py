@@ -14,12 +14,15 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
 import signal
+import tempfile
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -280,6 +283,9 @@ class GatewayRunner:
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
 
+        # Per-chat voice reply mode: "off" | "voice_only" | "all"
+        self._voice_mode: Dict[str, str] = self._load_voice_modes()
+
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
         if not hasattr(self, "_honcho_managers"):
@@ -335,6 +341,27 @@ class GatewayRunner:
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
     
+    # -- Voice mode persistence ------------------------------------------
+
+    _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+
+    def _load_voice_modes(self) -> Dict[str, str]:
+        try:
+            return json.loads(self._VOICE_MODE_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+    def _save_voice_modes(self) -> None:
+        try:
+            self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._VOICE_MODE_PATH.write_text(
+                json.dumps(self._voice_mode, indent=2)
+            )
+        except OSError as e:
+            logger.warning("Failed to save voice modes: %s", e)
+
+    # -----------------------------------------------------------------
+
     def _flush_memories_for_session(self, old_session_id: str):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -887,7 +914,7 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
-        
+
         # Check if user is authorized
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
@@ -939,7 +966,7 @@ class GatewayRunner:
                           "personality", "retry", "undo", "sethome", "set-home",
                           "compress", "usage", "insights", "reload-mcp", "reload_mcp",
                           "update", "title", "resume", "provider", "rollback",
-                          "background", "reasoning"}
+                          "background", "reasoning", "voice"}
         if command and command in _known_commands:
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
@@ -1010,7 +1037,11 @@ class GatewayRunner:
 
         if command == "reasoning":
             return await self._handle_reasoning_command(event)
-        
+
+        if command == "voice":
+            return await self._handle_voice_command(event)
+
+
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             quick_commands = self.config.get("quick_commands", {})
@@ -1568,7 +1599,28 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
-            
+
+            # Auto voice reply: send TTS audio before the text response
+            chat_id = source.chat_id
+            voice_mode = self._voice_mode.get(chat_id, "off")
+            is_voice_input = (event.message_type == MessageType.VOICE)
+            should_voice_reply = (
+                (voice_mode == "all")
+                or (voice_mode == "voice_only" and is_voice_input)
+            )
+            if should_voice_reply and response and not response.startswith("Error:"):
+                # Skip if agent already called TTS tool (avoid double voice)
+                has_agent_tts = any(
+                    msg.get("role") == "assistant"
+                    and any(
+                        tc.get("function", {}).get("name") == "text_to_speech"
+                        for tc in (msg.get("tool_calls") or [])
+                    )
+                    for msg in agent_messages
+                )
+                if not has_agent_tts:
+                    await self._send_voice_reply(event, response)
+
             return response
             
         except Exception as e:
@@ -1677,6 +1729,7 @@ class GatewayRunner:
             "`/reasoning [level|show|hide]` — Set reasoning effort or toggle display",
             "`/rollback [number]` — List or restore filesystem checkpoints",
             "`/background <prompt>` — Run a prompt in a separate background session",
+            "`/voice [on|off|tts|status]` — Toggle voice reply mode",
             "`/reload-mcp` — Reload MCP servers from config",
             "`/update` — Update Hermes Agent to the latest version",
             "`/help` — Show this message",
@@ -2052,6 +2105,93 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    async def _handle_voice_command(self, event: MessageEvent) -> str:
+        """Handle /voice [on|off|tts|status] command."""
+        args = event.get_command_args().strip().lower()
+        chat_id = event.source.chat_id
+
+        if args in ("on", "enable"):
+            self._voice_mode[chat_id] = "voice_only"
+            self._save_voice_modes()
+            return (
+                "Voice mode enabled.\n"
+                "I'll reply with voice when you send voice messages.\n"
+                "Use /voice tts to get voice replies for all messages."
+            )
+        elif args in ("off", "disable"):
+            self._voice_mode.pop(chat_id, None)
+            self._save_voice_modes()
+            return "Voice mode disabled. Text-only replies."
+        elif args == "tts":
+            self._voice_mode[chat_id] = "all"
+            self._save_voice_modes()
+            return (
+                "Auto-TTS enabled.\n"
+                "All replies will include a voice message."
+            )
+        elif args == "status":
+            mode = self._voice_mode.get(chat_id, "off")
+            labels = {
+                "off": "Off (text only)",
+                "voice_only": "On (voice reply to voice messages)",
+                "all": "TTS (voice reply to all messages)",
+            }
+            return f"Voice mode: {labels.get(mode, mode)}"
+        else:
+            # Toggle: off → on, on/all → off
+            current = self._voice_mode.get(chat_id, "off")
+            if current == "off":
+                self._voice_mode[chat_id] = "voice_only"
+                self._save_voice_modes()
+                return "Voice mode enabled."
+            else:
+                self._voice_mode.pop(chat_id, None)
+                self._save_voice_modes()
+                return "Voice mode disabled."
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+        """Generate TTS audio and send as a voice message before the text reply."""
+        try:
+            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+
+            tts_text = _strip_markdown_for_tts(text[:4000])
+            if not tts_text:
+                return
+
+            ogg_path = os.path.join(
+                tempfile.gettempdir(), "hermes_voice",
+                f"tts_reply_{int(time.time())}_{id(event) % 10000}.ogg",
+            )
+            os.makedirs(os.path.dirname(ogg_path), exist_ok=True)
+
+            result_json = await asyncio.to_thread(
+                text_to_speech_tool, text=tts_text, output_path=ogg_path
+            )
+            result = json.loads(result_json)
+
+            if not result.get("success") or not os.path.isfile(ogg_path):
+                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+                return
+
+            adapter = self.adapters.get(event.source.platform)
+            if adapter and hasattr(adapter, "send_voice"):
+                _thread_md = (
+                    {"thread_id": event.source.thread_id}
+                    if event.source.thread_id else None
+                )
+                await adapter.send_voice(
+                    event.source.chat_id,
+                    audio_path=ogg_path,
+                    reply_to=event.message_id,
+                    metadata=_thread_md,
+                )
+            try:
+                os.unlink(ogg_path)
+            except OSError:
+                pass
+        except Exception as e:
+            logger.warning("Auto voice reply failed: %s", e)
+
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list

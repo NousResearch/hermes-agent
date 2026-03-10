@@ -2158,18 +2158,22 @@ class GatewayRunner:
             if not tts_text:
                 return
 
-            ogg_path = os.path.join(
+            # Use .mp3 extension so edge-tts conversion to opus works correctly.
+            # The TTS tool may convert to .ogg — use file_path from result.
+            audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{int(time.time())}_{id(event) % 10000}.ogg",
+                f"tts_reply_{int(time.time())}_{id(event) % 10000}.mp3",
             )
-            os.makedirs(os.path.dirname(ogg_path), exist_ok=True)
+            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
             result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=ogg_path
+                text_to_speech_tool, text=tts_text, output_path=audio_path
             )
             result = json.loads(result_json)
 
-            if not result.get("success") or not os.path.isfile(ogg_path):
+            # Use the actual file path from result (may differ after opus conversion)
+            actual_path = result.get("file_path", audio_path)
+            if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
@@ -2177,7 +2181,7 @@ class GatewayRunner:
             if adapter and hasattr(adapter, "send_voice"):
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": event.source.chat_id,
-                    "audio_path": ogg_path,
+                    "audio_path": actual_path,
                     "reply_to": event.message_id,
                 }
                 if event.source.thread_id:
@@ -2188,10 +2192,11 @@ class GatewayRunner:
                 if "metadata" not in sig.parameters:
                     send_kwargs.pop("metadata", None)
                 await adapter.send_voice(**send_kwargs)
-            try:
-                os.unlink(ogg_path)
-            except OSError:
-                pass
+            for p in {audio_path, actual_path}:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e)
 

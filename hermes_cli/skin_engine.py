@@ -111,6 +111,8 @@ class SkinConfig:
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
+    banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
+    banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -215,6 +217,12 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(⚔) Available Commands",
         },
         "tool_prefix": "╎",
+        "banner_logo": """[bold #A3261F] █████╗ ██████╗ ███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #B73122]██╔══██╗██╔══██╗██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#C93C24]███████║██████╔╝█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#D84A28]██╔══██║██╔══██╗██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#E15A2D]██║  ██║██║  ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#EB6C32]╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
     },
     "mono": {
         "name": "mono",
@@ -278,6 +286,159 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "tool_prefix": "┊",
     },
+    "poseidon": {
+        "name": "poseidon",
+        "description": "Ocean-god theme — deep blue and seafoam",
+        "colors": {
+            "banner_border": "#2A6FB9",
+            "banner_title": "#A9DFFF",
+            "banner_accent": "#5DB8F5",
+            "banner_dim": "#153C73",
+            "banner_text": "#EAF7FF",
+            "ui_accent": "#5DB8F5",
+            "ui_label": "#A9DFFF",
+            "ui_ok": "#4caf50",
+            "ui_error": "#ef5350",
+            "ui_warn": "#ffa726",
+            "prompt": "#EAF7FF",
+            "input_rule": "#2A6FB9",
+            "response_border": "#5DB8F5",
+            "session_label": "#A9DFFF",
+            "session_border": "#496884",
+        },
+        "spinner": {
+            "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
+            "thinking_faces": ["(Ψ)", "(∿)", "(≈)", "(⌁)", "(◌)"],
+            "thinking_verbs": [
+                "charting currents", "sounding the depth", "reading foam lines",
+                "steering the trident", "tracking undertow", "plotting sea lanes",
+                "calling the swell", "measuring pressure",
+            ],
+            "wings": [
+                ["⟪≈", "≈⟫"],
+                ["⟪Ψ", "Ψ⟫"],
+                ["⟪∿", "∿⟫"],
+                ["⟪◌", "◌⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Poseidon Agent",
+            "welcome": "Welcome to Poseidon Agent! Type your message or /help for commands.",
+            "goodbye": "Fair winds! Ψ",
+            "response_label": " Ψ Poseidon ",
+            "prompt_symbol": "Ψ ❯ ",
+            "help_header": "(Ψ) Available Commands",
+        },
+        "tool_prefix": "│",
+        "banner_logo": """[bold #B8E8FF]██████╗  ██████╗ ███████╗██╗██████╗ ███████╗ ██████╗ ███╗   ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #97D6FF]██╔══██╗██╔═══██╗██╔════╝██║██╔══██╗██╔════╝██╔═══██╗████╗  ██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#75C1F6]██████╔╝██║   ██║███████╗██║██║  ██║█████╗  ██║   ██║██╔██╗ ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#4FA2E0]██╔═══╝ ██║   ██║╚════██║██║██║  ██║██╔══╝  ██║   ██║██║╚██╗██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#2E7CC7]██║     ╚██████╔╝███████║██║██████╔╝███████╗╚██████╔╝██║ ╚████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#1B4F95]╚═╝      ╚═════╝ ╚══════╝╚═╝╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+    },
+    "sisyphus": {
+        "name": "sisyphus",
+        "description": "Sisyphean theme — austere grayscale with persistence",
+        "colors": {
+            "banner_border": "#B7B7B7",
+            "banner_title": "#F5F5F5",
+            "banner_accent": "#E7E7E7",
+            "banner_dim": "#4A4A4A",
+            "banner_text": "#D3D3D3",
+            "ui_accent": "#E7E7E7",
+            "ui_label": "#D3D3D3",
+            "ui_ok": "#919191",
+            "ui_error": "#E7E7E7",
+            "ui_warn": "#B7B7B7",
+            "prompt": "#F5F5F5",
+            "input_rule": "#656565",
+            "response_border": "#B7B7B7",
+            "session_label": "#919191",
+            "session_border": "#656565",
+        },
+        "spinner": {
+            "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
+            "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
+            "thinking_verbs": [
+                "finding traction", "measuring the grade", "resetting the boulder",
+                "counting the ascent", "testing leverage", "setting the shoulder",
+                "pushing uphill", "enduring the loop",
+            ],
+            "wings": [
+                ["⟪◉", "◉⟫"],
+                ["⟪◬", "◬⟫"],
+                ["⟪◌", "◌⟫"],
+                ["⟪⬤", "⬤⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Sisyphus Agent",
+            "welcome": "Welcome to Sisyphus Agent! Type your message or /help for commands.",
+            "goodbye": "The boulder waits. ◉",
+            "response_label": " ◉ Sisyphus ",
+            "prompt_symbol": "◉ ❯ ",
+            "help_header": "(◉) Available Commands",
+        },
+        "tool_prefix": "│",
+        "banner_logo": """[bold #F5F5F5]███████╗██╗███████╗██╗   ██╗██████╗ ██╗  ██╗██╗   ██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #E7E7E7]██╔════╝██║██╔════╝╚██╗ ██╔╝██╔══██╗██║  ██║██║   ██║██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#D7D7D7]███████╗██║███████╗ ╚████╔╝ ██████╔╝███████║██║   ██║███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#BFBFBF]╚════██║██║╚════██║  ╚██╔╝  ██╔═══╝ ██╔══██║██║   ██║╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#8F8F8F]███████║██║███████║   ██║   ██║     ██║  ██║╚██████╔╝███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#626262]╚══════╝╚═╝╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+    },
+    "charizard": {
+        "name": "charizard",
+        "description": "Volcanic theme — burnt orange and ember",
+        "colors": {
+            "banner_border": "#C75B1D",
+            "banner_title": "#FFD39A",
+            "banner_accent": "#F29C38",
+            "banner_dim": "#7A3511",
+            "banner_text": "#FFF0D4",
+            "ui_accent": "#F29C38",
+            "ui_label": "#FFD39A",
+            "ui_ok": "#4caf50",
+            "ui_error": "#ef5350",
+            "ui_warn": "#ffa726",
+            "prompt": "#FFF0D4",
+            "input_rule": "#C75B1D",
+            "response_border": "#F29C38",
+            "session_label": "#FFD39A",
+            "session_border": "#6C4724",
+        },
+        "spinner": {
+            "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
+            "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
+            "thinking_verbs": [
+                "banking into the draft", "measuring burn", "reading the updraft",
+                "tracking ember fall", "setting wing angle", "holding the flame core",
+                "plotting a hot landing", "coiling for lift",
+            ],
+            "wings": [
+                ["⟪✦", "✦⟫"],
+                ["⟪▲", "▲⟫"],
+                ["⟪◌", "◌⟫"],
+                ["⟪◇", "◇⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Charizard Agent",
+            "welcome": "Welcome to Charizard Agent! Type your message or /help for commands.",
+            "goodbye": "Flame out! ✦",
+            "response_label": " ✦ Charizard ",
+            "prompt_symbol": "✦ ❯ ",
+            "help_header": "(✦) Available Commands",
+        },
+        "tool_prefix": "│",
+        "banner_logo": """[bold #FFF0D4] ██████╗██╗  ██╗ █████╗ ██████╗ ██╗███████╗ █████╗ ██████╗ ██████╗        █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #FFD39A]██╔════╝██║  ██║██╔══██╗██╔══██╗██║╚══███╔╝██╔══██╗██╔══██╗██╔══██╗      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#F29C38]██║     ███████║███████║██████╔╝██║  ███╔╝ ███████║██████╔╝██║  ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#E2832B]██║     ██╔══██║██╔══██║██╔══██╗██║ ███╔╝  ██╔══██║██╔══██╗██║  ██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#C75B1D]╚██████╗██║  ██║██║  ██║██║  ██║██║███████╗██║  ██║██║  ██║██████╔╝      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#7A3511] ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝       ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+    },
 }
 
 
@@ -326,6 +487,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
+        banner_logo=data.get("banner_logo", ""),
+        banner_hero=data.get("banner_hero", ""),
     )
 
 

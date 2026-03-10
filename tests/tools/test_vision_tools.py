@@ -239,10 +239,10 @@ class TestErrorLoggingExcInfo:
             assert error_records[0].exc_info is not None
 
     @pytest.mark.asyncio
-    async def test_analysis_error_logs_exc_info(self, caplog):
+    async def test_analysis_error_logs_exc_info(self):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
-        caplog.handler.setLevel(logging.ERROR)
-        with caplog.at_level(logging.ERROR, logger="tools.vision_tools"), \
+        import tools.vision_tools as _vt
+        with patch.object(_vt.logger, "error") as mock_error, \
              patch("tools.vision_tools._validate_image_url", return_value=True), \
              patch("tools.vision_tools._download_image", new_callable=AsyncMock,
                    side_effect=Exception("download boom")):
@@ -250,10 +250,10 @@ class TestErrorLoggingExcInfo:
                 "https://example.com/img.jpg", "describe this", "test/model"
             )
         result_data = json.loads(result)
-        # Error response uses "success": False, not an "error" key
         assert result_data["success"] is False
-        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(r.exc_info is not None for r in error_records)
+        assert mock_error.called
+        _, kwargs = mock_error.call_args
+        assert kwargs.get("exc_info") is True
 
     @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):

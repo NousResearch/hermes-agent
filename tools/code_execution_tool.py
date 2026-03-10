@@ -511,6 +511,7 @@ def execute_code(
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
+        server_sock.close()  # break accept() so thread exits promptly
         rpc_thread.join(timeout=3)
 
         # Build response

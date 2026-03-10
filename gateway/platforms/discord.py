@@ -297,9 +297,66 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, audio_path, caption)
-        except FileNotFoundError:
-            return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+            import io
+
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            if not os.path.exists(audio_path):
+                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+
+            filename = os.path.basename(audio_path)
+
+            with open(audio_path, "rb") as f:
+                file_data = f.read()
+
+            # Try sending as a native voice message via raw API (flags=8192).
+            try:
+                import base64
+
+                duration_secs = 5.0
+                try:
+                    from mutagen.oggopus import OggOpus
+                    info = OggOpus(audio_path)
+                    duration_secs = info.info.length
+                except Exception:
+                    duration_secs = max(1.0, len(file_data) / 2000.0)
+
+                waveform_bytes = bytes([128] * 256)
+                waveform_b64 = base64.b64encode(waveform_bytes).decode()
+
+                import json as _json
+                payload = _json.dumps({
+                    "flags": 8192,
+                    "attachments": [{
+                        "id": "0",
+                        "filename": "voice-message.ogg",
+                        "duration_secs": round(duration_secs, 2),
+                        "waveform": waveform_b64,
+                    }],
+                })
+                form = [
+                    {"name": "payload_json", "value": payload},
+                    {
+                        "name": "files[0]",
+                        "value": file_data,
+                        "filename": "voice-message.ogg",
+                        "content_type": "audio/ogg",
+                    },
+                ]
+                msg_data = await self._client.http.request(
+                    discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
+                    form=form,
+                )
+                return SendResult(success=True, message_id=str(msg_data["id"]))
+            except Exception as voice_err:
+                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+                file = discord.File(io.BytesIO(file_data), filename=filename)
+                msg = await channel.send(file=file)
+                return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)

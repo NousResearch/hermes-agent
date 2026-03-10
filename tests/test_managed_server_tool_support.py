@@ -19,6 +19,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+try:
+    import atroposlib  # noqa: F401
+except ImportError:
+    pytest.skip("atroposlib not installed", allow_module_level=True)
+
 
 class TestManagedServerAPI:
     """Test that ManagedServer's API matches what hermes-agent expects."""

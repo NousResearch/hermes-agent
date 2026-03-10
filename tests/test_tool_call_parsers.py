@@ -14,12 +14,15 @@ import pytest
 # Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from environments.tool_call_parsers import (
-    ParseResult,
-    ToolCallParser,
-    get_parser,
-    list_parsers,
-)
+try:
+    from environments.tool_call_parsers import (
+        ParseResult,
+        ToolCallParser,
+        get_parser,
+        list_parsers,
+    )
+except ImportError:
+    pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
 # ─── Registry tests ─────────────────────────────────────────────────────

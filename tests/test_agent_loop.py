@@ -18,13 +18,16 @@ import pytest
 # Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from environments.agent_loop import (
-    AgentResult,
-    HermesAgentLoop,
-    ToolError,
-    _extract_reasoning_from_message,
-    resize_tool_pool,
-)
+try:
+    from environments.agent_loop import (
+        AgentResult,
+        HermesAgentLoop,
+        ToolError,
+        _extract_reasoning_from_message,
+        resize_tool_pool,
+    )
+except ImportError:
+    pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
 # ─── Mock server infrastructure ─────────────────────────────────────────

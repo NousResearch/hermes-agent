@@ -2105,8 +2105,22 @@ class GatewayRunner:
             f"Cron jobs and cross-platform messages will be delivered here."
         )
     
+    @staticmethod
+    def _get_guild_id(event: MessageEvent) -> Optional[int]:
+        """Extract Discord guild_id from the raw message object."""
+        raw = getattr(event, "raw_message", None)
+        if raw is None:
+            return None
+        # Slash command interaction
+        if hasattr(raw, "guild_id") and raw.guild_id:
+            return int(raw.guild_id)
+        # Regular message
+        if hasattr(raw, "guild") and raw.guild:
+            return raw.guild.id
+        return None
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|status] command."""
+        """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
 
@@ -2129,6 +2143,10 @@ class GatewayRunner:
                 "Auto-TTS enabled.\n"
                 "All replies will include a voice message."
             )
+        elif args in ("channel", "join"):
+            return await self._handle_voice_channel_join(event)
+        elif args == "leave":
+            return await self._handle_voice_channel_leave(event)
         elif args == "status":
             mode = self._voice_mode.get(chat_id, "off")
             labels = {
@@ -2136,6 +2154,14 @@ class GatewayRunner:
                 "voice_only": "On (voice reply to voice messages)",
                 "all": "TTS (voice reply to all messages)",
             }
+            # Append voice channel info if connected
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            if guild_id and hasattr(adapter, "is_in_voice_channel"):
+                if adapter.is_in_voice_channel(guild_id):
+                    vc = adapter._voice_clients.get(guild_id)
+                    ch_name = vc.channel.name if vc and vc.channel else "unknown"
+                    return f"Voice mode: {labels.get(mode, mode)}\nVoice channel: {ch_name}"
             return f"Voice mode: {labels.get(mode, mode)}"
         else:
             # Toggle: off → on, on/all → off
@@ -2148,6 +2174,54 @@ class GatewayRunner:
                 self._voice_mode.pop(chat_id, None)
                 self._save_voice_modes()
                 return "Voice mode disabled."
+
+    async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
+        """Join the user's current Discord voice channel."""
+        adapter = self.adapters.get(event.source.platform)
+        if not hasattr(adapter, "join_voice_channel"):
+            return "Voice channels are not supported on this platform."
+
+        guild_id = self._get_guild_id(event)
+        if not guild_id:
+            return "This command only works in a Discord server."
+
+        voice_channel = await adapter.get_user_voice_channel(
+            guild_id, event.source.user_id
+        )
+        if not voice_channel:
+            return "You need to be in a voice channel first."
+
+        try:
+            success = await adapter.join_voice_channel(voice_channel)
+        except Exception as e:
+            logger.warning("Failed to join voice channel: %s", e)
+            return f"Failed to join voice channel: {e}"
+
+        if success:
+            adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+            self._voice_mode[event.source.chat_id] = "all"
+            self._save_voice_modes()
+            return (
+                f"Joined voice channel **{voice_channel.name}**.\n"
+                f"I'll speak my replies here. Use /voice leave to disconnect."
+            )
+        return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
+        """Leave the Discord voice channel."""
+        adapter = self.adapters.get(event.source.platform)
+        guild_id = self._get_guild_id(event)
+
+        if not guild_id or not hasattr(adapter, "leave_voice_channel"):
+            return "Not in a voice channel."
+
+        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+            return "Not in a voice channel."
+
+        await adapter.leave_voice_channel(guild_id)
+        self._voice_mode.pop(event.source.chat_id, None)
+        self._save_voice_modes()
+        return "Left voice channel."
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -2178,7 +2252,15 @@ class GatewayRunner:
                 return
 
             adapter = self.adapters.get(event.source.platform)
-            if adapter and hasattr(adapter, "send_voice"):
+
+            # If connected to a voice channel, play there instead of sending a file
+            guild_id = self._get_guild_id(event)
+            if (guild_id
+                    and hasattr(adapter, "play_in_voice_channel")
+                    and hasattr(adapter, "is_in_voice_channel")
+                    and adapter.is_in_voice_channel(guild_id)):
+                await adapter.play_in_voice_channel(guild_id, actual_path)
+            elif adapter and hasattr(adapter, "send_voice"):
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": event.source.chat_id,
                     "audio_path": actual_path,
@@ -2186,7 +2268,6 @@ class GatewayRunner:
                 }
                 if event.source.thread_id:
                     send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
-                # Only pass metadata if the adapter accepts it
                 import inspect
                 sig = inspect.signature(adapter.send_voice)
                 if "metadata" not in sig.parameters:
@@ -2198,7 +2279,7 @@ class GatewayRunner:
                 except OSError:
                     pass
         except Exception as e:
-            logger.warning("Auto voice reply failed: %s", e)
+            logger.warning("Auto voice reply failed: %s", e, exc_info=True)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

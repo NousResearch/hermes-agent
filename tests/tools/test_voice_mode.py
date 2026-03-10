@@ -438,10 +438,15 @@ class TestPlayBeep:
 
         from tools.voice_mode import play_beep
 
+        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+
         play_beep(frequency=880, duration=0.1, count=1)
 
         mock_sd.play.assert_called_once()
-        mock_sd.wait.assert_called_once()
+        mock_sd.stop.assert_called()
         # Verify audio data is int16 numpy array
         audio_arg = mock_sd.play.call_args[0][0]
         assert audio_arg.dtype == np.int16

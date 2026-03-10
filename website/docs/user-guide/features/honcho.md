@@ -9,9 +9,9 @@ sidebar_position: 8
 
 [Honcho](https://honcho.dev) is an AI-native memory system that gives Hermes persistent, cross-session understanding of users. While Hermes has built-in memory (`MEMORY.md` and `USER.md`), Honcho adds a deeper layer of **user modeling** — learning preferences, goals, communication style, and context across conversations via a dual-peer architecture where both the user and the AI build representations over time.
 
-## Works Alongside Built in Memory
+## Works Alongside Built-in Memory
 
-Runs `hybrid` (`local` + `honcho`) by default. 
+Hermes has two memory systems that can work together or be configured separately. In `hybrid` mode (the default), both run side by side — Honcho adds cross-session user modeling while local files handle agent-level notes.
 
 | Feature | Built-in Memory | Honcho Memory |
 |---------|----------------|---------------|
@@ -21,6 +21,8 @@ Runs `hybrid` (`local` + `honcho`) by default.
 | Query | Injected into system prompt automatically | Prefetched + on-demand via tools |
 | Content | Manually curated by the agent | Automatically learned from conversations |
 | Write surface | `memory` tool (add/replace/remove) | `honcho_conclude` tool (persist facts) |
+
+Set `memoryMode` to `honcho` to use Honcho exclusively, or `local` to disable Honcho and use only local files. See [Memory Modes](#memory-modes) for per-peer configuration.
 
 
 ## Setup
@@ -245,6 +247,15 @@ Parameters:
 - `query` (string) — natural language question
 - `peer` (string, optional) — `"user"` (default) or `"ai"`. Querying `"ai"` asks about the assistant's own history and identity.
 
+Example queries the agent might make:
+
+```
+"What are this user's main goals?"
+"What communication style does this user prefer?"
+"What topics has this user discussed recently?"
+"What is this user's technical expertise level?"
+```
+
 ### `honcho_conclude`
 
 Writes a fact to Honcho memory. Use when the user explicitly states a preference, correction, or project context worth remembering. Feeds into the user's peer card and representation.
@@ -309,6 +320,14 @@ hermes honcho identity --show
 ```
 
 Shows the current AI peer representation from Honcho.
+
+## Use Cases
+
+- **Personalized responses** — Honcho learns how each user prefers to communicate
+- **Goal tracking** — remembers what users are working toward across sessions
+- **Expertise adaptation** — adjusts technical depth based on user's background
+- **Cross-platform memory** — same user understanding across CLI, Telegram, Discord, etc.
+- **Multi-user support** — each user (via messaging platforms) gets their own user model
 
 :::tip
 Honcho is fully opt-in — zero behavior change when disabled or unconfigured. All Honcho calls are non-fatal; if the service is unreachable, the agent continues normally.

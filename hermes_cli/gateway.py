@@ -518,6 +518,32 @@ _PLATFORMS = [
         "emoji": "📡",
         "token_var": "SIGNAL_HTTP_URL",
     },
+    {
+        "key": "email",
+        "label": "Email",
+        "emoji": "📧",
+        "token_var": "EMAIL_ADDRESS",
+        "setup_instructions": [
+            "1. Use a dedicated email account for your Hermes agent",
+            "2. For Gmail: enable 2FA, then create an App Password at",
+            "   https://myaccount.google.com/apppasswords",
+            "3. For other providers: use your email password or app-specific password",
+            "4. IMAP must be enabled on your email account",
+        ],
+        "vars": [
+            {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
+             "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
+            {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
+             "help": "For Gmail, use an App Password (not your regular password)."},
+            {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,
+             "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook."},
+            {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP host", "password": False,
+             "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook."},
+            {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Only emails from these addresses will be processed."},
+        ],
+    },
 ]
 
 
@@ -541,6 +567,15 @@ def _platform_status(platform: dict) -> str:
         if val and account:
             return "configured"
         if val or account:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "email":
+        pwd = get_env_value("EMAIL_PASSWORD")
+        imap = get_env_value("EMAIL_IMAP_HOST")
+        smtp = get_env_value("EMAIL_SMTP_HOST")
+        if all([val, pwd, imap, smtp]):
+            return "configured"
+        if any([val, pwd, imap, smtp]):
             return "partially configured"
         return "not configured"
     if val:

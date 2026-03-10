@@ -104,6 +104,20 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".aac")
 
 
+_EXT_TO_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp",
+    ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".mp4": "video/mp4", ".pdf": "application/pdf", ".zip": "application/zip",
+}
+
+
+def _ext_to_mime(ext: str) -> str:
+    """Map file extension to MIME type."""
+    return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
 def _render_mentions(text: str, mentions: list) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
@@ -404,9 +418,8 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])
-        image_paths = []
-        audio_path = None
-        document_paths = []
+        media_urls = []
+        media_types = []
 
         if attachments_data and not getattr(self, "ignore_attachments", False):
             for att in attachments_data:
@@ -420,12 +433,10 @@ class SignalAdapter(BasePlatformAdapter):
                 try:
                     cached_path, ext = await self._fetch_attachment(att_id)
                     if cached_path:
-                        if _is_image_ext(ext):
-                            image_paths.append(cached_path)
-                        elif _is_audio_ext(ext):
-                            audio_path = cached_path
-                        else:
-                            document_paths.append(cached_path)
+                        # Use contentType from Signal if available, else map from extension
+                        content_type = att.get("contentType") or _ext_to_mime(ext)
+                        media_urls.append(cached_path)
+                        media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
@@ -440,12 +451,13 @@ class SignalAdapter(BasePlatformAdapter):
             chat_id_alt=group_id if is_group else None,
         )
 
-        # Determine message type
+        # Determine message type from media
         msg_type = MessageType.TEXT
-        if audio_path:
-            msg_type = MessageType.VOICE
-        elif image_paths:
-            msg_type = MessageType.IMAGE
+        if media_types:
+            if any(mt.startswith("audio/") for mt in media_types):
+                msg_type = MessageType.VOICE
+            elif any(mt.startswith("image/") for mt in media_types):
+                msg_type = MessageType.IMAGE
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -462,9 +474,8 @@ class SignalAdapter(BasePlatformAdapter):
             source=source,
             text=text or "",
             message_type=msg_type,
-            image_paths=image_paths,
-            audio_path=audio_path,
-            document_paths=document_paths,
+            media_urls=media_urls,
+            media_types=media_types,
             timestamp=timestamp,
         )
 

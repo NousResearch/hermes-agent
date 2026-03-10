@@ -235,8 +235,9 @@ class TestAudioRecorderCancel:
 
         assert recorder.is_recording is False
         assert recorder._frames == []
-        mock_stream.stop.assert_called_once()
-        mock_stream.close.assert_called_once()
+        # Stream is kept alive (persistent) — cancel() does NOT close it.
+        mock_stream.stop.assert_not_called()
+        mock_stream.close.assert_not_called()
 
     def test_cancel_when_not_recording_is_safe(self):
         from tools.voice_mode import AudioRecorder

@@ -603,28 +603,14 @@ class TestDisableVoiceModeStopsTTS:
 
     def test_disable_voice_mode_calls_stop_playback(self):
         """Source check: _disable_voice_mode must call stop_playback()."""
-        with open("cli.py") as f:
-            source = f.read()
+        import inspect
+        from cli import HermesCLI
 
-        # Extract _disable_voice_mode method body
-        lines = source.split("\n")
-        in_method = False
-        method_lines = []
-        for line in lines:
-            if "def _disable_voice_mode" in line:
-                in_method = True
-            elif in_method:
-                if line.strip() and not line.startswith(" ") and not line.startswith("\t"):
-                    break
-                if line.strip().startswith("def "):
-                    break
-                method_lines.append(line)
-
-        method_body = "\n".join(method_lines)
-        assert "stop_playback" in method_body, (
+        source = inspect.getsource(HermesCLI._disable_voice_mode)
+        assert "stop_playback" in source, (
             "_disable_voice_mode must call stop_playback()"
         )
-        assert "_voice_tts_done.set()" in method_body, (
+        assert "_voice_tts_done.set()" in source, (
             "_disable_voice_mode must set _voice_tts_done"
         )
 

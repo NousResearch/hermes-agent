@@ -23,6 +23,7 @@ import stat
 import base64
 import hashlib
 import subprocess
+import threading
 import time
 import uuid
 import webbrowser
@@ -44,6 +45,10 @@ try:
     import fcntl
 except Exception:
     fcntl = None
+try:
+    import msvcrt
+except Exception:
+    msvcrt = None
 
 # =============================================================================
 # Constants
@@ -299,31 +304,64 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
+_auth_lock_holder = threading.local()
+
 @contextmanager
 def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
-    """Cross-process advisory lock for auth.json reads+writes."""
+    """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
+    # Reentrant: if this thread already holds the lock, just yield.
+    if getattr(_auth_lock_holder, "depth", 0) > 0:
+        _auth_lock_holder.depth += 1
+        try:
+            yield
+        finally:
+            _auth_lock_holder.depth -= 1
+        return
+
     lock_path = _auth_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with lock_path.open("a+") as lock_file:
-        if fcntl is None:
+    if fcntl is None and msvcrt is None:
+        _auth_lock_holder.depth = 1
+        try:
             yield
-            return
+        finally:
+            _auth_lock_holder.depth = 0
+        return
 
+    # On Windows, msvcrt.locking needs the file to have content and the
+    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    with lock_path.open("r+" if msvcrt else "a+") as lock_file:
         deadline = time.time() + max(1.0, timeout_seconds)
         while True:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                 break
-            except BlockingIOError:
+            except (BlockingIOError, OSError, PermissionError):
                 if time.time() >= deadline:
                     raise TimeoutError("Timed out waiting for auth store lock")
                 time.sleep(0.05)
 
+        _auth_lock_holder.depth = 1
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            _auth_lock_holder.depth = 0
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:

@@ -249,7 +249,35 @@ class HermesAgentLoop:
             reasoning = _extract_reasoning_from_message(assistant_msg)
             reasoning_per_turn.append(reasoning)
 
-            # Check for tool calls -- standard OpenAI spec
+            # Check for tool calls -- standard OpenAI spec.
+            # Fallback: if response has no structured tool_calls but content
+            # contains raw tool call tags (e.g. <tool_call>), parse them using
+            # hermes-agent's standalone parsers. This handles the case where
+            # ManagedServer's ToolCallTranslator couldn't parse because vLLM
+            # isn't installed.
+            if (
+                not assistant_msg.tool_calls
+                and assistant_msg.content
+                and self.tool_schemas
+                and "<tool_call>" in (assistant_msg.content or "")
+            ):
+                try:
+                    from environments.tool_call_parsers import get_parser
+                    fallback_parser = get_parser("hermes")
+                    parsed_content, parsed_calls = fallback_parser.parse(
+                        assistant_msg.content
+                    )
+                    if parsed_calls:
+                        assistant_msg.tool_calls = parsed_calls
+                        if parsed_content is not None:
+                            assistant_msg.content = parsed_content
+                        logger.debug(
+                            "Fallback parser extracted %d tool calls from raw content",
+                            len(parsed_calls),
+                        )
+                except Exception:
+                    pass  # Fall through to no tool calls
+
             if assistant_msg.tool_calls:
                 # Build the assistant message dict for conversation history
                 msg_dict: Dict[str, Any] = {

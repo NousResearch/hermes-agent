@@ -279,21 +279,32 @@ class HermesAgentLoop:
                     pass  # Fall through to no tool calls
 
             if assistant_msg.tool_calls:
+                # Normalize tool calls to dicts — they may come as objects
+                # (OpenAI API) or dicts (vLLM ToolCallTranslator).
+                def _tc_to_dict(tc):
+                    if isinstance(tc, dict):
+                        return {
+                            "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("function", {}).get("name", tc.get("name", "")),
+                                "arguments": tc.get("function", {}).get("arguments", tc.get("arguments", "{}")),
+                            },
+                        }
+                    return {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+
                 # Build the assistant message dict for conversation history
                 msg_dict: Dict[str, Any] = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in assistant_msg.tool_calls
-                    ],
+                    "tool_calls": [_tc_to_dict(tc) for tc in assistant_msg.tool_calls],
                 }
 
                 # Preserve reasoning_content for multi-turn chat template handling
@@ -306,8 +317,13 @@ class HermesAgentLoop:
 
                 # Execute each tool call via hermes-agent's dispatch
                 for tc in assistant_msg.tool_calls:
-                    tool_name = tc.function.name
-                    tool_args_raw = tc.function.arguments
+                    # Handle both object (OpenAI) and dict (vLLM) formats
+                    if isinstance(tc, dict):
+                        tool_name = tc.get("function", {}).get("name", tc.get("name", ""))
+                        tool_args_raw = tc.get("function", {}).get("arguments", tc.get("arguments", "{}"))
+                    else:
+                        tool_name = tc.function.name
+                        tool_args_raw = tc.function.arguments
 
                     # Validate tool name
                     if tool_name not in self.valid_tool_names:
@@ -418,10 +434,11 @@ class HermesAgentLoop:
                             pass
 
                     # Add tool response to conversation
+                    tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tc.id,
+                            "tool_call_id": tc_id,
                             "content": tool_result,
                         }
                     )

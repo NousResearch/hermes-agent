@@ -82,17 +82,35 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     
+    # Auto-disconnect from voice channel after this many seconds of inactivity
+    VOICE_TIMEOUT = 300
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        # Voice channel state (per-guild)
+        self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
+        self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
+        self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
+
+        # Load opus codec for voice channel support
+        if not discord.opus.is_loaded():
+            try:
+                discord.opus.load_opus("/opt/homebrew/lib/libopus.dylib")
+            except Exception:
+                # Try common Linux path as fallback
+                try:
+                    discord.opus.load_opus("libopus.so.0")
+                except Exception:
+                    logger.warning("Opus codec not found — voice channel playback disabled")
         
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
@@ -360,6 +378,108 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
+
+    # ------------------------------------------------------------------
+    # Voice channel methods (join / leave / play)
+    # ------------------------------------------------------------------
+
+    async def join_voice_channel(self, channel) -> bool:
+        """Join a Discord voice channel. Returns True on success."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return False
+        guild_id = channel.guild.id
+
+        # Already connected in this guild?
+        existing = self._voice_clients.get(guild_id)
+        if existing and existing.is_connected():
+            if existing.channel.id == channel.id:
+                self._reset_voice_timeout(guild_id)
+                return True
+            await existing.move_to(channel)
+            self._reset_voice_timeout(guild_id)
+            return True
+
+        vc = await channel.connect()
+        self._voice_clients[guild_id] = vc
+        self._reset_voice_timeout(guild_id)
+        return True
+
+    async def leave_voice_channel(self, guild_id: int) -> None:
+        """Disconnect from the voice channel in a guild."""
+        vc = self._voice_clients.pop(guild_id, None)
+        if vc and vc.is_connected():
+            await vc.disconnect()
+        task = self._voice_timeout_tasks.pop(guild_id, None)
+        if task:
+            task.cancel()
+        self._voice_text_channels.pop(guild_id, None)
+
+    async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
+        """Play an audio file in the connected voice channel."""
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+
+        # Wait for current playback to finish
+        while vc.is_playing():
+            await asyncio.sleep(0.1)
+
+        done = asyncio.Event()
+        loop = asyncio.get_event_loop()
+
+        def _after(error):
+            if error:
+                logger.error("Voice playback error: %s", error)
+            loop.call_soon_threadsafe(done.set)
+
+        source = discord.FFmpegPCMAudio(audio_path)
+        source = discord.PCMVolumeTransformer(source, volume=1.0)
+        vc.play(source, after=_after)
+        await done.wait()
+        self._reset_voice_timeout(guild_id)
+        return True
+
+    async def get_user_voice_channel(self, guild_id: int, user_id: str):
+        """Return the voice channel the user is currently in, or None."""
+        if not self._client:
+            return None
+        guild = self._client.get_guild(guild_id)
+        if not guild:
+            return None
+        member = guild.get_member(int(user_id))
+        if not member or not member.voice:
+            return None
+        return member.voice.channel
+
+    def _reset_voice_timeout(self, guild_id: int) -> None:
+        """Reset the auto-disconnect inactivity timer."""
+        task = self._voice_timeout_tasks.pop(guild_id, None)
+        if task:
+            task.cancel()
+        self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
+            self._voice_timeout_handler(guild_id)
+        )
+
+    async def _voice_timeout_handler(self, guild_id: int) -> None:
+        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        try:
+            await asyncio.sleep(self.VOICE_TIMEOUT)
+        except asyncio.CancelledError:
+            return
+        text_ch_id = self._voice_text_channels.get(guild_id)
+        await self.leave_voice_channel(guild_id)
+        if text_ch_id and self._client:
+            ch = self._client.get_channel(text_ch_id)
+            if ch:
+                try:
+                    await ch.send("Left voice channel (inactivity timeout).")
+                except Exception:
+                    pass
+
+    def is_in_voice_channel(self, guild_id: int) -> bool:
+        """Check if the bot is connected to a voice channel in this guild."""
+        vc = self._voice_clients.get(guild_id)
+        return vc is not None and vc.is_connected()
 
     async def send_image_file(
         self,
@@ -685,8 +805,10 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, or status")
+        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
         @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
+            discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
             discord.app_commands.Choice(name="off — text only", value="off"),

@@ -22,10 +22,16 @@ logger = logging.getLogger(__name__)
 
 # Security flags applied to every container.
 # The container itself is the security boundary (isolated from host).
-# We drop all capabilities, block privilege escalation, and limit PIDs.
+# We drop all capabilities then add back the minimum needed:
+#   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
+#   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+# Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",
+    "--cap-add", "DAC_OVERRIDE",
+    "--cap-add", "CHOWN",
+    "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",

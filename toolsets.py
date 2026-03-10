@@ -58,8 +58,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "schedule_cronjob", "list_cronjobs", "remove_cronjob",
-    # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
+    # Cross-platform messaging and Discord workspace management
+    "send_message", "discord_manage",
     # Honcho user context (gated on honcho being active via check_fn)
     "query_user_context",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

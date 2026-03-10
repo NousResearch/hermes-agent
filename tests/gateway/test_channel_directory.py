@@ -1,6 +1,7 @@
 """Tests for gateway/channel_directory.py — channel resolution and display."""
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _build_from_sessions,
+    _build_discord,
     DIRECTORY_PATH,
 )
 
@@ -168,6 +170,26 @@ class TestBuildFromSessions:
             entries = _build_from_sessions("telegram")
 
         assert len(entries) == 1
+
+
+class TestBuildDiscord:
+    def test_includes_active_threads(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "discord", object())
+        guild = type(
+            "Guild",
+            (),
+            {
+                "name": "Hermes",
+                "text_channels": [type("TextChannel", (), {"id": 1, "name": "general"})()],
+                "threads": [type("Thread", (), {"id": 2, "name": "planning-thread"})()],
+            },
+        )()
+        adapter = type("Adapter", (), {"_client": type("Client", (), {"guilds": [guild]})()})()
+
+        entries = _build_discord(adapter)
+
+        assert {"id": "1", "name": "general", "guild": "Hermes", "type": "channel"} in entries
+        assert {"id": "2", "name": "planning-thread", "guild": "Hermes", "type": "thread"} in entries
 
 
 class TestFormatDirectoryForDisplay:

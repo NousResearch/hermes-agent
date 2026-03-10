@@ -161,10 +161,11 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     Returns:
         Path to the saved audio file.
     """
+    _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
 
-    communicate = edge_tts.Communicate(text, voice)
+    communicate = _edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
     return output_path
 
@@ -667,17 +668,18 @@ def stream_tts_to_speaker(
             except queue.Empty:
                 break
 
-        # Close the audio output stream
+        # output_stream is closed in the finally block below
+
+    except Exception as exc:
+        logger.warning("Streaming TTS pipeline error: %s", exc)
+    finally:
+        # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:
                 output_stream.stop()
                 output_stream.close()
             except Exception:
                 pass
-
-    except Exception as exc:
-        logger.warning("Streaming TTS pipeline error: %s", exc)
-    finally:
         tts_done_event.set()
 
 

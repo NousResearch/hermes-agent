@@ -43,6 +43,8 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.input.vt100_parser import ANSI_SEQUENCES
+from prompt_toolkit.keys import Keys
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 import threading
@@ -1806,7 +1808,7 @@ class HermesCLI:
                 _cprint(f"  {_GOLD}{cmd:<22}{_RST} {_DIM}-{_RST} {info['description']}")
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Shift+Enter, Alt+Enter, or Ctrl+Enter{_RST}")
         _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
@@ -3340,6 +3342,13 @@ class HermesCLI:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
         
+        # Shift+Enter via Kitty keyboard protocol (Ghostty, Kitty, WezTerm, etc.)
+        # These terminals send distinct escape sequences for Shift+Enter, but
+        # prompt_toolkit maps them to plain ControlM (Enter). Remap them to
+        # ControlJ so they insert a newline instead of submitting.
+        ANSI_SEQUENCES['\x1b[27;2;13~'] = Keys.ControlJ  # xterm modifyOtherKeys
+        ANSI_SEQUENCES['\x1b[13;2u'] = Keys.ControlJ      # CSI u / Kitty protocol
+
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input."""
@@ -3465,8 +3474,6 @@ class HermesCLI:
             """Handle Ctrl+D - exit."""
             self._should_exit = True
             event.app.exit()
-
-        from prompt_toolkit.keys import Keys
 
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):

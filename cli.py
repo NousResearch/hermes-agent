@@ -842,6 +842,22 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     layout_table.add_column("right", justify="left")
     
     # Build left content: caduceus + model info
+    # Resolve skin colors for the banner
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        _bskin = get_active_skin()
+        _accent = _bskin.get_color("banner_accent", "#FFBF00")
+        _dim = _bskin.get_color("banner_dim", "#B8860B")
+        _text = _bskin.get_color("banner_text", "#FFF8DC")
+        _session_c = _bskin.get_color("session_border", "#8B8682")
+        _title_c = _bskin.get_color("banner_title", "#FFD700")
+        _border_c = _bskin.get_color("banner_border", "#CD7F32")
+        _agent_name = _bskin.get_branding("agent_name", "Hermes Agent")
+    except Exception:
+        _accent, _dim, _text = "#FFBF00", "#B8860B", "#FFF8DC"
+        _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
+        _agent_name = "Hermes Agent"
+
     left_lines = ["", HERMES_CADUCEUS, ""]
     
     # Shorten model name for display
@@ -849,18 +865,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     
-    ctx_str = f" [dim #B8860B]·[/] [dim #B8860B]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[#FFBF00]{model_short}[/]{ctx_str} [dim #B8860B]·[/] [dim #B8860B]Nous Research[/]")
-    left_lines.append(f"[dim #B8860B]{cwd}[/]")
+    ctx_str = f" [dim {_dim}]·[/] [dim {_dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+    left_lines.append(f"[{_accent}]{model_short}[/]{ctx_str} [dim {_dim}]·[/] [dim {_dim}]Nous Research[/]")
+    left_lines.append(f"[dim {_dim}]{cwd}[/]")
     
     # Add session ID if provided
     if session_id:
-        left_lines.append(f"[dim #8B8682]Session: {session_id}[/]")
+        left_lines.append(f"[dim {_session_c}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)
     
     # Build right content: tools list grouped by toolset
     right_lines = []
-    right_lines.append("[bold #FFBF00]Available Tools[/]")
+    right_lines.append(f"[bold {_accent}]Available Tools[/]")
     
     # Group tools by toolset (include all possible tools, both enabled and disabled)
     toolsets_dict = {}
@@ -897,7 +913,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
             else:
-                colored_names.append(f"[#FFF8DC]{name}[/]")
+                colored_names.append(f"[{_text}]{name}[/]")
         
         tools_str = ", ".join(colored_names)
         # Truncate if too long (accounting for markup)
@@ -919,18 +935,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
                 else:
-                    colored_names.append(f"[#FFF8DC]{name}[/]")
+                    colored_names.append(f"[{_text}]{name}[/]")
             tools_str = ", ".join(colored_names)
         
-        right_lines.append(f"[dim #B8860B]{toolset}:[/] {tools_str}")
+        right_lines.append(f"[dim {_dim}]{toolset}:[/] {tools_str}")
     
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim #B8860B](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {_dim}](and {remaining_toolsets} more toolsets...)[/]")
     
     right_lines.append("")
     
     # Add skills section
-    right_lines.append("[bold #FFBF00]Available Skills[/]")
+    right_lines.append(f"[bold {_accent}]Available Skills[/]")
     skills_by_category = _get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
     
@@ -946,12 +962,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
             # Truncate if still too long
             if len(skills_str) > 50:
                 skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim #B8860B]{category}:[/] [#FFF8DC]{skills_str}[/]")
+            right_lines.append(f"[dim {_dim}]{category}:[/] [{_text}]{skills_str}[/]")
     else:
-        right_lines.append("[dim #B8860B]No skills installed[/]")
+        right_lines.append(f"[dim {_dim}]No skills installed[/]")
     
     right_lines.append("")
-    right_lines.append(f"[dim #B8860B]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
+    right_lines.append(f"[dim {_dim}]{len(tools)} tools · {total_skills} skills · /help for commands[/]")
     
     right_content = "\n".join(right_lines)
     
@@ -961,8 +977,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
     # Wrap in a panel with the title
     outer_panel = Panel(
         layout_table,
-        title=f"[bold #FFD700]Hermes Agent {VERSION}[/]",
-        border_style="#CD7F32",
+        title=f"[bold {_title_c}]{_agent_name} {VERSION}[/]",
+        border_style=_border_c,
         padding=(0, 2),
     )
     

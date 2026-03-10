@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
+from honcho_integration.client import HonchoClientConfig
 from run_agent import AIAgent
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS
 
@@ -1208,3 +1209,68 @@ class TestSystemPromptStability:
         conversation_history = []
         should_prefetch = not conversation_history
         assert should_prefetch is True
+
+
+class TestHonchoActivation:
+    def test_local_mode_skips_honcho_init(self):
+        hcfg = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            memory_mode="local",
+            peer_name="user",
+            ai_peer="hermes",
+        )
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("honcho_integration.client.HonchoClientConfig.from_global_config", return_value=hcfg),
+            patch("honcho_integration.client.get_honcho_client") as mock_client,
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert agent._honcho is None
+        assert agent._honcho_config is hcfg
+        mock_client.assert_not_called()
+
+    def test_injected_honcho_manager_skips_fresh_client_init(self):
+        hcfg = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            memory_mode="hybrid",
+            peer_name="user",
+            ai_peer="hermes",
+            recall_mode="hybrid",
+        )
+        manager = MagicMock()
+        manager._config = hcfg
+        manager.get_or_create.return_value = SimpleNamespace(messages=[])
+        manager.get_prefetch_context.return_value = {"representation": "Known user", "card": ""}
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("honcho_integration.client.get_honcho_client") as mock_client,
+            patch("tools.honcho_tools.set_session_context"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                honcho_session_key="gateway-session",
+                honcho_manager=manager,
+                honcho_config=hcfg,
+            )
+
+        assert agent._honcho is manager
+        manager.get_or_create.assert_called_once_with("gateway-session")
+        manager.get_prefetch_context.assert_called_once_with("gateway-session")
+        mock_client.assert_not_called()

@@ -175,9 +175,6 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
-        # Generation counter — incremented on each start/cancel/stop to
-        # detect stale stream-open completions after a cancel or restart.
-        self._generation: int = 0
         # Silence detection state
         self._has_spoken = False
         self._speech_start: float = 0.0  # When speech attempt began
@@ -367,8 +364,6 @@ class AudioRecorder:
             if self._recording:
                 return  # already recording
 
-            self._generation += 1
-
             self._frames = []
             self._start_time = time.monotonic()
             self._has_spoken = False
@@ -423,7 +418,6 @@ class AudioRecorder:
                 return None
 
             self._recording = False
-            self._generation += 1  # Invalidate any pending start()
             self._current_rms = 0
             # Stream stays alive — no close needed.
 
@@ -459,7 +453,6 @@ class AudioRecorder:
         The underlying stream is kept alive for reuse.
         """
         with self._lock:
-            self._generation += 1  # Invalidate any pending start()
             self._recording = False
             self._frames = []
             self._on_silence_stop = None

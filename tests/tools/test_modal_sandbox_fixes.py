@@ -22,8 +22,11 @@ _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-import tools.terminal_tool  # noqa: F401
-_tt_mod = sys.modules["tools.terminal_tool"]
+try:
+    import tools.terminal_tool  # noqa: F401
+    _tt_mod = sys.modules["tools.terminal_tool"]
+except ImportError:
+    pytest.skip("hermes-agent tools not importable (missing deps)", allow_module_level=True)
 
 
 # =========================================================================

@@ -854,11 +854,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         _border_c = _bskin.get_color("banner_border", "#CD7F32")
         _agent_name = _bskin.get_branding("agent_name", "Hermes Agent")
     except Exception:
+        _bskin = None
         _accent, _dim, _text = "#FFBF00", "#B8860B", "#FFF8DC"
         _session_c, _title_c, _border_c = "#8B8682", "#FFD700", "#CD7F32"
         _agent_name = "Hermes Agent"
 
-    left_lines = ["", HERMES_CADUCEUS, ""]
+    _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else HERMES_CADUCEUS
+    left_lines = ["", _hero, ""]
     
     # Shorten model name for display
     model_short = model.split("/")[-1] if "/" in model else model
@@ -982,11 +984,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dic
         padding=(0, 2),
     )
     
-    # Print the big HERMES-AGENT logo — skip if terminal is too narrow
+    # Print the big logo — use skin's custom logo if available
     console.print()
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
-        console.print(HERMES_AGENT_LOGO)
+        _logo = _bskin.banner_logo if hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+        console.print(_logo)
         console.print()
     
     # Print the panel with caduceus and info

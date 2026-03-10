@@ -2013,6 +2013,17 @@ For more help on a command:
         action="store_true",
         help="Reset configuration to defaults"
     )
+    setup_parser.add_argument(
+        "--migrate-from",
+        choices=["openclaw"],
+        default=None,
+        help="Import settings from a supported agent before the setup wizard continues"
+    )
+    setup_parser.add_argument(
+        "--skip-migration-prompt",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================

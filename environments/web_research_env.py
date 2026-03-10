@@ -356,10 +356,19 @@ class WebResearchEnv(HermesAgentBaseEnv):
           efficiency_weight  * efficiency   — penalizes wasteful tool usage
           + diversity_bonus                 — source diversity (≥2 distinct domains)
         """
-        final_response: str = result.final_response or ""
-        tools_used: list[str] = [
-            tc.tool_name for tc in (result.tool_calls or [])
-        ] if hasattr(result, "tool_calls") and result.tool_calls else []
+        # Extract final response from messages (last assistant message with content)
+        final_response = ""
+        tools_used: list[str] = []
+        for msg in reversed(result.messages):
+            if msg.get("role") == "assistant" and msg.get("content") and not final_response:
+                final_response = msg["content"]
+            # Collect tool names from tool call messages
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    name = fn.get("name", "")
+                    if name:
+                        tools_used.append(name)
         tool_call_count: int = result.turns_used or len(tools_used)
 
         cfg = self.config

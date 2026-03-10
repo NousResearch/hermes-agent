@@ -49,3 +49,4 @@ cli-config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+environments/benchmarks/evals/

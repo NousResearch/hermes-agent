@@ -1387,7 +1387,7 @@ trainer = SFTTrainer(
 For **advanced installation instructions** or if you see weird errors during installations:
 
 1. Install `torch` and `triton`. Go to <https://pytorch.org> to install it. For example `pip install torch torchvision torchaudio triton`
-2. Confirm if CUDA is installated correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
+2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
 3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to <https://github.com/facebookresearch/xformers>. Another option is to install `flash-attn` for Ampere GPUs.
 4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful.
 5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
@@ -1824,7 +1824,7 @@ For LLMs, datasets are collections of data that can be used to train our models.
 [datasets-guide](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide/datasets-guide)
 {% endcontent-ref %}
 
-For most of our notebook examples, we utilize the [Alpaca dataset](https://docs.unsloth.ai/basics/tutorial-how-to-finetune-llama-3-and-use-in-ollama#id-6.-alpaca-dataset) however other notebooks like Vision will use different datasets which may need images in the answer ouput as well.
+For most of our notebook examples, we utilize the [Alpaca dataset](https://docs.unsloth.ai/basics/tutorial-how-to-finetune-llama-3-and-use-in-ollama#id-6.-alpaca-dataset) however other notebooks like Vision will use different datasets which may need images in the answer output as well.
 
 ## 4. Understand Training Hyperparameters
 
@@ -13280,7 +13280,7 @@ if __name__ == '__main__':
 ## :detective: Extra Findings & Tips
 
 1. We find using lower KV cache quantization (4bit) seems to degrade generation quality via empirical tests - more tests need to be done, but we suggest using `q8_0` cache quantization. The goal of quantization is to support longer context lengths since the KV cache uses quite a bit of memory.
-2. We found the `down_proj` in this model to be extremely sensitive to quantitation. We had to redo some of our dyanmic quants which used 2bits for `down_proj` and now we use 3bits as the minimum for all these matrices.
+2. We found the `down_proj` in this model to be extremely sensitive to quantitation. We had to redo some of our dynamic quants which used 2bits for `down_proj` and now we use 3bits as the minimum for all these matrices.
 3. Using `llama.cpp` 's Flash Attention backend does result in somewhat faster decoding speeds. Use `-DGGML_CUDA_FA_ALL_QUANTS=ON` when compiling. Note it's also best to set your CUDA architecture as found in <https://developer.nvidia.com/cuda-gpus> to reduce compilation times, then set it via `-DCMAKE_CUDA_ARCHITECTURES="80"`&#x20;
 4. Using a `min_p=0.01`is probably enough. `llama.cpp`defaults to 0.1, which is probably not necessary. Since a temperature of 0.3 is used anyways, we most likely will very unlikely sample low probability tokens, so removing very unlikely tokens is a good idea. DeepSeek recommends 0.0 temperature for coding tasks.
 
@@ -16682,7 +16682,7 @@ Advanced flags which might be useful if you see breaking finetunes, or you want 
 
 <table><thead><tr><th width="397.4666748046875">Environment variable</th><th>Purpose</th><th data-hidden></th></tr></thead><tbody><tr><td><code>os.environ["UNSLOTH_RETURN_LOGITS"] = "1"</code></td><td>Forcibly returns logits - useful for evaluation if logits are needed.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"</code></td><td>Disables auto compiler. Could be useful to debug incorrect finetune results.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"</code></td><td>Disables fast generation for generic models.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_ENABLE_LOGGING"] = "1"</code></td><td>Enables auto compiler logging - useful to see which functions are compiled or not.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"</code></td><td>On float16 machines, use float32 and not float16 mixed precision. Useful for Gemma 3.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_STUDIO_DISABLED"] = "1"</code></td><td>Disables extra features.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_COMPILE_DEBUG"] = "1"</code></td><td>Turns on extremely verbose <code>torch.compile</code>logs.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_COMPILE_MAXIMUM"] = "0"</code></td><td>Enables maximum <code>torch.compile</code>optimizations - not recommended.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_COMPILE_IGNORE_ERRORS"] = "1"</code></td><td>Can turn this off to enable fullgraph parsing.</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_FULLGRAPH"] = "0"</code></td><td>Enable <code>torch.compile</code> fullgraph mode</td><td></td></tr><tr><td><code>os.environ["UNSLOTH_DISABLE_AUTO_UPDATES"] = "1"</code></td><td>Forces no updates to <code>unsloth-zoo</code></td><td></td></tr></tbody></table>
 
-Another possiblity is maybe the model uploads we uploaded are corrupted, but unlikely. Try the following:
+Another possibility is maybe the model uploads we uploaded are corrupted, but unlikely. Try the following:
 
 ```python
 model, tokenizer = FastVisionModel.from_pretrained(

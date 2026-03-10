@@ -95,21 +95,47 @@ def _run_git(
 ) -> tuple:
     """Run a git command against the shadow repo.  Returns (ok, stdout, stderr)."""
     env = _git_env(shadow_repo, working_dir)
+    cmd = ["git"] + args
     try:
         result = subprocess.run(
-            ["git"] + args,
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(Path(working_dir).resolve()),
         )
+        if result.returncode != 0:
+            logger.debug(
+                "Checkpoint git command failed (rc=%s): %s\nstdout: %s\nstderr: %s",
+                result.returncode,
+                " ".join(cmd),
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
         return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return False, "", f"git timed out after {timeout}s: git {' '.join(args)}"
-    except FileNotFoundError:
+    except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive logging
+        logger.error(
+            "Checkpoint git command timed out after %ss: %s",
+            timeout,
+            " ".join(cmd),
+            exc_info=True,
+        )
+        return False, "", f"git timed out after {timeout}s: {' '.join(cmd)}"
+    except FileNotFoundError as exc:  # pragma: no cover - defensive logging
+        logger.error(
+            "Checkpoint git command failed: git executable not found (command: %s)",
+            " ".join(cmd),
+            exc_info=True,
+        )
         return False, "", "git not found"
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error(
+            "Unexpected error while running checkpoint git command %s: %s",
+            " ".join(cmd),
+            exc,
+            exc_info=True,
+        )
         return False, "", str(exc)
 
 
@@ -122,6 +148,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 
     ok, _, err = _run_git(["init"], shadow_repo, working_dir)
     if not ok:
+        logger.error("Shadow checkpoint repo init failed for %s: %s", working_dir, err)
         return f"Shadow repo init failed: {err}"
 
     _run_git(["config", "user.email", "hermes@local"], shadow_repo, working_dir)

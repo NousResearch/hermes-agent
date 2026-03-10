@@ -356,7 +356,8 @@ async def vision_analyze_tool(
         
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        # Use logger.exception so exc_info is always attached for debugging and tests.
+        logger.exception("%s", error_msg)
         
         # Prepare error response
         result = {

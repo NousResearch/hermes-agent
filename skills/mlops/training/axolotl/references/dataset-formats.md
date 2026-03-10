@@ -115,7 +115,7 @@ A config for this would look like:
 
 Reference: Pre-Tokenized Dataset Documentation.
 
-We reccomend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
+We recommend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
 
 In the example below, you could see that there is no proper structure. At the same time, it’s very flexible as there are no constraints on how your prompt can look.
 
@@ -583,7 +583,7 @@ A config for this would look like:
 
 Reference: Pre-Tokenized Dataset Documentation.
 
-We reccomend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
+We recommend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
 
 In the example below, you could see that there is no proper structure. At the same time, it’s very flexible as there are no constraints on how your prompt can look.
 
@@ -796,7 +796,7 @@ A config for this would look like:
 
 Reference: Pre-Tokenized Dataset Documentation.
 
-We reccomend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
+We recommend this approach when you want granular control over the prompt formatting, special tokens, and masking, whilst letting Axolotl handle the tokenization. This is very useful if your dataset has unique prompts that differ across samples and where one single general template wouldn’t suffice.
 
 In the example below, you could see that there is no proper structure. At the same time, it’s very flexible as there are no constraints on how your prompt can look.
 

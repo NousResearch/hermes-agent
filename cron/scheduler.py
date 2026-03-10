@@ -103,6 +103,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "email": Platform.EMAIL,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:

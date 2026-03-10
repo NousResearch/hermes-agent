@@ -194,6 +194,8 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     def read_password_thread():
         """Read password with echo disabled. Uses msvcrt on Windows, /dev/tty on Unix."""
+        tty_fd = None
+        old_attrs = None
         try:
             if platform.system() == "Windows":
                 import msvcrt
@@ -213,28 +215,29 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
                 new_attrs = termios.tcgetattr(tty_fd)
                 new_attrs[3] = new_attrs[3] & ~termios.ECHO
                 termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-                try:
-                    chars = []
-                    while True:
-                        b = os.read(tty_fd, 1)
-                        if not b or b in (b"\n", b"\r"):
-                            break
-                        chars.append(b)
-                    result["password"] = b"".join(chars).decode("utf-8", errors="replace")
-                finally:
-                    try:
-                        termios.tcsetattr(tty_fd, termios.TCSAFLUSH, old_attrs)
-                    except Exception:
-                        pass
-                    try:
-                        os.close(tty_fd)
-                    except Exception:
-                        pass
+                chars = []
+                while True:
+                    b = os.read(tty_fd, 1)
+                    if not b or b in (b"\n", b"\r"):
+                        break
+                    chars.append(b)
+                result["password"] = b"".join(chars).decode("utf-8", errors="replace")
         except (EOFError, KeyboardInterrupt, OSError):
             result["password"] = ""
         except Exception:
             result["password"] = ""
         finally:
+            if tty_fd is not None and old_attrs is not None:
+                try:
+                    import termios as _termios
+                    _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
+                except Exception:
+                    pass
+            if tty_fd is not None:
+                try:
+                    os.close(tty_fd)
+                except Exception:
+                    pass
             result["done"] = True
     
     try:

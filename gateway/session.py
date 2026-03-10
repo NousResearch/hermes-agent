@@ -677,10 +677,17 @@ class SessionStore:
         """Get the path to a session's legacy transcript file."""
         return self.sessions_dir / f"{session_id}.jsonl"
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any]) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL)."""
-        # Write to SQLite
-        if self._db:
+    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+        """Append a message to a session's transcript (SQLite + legacy JSONL).
+
+        Args:
+            skip_db: When True, only write to JSONL and skip the SQLite write.
+                     Used when the agent already persisted messages to SQLite
+                     via its own _flush_messages_to_session_db(), preventing
+                     the duplicate-write bug (#860).
+        """
+        # Write to SQLite (unless the agent already handled it)
+        if self._db and not skip_db:
             try:
                 self._db.append_message(
                     session_id=session_id,

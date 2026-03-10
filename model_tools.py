@@ -284,6 +284,16 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # Notify the read-loop tracker when a non-read/search tool runs,
+    # so the *consecutive* counter resets (reads after other work are fine).
+    _READ_SEARCH_TOOLS = {"read_file", "search_files"}
+    if function_name not in _READ_SEARCH_TOOLS:
+        try:
+            from tools.file_tools import notify_other_tool_call
+            notify_other_tool_call(task_id or "default")
+        except Exception:
+            pass  # file_tools may not be loaded yet
+
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})

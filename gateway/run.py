@@ -2402,6 +2402,7 @@ class GatewayRunner:
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
+            Platform.SIGNAL: "hermes-signal",
             Platform.HOMEASSISTANT: "hermes-homeassistant",
         }
         
@@ -2424,6 +2425,7 @@ class GatewayRunner:
             Platform.DISCORD: "discord",
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",
+            Platform.SIGNAL: "signal",
             Platform.HOMEASSISTANT: "homeassistant",
         }.get(source.platform, "telegram")
         

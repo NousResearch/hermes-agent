@@ -493,7 +493,6 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL"),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL"),
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL"),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL"),
     ]
     for _pname, _env_vars, _default_url, _base_env in _apikey_providers:
@@ -529,6 +528,12 @@ def run_doctor(args):
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
+    # MiniMax global: /v1/models returns 404 by design — check key presence only
+    _minimax_key = os.getenv("MINIMAX_API_KEY", "")
+    if _minimax_key:
+        _label = "MiniMax".ljust(20)
+        print(f"  {color(chr(10003), Colors.GREEN)} {_label} {color('(API key configured)', Colors.DIM)}           ")
 
     # =========================================================================
     # Check: Submodules

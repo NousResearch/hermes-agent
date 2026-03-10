@@ -397,9 +397,9 @@ def execute_code(
 
     try:
         # Write the auto-generated hermes_tools module
-        tools_src = generate_hermes_tools_module(
-            list(sandbox_tools) if enabled_tools else list(SANDBOX_ALLOWED_TOOLS)
-        )
+        # sandbox_tools is already the correct set (intersection with session
+        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
+        tools_src = generate_hermes_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
             f.write(tools_src)
 

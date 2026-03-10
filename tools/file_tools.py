@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
+# Track files read per task to detect re-read loops after context compression.
+# Key: task_id, Value: dict mapping (path, offset, limit) -> read count
+_read_tracker_lock = threading.Lock()
+_read_tracker: dict = {}
+
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
@@ -132,9 +137,64 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         result = file_ops.read_file(path, offset, limit)
         if result.content:
             result.content = redact_sensitive_text(result.content)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+
+        # Track reads to detect re-read loops (e.g. after context compression)
+        read_key = (path, offset, limit)
+        with _read_tracker_lock:
+            task_reads = _read_tracker.setdefault(task_id, {})
+            task_reads[read_key] = task_reads.get(read_key, 0) + 1
+            count = task_reads[read_key]
+
+        if count >= 3:
+            # Hard block: stop returning content to break the loop
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have read this exact file region {count} times. "
+                    "The content has NOT changed. You already have this information. "
+                    "STOP re-reading and proceed with your task."
+                ),
+                "path": path,
+                "already_read": count,
+            }, ensure_ascii=False)
+        elif count > 1:
+            result_dict["_warning"] = (
+                f"You have already read this exact file region {count} times in this session. "
+                "The content has not changed. Use the information you already have instead of re-reading. "
+                "If you are stuck in a loop, stop reading and proceed with writing or responding."
+            )
+
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def get_read_files_summary(task_id: str = "default") -> list:
+    """Return a list of files read in this session for the given task.
+
+    Used by context compression to preserve file-read history across
+    compression boundaries.
+    """
+    with _read_tracker_lock:
+        task_reads = _read_tracker.get(task_id, {})
+        seen_paths = {}
+        for (path, offset, limit), count in task_reads.items():
+            if path not in seen_paths:
+                seen_paths[path] = []
+            seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
+        return [
+            {"path": p, "regions": regions}
+            for p, regions in sorted(seen_paths.items())
+        ]
+
+
+def clear_read_tracker(task_id: str = None):
+    """Clear the read tracker. Called when starting a new conversation."""
+    with _read_tracker_lock:
+        if task_id:
+            _read_tracker.pop(task_id, None)
+        else:
+            _read_tracker.clear()
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
@@ -185,6 +245,24 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        # Track searches to detect repeated search loops
+        search_key = ("search", pattern, target, path, file_glob or "")
+        with _read_tracker_lock:
+            task_reads = _read_tracker.setdefault(task_id, {})
+            task_reads[search_key] = task_reads.get(search_key, 0) + 1
+            count = task_reads[search_key]
+
+        if count >= 3:
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have run this exact search {count} times. "
+                    "The results have NOT changed. You already have this information. "
+                    "STOP re-searching and proceed with your task."
+                ),
+                "pattern": pattern,
+                "already_searched": count,
+            }, ensure_ascii=False)
+
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
@@ -195,6 +273,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content)
         result_dict = result.to_dict()
+
+        if count > 1:
+            result_dict["_warning"] = (
+                f"You have run this exact search {count} times in this session. "
+                "The results have not changed. Use the information you already have."
+            )
+
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.

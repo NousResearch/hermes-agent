@@ -511,7 +511,6 @@ def execute_code(
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
-        server_sock.close()
         rpc_thread.join(timeout=3)
 
         # Build response
@@ -547,6 +546,10 @@ def execute_code(
 
     finally:
         # Cleanup temp dir and socket
+        try:
+            server_sock.close()
+        except Exception:
+            pass
         try:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)

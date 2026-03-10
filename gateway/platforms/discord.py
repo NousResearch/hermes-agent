@@ -359,7 +359,7 @@ class DiscordAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Failed to send image attachment, falling back to URL: {e}")
             return await super().send_image(chat_id, image_url, caption, reply_to)
     
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator."""
         if self._client:
             try:

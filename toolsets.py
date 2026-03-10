@@ -48,6 +48,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision",
     # Text-to-speech
     "text_to_speech",
+    # Phone calls
+    "phone_call", "phone_call_result",
     # Planning & memory
     "todo", "memory",
     # Session history search
@@ -151,6 +153,11 @@ TOOLSETS = {
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, or OpenAI",
         "tools": ["text_to_speech"],
+        "includes": []
+    },
+    "phone": {
+        "description": "Make outbound phone calls via AI voice agent (Bland.ai or Vapi). Schedule appointments, make reservations, deliver messages.",
+        "tools": ["phone_call", "phone_call_result"],
         "includes": []
     },
     

@@ -225,6 +225,12 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str}
         self._pending_approvals: Dict[str, Dict[str, str]] = {}
+
+        # Persistent Honcho managers keyed by gateway session key.
+        # This preserves write_frequency="session" semantics across short-lived
+        # per-message AIAgent instances.
+        self._honcho_managers: Dict[str, Any] = {}
+        self._honcho_configs: Dict[str, Any] = {}
         
         # Initialize session database for session_search tool support
         self._session_db = None
@@ -241,6 +247,63 @@ class GatewayRunner:
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+
+    def _get_or_create_gateway_honcho(self, session_key: str):
+        """Return a persistent Honcho manager/config pair for this gateway session."""
+        if not hasattr(self, "_honcho_managers"):
+            self._honcho_managers = {}
+        if not hasattr(self, "_honcho_configs"):
+            self._honcho_configs = {}
+
+        if session_key in self._honcho_managers:
+            return self._honcho_managers[session_key], self._honcho_configs.get(session_key)
+
+        try:
+            from honcho_integration.client import HonchoClientConfig, get_honcho_client
+            from honcho_integration.session import HonchoSessionManager
+
+            hcfg = HonchoClientConfig.from_global_config()
+            ai_mode = hcfg.peer_memory_mode(hcfg.ai_peer)
+            user_mode = hcfg.peer_memory_mode(hcfg.peer_name or "user")
+            if not hcfg.enabled or not hcfg.api_key or (ai_mode == "local" and user_mode == "local"):
+                return None, hcfg
+
+            client = get_honcho_client(hcfg)
+            manager = HonchoSessionManager(
+                honcho=client,
+                config=hcfg,
+                context_tokens=hcfg.context_tokens,
+            )
+            self._honcho_managers[session_key] = manager
+            self._honcho_configs[session_key] = hcfg
+            return manager, hcfg
+        except Exception as e:
+            logger.debug("Gateway Honcho init failed for %s: %s", session_key, e)
+            return None, None
+
+    def _shutdown_gateway_honcho(self, session_key: str) -> None:
+        """Flush and close the persistent Honcho manager for a gateway session."""
+        managers = getattr(self, "_honcho_managers", None)
+        configs = getattr(self, "_honcho_configs", None)
+        if managers is None or configs is None:
+            return
+
+        manager = managers.pop(session_key, None)
+        configs.pop(session_key, None)
+        if not manager:
+            return
+        try:
+            manager.shutdown()
+        except Exception as e:
+            logger.debug("Gateway Honcho shutdown failed for %s: %s", session_key, e)
+
+    def _shutdown_all_gateway_honcho(self) -> None:
+        """Flush and close all persistent Honcho managers."""
+        managers = getattr(self, "_honcho_managers", None)
+        if not managers:
+            return
+        for session_key in list(managers.keys()):
+            self._shutdown_gateway_honcho(session_key)
     
     def _flush_memories_for_session(self, old_session_id: str):
         """Prompt the agent to save memories/skills before context is lost.
@@ -595,6 +658,7 @@ class GatewayRunner:
                     )
                     try:
                         await self._async_flush_memories(entry.session_id)
+                        self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
@@ -617,8 +681,9 @@ class GatewayRunner:
                 logger.info("✓ %s disconnected", platform.value)
             except Exception as e:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
-        
+
         self.adapters.clear()
+        self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file
@@ -1369,6 +1434,8 @@ class GatewayRunner:
                 asyncio.create_task(self._async_flush_memories(old_entry.session_id))
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
+
+        self._shutdown_gateway_honcho(session_key)
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
@@ -1988,6 +2055,8 @@ class GatewayRunner:
             asyncio.create_task(self._async_flush_memories(current_entry.session_id))
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
+
+        self._shutdown_gateway_honcho(session_key)
 
         # Clear any running agent for this session key
         if session_key in self._running_agents:
@@ -2812,6 +2881,7 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
+            honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
             agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -2833,6 +2903,8 @@ class GatewayRunner:
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 platform=platform_key,
                 honcho_session_key=session_key,
+                honcho_manager=honcho_manager,
+                honcho_config=honcho_config,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )

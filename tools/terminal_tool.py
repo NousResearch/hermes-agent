@@ -437,7 +437,8 @@ def _get_env_config() -> Dict[str, Any]:
     # SSH is excluded since /home/ paths are valid on remote machines.
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if env_type in ("modal", "docker", "singularity", "daytona") and cwd:
-        host_prefixes = ("/Users/", "C:\\", "C:/")
+        # Host paths that won't exist inside containers
+        host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
         if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host path won't exist in sandbox). Using %r instead.",

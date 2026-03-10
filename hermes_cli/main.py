@@ -1777,6 +1777,44 @@ def cmd_update(args):
             sys.exit(1)
 
 
+def _coalesce_session_name_args(argv: list) -> list:
+    """Join unquoted multi-word session names after -c/--continue and -r/--resume.
+
+    When a user types ``hermes -c Pokemon Agent Dev`` without quoting the
+    session name, argparse sees three separate tokens.  This function merges
+    them into a single argument so argparse receives
+    ``['-c', 'Pokemon Agent Dev']`` instead.
+
+    Tokens are collected after the flag until we hit another flag (``-*``)
+    or a known top-level subcommand.
+    """
+    _SUBCOMMANDS = {
+        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
+        "status", "cron", "doctor", "config", "pairing", "skills", "tools",
+        "sessions", "insights", "version", "update", "uninstall",
+    }
+    _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
+
+    result = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in _SESSION_FLAGS:
+            result.append(token)
+            i += 1
+            # Collect subsequent non-flag, non-subcommand tokens as one name
+            parts: list = []
+            while i < len(argv) and not argv[i].startswith("-") and argv[i] not in _SUBCOMMANDS:
+                parts.append(argv[i])
+                i += 1
+            if parts:
+                result.append(" ".join(parts))
+        else:
+            result.append(token)
+            i += 1
+    return result
+
+
 def main():
     """Main entry point for hermes CLI."""
     parser = argparse.ArgumentParser(
@@ -2515,7 +2553,11 @@ For more help on a command:
     # =========================================================================
     # Parse and execute
     # =========================================================================
-    args = parser.parse_args()
+    # Pre-process argv so unquoted multi-word session names after -c / -r
+    # are merged into a single token before argparse sees them.
+    # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
+    _processed_argv = _coalesce_session_name_args(sys.argv[1:])
+    args = parser.parse_args(_processed_argv)
     
     # Handle --version flag
     if args.version:

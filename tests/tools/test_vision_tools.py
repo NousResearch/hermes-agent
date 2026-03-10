@@ -242,7 +242,10 @@ class TestErrorLoggingExcInfo:
     async def test_analysis_error_logs_exc_info(self):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         import tools.vision_tools as _vt
-        with patch.object(_vt.logger, "error") as mock_error, \
+        mock_async_client = MagicMock()
+        with patch.object(_vt, "_aux_async_client", mock_async_client), \
+             patch.object(_vt, "DEFAULT_VISION_MODEL", "test/model"), \
+             patch.object(_vt.logger, "error") as mock_error, \
              patch("tools.vision_tools._validate_image_url", return_value=True), \
              patch("tools.vision_tools._download_image", new_callable=AsyncMock,
                    side_effect=Exception("download boom")):

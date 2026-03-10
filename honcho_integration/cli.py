@@ -121,20 +121,20 @@ def cmd_setup(args) -> None:
 
     hermes_host.setdefault("aiPeer", HOST)
 
-    # Memory mode (host-scoped)
-    current_mode = hermes_host.get("memoryMode") or cfg.get("memoryMode", "hybrid")
+    # Memory mode
+    current_mode = cfg.get("memoryMode", "hybrid")
     print(f"\n  Memory mode options:")
     print("    hybrid  — write to both Honcho and local MEMORY.md (default)")
     print("    honcho  — Honcho only, skip MEMORY.md writes")
     print("    local   — MEMORY.md only, Honcho disabled")
     new_mode = _prompt("Memory mode", default=current_mode)
     if new_mode in ("hybrid", "honcho", "local"):
-        hermes_host["memoryMode"] = new_mode
+        cfg["memoryMode"] = new_mode
     else:
-        hermes_host["memoryMode"] = "hybrid"
+        cfg["memoryMode"] = "hybrid"
 
-    # Write frequency (host-scoped)
-    current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))
+    # Write frequency
+    current_wf = str(cfg.get("writeFrequency", "async"))
     print(f"\n  Write frequency options:")
     print("    async   — background thread, no token cost (recommended)")
     print("    turn    — sync write after every turn")
@@ -142,22 +142,22 @@ def cmd_setup(args) -> None:
     print("    N       — write every N turns (e.g. 5)")
     new_wf = _prompt("Write frequency", default=current_wf)
     try:
-        hermes_host["writeFrequency"] = int(new_wf)
+        cfg["writeFrequency"] = int(new_wf)
     except (ValueError, TypeError):
-        hermes_host["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
+        cfg["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
 
-    # Recall mode (host-scoped)
-    current_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
+    # Recall mode
+    current_recall = cfg.get("recallMode", "hybrid")
     print(f"\n  Recall mode options:")
     print("    hybrid  — pre-warmed context + memory tools available (default)")
     print("    context — pre-warmed context only, memory tools suppressed")
     print("    tools   — no pre-loaded context, rely on tool calls only")
     new_recall = _prompt("Recall mode", default=current_recall)
     if new_recall in ("hybrid", "context", "tools"):
-        hermes_host["recallMode"] = new_recall
+        cfg["recallMode"] = new_recall
 
-    # Session strategy (host-scoped)
-    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
+    # Session strategy
+    current_strat = cfg.get("sessionStrategy", "per-session")
     print(f"\n  Session strategy options:")
     print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
     print("    per-repo      — one session per git repository (uses repo root name)")
@@ -165,7 +165,7 @@ def cmd_setup(args) -> None:
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
     if new_strat in ("per-session", "per-repo", "per-directory", "global"):
-        hermes_host["sessionStrategy"] = new_strat
+        cfg["sessionStrategy"] = new_strat
 
     cfg.setdefault("enabled", True)
     cfg.setdefault("saveMessages", True)

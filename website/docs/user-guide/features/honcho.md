@@ -37,15 +37,15 @@ The setup wizard walks through API key, peer names, workspace, memory mode, writ
 
 ### Manual Setup
 
-#### 1. Install the Client Library
+#### 1. Get an API Key
+
+Go to [app.honcho.dev](https://app.honcho.dev) > Settings > API Keys.
+
+#### 2. Install the Client Library
 
 ```bash
 pip install 'honcho-ai>=2.0.1'
 ```
-
-#### 2. Get an API Key
-
-Go to [app.honcho.dev](https://app.honcho.dev) > Settings > API Keys.
 
 #### 3. Configure
 
@@ -54,16 +54,22 @@ Honcho reads from `~/.honcho/config.json` (shared across all Honcho-enabled appl
 ```json
 {
   "apiKey": "your-honcho-api-key",
-  "workspace": "hermes",
   "peerName": "your-name",
-  "aiPeer": "hermes",
-  "memoryMode": "hybrid",
-  "writeFrequency": "async",
-  "recallMode": "hybrid",
-  "sessionStrategy": "per-directory",
-  "enabled": true
+  "enabled": true,
+  "hosts": {
+    "hermes": {
+      "workspace": "hermes",
+      "aiPeer": "hermes",
+      "memoryMode": "hybrid",
+      "writeFrequency": "async",
+      "recallMode": "hybrid",
+      "sessionStrategy": "per-directory"
+    }
+  }
 }
 ```
+
+The `hosts` structure lets multiple integrations share the same config file. Each host (Hermes, Claude Code, Cursor, etc.) reads its own block while sharing global fields like `apiKey` and `peerName`.
 
 Or set the API key as an environment variable:
 
